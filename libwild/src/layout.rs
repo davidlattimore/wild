@@ -36,7 +36,7 @@ use crate::error::warning;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::input_data::FileId;
-use crate::input_data::InputData;
+use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
@@ -149,7 +149,7 @@ pub fn compute<'data, A: Arch>(
     resolved: ResolutionOutputs<'data>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
-    input_data: &InputData<'data>,
+    input_data: &FileLoader<'data>,
 ) -> Result<Layout<'data>> {
     timing_phase!("Layout");
 
@@ -1737,7 +1737,7 @@ struct GraphResources<'data, 'scope> {
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 
-    input_data: &'scope InputData<'data>,
+    input_data: &'scope FileLoader<'data>,
 
     /// The number of groups that haven't yet completed activation.
     activations_remaining: AtomicUsize,
@@ -2475,7 +2475,7 @@ fn find_required_sections<'data, A: Arch>(
     symbol_db: &SymbolDb<'data>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    input_data: &InputData<'data>,
+    input_data: &FileLoader<'data>,
 ) -> Result<GcOutputs<'data>> {
     timing_phase!("Find required sections");
 

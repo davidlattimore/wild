@@ -63,12 +63,13 @@ pub(crate) mod x86_64;
 use crate::args::ActivatedArgs;
 use crate::error::Result;
 use crate::identity::linker_identity;
+use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
-use input_data::InputData;
+use input_data::FileLoader;
 use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
@@ -119,7 +120,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// pages) will still happen anyway.
 pub struct Linker {
     /// We store our input files here once we've read them.
-    inputs: Arena<InputFile>,
+    inputs_arena: Arena<InputFile>,
 
     /// Anything that doesn't need a custom Drop implementation can go in here. In practice, it's
     /// mostly just the decompressed copy of compressed string-merge sections.
@@ -148,7 +149,7 @@ impl Linker {
         let (guard_a, guard_b) = timing_guard!("Link");
 
         Self {
-            inputs: Arena::new(),
+            inputs_arena: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
             _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
@@ -181,47 +182,58 @@ impl Linker {
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let input_data = input_data::InputData::from_args(args, &self.inputs)?;
-
-        let output_kind = OutputKind::new(args, &input_data);
-
-        let output = file_writer::Output::new(args, output_kind);
+        let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, args, output_kind);
+        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
 
-        input_data.verify_inputs_unchanged()?;
+        file_loader.verify_inputs_unchanged()?;
 
         result
     }
 
-    fn link_with_input_data<'data, A: arch::Arch>(
+    fn load_inputs_and_link<'data, A: arch::Arch>(
         &'data self,
-        mut output: file_writer::Output,
-        input_data: &InputData<'data>,
+        file_loader: &mut FileLoader<'data>,
         args: &'data Args,
-        output_kind: OutputKind,
     ) -> error::Result<LinkerOutput<'data>> {
+        let loaded = file_loader.load_inputs(&args.inputs, args)?;
+
+        args.save_dir.finish(file_loader)?;
+
+        let output_kind = OutputKind::new(args, file_loader);
+
+        let mut output = file_writer::Output::new(args, output_kind);
+
         let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
-        let (linker_scripts, layout_rules) =
-            parsing::process_linker_scripts(&input_data.linker_scripts, &mut output_sections)?;
+        let mut layout_rules_builder = LayoutRulesBuilder::default();
 
-        let parsed_inputs =
-            parsing::parse_input_files(&input_data.inputs, linker_scripts, args, output_kind)?;
+        let linker_scripts = parsing::process_linker_scripts(
+            &loaded.linker_scripts,
+            &mut output_sections,
+            &mut layout_rules_builder,
+        )?;
 
-        let groups = grouping::group_files(parsed_inputs, args, &self.herd);
+        let prelude = parsing::Prelude::new(args, output_kind);
+
+        let objects = parsing::parse_input_files(&loaded.inputs, args)?;
+
+        let groups = grouping::group_files(prelude, objects, linker_scripts, args, &self.herd);
+
+        let auxiliary = input_data::AuxiliaryFiles::new(args, &self.inputs_arena)?;
 
         let (mut symbol_db, mut per_symbol_flags) = symbol_db::SymbolDb::build(
             groups,
-            input_data.version_script_data,
+            &auxiliary,
             args,
-            &input_data.linker_scripts,
+            &loaded.linker_scripts,
             &self.herd,
-            input_data.export_list_data,
             output_kind,
         )?;
+
+        let layout_rules = layout_rules_builder.build();
 
         let resolved = resolution::resolve_symbols_and_sections(
             &mut symbol_db,
@@ -237,7 +249,7 @@ impl Linker {
             resolved,
             output_sections,
             &mut output,
-            input_data,
+            file_loader,
         )?;
 
         output.write(&layout, elf_writer::write::<A>)?;
@@ -262,7 +274,7 @@ impl Default for Linker {
 impl Drop for Linker {
     fn drop(&mut self) {
         timing_phase!("Drop inputs");
-        self.inputs = Arena::new();
+        self.inputs_arena = Arena::new();
         self.herd = Default::default();
     }
 }

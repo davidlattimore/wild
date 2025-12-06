@@ -34,21 +34,19 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-pub(crate) struct InputData<'data> {
-    /// These are actual files on disk. We mostly only need to keep these so that we can verify
-    /// that they didn't change while we were running.
-    pub(crate) files: Vec<&'data InputFile>,
+pub(crate) struct FileLoader<'data> {
+    /// The files that we've loaded so far.
+    pub(crate) loaded_files: Vec<&'data InputFile>,
 
-    /// This is like `files`, but archives have been split into their separate parts.
+    inputs_arena: &'data Arena<InputFile>,
+}
+
+pub(crate) struct LoadedInputs<'data> {
+    /// Files, or in the case of archives, parts of files that we should parse as input objects.
+    /// Doesn't include linker scripts.
     pub(crate) inputs: Vec<InputBytes<'data>>,
 
-    pub(crate) version_script_data: Option<ScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
-    pub(crate) export_list_data: Option<ScriptData<'data>>,
-
-    /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
-    /// regenerating the map.
-    path_to_load_index: HashMap<PathBuf, FileLoadIndex>,
 }
 
 pub(crate) struct InputBytes<'data> {
@@ -181,25 +179,47 @@ struct LoadedLinkerScript<'data> {
     extra_inputs: Vec<Input>,
 }
 
-impl<'data> InputData<'data> {
-    pub fn from_args(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
-        timing_phase!("Open input files");
+pub(crate) struct AuxiliaryFiles<'data> {
+    pub(crate) version_script_data: Option<ScriptData<'data>>,
+    pub(crate) export_list_data: Option<ScriptData<'data>>,
+}
 
-        let version_script_data = args
-            .version_script_path
-            .as_ref()
-            .map(|path| read_script_data(path, inputs_arena))
-            .transpose()?;
-        let export_list_data = args
-            .export_list_path
-            .as_ref()
-            .map(|path| read_script_data(path, inputs_arena))
-            .transpose()?;
+impl<'data> AuxiliaryFiles<'data> {
+    pub(crate) fn new(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+        Ok(Self {
+            version_script_data: args
+                .version_script_path
+                .as_ref()
+                .map(|path| read_script_data(path, inputs_arena))
+                .transpose()?,
+            export_list_data: args
+                .export_list_path
+                .as_ref()
+                .map(|path| read_script_data(path, inputs_arena))
+                .transpose()?,
+        })
+    }
+}
+
+impl<'data> FileLoader<'data> {
+    pub(crate) fn new(inputs_arena: &'data Arena<InputFile>) -> Self {
+        Self {
+            loaded_files: Vec::new(),
+            inputs_arena,
+        }
+    }
+
+    pub(crate) fn load_inputs(
+        &mut self,
+        inputs: &[Input],
+        args: &'data Args,
+    ) -> Result<LoadedInputs<'data>> {
+        timing_phase!("Open input files");
 
         let mut path_to_load_index = HashMap::new();
 
-        let mut initial_work = Vec::with_capacity(args.inputs.len());
-        for input in &args.inputs {
+        let mut initial_work = Vec::with_capacity(inputs.len());
+        for input in inputs {
             let path = input.path(args)?;
             path_to_load_index
                 .entry(path.absolute.clone())
@@ -222,7 +242,7 @@ impl<'data> InputData<'data> {
             path_to_load_index: Mutex::new(path_to_load_index),
             next_file_load_index: AtomicUsize::new(initial_work.len()),
             files: SegQueue::new(),
-            inputs_arena,
+            inputs_arena: self.inputs_arena,
         };
 
         // Open files, mmap them and identify their type from separate threads.
@@ -233,15 +253,6 @@ impl<'data> InputData<'data> {
         });
 
         verbose_timing_phase!("Finalise open input files");
-
-        let mut inputs = Self {
-            files: Vec::new(),
-            inputs: Vec::new(),
-            linker_scripts: Vec::new(),
-            version_script_data,
-            export_list_data,
-            path_to_load_index: temporary_state.path_to_load_index.into_inner().unwrap(),
-        };
 
         // Put files into a deterministic order. That order will the order we'd find them if we just
         // processed command-line arguments in order, recursively processing any files that those
@@ -256,11 +267,7 @@ impl<'data> InputData<'data> {
             );
             *entry = Some(file.state);
         }
-        inputs.extract_all(&mut files_by_index)?;
-
-        args.save_dir.finish(inputs.path_to_load_index.keys())?;
-
-        Ok(inputs)
+        self.extract_all(&mut files_by_index)
     }
 
     /// Checks that the modification timestamp on all our input files hasn't changed since we opened
@@ -270,7 +277,7 @@ impl<'data> InputData<'data> {
     pub(crate) fn verify_inputs_unchanged(&self) -> Result {
         timing_phase!("Verify inputs unchanged");
 
-        self.files.par_iter().try_for_each(|file| {
+        self.loaded_files.par_iter().try_for_each(|file| {
             let Some(file_data) = &file.data else {
                 return Ok(());
             };
@@ -303,50 +310,54 @@ impl<'data> InputData<'data> {
     /// linker script is loaded, its files appear at the point at which the linker script appeared
     /// on the command-line, even though the FileLoadIndex for files loaded by linker scripts is
     /// later.
-    fn extract_all(&mut self, files: &mut [Option<LoadedFileState<'data>>]) -> Result {
+    fn extract_all(
+        &mut self,
+        files: &mut [Option<LoadedFileState<'data>>],
+    ) -> Result<LoadedInputs<'data>> {
+        let mut loaded = LoadedInputs {
+            inputs: Vec::with_capacity(files.len()),
+            linker_scripts: Vec::new(),
+        };
+
         for i in 0..files.len() {
-            self.extract_file(FileLoadIndex(i), files)?;
+            self.extract_file(FileLoadIndex(i), files, &mut loaded)?;
         }
 
-        Ok(())
+        Ok(loaded)
     }
 
     fn extract_file(
         &mut self,
         index: FileLoadIndex,
         files: &mut [Option<LoadedFileState<'data>>],
+        loaded: &mut LoadedInputs<'data>,
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
             None => {}
             Some(LoadedFileState::Loaded(input_file)) => {
-                self.inputs.push(InputBytes::from_file(input_file));
-                self.files.push(input_file);
+                loaded.inputs.push(InputBytes::from_file(input_file));
+                self.loaded_files.push(input_file);
             }
             Some(LoadedFileState::Archive(input_file, mut parts)) => {
-                self.inputs.append(&mut parts);
-                self.files.push(input_file);
+                loaded.inputs.append(&mut parts);
+                self.loaded_files.push(input_file);
             }
             Some(LoadedFileState::ThinArchive(mut input_files)) => {
-                self.inputs
+                loaded
+                    .inputs
                     .extend(input_files.iter().map(|file| InputBytes::from_file(file)));
-                self.files.append(&mut input_files);
+                self.loaded_files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
-                // Check if the linker script contains a VERSION command
-                if let Some(version_content) = loaded_linker_script_state
-                    .script
-                    .script
-                    .get_version_script_content()
-                {
-                    self.version_script_data = Some(ScriptData {
-                        raw: version_content,
-                    });
-                }
+                self.loaded_files
+                    .push(loaded_linker_script_state.script.input_file);
 
-                self.linker_scripts.push(loaded_linker_script_state.script);
+                loaded
+                    .linker_scripts
+                    .push(loaded_linker_script_state.script);
 
                 for i in loaded_linker_script_state.file_indexes {
-                    self.extract_file(i, files)?;
+                    self.extract_file(i, files, loaded)?;
                 }
             }
             Some(LoadedFileState::Error(error)) => {
@@ -359,9 +370,9 @@ impl<'data> InputData<'data> {
     }
 
     pub(crate) fn has_file(&self, name: &'data [u8]) -> bool {
-        self.path_to_load_index
-            .keys()
-            .any(|path| path.ends_with(Path::new(OsStr::from_bytes(name))))
+        self.loaded_files
+            .iter()
+            .any(|file| file.filename.ends_with(Path::new(OsStr::from_bytes(name))))
     }
 }
 

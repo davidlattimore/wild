@@ -4,7 +4,6 @@ use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
 use crate::parsing::Epilogue;
 use crate::parsing::ParsedInputObject;
-use crate::parsing::ParsedInputs;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::sharding::ShardKey as _;
@@ -12,6 +11,7 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use object::LittleEndian;
 use std::fmt::Display;
 
@@ -88,22 +88,25 @@ impl Group<'_> {
 }
 
 pub(crate) fn group_files<'data>(
-    parsed_inputs: ParsedInputs<'data>,
+    prelude: Prelude<'data>,
+    parsed_objects: Vec<ParsedInputObject<'data>>,
+    linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &Args,
     herd: &'data bumpalo_herd::Herd,
 ) -> Vec<Group<'data>> {
     timing_phase!("Group files");
 
     let max_files_per_group = determine_max_files_per_group(args);
-    let symbols_per_group = determine_symbols_per_group(&parsed_inputs, args);
+    let num_symbols = count_symbols(&prelude, &parsed_objects, &linker_scripts);
+    let symbols_per_group = determine_symbols_per_group(num_symbols, args);
 
-    let mut groups = Vec::with_capacity(parsed_inputs.objects.len() / max_files_per_group + 3);
+    let mut groups = Vec::with_capacity(parsed_objects.len() / max_files_per_group + 3);
 
     let mut next_symbol_id = SymbolId::undefined();
-    next_symbol_id = next_symbol_id.add_usize(parsed_inputs.prelude.symbol_definitions.len());
-    groups.push(Group::Prelude(parsed_inputs.prelude));
+    next_symbol_id = next_symbol_id.add_usize(prelude.symbol_definitions.len());
+    groups.push(Group::Prelude(prelude));
 
-    let mut objects = parsed_inputs.objects.into_iter().peekable();
+    let mut objects = parsed_objects.into_iter().peekable();
 
     let mut num_symbols_in_group = 0;
     let mut group_objects = Vec::new();
@@ -147,8 +150,7 @@ pub(crate) fn group_files<'data>(
         }
     }
 
-    let linker_scripts: Vec<SequencedLinkerScript<'_>> = parsed_inputs
-        .linker_scripts
+    let linker_scripts: Vec<SequencedLinkerScript<'_>> = linker_scripts
         .into_iter()
         .enumerate()
         .map(|(i, script)| {
@@ -178,7 +180,7 @@ pub(crate) fn group_files<'data>(
 }
 
 /// Decides after how many symbols, we should start a new group.
-fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usize {
+fn determine_symbols_per_group(num_symbols: usize, args: &Args) -> usize {
     let num_threads = args.available_threads.get();
 
     // If we're running with a single thread, then we might as well put everything into a single
@@ -193,7 +195,7 @@ fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usi
     // after the others.
     const GROUPS_PER_THREAD: usize = 30;
 
-    1.max(parsed_inputs.num_symbols / num_threads / GROUPS_PER_THREAD)
+    1.max(num_symbols / num_threads / GROUPS_PER_THREAD)
 }
 
 /// Decides the maximum number of files that we'll put into one group.
@@ -205,6 +207,26 @@ fn determine_max_files_per_group(args: &Args) -> usize {
     // We may eventually find that a lower value based on the number of threads is better, but for
     // now, if files are small, we allow lots of them in a single group.
     crate::input_data::MAX_FILES_PER_GROUP as usize
+}
+
+/// Compute the total number of symbols in the prelude, input objects and defined by linker scripts.
+/// Doesn't include symbols defined by the epilogue, since we don't know what they will be until
+/// later.
+fn count_symbols(
+    prelude: &Prelude,
+    objects: &[ParsedInputObject],
+    linker_scripts: &[ProcessedLinkerScript],
+) -> usize {
+    verbose_timing_phase!("Count symbols");
+
+    let in_objects = objects.iter().map(|o| o.num_symbols()).sum::<usize>();
+
+    let in_linker_scripts = linker_scripts
+        .iter()
+        .map(|l| l.num_symbols())
+        .sum::<usize>();
+
+    prelude.symbol_definitions.len() + in_objects + in_linker_scripts
 }
 
 struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);
