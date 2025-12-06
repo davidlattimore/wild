@@ -234,6 +234,10 @@ impl AtomicValueFlags {
     pub(crate) fn or_assign(&self, flags: ValueFlags) {
         self.0.fetch_or(flags.bits(), Ordering::Relaxed);
     }
+
+    pub(crate) fn remove(&self, flags_to_remove: ValueFlags) {
+        self.0.fetch_and(!flags_to_remove.bits(), Ordering::Relaxed);
+    }
 }
 
 impl std::fmt::Display for ValueFlags {
@@ -263,6 +267,10 @@ impl PerSymbolFlags {
 
     pub(crate) fn set_flag(&mut self, symbol_id: SymbolId, extra: ValueFlags) {
         self.flags[symbol_id.as_usize()].0 |= extra.raw().0;
+    }
+
+    pub(crate) fn flags_mut(&mut self) -> &mut [RawFlags] {
+        &mut self.flags
     }
 }
 
