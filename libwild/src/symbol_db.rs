@@ -37,6 +37,7 @@ use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::RawFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use crate::version_script::RustVersionScript;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -281,6 +282,39 @@ struct PendingSymbolHashBucket<'data> {
 }
 
 impl<'data> SymbolDb<'data> {
+    /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
+    /// This promotes symbols marked for global visibility in a Rust version script back to global.
+    /// Also adds the non-interposable flag to all local symbols.
+    fn handle_rust_version_script(
+        &self,
+        rust_vscript: &RustVersionScript<'data>,
+        per_symbol_flags: &mut PerSymbolFlags,
+    ) {
+        verbose_timing_phase!("Upgrade locals for export");
+        let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
+
+        rust_vscript.global.par_iter().for_each(|symbol| {
+            let prehashed = UnversionedSymbolName::prehashed(symbol);
+            if let Some(symbol_id) = self.get_unversioned(&prehashed) {
+                let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
+                symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+            }
+        });
+
+        // Don't forget to add the non-interposable flag the local symbols.
+        // We coudn't do this earlier as we didn't know which symbols would remain
+        // local.
+        per_symbol_flags
+            .flags_mut()
+            .par_iter_mut()
+            .for_each(|flags| {
+                let flags_val = flags.get();
+                if flags_val.is_downgraded_to_local() {
+                    *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+                }
+            });
+    }
+
     pub fn build(
         groups: Vec<Group<'data>>,
         version_script_data: Option<ScriptData<'data>>,
@@ -380,39 +414,15 @@ impl<'data> SymbolDb<'data> {
                 // If it's a rust version script, apply the global symbol visibility now.
                 // We previously downgraded all symbols to local visibility.
                 if let VersionScript::Rust(rust_vscript) = &index.version_script {
-                    verbose_timing_phase!("Upgrade locals for export");
-                    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
-
-                    rust_vscript.global.par_iter().for_each(|symbol| {
-                        let prehashed = UnversionedSymbolName::prehashed(symbol);
-                        if let Some(symbol_id) = index.get_unversioned(&prehashed) {
-                            let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
-                            symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-                        }
-                    });
-
-                    // Don't forget to add the non-interposable flag the local symbols.
-                    // We coudn't do this earlier as we didn't know which symbols would remain
-                    // local.
-                    per_symbol_flags
-                        .flags_mut()
-                        .par_iter_mut()
-                        .for_each(|flags| {
-                            let flags_val = flags.get();
-                            if flags_val.is_downgraded_to_local() {
-                                *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
-                            }
-                        });
+                    index.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
                 }
 
-                {
-                    index.apply_wrapped_symbol_overrides(args, herd);
+                index.apply_wrapped_symbol_overrides(args, herd);
 
-                    verbose_timing_phase!("Apply linker scripts");
+                verbose_timing_phase!("Apply linker scripts");
 
-                    for script in linker_scripts {
-                        index.apply_linker_script(script);
-                    }
+                for script in linker_scripts {
+                    index.apply_linker_script(script);
                 }
             },
         );
