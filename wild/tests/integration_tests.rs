@@ -1062,7 +1062,7 @@ impl ProgramInputs {
             .collect();
 
         if !config.remove_sections.is_empty() {
-            remove_sections(&link_output, &config.remove_sections)?;
+            remove_sections(&link_output, &config.remove_sections, cross_arch)?;
         }
 
         Ok(Program {
@@ -1175,8 +1175,17 @@ impl ProgramInputs {
 }
 
 /// Removes the specified sections from the output file.
-fn remove_sections(link_output: &LinkOutput, section_names: &[String]) -> Result {
-    let mut command = Command::new("objcopy");
+fn remove_sections(
+    link_output: &LinkOutput,
+    section_names: &[String],
+    cross_arch: Option<Architecture>,
+) -> Result {
+    let objcopy = match cross_arch {
+        Some(arch) => format!("{}-linux-gnu-objcopy", arch),
+        None => "objcopy".to_owned(),
+    };
+
+    let mut command = Command::new(objcopy);
     for section_name in section_names {
         command.arg("--remove-section").arg(section_name);
     }
