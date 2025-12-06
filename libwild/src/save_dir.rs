@@ -133,17 +133,35 @@ impl SaveDirState {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
-        self.write_args(&mut out)?;
+
+        let mut original_output_file = None;
+        self.write_args(&self.args, &mut out, &mut original_output_file)?;
+
+        if let Some(orig) = original_output_file {
+            out.write_all(b"\n# Original output file: ")?;
+            out.write_all(orig.as_bytes())?;
+        }
+
         drop(out);
         crate::fs::make_executable(&file)?;
         Ok(())
     }
 
-    fn write_args(&self, out: &mut BufWriter<&mut std::fs::File>) -> Result {
-        let mut original_output_file = None;
-        let mut args = self.args.iter();
+    fn write_args(
+        &self,
+        args: &[String],
+        out: &mut BufWriter<&mut std::fs::File>,
+        original_output_file: &mut Option<String>,
+    ) -> Result {
+        let mut args = args.iter();
 
         while let Some(arg) = args.next() {
+            if let Some(args_path) = arg.strip_prefix("@") {
+                let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
+                self.write_args(&args_from_file, out, original_output_file)?;
+                continue;
+            }
+
             out.write_all(b" \\\n  ")?;
 
             if let Some(mut path) = arg.strip_prefix("-o") {
@@ -151,7 +169,7 @@ impl SaveDirState {
                     path = args.next().map(|s| s.as_str()).unwrap_or_default();
                 }
                 out.write_all(b"-o $OUT")?;
-                original_output_file = Some(path);
+                *original_output_file = Some(path.to_owned());
             } else if let Some(mut dir) = arg.strip_prefix("-L") {
                 if dir.is_empty() {
                     dir = args.next().map(|s| s.as_str()).unwrap_or_default();
@@ -182,10 +200,6 @@ impl SaveDirState {
             }
         }
 
-        if let Some(orig) = original_output_file {
-            out.write_all(b"\n# Original output file: ")?;
-            out.write_all(orig.as_bytes())?;
-        }
         Ok(())
     }
 

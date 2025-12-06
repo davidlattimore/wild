@@ -513,7 +513,7 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
+pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
     arguments_from_string(&contents)
