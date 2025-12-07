@@ -15,6 +15,7 @@
 //! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,
 //! update `NUM_BUILT_IN_REGULAR_SECTIONS`.
 
+use core::cmp::Ordering;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
@@ -863,6 +864,50 @@ pub(crate) struct InitFiniOrder {
     pub(crate) file_rank: u32,
     pub(crate) section_index: u32,
     pub(crate) is_ctors_like: bool,
+}
+
+impl Ord for InitFiniOrder {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let self_priority_key = if self.is_ctors_like {
+            u16::MAX - self.priority
+        } else {
+            self.priority
+        };
+        let other_priority_key = if other.is_ctors_like {
+            u16::MAX - other.priority
+        } else {
+            other.priority
+        };
+
+        match self_priority_key.cmp(&other_priority_key) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+
+        match self.file_rank.cmp(&other.file_rank) {
+            Ordering::Equal => {}
+            ord => return ord,
+        }
+
+        let self_index_key = if self.is_ctors_like {
+            u32::MAX - self.section_index
+        } else {
+            self.section_index
+        };
+        let other_index_key = if other.is_ctors_like {
+            u32::MAX - other.section_index
+        } else {
+            other.section_index
+        };
+
+        self_index_key.cmp(&other_index_key)
+    }
+}
+
+impl PartialOrd for InitFiniOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 #[derive(Debug)]
