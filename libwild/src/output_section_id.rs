@@ -868,39 +868,29 @@ pub(crate) struct InitFiniOrder {
 
 impl Ord for InitFiniOrder {
     fn cmp(&self, other: &Self) -> Ordering {
-        let self_priority_key = if self.is_ctors_like {
-            u16::MAX - self.priority
-        } else {
-            self.priority
-        };
-        let other_priority_key = if other.is_ctors_like {
-            u16::MAX - other.priority
-        } else {
-            other.priority
-        };
-
-        match self_priority_key.cmp(&other_priority_key) {
+        match self.priority.cmp(&other.priority) {
             Ordering::Equal => {}
             ord => return ord,
         }
 
-        match self.file_rank.cmp(&other.file_rank) {
+        match other.file_rank.cmp(&self.file_rank) {
             Ordering::Equal => {}
             ord => return ord,
         }
 
-        let self_index_key = if self.is_ctors_like {
+        let self_key = if self.is_ctors_like {
             u32::MAX - self.section_index
         } else {
             self.section_index
         };
-        let other_index_key = if other.is_ctors_like {
+
+        let other_key = if other.is_ctors_like {
             u32::MAX - other.section_index
         } else {
             other.section_index
         };
 
-        self_index_key.cmp(&other_index_key)
+        self_key.cmp(&other_key)
     }
 }
 
@@ -1028,6 +1018,10 @@ impl<'data> OutputSections<'data> {
             location: None,
             secondary_order,
         })
+    }
+
+    pub(crate) fn set_secondary_order(&mut self, id: OutputSectionId, order: SecondaryOrder) {
+        self.section_infos.get_mut(id).secondary_order = Some(order);
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {

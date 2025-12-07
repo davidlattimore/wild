@@ -622,6 +622,31 @@ fn is_init_fini_name(name: &[u8]) -> bool {
         || name.starts_with(b".dtors")
 }
 
+fn classify_init_fini_priority(name: &[u8]) -> (u16, bool) {
+    let is_ctors_like = name.starts_with(b".ctors") || name.starts_with(b".dtors");
+
+    if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
+        return (u16::MAX, is_ctors_like);
+    }
+
+    if name.starts_with(b".init_array.") || name.starts_with(b".fini_array.") {
+        let prio = parse_priority_suffix(name).unwrap_or(u16::MAX);
+        return (prio, is_ctors_like);
+    }
+
+    if name.starts_with(b".ctors.") || name.starts_with(b".dtors.") {
+        let suffix = parse_priority_suffix(name).unwrap_or(u16::MAX);
+        let prio = u16::MAX.wrapping_sub(suffix);
+        return (prio, is_ctors_like);
+    }
+
+    if name == b".ctors" || name == b".dtors" {
+        return (u16::MAX, is_ctors_like);
+    }
+
+    (u16::MAX, is_ctors_like)
+}
+
 fn assign_init_fini_secondaries<'data>(
     file_id: FileId,
     object_file: &File<'data>,
@@ -644,24 +669,18 @@ fn assign_init_fini_secondaries<'data>(
             continue;
         }
 
-        let priority = parse_priority_suffix(name).unwrap_or(u16::MAX);
-        let alignment = unloaded.part_id.alignment();
-        let primary_id = unloaded.part_id.output_section_id();
+        let (priority, is_ctors_like) = classify_init_fini_priority(name);
+        let secondary_id = unloaded.part_id.output_section_id();
 
-        let is_ctors_like = name.starts_with(b".ctors") || name.starts_with(b".dtors");
-
-        let secondary_id = output_sections.add_secondary_section(
-            primary_id,
-            alignment,
-            Some(SecondaryOrder::InitFini(InitFiniOrder {
+        output_sections.set_secondary_order(
+            secondary_id,
+            SecondaryOrder::InitFini(InitFiniOrder {
                 priority,
                 file_rank: file_rank(file_id),
                 section_index: index as u32,
                 is_ctors_like,
-            })),
+            }),
         );
-
-        unloaded.part_id = secondary_id.part_id_with_alignment(alignment);
     }
 }
 
