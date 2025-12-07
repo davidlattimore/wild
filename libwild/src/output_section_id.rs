@@ -861,24 +861,16 @@ impl Debug for SectionName<'_> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct InitFiniOrder {
     pub(crate) priority: u16,
-    pub(crate) file_rank: u32,
-    pub(crate) section_index: u32,
+    pub(crate) file_index: u32,
     pub(crate) is_ctors_like: bool,
 }
 
 impl Ord for InitFiniOrder {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.priority.cmp(&other.priority) {
-            Ordering::Equal => {}
-            ord => return ord,
+            Ordering::Equal => self.file_index.cmp(&other.file_index),
+            ord => ord,
         }
-
-        match self.file_rank.cmp(&other.file_rank) {
-            Ordering::Equal => {}
-            ord => return ord,
-        }
-
-        self.section_index.cmp(&other.section_index)
     }
 }
 

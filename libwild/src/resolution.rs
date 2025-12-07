@@ -595,10 +595,6 @@ fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSec
     }
 }
 
-fn file_rank(file_id: FileId) -> u32 {
-    ((file_id.group() as u32) << 16) | file_id.file() as u32
-}
-
 fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
     let idx = name.iter().rposition(|&b| b == b'.')?;
     let suffix = name.get(idx + 1..)?;
@@ -623,7 +619,7 @@ fn is_init_fini_name(name: &[u8]) -> bool {
 }
 
 fn classify_init_fini_priority(name: &[u8]) -> (u16, bool) {
-    let is_ctors_like = name.starts_with(b".ctors") || name.starts_with(b".dtors");
+    let is_ctors_like = name.starts_with(b".ctors");
 
     if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
         return (u16::MAX, is_ctors_like);
@@ -676,8 +672,7 @@ fn assign_init_fini_secondaries<'data>(
             secondary_id,
             SecondaryOrder::InitFini(InitFiniOrder {
                 priority,
-                file_rank: file_rank(file_id),
-                section_index: index as u32,
+                file_index: file_id.file() as u32,
                 is_ctors_like,
             }),
         );
