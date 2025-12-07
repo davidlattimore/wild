@@ -61,6 +61,9 @@ pub(crate) struct SectionRule<'data> {
 
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
+
+    /// how to sort
+    sort_order: Option<SortOrder>,
 }
 
 /// What should be done with a particular input section.
@@ -154,6 +157,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             output_sections.add_secondary_section(
                                                 primary_section_id,
                                                 replace(&mut extra_min_alignment, alignment::MIN),
+                                                None,
                                             )
                                         };
 
@@ -235,6 +239,7 @@ impl<'data> SectionRule<'data> {
                 name: prefix,
                 is_prefix: true,
                 outcome,
+                sort_order: None,
             })
         } else {
             ensure!(
@@ -247,6 +252,7 @@ impl<'data> SectionRule<'data> {
                 name: pattern,
                 is_prefix: false,
                 outcome,
+                sort_order: None,
             })
         }
     }
@@ -284,14 +290,17 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    const fn prefix_section_keep(
+    pub const fn prefix_section_keep_sorted(
         name: &'data [u8],
         section_id: OutputSectionId,
+        sort_order: SortOrder,
     ) -> SectionRule<'data> {
-        Self::prefix(
+        SectionRule {
             name,
-            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
-        )
+            is_prefix: true,
+            outcome: SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
+            sort_order: Some(sort_order),
+        }
     }
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
@@ -299,6 +308,7 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: false,
             outcome,
+            sort_order: None,
         }
     }
 
@@ -307,8 +317,15 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: true,
             outcome,
+            sort_order: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum SortOrder {
+    Init,
+    Fini,
 }
 
 const BUILT_IN_RULES: &[SectionRule<'static>] = &[
@@ -335,16 +352,26 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
     SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_keep_sorted(
         secnames::INIT_ARRAY_SECTION_NAME,
         output_section_id::INIT_ARRAY,
+        SortOrder::Init,
     ),
-    SectionRule::prefix_section_keep(b".ctors", output_section_id::INIT_ARRAY),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_keep_sorted(
+        b".ctors",
+        output_section_id::INIT_ARRAY,
+        SortOrder::Init,
+    ),
+    SectionRule::prefix_section_keep_sorted(
         secnames::FINI_ARRAY_SECTION_NAME,
         output_section_id::FINI_ARRAY,
+        SortOrder::Fini,
     ),
-    SectionRule::prefix_section_keep(b".dtors", output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section_keep_sorted(
+        b".dtors",
+        output_section_id::FINI_ARRAY,
+        SortOrder::Fini,
+    ),
     SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
     SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
     SectionRule::prefix_section(

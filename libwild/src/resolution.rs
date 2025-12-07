@@ -21,7 +21,9 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
+use crate::output_section_id::InitFiniOrder;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SecondaryOrder;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
@@ -53,6 +55,7 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
+use object::SectionIndex;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelBridge;
@@ -574,8 +577,91 @@ fn assign_section_ids<'data>(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
                 );
+                assign_init_fini_secondaries(
+                    s.file_id,
+                    s.object,
+                    non_dynamic.sections.as_mut_slice(),
+                    output_sections,
+                );
             }
         }
+    }
+}
+
+fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSection> {
+    match slot {
+        SectionSlot::Unloaded(sec) | SectionSlot::MustLoad(sec) => Some(sec),
+        _ => None,
+    }
+}
+
+fn file_rank(file_id: FileId) -> u32 {
+    ((file_id.group() as u32) << 16) | file_id.file() as u32
+}
+
+fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
+    let idx = name.iter().rposition(|&b| b == b'.')?;
+    let suffix = name.get(idx + 1..)?;
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
+    Some(u16::try_from(value).unwrap_or(u16::MAX))
+}
+
+fn is_init_fini_name(name: &[u8]) -> bool {
+    // .init_array / .init_array.00005...
+    name == secnames::INIT_ARRAY_SECTION_NAME
+        || name.starts_with(b".init_array.")
+        // .fini_array / .fini_array.00005...
+        || name == secnames::FINI_ARRAY_SECTION_NAME
+        || name.starts_with(b".fini_array.")
+        // .ctors / .ctors.00005...
+        || name.starts_with(b".ctors")
+        // .dtors / .dtors.00005...
+        || name.starts_with(b".dtors")
+}
+
+fn assign_init_fini_secondaries<'data>(
+    file_id: FileId,
+    object_file: &File<'data>,
+    sections: &mut [SectionSlot],
+    output_sections: &mut OutputSections<'data>,
+) {
+    for (index, slot) in sections.iter_mut().enumerate() {
+        let unloaded = match init_fini_unloaded_section(slot) {
+            Some(u) => u,
+            None => continue,
+        };
+
+        let header = match object_file.section(SectionIndex(index)) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let name = object_file.section_name(header).unwrap_or(b"");
+
+        if !is_init_fini_name(name) {
+            continue;
+        }
+
+        let priority = parse_priority_suffix(name).unwrap_or(u16::MAX);
+        let alignment = unloaded.part_id.alignment();
+        let primary_id = unloaded.part_id.output_section_id();
+
+        let is_ctors_like = name.starts_with(b".ctors") || name.starts_with(b".dtors");
+
+        let secondary_id = output_sections.add_secondary_section(
+            primary_id,
+            alignment,
+            Some(SecondaryOrder::InitFini(InitFiniOrder {
+                priority,
+                file_rank: file_rank(file_id),
+                section_index: index as u32,
+                is_ctors_like,
+            })),
+        );
+
+        unloaded.part_id = secondary_id.part_id_with_alignment(alignment);
     }
 }
 
