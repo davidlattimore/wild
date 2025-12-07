@@ -327,33 +327,64 @@ fn update_defsym_symbol_resolutions(
     symbol_db: &SymbolDb,
     resolutions: &mut [Option<Resolution>],
 ) -> Result {
-    if let Some(Group::Prelude(prelude)) = symbol_db.groups.first() {
-        let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
+    verbose_timing_phase!("Update symdef resolutions");
 
-        for (local_index, def_info) in prelude.symbol_definitions.iter().enumerate() {
-            let SymbolPlacement::DefsymSymbol(target_name) = def_info.placement else {
-                continue;
-            };
+    for group in &symbol_db.groups {
+        let mut symbol_id = group.symbol_id_range().start();
 
-            let symbol_id = symbol_id_range.offset_to_id(local_index);
-            if !symbol_db.is_canonical(symbol_id) {
-                continue;
+        match group {
+            Group::Prelude(prelude) => {
+                for def_info in &prelude.symbol_definitions {
+                    update_defsym_symbol_resolution(symbol_id, def_info, symbol_db, resolutions)?;
+                    symbol_id = symbol_id.next();
+                }
             }
-
-            let Some(target_symbol_id) = symbol_db
-                .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
-            else {
-                return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
-            };
-
-            if let Some(target_value) = resolutions[target_symbol_id.as_usize()]
-                .as_ref()
-                .map(|r| r.raw_value)
-                && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
-            {
-                resolution.raw_value = target_value;
+            Group::LinkerScripts(scripts) => {
+                for script in scripts {
+                    for def_info in &script.parsed.symbol_defs {
+                        update_defsym_symbol_resolution(
+                            symbol_id,
+                            def_info,
+                            symbol_db,
+                            resolutions,
+                        )?;
+                        symbol_id = symbol_id.next();
+                    }
+                }
             }
+            Group::Objects(_) | Group::Epilogue(_) => {}
         }
+    }
+
+    Ok(())
+}
+
+fn update_defsym_symbol_resolution(
+    symbol_id: SymbolId,
+    def_info: &InternalSymDefInfo,
+    symbol_db: &SymbolDb,
+    resolutions: &mut [Option<Resolution>],
+) -> Result {
+    let SymbolPlacement::DefsymSymbol(target_name) = def_info.placement else {
+        return Ok(());
+    };
+
+    if !symbol_db.is_canonical(symbol_id) {
+        return Ok(());
+    }
+
+    let Some(target_symbol_id) =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+    else {
+        return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
+    };
+
+    if let Some(target_value) = resolutions[target_symbol_id.as_usize()]
+        .as_ref()
+        .map(|r| r.raw_value)
+        && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
+    {
+        resolution.raw_value = target_value;
     }
 
     Ok(())
@@ -3399,13 +3430,14 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
-        self.assign_defsym_flags(resources);
+        self.mark_defsyms_as_used(resources);
 
         Ok(())
     }
 
-    fn assign_defsym_flags(&self, resources: &GraphResources) {
-        let needs_dynsym = resources.symbol_db.output_kind.needs_dynsym();
+    /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
+    /// even if nothing in the code references them.
+    fn mark_defsyms_as_used(&self, resources: &GraphResources) {
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(index);
             if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3413,22 +3445,11 @@ impl<'data> PreludeLayoutState<'data> {
             }
 
             match def_info.placement {
-                SymbolPlacement::DefsymAbsolute(_) => {
+                SymbolPlacement::DefsymAbsolute(_) | SymbolPlacement::DefsymSymbol(_) => {
                     resources
                         .per_symbol_flags
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
-                }
-                SymbolPlacement::DefsymSymbol(_) => {
-                    let flags_to_set = if needs_dynsym {
-                        ValueFlags::DIRECT | ValueFlags::EXPORT_DYNAMIC
-                    } else {
-                        ValueFlags::DIRECT
-                    };
-                    resources
-                        .per_symbol_flags
-                        .get_atomic(symbol_id)
-                        .or_assign(flags_to_set);
                 }
                 _ => {}
             }

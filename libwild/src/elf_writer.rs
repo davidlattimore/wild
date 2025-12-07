@@ -3076,7 +3076,13 @@ fn write_dynamic_symbol_definitions(
                             layout,
                             sym_def.symbol_id,
                             script,
-                        )?;
+                        )
+                        .with_context(|| {
+                            format!(
+                                "Failed to write linker script dynsym: {}",
+                                layout.symbol_debug(sym_def.symbol_id)
+                            )
+                        })?;
                     }
                     FileLayout::Prelude(prelude) => {
                         write_prelude_dynsym(
@@ -3115,14 +3121,13 @@ fn write_linker_script_dynsym(
 
     let info = &script.internal_symbols.symbol_definitions[local_index];
 
-    debug_assert!(
-        !matches!(
-            info.placement,
-            crate::parsing::SymbolPlacement::DefsymSymbol(_)
-                | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-        ),
-        "Defsym symbols from linker scripts should be emitted via the prelude"
-    );
+    if matches!(
+        info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol(_)
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ) {
+        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
+    }
 
     let section_id = info
         .section_id()
