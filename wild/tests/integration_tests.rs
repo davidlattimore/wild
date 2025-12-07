@@ -2945,6 +2945,7 @@ fn integration_test(
         "basic-comdat.s",
         "input_does_not_exist.c",
         "ifunc2.c",
+        "init-order.c",
         "ctors.c",
         "visibility-merging.c",
         "tls-local-exec.c",
