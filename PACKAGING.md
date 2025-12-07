@@ -28,11 +28,10 @@ To test built binary, you can use `cargo test`, preferably with the same configu
 to avoid rebuilding. The testsuite is configured with `test-config.toml` file (default values are
 used if absent) and `WILD_TEST_IGNORE_FORMAT`.
 
-To tweak the configuration, you can copy
-`test-config.toml.example` to `test-config.toml` and edit it to your liking. You can learn more
-about the options at [Configuration file for tests](./CONTRIBUTING.md#configuration-file-for-tests).
-Just be careful with `run_all_diffs` option, it's meant mostly for Wild development and may cause
-false positives.
+To tweak the configuration, you can copy `test-config.toml.example` to `test-config.toml` and edit
+it to your liking. You can learn more about the options
+at [Configuration file for tests](./CONTRIBUTING.md#configuration-file-for-tests). Just be careful
+with `run_all_diffs` option, it's meant mostly for Wild development and may cause false positives.
 
 Setting `WILD_TEST_IGNORE_FORMAT` disables format checks of C/C++ source files in tests which you
 might prefer because your `clang-format` may give different results.
