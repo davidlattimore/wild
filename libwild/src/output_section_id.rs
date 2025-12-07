@@ -873,24 +873,12 @@ impl Ord for InitFiniOrder {
             ord => return ord,
         }
 
-        match other.file_rank.cmp(&self.file_rank) {
+        match self.file_rank.cmp(&other.file_rank) {
             Ordering::Equal => {}
             ord => return ord,
         }
 
-        let self_key = if self.is_ctors_like {
-            u32::MAX - self.section_index
-        } else {
-            self.section_index
-        };
-
-        let other_key = if other.is_ctors_like {
-            u32::MAX - other.section_index
-        } else {
-            other.section_index
-        };
-
-        self_key.cmp(&other_key)
+        self.section_index.cmp(&other.section_index)
     }
 }
 
