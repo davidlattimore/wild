@@ -42,10 +42,12 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
+use crate::output_section_id::InitFiniOrder;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SecondaryOrder;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -137,9 +139,6 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use zerocopy::FromBytes;
-use crate::output_section_id::InitFiniOrder;
-use crate::output_section_id::SecondaryOrder;
-
 
 pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
@@ -1973,9 +1972,7 @@ fn merge_secondary_parts(
             match info.secondary_order {
                 Some(SecondaryOrder::InitFini(order)) => {
                     // .init_array/.fini_array/.ctors/.dtors 系
-                    init_fini_secondaries
-                        .get_mut(primary_id)
-                        .push((order, id));
+                    init_fini_secondaries.get_mut(primary_id).push((order, id));
                 }
                 _ => {
                     // それ以外の secondary は従来通りの順序でマージ
@@ -1995,9 +1992,8 @@ fn merge_secondary_parts(
 
         // 2. Init/Fini secondary を InitFiniOrder でソートしてからマージ
         let list = init_fini_secondaries.get_mut(primary_id);
-            list.sort_by(|(a, _), (b, _)| a.cmp(b));
+        list.sort_by(|(a, _), (b, _)| a.cmp(b));
         if !list.is_empty() {
-
             for &(_, secondary_id) in list.iter() {
                 let secondary_layout = take(section_layouts.get_mut(secondary_id));
                 section_layouts.get_mut(primary_id).merge(&secondary_layout);

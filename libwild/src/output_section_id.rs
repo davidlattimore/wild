@@ -15,7 +15,6 @@
 //! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,
 //! update `NUM_BUILT_IN_REGULAR_SECTIONS`.
 
-use core::cmp::Ordering;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
@@ -39,6 +38,7 @@ use crate::program_segments::ProgramSegments;
 use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
+use core::cmp::Ordering;
 use core::slice;
 use hashbrown::HashMap;
 use linker_utils::elf::SectionFlags;
