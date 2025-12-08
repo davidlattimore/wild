@@ -28,7 +28,7 @@ use rayon::iter::ParallelIterator;
 
 pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
-    mut linker_scripts: Vec<ProcessedLinkerScript<'data>>,
+    linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &'data Args,
     output_kind: OutputKind,
 ) -> Result<ParsedInputs<'data>> {
@@ -47,12 +47,7 @@ pub(crate) fn parse_input_files<'data>(
         },
     );
 
-    verbose_timing_phase!("Count symbols");
-
     let objects = objects?;
-    let mut prelude = prelude;
-
-    move_linker_script_defsyms_to_prelude(&mut prelude, &mut linker_scripts);
 
     let num_symbols = count_symbols(&prelude, &objects, &linker_scripts);
 
@@ -262,29 +257,13 @@ impl<'data> Prelude<'data> {
     }
 }
 
-fn move_linker_script_defsyms_to_prelude<'data>(
-    prelude: &mut Prelude<'data>,
-    linker_scripts: &mut [ProcessedLinkerScript<'data>],
-) {
-    for script in linker_scripts {
-        script.symbol_defs.retain(|def| {
-            let is_defsym = matches!(
-                def.placement,
-                SymbolPlacement::DefsymAbsolute(_) | SymbolPlacement::DefsymSymbol(_)
-            );
-            if is_defsym {
-                prelude.symbol_definitions.push(*def);
-            }
-            !is_defsym
-        });
-    }
-}
-
 fn count_symbols(
     prelude: &Prelude,
     objects: &[ParsedInputObject],
     linker_scripts: &[ProcessedLinkerScript],
 ) -> usize {
+    verbose_timing_phase!("Count symbols");
+
     let in_objects = objects.iter().map(|o| o.num_symbols()).sum::<usize>();
 
     let in_linker_scripts = linker_scripts
