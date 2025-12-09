@@ -17,9 +17,9 @@ use crate::grouping::SequencedLinkerScript;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
+use crate::input_data::AuxiliaryFiles;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::input_data::ScriptData;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
@@ -317,20 +317,21 @@ impl<'data> SymbolDb<'data> {
 
     pub fn build(
         groups: Vec<Group<'data>>,
-        version_script_data: Option<ScriptData<'data>>,
+        auxiliary: &AuxiliaryFiles<'data>,
         args: &'data Args,
         linker_scripts: &[InputLinkerScript<'data>],
         herd: &'data bumpalo_herd::Herd,
-        export_list_data: Option<ScriptData<'data>>,
         output_kind: OutputKind,
     ) -> Result<(Self, PerSymbolFlags)> {
         timing_phase!("Build symbol DB");
 
-        let version_script = version_script_data
-            .map(VersionScript::parse)
-            .transpose()?
-            .unwrap_or_default();
-        let mut export_list = export_list_data.map(ExportList::parse).transpose()?;
+        let version_script = find_and_parse_version_script(auxiliary, linker_scripts)?;
+
+        let mut export_list = auxiliary
+            .export_list_data
+            .map(ExportList::parse)
+            .transpose()?;
+
         for symbol in &args.export_list {
             export_list
                 .get_or_insert_default()
@@ -824,6 +825,30 @@ impl<'data> SymbolDb<'data> {
             }
         }
     }
+}
+
+fn find_and_parse_version_script<'data>(
+    auxiliary: &AuxiliaryFiles<'data>,
+    linker_scripts: &[InputLinkerScript<'data>],
+) -> Result<VersionScript<'data>> {
+    let mut script_data = auxiliary.version_script_data;
+
+    for script in linker_scripts {
+        // Check if the linker script contains a VERSION command
+        if let Some(version_content) = script.script.get_version_script_content() {
+            if script_data.is_some() {
+                bail!("Multiple version scripts provided");
+            }
+            script_data = Some(crate::input_data::ScriptData {
+                raw: version_content,
+            });
+        }
+    }
+
+    Ok(script_data
+        .map(VersionScript::parse)
+        .transpose()?
+        .unwrap_or_default())
 }
 
 struct SymbolVecWriters<'out> {

@@ -1,4 +1,3 @@
-use crate::LayoutRules;
 use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::Args;
@@ -28,62 +27,27 @@ use rayon::iter::ParallelIterator;
 
 pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
-    linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &'data Args,
-    output_kind: OutputKind,
-) -> Result<ParsedInputs<'data>> {
+) -> Result<Vec<ParsedInputObject<'data>>> {
     timing_phase!("Parse input files");
 
-    let (objects, prelude) = rayon::join(
-        || {
-            inputs
-                .par_iter()
-                .map(|f| ParsedInputObject::new(f, args))
-                .collect::<Result<Vec<ParsedInputObject>>>()
-        },
-        move || {
-            verbose_timing_phase!("Construct prelude");
-            Prelude::new(args, output_kind)
-        },
-    );
-
-    let objects = objects?;
-
-    let num_symbols = count_symbols(&prelude, &objects, &linker_scripts);
-
-    Ok(ParsedInputs {
-        prelude,
-        objects,
-        linker_scripts,
-        num_symbols,
-    })
+    inputs
+        .par_iter()
+        .map(|f| ParsedInputObject::new(f, args))
+        .collect::<Result<Vec<ParsedInputObject>>>()
 }
 
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
     output_sections: &mut OutputSections<'data>,
-) -> Result<(Vec<ProcessedLinkerScript<'data>>, LayoutRules<'data>)> {
+    layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+) -> Result<Vec<ProcessedLinkerScript<'data>>> {
     timing_phase!("Process linker scripts");
 
-    let mut builder = LayoutRulesBuilder::default();
-
-    let linker_scripts = linker_scripts_in
+    linker_scripts_in
         .iter()
-        .map(|script| builder.process_linker_script(script, output_sections))
-        .collect::<Result<Vec<ProcessedLinkerScript>>>()?;
-
-    Ok((linker_scripts, builder.build()))
-}
-
-pub(crate) struct ParsedInputs<'data> {
-    pub(crate) prelude: Prelude<'data>,
-    pub(crate) objects: Vec<ParsedInputObject<'data>>,
-    pub(crate) linker_scripts: Vec<ProcessedLinkerScript<'data>>,
-
-    /// Total number of symbols in the prelude, input objects and defined by linker scripts.
-    /// Doesn't include symbols defined by the epilogue, since we don't know what they will be
-    /// until later.
-    pub(crate) num_symbols: usize,
+        .map(|script| layout_rules_builder.process_linker_script(script, output_sections))
+        .collect::<Result<Vec<ProcessedLinkerScript>>>()
 }
 
 #[derive(Debug)]
@@ -177,13 +141,15 @@ impl<'data> ParsedInputObject<'data> {
         })
     }
 
-    fn num_symbols(&self) -> usize {
+    pub(crate) fn num_symbols(&self) -> usize {
         self.object.symbols.len()
     }
 }
 
 impl<'data> Prelude<'data> {
-    fn new(args: &'data Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new(args: &'data Args, output_kind: OutputKind) -> Self {
+        verbose_timing_phase!("Construct prelude");
+
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions =
             vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
@@ -255,23 +221,6 @@ impl<'data> Prelude<'data> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         UnversionedSymbolName::new(def.name)
     }
-}
-
-fn count_symbols(
-    prelude: &Prelude,
-    objects: &[ParsedInputObject],
-    linker_scripts: &[ProcessedLinkerScript],
-) -> usize {
-    verbose_timing_phase!("Count symbols");
-
-    let in_objects = objects.iter().map(|o| o.num_symbols()).sum::<usize>();
-
-    let in_linker_scripts = linker_scripts
-        .iter()
-        .map(|l| l.num_symbols())
-        .sum::<usize>();
-
-    prelude.symbol_definitions.len() + in_objects + in_linker_scripts
 }
 
 impl<'data> ProcessedLinkerScript<'data> {

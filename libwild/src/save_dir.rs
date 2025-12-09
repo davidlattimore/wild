@@ -8,6 +8,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileData;
+use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
 use std::io::BufWriter;
 use std::io::Write;
@@ -43,9 +44,9 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
+    pub(crate) fn finish(&self, input_data: &FileLoader) -> Result {
         if let Some(state) = self.0.as_ref() {
-            state.finish(filenames)?;
+            state.finish(input_data.loaded_files.iter().map(|file| &file.filename))?;
         }
         Ok(())
     }
