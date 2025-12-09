@@ -2784,10 +2784,10 @@ fn write_epilogue<A: Arch>(
     if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
-    write_sysv_hash_table(epilogue, buffers)?;
-    write_gnu_hash_tables(epilogue, buffers)?;
+    write_sysv_hash_table(layout, epilogue, buffers)?;
+    write_gnu_hash_tables(layout, epilogue, buffers)?;
 
-    write_dynamic_symbol_definitions(epilogue, table_writer, layout)?;
+    write_dynamic_symbol_definitions(table_writer, layout)?;
 
     if !&epilogue.gnu_property_notes.is_empty() {
         write_gnu_property_notes(epilogue, buffers)?;
@@ -2898,6 +2898,7 @@ fn write_riscv_attributes(
 }
 
 fn write_sysv_hash_table(
+    layout: &Layout,
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -2944,7 +2945,7 @@ fn write_sysv_hash_table(
     chains.fill(0);
     let mut last_in_bucket: Vec<Option<usize>> = vec![None; bucket_count];
 
-    for (i, sym_def) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+    for (i, sym_def) in layout.dynamic_symbol_definitions.iter().enumerate() {
         let additional = u32::try_from(i).context("Too many dynamic symbols for .hash")?;
         let sym_index = epilogue
             .dynsym_start_index
@@ -2968,6 +2969,7 @@ fn write_sysv_hash_table(
 }
 
 fn write_gnu_hash_tables(
+    layout: &Layout,
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -2991,7 +2993,7 @@ fn write_gnu_hash_tables(
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
             .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
     let (chains, rest) =
-        object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
+        object::slice_from_bytes_mut::<u32>(rest, layout.dynamic_symbol_definitions.len())
             .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
 
     debug_assert_eq!(rest.len(), 0);
@@ -3001,7 +3003,7 @@ fn write_gnu_hash_tables(
     buckets.fill(0);
     bloom.fill(0);
 
-    let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
+    let mut sym_defs = layout.dynamic_symbol_definitions.iter().peekable();
 
     let elf_class_bits = size_of::<u64>() as u32 * 8;
 
@@ -3036,15 +3038,11 @@ fn write_gnu_hash_tables(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions(
-    epilogue: &EpilogueLayout,
-    table_writer: &mut TableWriter,
-    layout: &Layout,
-) -> Result {
+fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let chunk_size =
-        10.max(epilogue.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
+        10.max(layout.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
 
-    epilogue
+    layout
         .dynamic_symbol_definitions
         .chunks(chunk_size)
         .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
