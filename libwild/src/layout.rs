@@ -59,9 +59,9 @@ use crate::resolution;
 use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
-use crate::resolution::ResolvedEpilogue;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ResolvedLinkerScript;
+use crate::resolution::ResolvedSyntheticSymbols;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
 use crate::sharding::ShardKey;
@@ -186,6 +186,17 @@ pub fn compute<'data, A: Arch>(
     let gc_outputs = gc_outputs?;
 
     let mut group_states = gc_outputs.group_states;
+
+    let epilogue_file_id = FileId::new(group_states.len() as u32, 0);
+
+    group_states.push(GroupState {
+        files: vec![FileLayoutState::Epilogue(EpilogueLayoutState::new(
+            symbol_db.args,
+        ))],
+        queue: LocalWorkQueue::new(epilogue_file_id.group()),
+        common: CommonGroupState::new(&output_sections),
+        num_symbols: 0,
+    });
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
@@ -353,7 +364,7 @@ fn update_defsym_symbol_resolutions(
                     }
                 }
             }
-            Group::Objects(_) | Group::Epilogue(_) => {}
+            Group::Objects(_) | Group::SyntheticSymbols(_) => {}
         }
     }
 
@@ -835,6 +846,7 @@ pub(crate) enum FileLayout<'data> {
     Prelude(PreludeLayout<'data>),
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
+    SyntheticSymbols(SyntheticSymbolsLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data>),
@@ -898,6 +910,7 @@ enum FileLayoutState<'data> {
     Object(ObjectLayoutState<'data>),
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded(NotLoaded),
+    SyntheticSymbols(SyntheticSymbolsLayoutState<'data>),
     Epilogue(EpilogueLayoutState<'data>),
     LinkerScript(LinkerScriptLayoutState<'data>),
 }
@@ -916,11 +929,13 @@ struct PreludeLayoutState<'data> {
     eflags: u32,
 }
 
-pub(crate) struct EpilogueLayoutState<'data> {
+pub(crate) struct SyntheticSymbolsLayoutState<'data> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols<'data>,
+}
 
+pub(crate) struct EpilogueLayoutState<'data> {
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
@@ -953,8 +968,12 @@ pub(crate) struct SysvHashLayout {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout<'data> {
+pub(crate) struct SyntheticSymbolsLayout<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
+}
+
+#[derive(Debug)]
+pub(crate) struct EpilogueLayout<'data> {
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
@@ -1080,17 +1099,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
                 }
             }
         }
-        if symbol_db.output_kind.should_output_symbol_versions() {
-            let num_dynamic_symbols =
-                common.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
-            // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
-            // multiple files in our group, we'll update this same value multiple times, each time
-            // with a possibly revised dynamic symbol count. The important thing is that when we're
-            // done finalising the group sizes, the GNU_VERSION size should be consistent with the
-            // DYNSYM size.
-            *common.mem_sizes.get_mut(part_id::GNU_VERSION) =
-                num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
-        }
+
         Ok(())
     }
 
@@ -1360,7 +1369,7 @@ impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
     }
 }
 
-impl HandlerData for EpilogueLayoutState<'_> {
+impl HandlerData for SyntheticSymbolsLayoutState<'_> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -1370,7 +1379,7 @@ impl HandlerData for EpilogueLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
+impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
@@ -2411,6 +2420,7 @@ struct GroupActivationInputs<'data> {
     num_symbols: usize,
     group_index: usize,
 }
+
 impl<'data> GroupActivationInputs<'data> {
     fn activate_group<'scope, A: Arch>(
         self,
@@ -2441,10 +2451,10 @@ impl<'data> GroupActivationInputs<'data> {
             let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
                 .with_context(|| format!("Failed to activate {file}"));
 
-            // The epilogue can't be processed until all groups have completed
-            // activation, since the epilogue can read from `start_stop_sections` which
-            // gets populated by other objects during activation.
-            should_delay_processing |= matches!(file, FileLayoutState::Epilogue(_));
+            // SyntheticSymbols can't be processed until all groups have completed activation, since
+            // it can read from `start_stop_sections` which gets populated by other objects during
+            // activation.
+            should_delay_processing |= matches!(file, FileLayoutState::SyntheticSymbols(_));
 
             if let Err(error) = r {
                 resources.errors.lock().unwrap().push(error);
@@ -2705,8 +2715,9 @@ fn activate<'data, 'scope, A: Arch>(
         FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
+        FileLayoutState::Epilogue(_) => {}
         FileLayoutState::NotLoaded(_) => {}
-        FileLayoutState::Epilogue(s) => s.activate(resources, queue),
+        FileLayoutState::SyntheticSymbols(_) => {}
     }
     Ok(())
 }
@@ -2829,9 +2840,12 @@ impl<'data> FileLayoutState<'data> {
                 PreludeLayoutState::finalise_sizes(common, merged_strings);
                 s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
             }
-            FileLayoutState::Epilogue(s) => {
+            FileLayoutState::SyntheticSymbols(s) => {
                 s.finalise_sizes(common, symbol_db, per_symbol_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+            }
+            FileLayoutState::Epilogue(s) => {
+                s.finalise_sizes(common, symbol_db);
             }
             FileLayoutState::LinkerScript(s) => {
                 s.finalise_sizes(common, symbol_db, per_symbol_flags)?;
@@ -2839,6 +2853,9 @@ impl<'data> FileLayoutState<'data> {
             }
             FileLayoutState::NotLoaded(_) => {}
         }
+
+        finalise_gnu_version_size(common, symbol_db);
+
         Ok(())
     }
 
@@ -2913,8 +2930,13 @@ impl<'data> FileLayoutState<'data> {
             }
             FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
-            FileLayoutState::Epilogue(state) => {
+            FileLayoutState::SyntheticSymbols(state) => {
                 state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+            }
+            FileLayoutState::Epilogue(_) => {
+                // The epilogue doesn't define symbols. In fact, it isn't even created until after
+                // the GC phase graph traversal.
+                unreachable!();
             }
         }
         Ok(())
@@ -2941,7 +2963,10 @@ impl<'data> FileLayoutState<'data> {
                 resolutions_out,
                 resources,
             )?),
-            Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
+            Self::Epilogue(s) => {
+                FileLayout::Epilogue(s.finalise_layout(memory_offsets, resources)?)
+            }
+            Self::SyntheticSymbols(s) => FileLayout::SyntheticSymbols(s.finalise_layout(
                 memory_offsets,
                 resolutions_out,
                 resources,
@@ -2963,6 +2988,20 @@ impl<'data> FileLayoutState<'data> {
             }
         };
         Ok(file_layout)
+    }
+}
+
+fn finalise_gnu_version_size(common: &mut CommonGroupState, symbol_db: &SymbolDb) {
+    if symbol_db.output_kind.should_output_symbol_versions() {
+        let num_dynamic_symbols =
+            common.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+        // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
+        // multiple files in our group, we'll update this same value multiple times, each time
+        // with a possibly revised dynamic symbol count. The important thing is that when we're
+        // done finalising the group sizes, the GNU_VERSION size should be consistent with the
+        // DYNSYM size.
+        *common.mem_sizes.get_mut(part_id::GNU_VERSION) =
+            num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
     }
 }
 
@@ -2991,6 +3030,12 @@ impl std::fmt::Display for EpilogueLayoutState<'_> {
     }
 }
 
+impl std::fmt::Display for SyntheticSymbolsLayoutState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt("<synthetic>", f)
+    }
+}
+
 impl std::fmt::Display for LinkerScriptLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
@@ -3004,6 +3049,7 @@ impl std::fmt::Display for FileLayoutState<'_> {
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::LinkerScript(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
+            FileLayoutState::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
             FileLayoutState::NotLoaded(_) => std::fmt::Display::fmt("<not-loaded>", f),
             FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
@@ -3018,6 +3064,7 @@ impl std::fmt::Display for FileLayout<'_> {
             Self::LinkerScript(s) => std::fmt::Display::fmt(s, f),
             Self::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
+            Self::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
         }
     }
@@ -3871,7 +3918,7 @@ impl<'data> InternalSymbols<'data> {
     }
 
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
-        SymbolIdRange::epilogue(self.start_symbol_id, self.symbol_definitions.len())
+        SymbolIdRange::input(self.start_symbol_id, self.symbol_definitions.len())
     }
 }
 
@@ -3946,32 +3993,73 @@ fn should_emit_undefined_error(
     }
 }
 
+impl<'data> SyntheticSymbolsLayoutState<'data> {
+    fn new(input_state: ResolvedSyntheticSymbols<'data>) -> SyntheticSymbolsLayoutState<'data> {
+        SyntheticSymbolsLayoutState {
+            file_id: input_state.file_id,
+            symbol_id_range: SymbolIdRange::input(
+                input_state.start_symbol_id,
+                input_state.symbol_definitions.len(),
+            ),
+            internal_symbols: InternalSymbols {
+                symbol_definitions: input_state.symbol_definitions,
+                start_symbol_id: input_state.start_symbol_id,
+            },
+        }
+    }
+
+    fn finalise_sizes(
+        &self,
+        common: &mut CommonGroupState,
+        symbol_db: &SymbolDb<'data>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        if !symbol_db.args.strip_all() {
+            self.internal_symbols.allocate_symbol_table_sizes(
+                &mut common.mem_sizes,
+                symbol_db,
+                |symbol_id, _| {
+                    // For user-defined start/stop symbols, we only emit them if they're referenced.
+                    per_symbol_flags
+                        .flags_for_symbol(symbol_id)
+                        .has_resolution()
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn finalise_layout(
+        self,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resolutions_out: &mut ResolutionWriter,
+        resources: &FinaliseLayoutResources<'_, 'data>,
+    ) -> Result<SyntheticSymbolsLayout<'data>> {
+        self.internal_symbols
+            .finalise_layout(memory_offsets, resolutions_out, resources)?;
+
+        Ok(SyntheticSymbolsLayout {
+            internal_symbols: self.internal_symbols,
+        })
+    }
+}
+
 impl<'data> EpilogueLayoutState<'data> {
-    fn activate(&mut self, resources: &GraphResources<'data, '_>, _queue: &mut LocalWorkQueue) {
-        self.build_id_size = match &resources.symbol_db.args.build_id {
+    fn new(args: &Args) -> EpilogueLayoutState<'data> {
+        let build_id_size = match &args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
             BuildIdOption::Hex(hex) => Some(hex.len()),
             BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
         };
-    }
 
-    fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
-            file_id: input_state.file_id,
-            symbol_id_range: SymbolIdRange::epilogue(
-                input_state.start_symbol_id,
-                input_state.custom_start_stop_defs.len(),
-            ),
-            internal_symbols: InternalSymbols {
-                symbol_definitions: input_state.custom_start_stop_defs,
-                start_symbol_id: input_state.start_symbol_id,
-            },
             dynamic_symbol_definitions: Default::default(),
             sysv_hash_layout: None,
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
-            build_id_size: Default::default(),
+            build_id_size,
             verdefs: Default::default(),
             riscv_attributes: Default::default(),
         }
@@ -4053,25 +4141,7 @@ impl<'data> EpilogueLayoutState<'data> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 
-    fn finalise_sizes(
-        &mut self,
-        common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
-        per_symbol_flags: &AtomicPerSymbolFlags,
-    ) -> Result {
-        if !symbol_db.args.strip_all() {
-            self.internal_symbols.allocate_symbol_table_sizes(
-                &mut common.mem_sizes,
-                symbol_db,
-                |symbol_id, _| {
-                    // For user-defined start/stop symbols, we only emit them if they're referenced.
-                    per_symbol_flags
-                        .flags_for_symbol(symbol_id)
-                        .has_resolution()
-                },
-            )?;
-        }
-
+    fn finalise_sizes(&mut self, common: &mut CommonGroupState, symbol_db: &SymbolDb<'data>) {
         if symbol_db.output_kind.needs_dynamic() {
             let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
             common.allocate(
@@ -4166,8 +4236,6 @@ impl<'data> EpilogueLayoutState<'data> {
             );
             self.verdefs.replace(verdefs);
         }
-
-        Ok(())
     }
 
     /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
@@ -4231,12 +4299,8 @@ impl<'data> EpilogueLayoutState<'data> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<EpilogueLayout<'data>> {
-        self.internal_symbols
-            .finalise_layout(memory_offsets, resolutions_out, resources)?;
-
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -4293,7 +4357,6 @@ impl<'data> EpilogueLayoutState<'data> {
 
         let riscv_attributes_length = self.riscv_attributes_section_size() as u32;
         Ok(EpilogueLayout {
-            internal_symbols: self.internal_symbols,
             sysv_hash_layout: self.sysv_hash_layout,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
@@ -5567,8 +5630,8 @@ impl<'data> resolution::ResolvedFile<'data> {
             resolution::ResolvedFile::LinkerScript(s) => {
                 FileLayoutState::LinkerScript(LinkerScriptLayoutState::new(s))
             }
-            resolution::ResolvedFile::Epilogue(s) => {
-                FileLayoutState::Epilogue(EpilogueLayoutState::new(s))
+            resolution::ResolvedFile::SyntheticSymbols(s) => {
+                FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
         }
     }
@@ -6392,6 +6455,7 @@ impl std::fmt::Debug for FileLayoutState<'_> {
             }
             FileLayoutState::NotLoaded(_) => Display::fmt(&"<not loaded>", f),
             FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
+            FileLayoutState::SyntheticSymbols(_) => Display::fmt(&"<synthetic symbols>", f),
         }
     }
 }

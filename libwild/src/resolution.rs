@@ -80,7 +80,7 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolve_sections(&mut resolved_groups, herd, symbol_db, layout_rules)?;
 
-    let mut custom_start_stop_defs = Vec::new();
+    let mut syn = symbol_db.new_synthetic_symbols_group();
 
     assign_section_ids(&mut resolved_groups, output_sections);
 
@@ -90,20 +90,12 @@ pub fn resolve_symbols_and_sections<'data>(
         &resolved_groups,
         symbol_db,
         per_symbol_flags,
-        &mut custom_start_stop_defs,
+        &mut syn,
     );
 
-    let ResolvedFile::Epilogue(epilogue) = resolved_groups
-        .last_mut()
-        .unwrap()
-        .files
-        .last_mut()
-        .unwrap()
-    else {
-        panic!("Epilogue must always be last");
-    };
-
-    epilogue.custom_start_stop_defs = custom_start_stop_defs;
+    resolved_groups.push(ResolvedGroup {
+        files: vec![ResolvedFile::SyntheticSymbols(syn)],
+    });
 
     crate::symbol_db::resolve_alternative_symbol_definitions(
         symbol_db,
@@ -278,14 +270,14 @@ fn resolve_group<'data, 'definitions>(
 
             ResolvedGroup { files }
         }
-        Group::Epilogue(epilogue) => {
+        Group::SyntheticSymbols(syn) => {
             definitions_out_per_file.push(AtomicTake::empty());
 
             ResolvedGroup {
-                files: vec![ResolvedFile::Epilogue(ResolvedEpilogue {
-                    file_id: epilogue.file_id,
-                    start_symbol_id: epilogue.start_symbol_id,
-                    custom_start_stop_defs: Vec::new(),
+                files: vec![ResolvedFile::SyntheticSymbols(ResolvedSyntheticSymbols {
+                    file_id: syn.file_id,
+                    start_symbol_id: syn.symbol_id_range.start(),
+                    symbol_definitions: Vec::new(),
                 })],
             }
         }
@@ -458,7 +450,7 @@ pub(crate) enum ResolvedFile<'data> {
     Prelude(ResolvedPrelude<'data>),
     Object(ResolvedObject<'data>),
     LinkerScript(ResolvedLinkerScript<'data>),
-    Epilogue(ResolvedEpilogue<'data>),
+    SyntheticSymbols(ResolvedSyntheticSymbols<'data>),
 }
 
 #[derive(Debug)]
@@ -562,10 +554,10 @@ pub(crate) struct ResolvedLinkerScript<'data> {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedEpilogue<'data> {
+pub(crate) struct ResolvedSyntheticSymbols<'data> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
-    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
 fn assign_section_ids<'data>(
@@ -642,7 +634,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             }
         }
         Group::LinkerScripts(_) => {}
-        Group::Epilogue(_) => {}
+        Group::SyntheticSymbols(_) => {}
     }
 }
 
@@ -700,13 +692,17 @@ fn load_symbol_named<'scope>(
     }
 }
 
+/// Where there are multiple references to undefined symbols with the same name, pick one reference
+/// as the canonical one to which we'll refer. Where undefined symbols can be resolved to
+/// __start/__stop symbols that refer to the start or stop of a custom section, collect that
+/// information up and put it into `custom_start_stop_defs`.
 fn canonicalise_undefined_symbols<'data>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
-    custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
+    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
 ) {
     timing_phase!("Canonicalise undefined symbols");
 
@@ -810,7 +806,7 @@ fn allocate_start_stop_symbol_id<'data>(
     name: PreHashed<UnversionedSymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
-    custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
+    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
@@ -825,15 +821,15 @@ fn allocate_start_stop_symbol_id<'data>(
 
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
-    let symbol_id = symbol_db.add_start_stop_symbol(per_symbol_flags, name);
-
     let def_info = if is_start {
         InternalSymDefInfo::notype(SymbolPlacement::SectionStart(section_id), name.bytes())
     } else {
         InternalSymDefInfo::notype(SymbolPlacement::SectionEnd(section_id), name.bytes())
     };
 
-    custom_start_stop_defs.push(def_info);
+    let symbol_id = symbol_db.add_synthetic_symbol(per_symbol_flags, name, custom_start_stop_defs);
+
+    custom_start_stop_defs.symbol_definitions.push(def_info);
 
     Some(symbol_id)
 }
@@ -1110,7 +1106,7 @@ impl std::fmt::Display for ResolvedFile<'_> {
             ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
-            ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
+            ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
         }
     }
 }

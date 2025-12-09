@@ -2,10 +2,10 @@ use crate::args::Args;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
-use crate::parsing::Epilogue;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
+use crate::parsing::SyntheticSymbols;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
@@ -20,7 +20,7 @@ pub(crate) enum Group<'data> {
     Prelude(Prelude<'data>),
     Objects(&'data [SequencedInputObject<'data>]),
     LinkerScripts(Vec<SequencedLinkerScript<'data>>),
-    Epilogue(Epilogue),
+    SyntheticSymbols(SyntheticSymbols),
 }
 
 #[derive(Debug)]
@@ -42,7 +42,7 @@ pub(crate) enum SequencedInput<'data> {
     Prelude(&'data Prelude<'data>),
     Object(&'data SequencedInputObject<'data>),
     LinkerScript(&'data SequencedLinkerScript<'data>),
-    Epilogue(&'data Epilogue),
+    SyntheticSymbols(&'data SyntheticSymbols),
 }
 
 impl Group<'_> {
@@ -53,7 +53,7 @@ impl Group<'_> {
             Group::Prelude(_) => 0,
             Group::Objects(objects) => objects[0].file_id.group(),
             Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
-            Group::Epilogue(epilogue) => epilogue.file_id.group(),
+            Group::SyntheticSymbols(s) => s.file_id.group(),
         }
     }
 
@@ -78,7 +78,7 @@ impl Group<'_> {
                     )
                 }
             }
-            Group::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
+            Group::SyntheticSymbols(o) => o.symbol_id_range,
         }
     }
 
@@ -169,11 +169,6 @@ pub(crate) fn group_files<'data>(
         groups.push(Group::LinkerScripts(linker_scripts));
     }
 
-    groups.push(Group::Epilogue(Epilogue {
-        file_id: FileId::new(groups.len() as u32, 0),
-        start_symbol_id: next_symbol_id,
-    }));
-
     tracing::trace!("GROUPS:\n{}", GroupsDisplay(&groups));
 
     groups
@@ -210,8 +205,7 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 }
 
 /// Compute the total number of symbols in the prelude, input objects and defined by linker scripts.
-/// Doesn't include symbols defined by the epilogue, since we don't know what they will be until
-/// later.
+/// Doesn't include __start/__stop symbols, since we don't know what they will be until later.
 fn count_symbols(
     prelude: &Prelude,
     objects: &[ParsedInputObject],
@@ -308,12 +302,7 @@ impl SequencedInput<'_> {
             SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             SequencedInput::Object(o) => o.symbol_id_range,
             SequencedInput::LinkerScript(o) => o.symbol_id_range,
-            SequencedInput::Epilogue(o) => SymbolIdRange::epilogue(
-                o.start_symbol_id,
-                // The epilogue allocates symbols after inputs are parsed, so it effectively owns
-                // the rest of the symbol ID space.
-                u32::MAX as usize - o.start_symbol_id.as_usize(),
-            ),
+            SequencedInput::SyntheticSymbols(o) => o.symbol_id_range,
         }
     }
 
@@ -358,7 +347,7 @@ impl Display for Group<'_> {
                 )
             }
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
-            Group::Epilogue(_) => write!(f, "<epilogue>"),
+            Group::SyntheticSymbols(_) => write!(f, "<epilogue>"),
         }
     }
 }
@@ -369,7 +358,7 @@ impl std::fmt::Display for SequencedInput<'_> {
             SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             SequencedInput::Object(o) => std::fmt::Display::fmt(o, f),
             SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
-            SequencedInput::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
+            SequencedInput::SyntheticSymbols(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
 }
