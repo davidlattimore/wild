@@ -24,8 +24,10 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
+use crate::parsing::SyntheticSymbols;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
+use crate::resolution::ResolvedSyntheticSymbols;
 use crate::sharding::ShardKey;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
@@ -77,10 +79,8 @@ pub struct SymbolDb<'data> {
     /// The number of symbols in each group, keyed by the index of the group.
     pub(crate) num_symbols_per_group: Vec<usize>,
 
-    epilogue_file_id: FileId,
-
     /// The names of symbols that mark the start / stop of sections. These are indexed by the
-    /// offset into the epilogue's symbol IDs.
+    /// offset into the SyntheticSymbols' symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
@@ -162,13 +162,6 @@ impl SymbolIdRange {
     pub(crate) fn prelude(num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id: SymbolId::undefined(),
-            num_symbols,
-        }
-    }
-
-    pub(crate) fn epilogue(start_symbol_id: SymbolId, num_symbols: usize) -> SymbolIdRange {
-        SymbolIdRange {
-            start_symbol_id,
             num_symbols,
         }
     }
@@ -338,11 +331,6 @@ impl<'data> SymbolDb<'data> {
                 .add_symbol(symbol, true)?;
         }
 
-        let Some(Group::Epilogue(epilogue)) = groups.last() else {
-            bail!("Epilogue should always be last");
-        };
-        let epilogue_file_id = epilogue.file_id;
-
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
         let num_symbols = num_symbols_per_group.iter().sum();
 
@@ -391,7 +379,6 @@ impl<'data> SymbolDb<'data> {
         let mut index = SymbolDb {
             args,
             buckets,
-            epilogue_file_id,
             symbol_file_ids,
             symbol_definitions,
             groups,
@@ -431,12 +418,21 @@ impl<'data> SymbolDb<'data> {
         Ok((index, per_symbol_flags))
     }
 
-    pub(crate) fn add_start_stop_symbol(
+    /// Adds a new synthetic symbol. `syn` must have been the most recently added group.
+    pub(crate) fn add_synthetic_symbol(
         &mut self,
         per_symbol_flags: &mut PerSymbolFlags,
         symbol_name: PreHashed<UnversionedSymbolName<'data>>,
+        syn: &ResolvedSyntheticSymbols<'data>,
     ) -> SymbolId {
+        debug_assert_eq!(syn.file_id.group() + 1, self.groups.len());
+
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
+
+        debug_assert_eq!(
+            symbol_id.0,
+            syn.start_symbol_id.0 + syn.symbol_definitions.len() as u32
+        );
 
         let num_buckets = self.buckets.len();
         self.buckets[symbol_name.hash() as usize % num_buckets].add_symbol(&PendingSymbol {
@@ -446,7 +442,12 @@ impl<'data> SymbolDb<'data> {
 
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
-        self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
+        self.num_symbols_per_group[syn.file_id.group()] += 1;
+        let Group::SyntheticSymbols(s) = &mut self.groups[syn.file_id.group()] else {
+            panic!("Tried to add synthetic symbol to non-synthetic-symbol group");
+        };
+        s.symbol_id_range.num_symbols += 1;
+        self.symbol_file_ids.push(syn.file_id);
 
         per_symbol_flags.push(ValueFlags::NON_INTERPOSABLE);
 
@@ -518,7 +519,7 @@ impl<'data> SymbolDb<'data> {
                 }
             }
             Group::LinkerScripts(_) => Visibility::Default,
-            Group::Epilogue(_) => Visibility::Default,
+            Group::SyntheticSymbols(_) => Visibility::Default,
         }
     }
 
@@ -550,8 +551,8 @@ impl<'data> SymbolDb<'data> {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
             Group::LinkerScripts(scripts) => Ok(scripts[file_id.file()].symbol_name(symbol_id)),
-            Group::Epilogue(epilogue) => {
-                Ok(self.start_stop_symbol_names[symbol_id.offset_from(epilogue.start_symbol_id)])
+            Group::SyntheticSymbols(syn) => {
+                Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
         }
     }
@@ -588,7 +589,7 @@ impl<'data> SymbolDb<'data> {
                 Group::Prelude(_) => 0,
                 Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
                 Group::LinkerScripts(_) => 0,
-                Group::Epilogue(_) => 0,
+                Group::SyntheticSymbols(_) => 0,
             })
             .sum()
     }
@@ -640,10 +641,7 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
-        self.symbol_file_ids
-            .get(symbol_id.as_usize())
-            .copied()
-            .unwrap_or(self.epilogue_file_id)
+        self.symbol_file_ids[symbol_id.as_usize()]
     }
 
     /// Returns whether the supplied symbol ID is the canonical ID. A symbol won't be canonical, if
@@ -674,7 +672,7 @@ impl<'data> SymbolDb<'data> {
                 SequencedInput::Object(&parsed_input_objects[file_id.file()])
             }
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
-            Group::Epilogue(epilogue) => SequencedInput::Epilogue(epilogue),
+            Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
         }
     }
 
@@ -823,6 +821,28 @@ impl<'data> SymbolDb<'data> {
             if let crate::linker_script::Command::Entry(symbol_name) = cmd {
                 self.entry = Some(*symbol_name);
             }
+        }
+    }
+
+    pub(crate) fn next_symbol_id(&self) -> SymbolId {
+        SymbolId::from_usize(self.num_symbols())
+    }
+
+    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data> {
+        self.num_symbols_per_group.push(0);
+
+        let file_id = FileId::new(self.groups.len() as u32, 0);
+        let start_symbol_id = self.next_symbol_id();
+
+        self.groups.push(Group::SyntheticSymbols(SyntheticSymbols {
+            file_id,
+            symbol_id_range: SymbolIdRange::input(start_symbol_id, 0),
+        }));
+
+        ResolvedSyntheticSymbols {
+            file_id,
+            start_symbol_id,
+            symbol_definitions: Vec::new(),
         }
     }
 }
@@ -1237,7 +1257,7 @@ fn read_symbols_for_group<'data>(
                 load_linker_script_symbols(script, shard, &mut outputs);
             }
         }
-        Group::Epilogue(_) => {
+        Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
     }
@@ -1707,7 +1727,9 @@ impl std::fmt::Display for SymbolDebug<'_> {
                 SequencedInput::LinkerScript(s) => {
                     write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
                 }
-                SequencedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
+                SequencedInput::SyntheticSymbols(_) => {
+                    write!(f, "<unnamed custom-section symbol>")?;
+                }
             }
         } else {
             write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;

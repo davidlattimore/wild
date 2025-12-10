@@ -18,6 +18,7 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
@@ -70,9 +71,9 @@ pub(crate) struct ProcessedLinkerScript<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Epilogue {
+pub(crate) struct SyntheticSymbols {
     pub(crate) file_id: FileId,
-    pub(crate) start_symbol_id: SymbolId,
+    pub(crate) symbol_id_range: SymbolIdRange,
 }
 
 #[derive(Clone, Copy, derive_more::Debug)]

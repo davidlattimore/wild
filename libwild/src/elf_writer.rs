@@ -55,6 +55,7 @@ use crate::layout::Resolution;
 use crate::layout::RiscVAttribute;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
@@ -353,6 +354,7 @@ fn write_file<A: Arch>(
         FileLayout::Object(s) => write_object::<A>(s, buffers, table_writer, layout, trace)?,
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<A>(s, table_writer, layout)?,
@@ -2749,6 +2751,26 @@ fn write_linker_script_state<A: Arch>(
     Ok(())
 }
 
+fn write_synthetic_symbols<A: Arch>(
+    syn: &SyntheticSymbolsLayout,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    verbose_timing_phase!("Write epilogue");
+
+    write_internal_symbols_plt_got_entries::<A>(&syn.internal_symbols, table_writer, layout)?;
+
+    if !layout.args().strip_all() {
+        write_internal_symbols(
+            &syn.internal_symbols,
+            layout,
+            &mut table_writer.debug_symbol_writer,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn write_epilogue<A: Arch>(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -2759,15 +2781,6 @@ fn write_epilogue<A: Arch>(
 
     let mut epilogue_offsets = EpilogueOffsets::default();
 
-    write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
-
-    if !layout.args().strip_all() {
-        write_internal_symbols(
-            &epilogue.internal_symbols,
-            layout,
-            &mut table_writer.debug_symbol_writer,
-        )?;
-    }
     if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }

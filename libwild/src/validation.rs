@@ -40,7 +40,6 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
     for group in &layout.group_layouts {
         for file in &group.files {
             match file {
-                crate::layout::FileLayout::Prelude(_) => {}
                 crate::layout::FileLayout::Object(obj) => {
                     for (sec_index, sec) in obj.object.sections.enumerate() {
                         if let Some(resolution) =
@@ -55,10 +54,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
                         }
                     }
                 }
-                crate::layout::FileLayout::LinkerScript(_) => {}
-                crate::layout::FileLayout::Dynamic(_) => {}
-                crate::layout::FileLayout::Epilogue(_) => {}
-                crate::layout::FileLayout::NotLoaded => {}
+                _ => {}
             }
         }
     }
