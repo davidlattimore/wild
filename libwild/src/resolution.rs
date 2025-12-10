@@ -62,57 +62,70 @@ use std::num::NonZeroU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-#[derive(Debug)]
-pub(crate) struct ResolutionOutputs<'data> {
-    pub(crate) groups: Vec<ResolvedGroup<'data>>,
+#[derive(Default)]
+pub(crate) struct Resolver<'data> {
+    undefined_symbols: Vec<UndefinedSymbol<'data>>,
+    pub(crate) resolved_groups: Vec<ResolvedGroup<'data>>,
 }
 
-pub fn resolve_symbols_and_sections<'data>(
-    symbol_db: &mut SymbolDb<'data>,
-    per_symbol_flags: &mut PerSymbolFlags,
-    herd: &'data bumpalo_herd::Herd,
-    output_sections: &mut OutputSections<'data>,
-    layout_rules: &LayoutRules<'data>,
-) -> Result<ResolutionOutputs<'data>> {
-    timing_phase!("Symbol resolution");
+impl<'data> Resolver<'data> {
+    /// Resolves undefined symbols. In the process of resolving symbols, we decide which archive
+    /// entries to load. Some symbols may not have definitions, in which case we'll note those for
+    /// later processing. Can be called multiple times with additional groups having been added to
+    /// the SymbolDb in between.
+    pub(crate) fn resolve_symbols_and_select_archive_entries(
+        &mut self,
+        symbol_db: &mut SymbolDb<'data>,
+    ) -> Result {
+        resolve_symbols_and_select_archive_entries(self, symbol_db)
+    }
 
-    let (mut resolved_groups, undefined_symbols) = resolve_symbols_in_files(symbol_db)?;
+    /// For all regular objects that we've decided to load, decide what to do with each section.
+    /// Canonicalises undefined symbols. Some undefined symbols might be able to become defined if
+    /// we can identify them as start/stop symbols for which we found a custom section with the
+    /// appropriate name.
+    pub(crate) fn resolve_sections_and_canonicalise_undefined(
+        mut self,
+        symbol_db: &mut SymbolDb<'data>,
+        per_symbol_flags: &mut PerSymbolFlags,
+        output_sections: &mut OutputSections<'data>,
+        layout_rules: &LayoutRules<'data>,
+    ) -> Result<Vec<ResolvedGroup<'data>>> {
+        timing_phase!("Section resolution");
 
-    resolve_sections(&mut resolved_groups, herd, symbol_db, layout_rules)?;
+        resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
 
-    let mut syn = symbol_db.new_synthetic_symbols_group();
+        let mut syn = symbol_db.new_synthetic_symbols_group();
 
-    assign_section_ids(&mut resolved_groups, output_sections);
+        assign_section_ids(&mut self.resolved_groups, output_sections);
 
-    canonicalise_undefined_symbols(
-        undefined_symbols,
-        output_sections,
-        &resolved_groups,
-        symbol_db,
-        per_symbol_flags,
-        &mut syn,
-    );
+        canonicalise_undefined_symbols(
+            self.undefined_symbols,
+            output_sections,
+            &self.resolved_groups,
+            symbol_db,
+            per_symbol_flags,
+            &mut syn,
+        );
 
-    resolved_groups.push(ResolvedGroup {
-        files: vec![ResolvedFile::SyntheticSymbols(syn)],
-    });
+        self.resolved_groups.push(ResolvedGroup {
+            files: vec![ResolvedFile::SyntheticSymbols(syn)],
+        });
 
-    crate::symbol_db::resolve_alternative_symbol_definitions(
-        symbol_db,
-        per_symbol_flags,
-        &resolved_groups,
-    )?;
-
-    Ok(ResolutionOutputs {
-        groups: resolved_groups,
-    })
+        Ok(self.resolved_groups)
+    }
 }
 
-fn resolve_symbols_in_files<'data>(
+fn resolve_symbols_and_select_archive_entries<'data>(
+    resolver: &mut Resolver<'data>,
     symbol_db: &mut SymbolDb<'data>,
-) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
+) -> Result {
     timing_phase!("Resolve symbols");
 
+    // Note, this is the total number of objects including those that we might have processed in
+    // previous calls. This is just an upper bound on how many objects might need to be loaded. We
+    // can't just count the objects in the new groups because we might end up loading some of the
+    // objects from earlier groups.
     let num_objects = symbol_db.num_objects();
     if num_objects == 0 {
         bail!("no input files");
@@ -134,24 +147,26 @@ fn resolve_symbols_in_files<'data>(
 
     let mut initial_work = Vec::new();
 
-    let mut resolved: Vec<ResolvedGroup<'_>> = {
+    {
         verbose_timing_phase!("Resolution setup");
 
-        symbol_db
-            .groups
-            .iter()
-            .zip(&mut definitions_per_group_and_file)
-            .map(|(group, definitions_out_per_file)| {
-                resolve_group(
-                    group,
-                    &mut initial_work,
-                    definitions_out_per_file,
-                    &mut symbol_definitions_slice,
-                    symbol_db,
-                    &outputs,
-                )
-            })
-            .collect()
+        let new_groups = &symbol_db.groups[resolver.resolved_groups.len()..];
+
+        resolver.resolved_groups.extend(
+            new_groups
+                .iter()
+                .zip(&mut definitions_per_group_and_file)
+                .map(|(group, definitions_out_per_file)| {
+                    resolve_group(
+                        group,
+                        &mut initial_work,
+                        definitions_out_per_file,
+                        &mut symbol_definitions_slice,
+                        symbol_db,
+                        &outputs,
+                    )
+                }),
+        );
     };
 
     let resources = ResolutionResources {
@@ -181,10 +196,12 @@ fn resolve_symbols_in_files<'data>(
 
     for obj in outputs.loaded {
         let file_id = obj.file_id;
-        resolved[file_id.group()].files[file_id.file()] = ResolvedFile::Object(obj);
+        resolver.resolved_groups[file_id.group()].files[file_id.file()] = ResolvedFile::Object(obj);
     }
 
-    Ok((resolved, outputs.undefined_symbols))
+    resolver.undefined_symbols.extend(outputs.undefined_symbols);
+
+    Ok(())
 }
 
 fn resolve_group<'data, 'definitions>(
@@ -286,13 +303,13 @@ fn resolve_group<'data, 'definitions>(
 
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
-    herd: &'data bumpalo_herd::Herd,
     symbol_db: &SymbolDb<'data>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
     timing_phase!("Resolve sections");
 
     let loaded_metrics: LoadedMetrics = Default::default();
+    let herd = symbol_db.herd;
 
     groups.par_iter_mut().try_for_each_init(
         || herd.get(),
@@ -697,7 +714,7 @@ fn load_symbol_named<'scope>(
 /// __start/__stop symbols that refer to the start or stop of a custom section, collect that
 /// information up and put it into `custom_start_stop_defs`.
 fn canonicalise_undefined_symbols<'data>(
-    undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
+    mut undefined_symbols: Vec<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
@@ -711,8 +728,6 @@ fn canonicalise_undefined_symbols<'data>(
 
     let mut versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId> =
         Default::default();
-
-    let mut undefined_symbols = Vec::from_iter(undefined_symbols);
 
     // Sort by symbol ID to ensure deterministic behaviour. This means that the canonical symbol ID
     // for any given name will be the one for the earliest file that refers to that symbol.
