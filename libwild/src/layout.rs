@@ -202,7 +202,7 @@ pub fn compute<'data, A: Arch>(
     let (dynamic_symbol_definitions, gnu_hash_layout) =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
     let gnu_property_notes = merge_gnu_property_notes::<A>(&group_states, symbol_db.args.z_isa)?;
-    merge_eflags::<A>(&mut group_states)?;
+    let eflags = merge_eflags::<A>(&group_states)?;
     let riscv_attributes = merge_riscv_attributes::<A>(&group_states);
 
     let finalise_sizes_resources = FinaliseSizesResources {
@@ -212,6 +212,7 @@ pub fn compute<'data, A: Arch>(
         gnu_hash_layout,
         gnu_property_notes: &gnu_property_notes,
         riscv_attributes: &riscv_attributes,
+        eflags,
     };
 
     finalise_all_sizes(
@@ -360,6 +361,7 @@ struct FinaliseSizesResources<'data, 'scope> {
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: &'scope [GnuProperty],
     riscv_attributes: &'scope RiscVAttributes,
+    eflags: Eflags,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -486,17 +488,6 @@ fn finalise_all_sizes<'data>(
         verbose_timing_phase!("Finalise sizes for group");
         state.finalise_sizes(output_sections, per_symbol_flags, resources)
     })
-}
-
-fn get_prelude_mut<'a, 'data>(
-    group_states: &'a mut [GroupState<'data>],
-) -> &'a mut PreludeLayoutState<'data> {
-    let Some(FileLayoutState::Prelude(prelude)) =
-        group_states.first_mut().and_then(|g| g.files.first_mut())
-    else {
-        panic!("Internal error, prelude must be first");
-    };
-    prelude
 }
 
 fn merge_dynamic_symbol_definitions<'data>(
@@ -687,7 +678,7 @@ fn merge_gnu_property_notes<A: Arch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
+fn merge_eflags<A: Arch>(group_states: &[GroupState]) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
 
     let eflags = group_states
@@ -703,9 +694,7 @@ fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
         })
         .collect_vec();
 
-    let prelude = get_prelude_mut(group_states);
-    prelude.eflags = A::merge_eflags(&eflags)?;
-    Ok(())
+    Ok(Eflags(A::merge_eflags(&eflags)?))
 }
 
 fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> RiscVAttributes {
@@ -969,8 +958,10 @@ struct PreludeLayoutState<'data> {
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
-    eflags: u32,
 }
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Eflags(pub(crate) u32);
 
 pub(crate) struct SyntheticSymbolsLayoutState<'data> {
     file_id: FileId,
@@ -2336,7 +2327,7 @@ fn compute_total_section_part_sizes(
         output_order,
         program_segments,
         per_symbol_flags,
-        resources.symbol_db,
+        resources,
     )?;
 
     Ok(total_sizes)
@@ -3475,7 +3466,6 @@ impl<'data> PreludeLayoutState<'data> {
             header_info: None,
             dynamic_linker: None,
             shstrtab_size: 0,
-            eflags: 0,
         }
     }
 
@@ -3632,7 +3622,7 @@ impl<'data> PreludeLayoutState<'data> {
         output_order: &OutputOrder,
         program_segments: &ProgramSegments,
         per_symbol_flags: &mut PerSymbolFlags,
-        symbol_db: &SymbolDb,
+        resources: &FinaliseSizesResources,
     ) -> Result {
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
@@ -3646,14 +3636,14 @@ impl<'data> PreludeLayoutState<'data> {
             output_sections,
             program_segments,
             output_order,
-            symbol_db,
+            resources,
             per_symbol_flags,
         );
 
         self.allocate_symbol_table_sizes(
             output_sections,
             per_symbol_flags,
-            symbol_db,
+            resources.symbol_db,
             &mut extra_sizes,
         )?;
 
@@ -3719,7 +3709,7 @@ impl<'data> PreludeLayoutState<'data> {
         output_sections: &mut OutputSections,
         program_segments: &ProgramSegments,
         output_order: &OutputOrder,
-        symbol_db: &SymbolDb,
+        resources: &FinaliseSizesResources,
         symbol_flags: &PerSymbolFlags,
     ) {
         use output_section_id::OrderEvent;
@@ -3824,7 +3814,7 @@ impl<'data> PreludeLayoutState<'data> {
         keep_segments[0] = true;
 
         // If relro is disabled, then discard the relro segment.
-        if !symbol_db.args.relro {
+        if !resources.symbol_db.args.relro {
             for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
                 if segment_def.segment_type == pt::GNU_RELRO {
                     *keep = false;
@@ -3843,7 +3833,7 @@ impl<'data> PreludeLayoutState<'data> {
                 .expect("output section count must fit in a u16"),
 
             active_segment_ids,
-            eflags: self.eflags,
+            eflags: resources.eflags,
         };
 
         // Allocate space for headers based on segment and section counts.
@@ -4413,7 +4403,7 @@ impl EpilogueLayoutState {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
-    pub(crate) eflags: u32,
+    pub(crate) eflags: Eflags,
 }
 
 impl HeaderInfo {
@@ -6627,7 +6617,7 @@ fn test_no_disallowed_overlaps() {
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),
-        eflags: 0,
+        eflags: Eflags(0),
     };
 
     let mut section_index = 0;
