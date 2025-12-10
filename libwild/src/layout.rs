@@ -203,7 +203,7 @@ pub fn compute<'data, A: Arch>(
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
     let gnu_property_notes = merge_gnu_property_notes::<A>(&group_states, symbol_db.args.z_isa)?;
     merge_eflags::<A>(&mut group_states)?;
-    merge_riscv_attributes::<A>(&mut group_states);
+    let riscv_attributes = merge_riscv_attributes::<A>(&group_states);
 
     let finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
@@ -211,6 +211,7 @@ pub fn compute<'data, A: Arch>(
         merged_strings: &merged_strings,
         gnu_hash_layout,
         gnu_property_notes: &gnu_property_notes,
+        riscv_attributes: &riscv_attributes,
     };
 
     finalise_all_sizes(
@@ -302,6 +303,7 @@ pub fn compute<'data, A: Arch>(
         per_symbol_flags: &per_symbol_flags,
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
         gnu_property_notes: &gnu_property_notes,
+        riscv_attributes: &riscv_attributes,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -347,6 +349,7 @@ pub fn compute<'data, A: Arch>(
         per_symbol_flags,
         dynamic_symbol_definitions,
         gnu_property_notes,
+        riscv_attributes,
     })
 }
 
@@ -356,6 +359,7 @@ struct FinaliseSizesResources<'data, 'scope> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: &'scope [GnuProperty],
+    riscv_attributes: &'scope RiscVAttributes,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -493,17 +497,6 @@ fn get_prelude_mut<'a, 'data>(
         panic!("Internal error, prelude must be first");
     };
     prelude
-}
-
-fn get_epilogue_mut<'a, 'data>(
-    group_states: &'a mut [GroupState<'data>],
-) -> &'a mut EpilogueLayoutState {
-    let Some(FileLayoutState::Epilogue(epilogue)) =
-        group_states.last_mut().and_then(|g| g.files.last_mut())
-    else {
-        panic!("Internal error, epilogue must be last");
-    };
-    epilogue
 }
 
 fn merge_dynamic_symbol_definitions<'data>(
@@ -715,7 +708,7 @@ fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
     Ok(())
 }
 
-fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) {
+fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> RiscVAttributes {
     timing_phase!("Merge .riscv.attributes sections");
 
     let attributes = group_states
@@ -828,8 +821,12 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) {
         merged.push(RiscVAttribute::PrivilegedSpecRevision(*version));
     }
 
-    let epilogue = get_epilogue_mut(group_states);
-    epilogue.riscv_attributes = merged;
+    let section_size = EpilogueLayoutState::riscv_attributes_section_size(&merged);
+
+    RiscVAttributes {
+        attributes: merged,
+        section_size,
+    }
 }
 
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
@@ -866,6 +863,7 @@ pub struct Layout<'data> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) riscv_attributes: RiscVAttributes,
 }
 
 #[derive(Debug)]
@@ -984,7 +982,6 @@ pub(crate) struct EpilogueLayoutState {
     sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
     build_id_size: Option<usize>,
-    riscv_attributes: Vec<RiscVAttribute>,
 
     verdefs: Option<Vec<VersionDef>>,
 }
@@ -1021,7 +1018,6 @@ pub(crate) struct EpilogueLayout {
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynsym_start_index: u32,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
-    pub(crate) riscv_attributes: Vec<RiscVAttribute>,
     pub(crate) riscv_attributes_length: u32,
 }
 
@@ -1639,6 +1635,12 @@ impl RiscVArch {
 }
 
 #[derive(Debug)]
+pub(crate) struct RiscVAttributes {
+    pub(crate) attributes: Vec<RiscVAttribute>,
+    pub(crate) section_size: u64,
+}
+
+#[derive(Debug)]
 pub(crate) enum RiscVAttribute {
     /// Indicates the stack alignment requirement in bytes.
     StackAlign(u64),
@@ -1808,6 +1810,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
     gnu_property_notes: &'scope [GnuProperty],
+    riscv_attributes: &'scope RiscVAttributes,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -4103,7 +4106,6 @@ impl EpilogueLayoutState {
             gnu_hash_layout: None,
             build_id_size,
             verdefs: Default::default(),
-            riscv_attributes: Default::default(),
         }
     }
 
@@ -4135,13 +4137,13 @@ impl EpilogueLayoutState {
         }
     }
 
-    fn riscv_attributes_section_size(&self) -> u64 {
+    fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
         let size_of_uleb_encoded = |value| {
             let mut cursor = Cursor::new([0u8; 10]);
             leb128::write::unsigned(&mut cursor, value).unwrap()
         };
 
-        (if self.riscv_attributes.is_empty() {
+        (if riscv_attributes.is_empty() {
             0
         } else {
             1 // 'A'
@@ -4149,7 +4151,7 @@ impl EpilogueLayoutState {
             + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
             + 4 // sizeof(u32)
             + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
-            + self.riscv_attributes.iter().map(|attr| {
+            + riscv_attributes.iter().map(|attr| {
                 match attr {
                     RiscVAttribute::StackAlign(align) => {
                                         size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
@@ -4229,7 +4231,7 @@ impl EpilogueLayoutState {
         );
         common.allocate(
             part_id::RISCV_ATTRIBUTES,
-            self.riscv_attributes_section_size(),
+            resources.riscv_attributes.section_size,
         );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
@@ -4376,9 +4378,10 @@ impl EpilogueLayoutState {
             part_id::NOTE_GNU_PROPERTY,
             Self::gnu_property_notes_section_size(resources.gnu_property_notes),
         );
+
         memory_offsets.increment(
             part_id::RISCV_ATTRIBUTES,
-            self.riscv_attributes_section_size(),
+            resources.riscv_attributes.section_size,
         );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
@@ -4396,14 +4399,12 @@ impl EpilogueLayoutState {
             );
         }
 
-        let riscv_attributes_length = self.riscv_attributes_section_size() as u32;
         Ok(EpilogueLayout {
             sysv_hash_layout: self.sysv_hash_layout,
             gnu_hash_layout: self.gnu_hash_layout,
             dynsym_start_index,
             verdefs: self.verdefs,
-            riscv_attributes: self.riscv_attributes,
-            riscv_attributes_length,
+            riscv_attributes_length: resources.riscv_attributes.section_size as u32,
         })
     }
 }

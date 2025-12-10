@@ -2789,11 +2789,11 @@ fn write_epilogue<A: Arch>(
 
     write_dynamic_symbol_definitions(table_writer, layout)?;
 
-    if !&layout.gnu_property_notes.is_empty() {
+    if !layout.gnu_property_notes.is_empty() {
         write_gnu_property_notes(layout, buffers)?;
     }
-    if !&epilogue.riscv_attributes.is_empty() {
-        write_riscv_attributes(epilogue, buffers)?;
+    if layout.riscv_attributes.section_size != 0 {
+        write_riscv_attributes(epilogue, layout, buffers)?;
     }
 
     if let Some(verdefs) = &epilogue.verdefs {
@@ -2847,6 +2847,7 @@ fn write_gnu_property_notes(
 
 fn write_riscv_attributes(
     epilogue: &EpilogueLayout,
+    layout: &Layout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
@@ -2864,7 +2865,7 @@ fn write_riscv_attributes(
             .to_le_bytes()
             .as_slice(),
     )?;
-    for tag in &epilogue.riscv_attributes {
+    for tag in &layout.riscv_attributes.attributes {
         match tag {
             &RiscVAttribute::StackAlign(align) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_STACK_ALIGN)?;
