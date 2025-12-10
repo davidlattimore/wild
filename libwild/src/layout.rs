@@ -2591,22 +2591,24 @@ fn find_required_sections<'data, A: Arch>(
 
 fn queue_initial_group_processing<'data, 'scope, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
-    symbol_db: &SymbolDb<'data>,
+    symbol_db: &'scope SymbolDb<'data>,
     resources: &'scope GraphResources<'data, '_>,
     scope: &Scope<'scope>,
 ) {
     verbose_timing_phase!("Create worker slots");
 
+    assert_eq!(groups_in.len(), symbol_db.groups.len());
+
     groups_in
         .into_iter()
         .enumerate()
-        .zip(&symbol_db.num_symbols_per_group)
-        .for_each(|((group_index, group), &num_symbols)| {
+        .zip(&symbol_db.groups)
+        .for_each(|((group_index, resolved), group)| {
             scope.spawn(move |scope| {
                 verbose_timing_phase!("Activate group");
                 let inputs = GroupActivationInputs {
-                    resolved: group,
-                    num_symbols,
+                    resolved,
+                    num_symbols: group.num_symbols(),
                     group_index,
                 };
                 inputs.activate_group::<A>(resources, scope);

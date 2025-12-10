@@ -76,9 +76,6 @@ pub struct SymbolDb<'data> {
     /// value at index 5 will be the symbol ID 5.
     symbol_definitions: Vec<SymbolId>,
 
-    /// The number of symbols in each group, keyed by the index of the group.
-    pub(crate) num_symbols_per_group: Vec<usize>,
-
     /// The names of symbols that mark the start / stop of sections. These are indexed by the
     /// offset into the SyntheticSymbols' symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
@@ -331,8 +328,7 @@ impl<'data> SymbolDb<'data> {
                 .add_symbol(symbol, true)?;
         }
 
-        let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
-        let num_symbols = num_symbols_per_group.iter().sum();
+        let num_symbols = groups.iter().map(|g| g.num_symbols()).sum();
 
         let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
         let mut per_symbol_flags: Vec<RawFlags> = Vec::with_capacity(num_symbols);
@@ -382,7 +378,6 @@ impl<'data> SymbolDb<'data> {
             symbol_file_ids,
             symbol_definitions,
             groups,
-            num_symbols_per_group,
             start_stop_symbol_names: Default::default(),
             version_script,
             export_list,
@@ -442,7 +437,6 @@ impl<'data> SymbolDb<'data> {
 
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
-        self.num_symbols_per_group[syn.file_id.group()] += 1;
         let Group::SyntheticSymbols(s) = &mut self.groups[syn.file_id.group()] else {
             panic!("Tried to add synthetic symbol to non-synthetic-symbol group");
         };
@@ -829,8 +823,6 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data> {
-        self.num_symbols_per_group.push(0);
-
         let file_id = FileId::new(self.groups.len() as u32, 0);
         let start_symbol_id = self.next_symbol_id();
 
