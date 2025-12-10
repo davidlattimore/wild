@@ -41,6 +41,7 @@ pub(crate) struct FileLoader<'data> {
     inputs_arena: &'data Arena<InputFile>,
 }
 
+#[derive(Default)]
 pub(crate) struct LoadedInputs<'data> {
     /// Files, or in the case of archives, parts of files that we should parse as input objects.
     /// Doesn't include linker scripts.

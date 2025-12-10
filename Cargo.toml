@@ -29,7 +29,7 @@ ar = "0.9.0"
 atomic-take = "1.0.0"
 bitflags = "2.4.0"
 blake3 = { version = "1.0.0", features = ["rayon"] }
-bumpalo-herd = "0.1.0"
+bumpalo-herd = "0.1.2"
 bytesize = "2.0.0"
 clap = { version = "4.0.0", features = ["derive"] }
 colored = "3.0.0"

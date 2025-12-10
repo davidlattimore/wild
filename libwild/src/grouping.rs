@@ -8,6 +8,7 @@ use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
@@ -87,34 +88,30 @@ impl Group<'_> {
     }
 }
 
-pub(crate) fn group_files<'data>(
-    prelude: Prelude<'data>,
+pub(crate) fn create_groups<'data>(
+    symbol_db: &mut SymbolDb<'data>,
     parsed_objects: Vec<ParsedInputObject<'data>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
-    args: &Args,
-    herd: &'data bumpalo_herd::Herd,
-) -> Vec<Group<'data>> {
+) {
     timing_phase!("Group files");
 
-    let max_files_per_group = determine_max_files_per_group(args);
-    let num_symbols = count_symbols(&prelude, &parsed_objects, &linker_scripts);
-    let symbols_per_group = determine_symbols_per_group(num_symbols, args);
+    let max_files_per_group = determine_max_files_per_group(symbol_db.args);
+    let num_symbols = count_symbols(&parsed_objects);
+    let symbols_per_group = determine_symbols_per_group(num_symbols, symbol_db.args);
 
-    let mut groups = Vec::with_capacity(parsed_objects.len() / max_files_per_group + 3);
+    symbol_db.groups_reserve(parsed_objects.len() / max_files_per_group + 3);
 
-    let mut next_symbol_id = SymbolId::undefined();
-    next_symbol_id = next_symbol_id.add_usize(prelude.symbol_definitions.len());
-    groups.push(Group::Prelude(prelude));
+    let mut next_symbol_id = symbol_db.next_symbol_id();
 
     let mut objects = parsed_objects.into_iter().peekable();
 
     let mut num_symbols_in_group = 0;
     let mut group_objects = Vec::new();
 
-    let allocator = herd.get();
+    let allocator = symbol_db.herd.get();
 
     while let Some(obj) = objects.next() {
-        let file_id = FileId::new(groups.len() as u32, group_objects.len() as u32);
+        let file_id = FileId::new(symbol_db.next_group_index(), group_objects.len() as u32);
         let num_symbols_in_file = obj.object.symbols.len();
 
         group_objects.push(SequencedInputObject {
@@ -146,7 +143,7 @@ pub(crate) fn group_files<'data>(
             let objects_slice =
                 allocator.alloc_slice_fill_iter(core::mem::take(&mut group_objects));
 
-            groups.push(Group::Objects(objects_slice));
+            symbol_db.add_group(Group::Objects(objects_slice));
         }
     }
 
@@ -159,19 +156,17 @@ pub(crate) fn group_files<'data>(
 
             SequencedLinkerScript {
                 parsed: script,
-                file_id: FileId::new(groups.len() as u32, i as u32),
+                file_id: FileId::new(symbol_db.next_group_index(), i as u32),
                 symbol_id_range,
             }
         })
         .collect();
 
     if !linker_scripts.is_empty() {
-        groups.push(Group::LinkerScripts(linker_scripts));
+        symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
 
-    tracing::trace!("GROUPS:\n{}", GroupsDisplay(&groups));
-
-    groups
+    tracing::trace!("GROUPS:\n{}", GroupsDisplay(&symbol_db.groups));
 }
 
 /// Decides after how many symbols, we should start a new group.
@@ -204,23 +199,11 @@ fn determine_max_files_per_group(args: &Args) -> usize {
     crate::input_data::MAX_FILES_PER_GROUP as usize
 }
 
-/// Compute the total number of symbols in the prelude, input objects and defined by linker scripts.
-/// Doesn't include __start/__stop symbols, since we don't know what they will be until later.
-fn count_symbols(
-    prelude: &Prelude,
-    objects: &[ParsedInputObject],
-    linker_scripts: &[ProcessedLinkerScript],
-) -> usize {
+/// Compute the total number of symbols in the supplied objects.
+fn count_symbols(objects: &[ParsedInputObject]) -> usize {
     verbose_timing_phase!("Count symbols");
 
-    let in_objects = objects.iter().map(|o| o.num_symbols()).sum::<usize>();
-
-    let in_linker_scripts = linker_scripts
-        .iter()
-        .map(|l| l.num_symbols())
-        .sum::<usize>();
-
-    prelude.symbol_definitions.len() + in_objects + in_linker_scripts
+    objects.iter().map(|o| o.num_symbols()).sum::<usize>()
 }
 
 struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);

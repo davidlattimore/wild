@@ -10,6 +10,7 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::export_list::ExportList;
+use crate::grouping;
 use crate::grouping::Group;
 use crate::grouping::SequencedInput;
 use crate::grouping::SequencedInputObject;
@@ -19,8 +20,12 @@ use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
 use crate::input_data::AuxiliaryFiles;
 use crate::input_data::FileId;
+use crate::input_data::LoadedInputs;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
+use crate::parsing;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
@@ -87,6 +92,7 @@ pub struct SymbolDb<'data> {
     entry: Option<&'data [u8]>,
 
     pub(crate) output_kind: OutputKind,
+    pub(crate) herd: &'data bumpalo_herd::Herd,
 }
 
 /// Borrows from a SymbolDb, but allows temporary atomic access to some of the tables. These tables
@@ -305,40 +311,22 @@ impl<'data> SymbolDb<'data> {
             });
     }
 
-    pub fn build(
-        groups: Vec<Group<'data>>,
-        auxiliary: &AuxiliaryFiles<'data>,
+    pub(crate) fn new(
         args: &'data Args,
-        linker_scripts: &[InputLinkerScript<'data>],
-        herd: &'data bumpalo_herd::Herd,
         output_kind: OutputKind,
-    ) -> Result<(Self, PerSymbolFlags)> {
-        timing_phase!("Build symbol DB");
+        auxiliary: &AuxiliaryFiles<'data>,
+        herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Self> {
+        let version_script = auxiliary
+            .version_script_data
+            .map(VersionScript::parse)
+            .transpose()?
+            .unwrap_or_default();
 
-        let version_script = find_and_parse_version_script(auxiliary, linker_scripts)?;
-
-        let mut export_list = auxiliary
+        let export_list = auxiliary
             .export_list_data
             .map(ExportList::parse)
             .transpose()?;
-
-        for symbol in &args.export_list {
-            export_list
-                .get_or_insert_default()
-                .add_symbol(symbol, true)?;
-        }
-
-        let num_symbols = groups.iter().map(|g| g.num_symbols()).sum();
-
-        let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
-        let mut per_symbol_flags: Vec<RawFlags> = Vec::with_capacity(num_symbols);
-        let mut symbol_file_ids: Vec<FileId> = Vec::with_capacity(num_symbols);
-
-        let mut writers = SymbolVecWriters::new(
-            &mut symbol_definitions,
-            &mut per_symbol_flags,
-            &mut symbol_file_ids,
-        );
 
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();
@@ -349,20 +337,89 @@ impl<'data> SymbolDb<'data> {
             alternative_versioned_definitions: HashMap::new(),
         });
 
-        let mut per_group_shards = groups
+        let mut symbol_db = SymbolDb {
+            args,
+            buckets,
+            symbol_file_ids: Vec::new(),
+            symbol_definitions: Vec::new(),
+            groups: Vec::new(),
+            start_stop_symbol_names: Default::default(),
+            version_script,
+            export_list,
+            entry: None,
+            output_kind,
+            herd,
+        };
+
+        for symbol in &args.export_list {
+            symbol_db
+                .export_list
+                .get_or_insert_default()
+                .add_symbol(symbol, true)?;
+        }
+
+        Ok(symbol_db)
+    }
+
+    pub(crate) fn add_inputs(
+        &mut self,
+        per_symbol_flags: &mut PerSymbolFlags,
+        output_sections: &mut OutputSections<'data>,
+        layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+        loaded: &LoadedInputs<'data>,
+    ) -> Result {
+        timing_phase!("Load inputs into symbol DB");
+
+        let parsed_objects = parsing::parse_input_files(&loaded.inputs, self.args)?;
+
+        let processed_linker_scripts = parsing::process_linker_scripts(
+            &loaded.linker_scripts,
+            output_sections,
+            layout_rules_builder,
+        )?;
+
+        self.add_version_script_from_linker_scripts(&loaded.linker_scripts)?;
+
+        let pre_existing_groups = self.groups.len();
+
+        if self.groups.is_empty() {
+            self.groups
+                .push(Group::Prelude(crate::parsing::Prelude::new(
+                    self.args,
+                    self.output_kind,
+                )));
+        }
+
+        grouping::create_groups(self, parsed_objects, processed_linker_scripts);
+
+        let new_groups = &self.groups[pre_existing_groups..];
+
+        let num_symbols = new_groups.iter().map(|group| group.num_symbols()).sum();
+
+        self.symbol_definitions.reserve(num_symbols);
+        per_symbol_flags.reserve(num_symbols);
+        self.symbol_file_ids.reserve(num_symbols);
+
+        let mut writers = SymbolVecWriters::new(
+            &mut self.symbol_definitions,
+            &mut per_symbol_flags.flags,
+            &mut self.symbol_file_ids,
+        );
+
+        let mut per_group_shards = new_groups
             .iter()
             .map(|group| writers.new_shard(group))
             .collect_vec();
 
         let per_group_outputs = read_symbols(
-            &version_script,
+            &self.version_script,
             &mut per_group_shards,
-            args,
-            &export_list,
-            output_kind,
+            self.args,
+            &self.export_list,
+            self.output_kind,
         )?;
 
-        populate_symbol_db(&mut buckets, &per_group_outputs);
+        populate_symbol_db(&mut self.buckets, &per_group_outputs);
 
         {
             verbose_timing_phase!("Return shards");
@@ -371,21 +428,6 @@ impl<'data> SymbolDb<'data> {
                 writers.return_shard(shard);
             }
         }
-
-        let mut index = SymbolDb {
-            args,
-            buckets,
-            symbol_file_ids,
-            symbol_definitions,
-            groups,
-            start_stop_symbol_names: Default::default(),
-            version_script,
-            export_list,
-            entry: None,
-            output_kind,
-        };
-
-        let mut per_symbol_flags = PerSymbolFlags::new(per_symbol_flags);
 
         rayon::join(
             || {
@@ -396,21 +438,19 @@ impl<'data> SymbolDb<'data> {
             || {
                 // If it's a rust version script, apply the global symbol visibility now.
                 // We previously downgraded all symbols to local visibility.
-                if let VersionScript::Rust(rust_vscript) = &index.version_script {
-                    index.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+                if let VersionScript::Rust(rust_vscript) = &self.version_script {
+                    self.handle_rust_version_script(rust_vscript, per_symbol_flags);
                 }
-
-                index.apply_wrapped_symbol_overrides(args, herd);
 
                 verbose_timing_phase!("Apply linker scripts");
 
-                for script in linker_scripts {
-                    index.apply_linker_script(script);
+                for script in &loaded.linker_scripts {
+                    self.apply_linker_script(script);
                 }
             },
         );
 
-        Ok((index, per_symbol_flags))
+        Ok(())
     }
 
     /// Adds a new synthetic symbol. `syn` must have been the most recently added group.
@@ -454,16 +494,16 @@ impl<'data> SymbolDb<'data> {
     /// defines it will not go via the wrapper. This is in contrast to LLD where wrapping also
     /// affects references to symbols in compilation units where those symbols are defined. Our main
     /// reason for this choice of behaviour is that it's much simpler to implement.
-    fn apply_wrapped_symbol_overrides(&mut self, args: &Args, herd: &'data bumpalo_herd::Herd) {
-        if args.wrap.is_empty() {
+    pub(crate) fn apply_wrapped_symbol_overrides(&mut self) {
+        if self.args.wrap.is_empty() {
             return;
         }
 
         verbose_timing_phase!("Apply wrapped symbol overrides");
 
-        let allocator = herd.get();
+        let allocator = self.herd.get();
 
-        for name in &args.wrap {
+        for name in &self.args.wrap {
             let wrap_name = format!("__wrap_{name}");
             let Some(wrap_id) =
                 self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
@@ -819,7 +859,10 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn next_symbol_id(&self) -> SymbolId {
-        SymbolId::from_usize(self.num_symbols())
+        self.groups.last().map_or(SymbolId::undefined(), |group| {
+            let range = group.symbol_id_range();
+            range.start().add_usize(range.len())
+        })
     }
 
     pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data> {
@@ -837,30 +880,38 @@ impl<'data> SymbolDb<'data> {
             symbol_definitions: Vec::new(),
         }
     }
-}
 
-fn find_and_parse_version_script<'data>(
-    auxiliary: &AuxiliaryFiles<'data>,
-    linker_scripts: &[InputLinkerScript<'data>],
-) -> Result<VersionScript<'data>> {
-    let mut script_data = auxiliary.version_script_data;
+    fn add_version_script_from_linker_scripts(
+        &mut self,
+        linker_scripts: &[InputLinkerScript<'data>],
+    ) -> Result {
+        for script in linker_scripts {
+            // Check if the linker script contains a VERSION command
+            if let Some(version_content) = script.script.get_version_script_content() {
+                if self.version_script != VersionScript::default() {
+                    bail!("Multiple version scripts provided");
+                }
 
-    for script in linker_scripts {
-        // Check if the linker script contains a VERSION command
-        if let Some(version_content) = script.script.get_version_script_content() {
-            if script_data.is_some() {
-                bail!("Multiple version scripts provided");
+                self.version_script = VersionScript::parse(crate::input_data::ScriptData {
+                    raw: version_content,
+                })?;
             }
-            script_data = Some(crate::input_data::ScriptData {
-                raw: version_content,
-            });
         }
+
+        Ok(())
     }
 
-    Ok(script_data
-        .map(VersionScript::parse)
-        .transpose()?
-        .unwrap_or_default())
+    pub(crate) fn groups_reserve(&mut self, additional: usize) {
+        self.groups.reserve(additional);
+    }
+
+    pub(crate) fn next_group_index(&self) -> u32 {
+        self.groups.len() as u32
+    }
+
+    pub(crate) fn add_group(&mut self, group: Group<'data>) {
+        self.groups.push(group);
+    }
 }
 
 struct SymbolVecWriters<'out> {
