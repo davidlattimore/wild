@@ -199,17 +199,24 @@ pub fn compute<'data, A: Arch>(
     });
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
-    merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
+    let (dynamic_symbol_definitions, gnu_hash_layout) =
+        merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
     merge_gnu_property_notes::<A>(&mut group_states, symbol_db.args.z_isa)?;
     merge_eflags::<A>(&mut group_states)?;
     merge_riscv_attributes::<A>(&mut group_states);
 
+    let finalise_sizes_resources = FinaliseSizesResources {
+        dynamic_symbol_definitions: &dynamic_symbol_definitions,
+        symbol_db: &symbol_db,
+        merged_strings: &merged_strings,
+        gnu_hash_layout,
+    };
+
     finalise_all_sizes(
-        &symbol_db,
-        &output_sections,
         &mut group_states,
+        &output_sections,
         &atomic_per_symbol_flags,
-        &merged_strings,
+        &finalise_sizes_resources,
     )?;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
@@ -234,7 +241,7 @@ pub fn compute<'data, A: Arch>(
         &program_segments,
         &mut per_symbol_flags,
         gc_outputs.sections_with_content,
-        &symbol_db,
+        &finalise_sizes_resources,
     )?;
 
     let section_part_layouts = layout_section_parts(
@@ -292,6 +299,7 @@ pub fn compute<'data, A: Arch>(
         merged_string_start_addresses: &merged_string_start_addresses,
         merged_strings: &merged_strings,
         per_symbol_flags: &per_symbol_flags,
+        dynamic_symbol_definitions: &dynamic_symbol_definitions,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -307,7 +315,11 @@ pub fn compute<'data, A: Arch>(
             .context("Group resolutions not filled")?;
     }
 
-    update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
+    update_dynamic_symbol_resolutions(
+        &resources,
+        &group_layouts,
+        &mut symbol_resolutions.resolutions,
+    );
     update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
@@ -331,7 +343,15 @@ pub fn compute<'data, A: Arch>(
         has_variant_pcs: gc_outputs.has_variant_pcs,
         relocation_statistics,
         per_symbol_flags,
+        dynamic_symbol_definitions,
     })
+}
+
+struct FinaliseSizesResources<'data, 'scope> {
+    dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data>],
+    symbol_db: &'scope SymbolDb<'data>,
+    merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
+    gnu_hash_layout: Option<GnuHashLayout>,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -404,6 +424,7 @@ fn update_defsym_symbol_resolution(
 
 /// Update resolutions for all dynamic symbols that our output file defines.
 fn update_dynamic_symbol_resolutions(
+    resources: &FinaliseLayoutResources,
     layouts: &[GroupLayout],
     resolutions: &mut [Option<Resolution>],
 ) {
@@ -413,7 +434,7 @@ fn update_dynamic_symbol_resolutions(
         panic!("Epilogue should be the last file");
     };
 
-    for (index, sym) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+    for (index, sym) in resources.dynamic_symbol_definitions.iter().enumerate() {
         let dynamic_symbol_index = NonZeroU32::try_from(epilogue.dynsym_start_index + index as u32)
             .expect("Dynamic symbol definitions should start > 0");
         if let Some(res) = &mut resolutions[sym.symbol_id.as_usize()] {
@@ -446,17 +467,16 @@ fn finalise_copy_relocations<'data>(
 }
 
 fn finalise_all_sizes<'data>(
-    symbol_db: &SymbolDb<'data>,
-    output_sections: &OutputSections,
     group_states: &mut [GroupState<'data>],
+    output_sections: &OutputSections,
     per_symbol_flags: &AtomicPerSymbolFlags,
-    merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+    resources: &FinaliseSizesResources<'data, '_>,
 ) -> Result {
     timing_phase!("Finalise per-object sizes");
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes(symbol_db, output_sections, per_symbol_flags, merged_strings)
+        state.finalise_sizes(output_sections, per_symbol_flags, resources)
     })
 }
 
@@ -473,7 +493,7 @@ fn get_prelude_mut<'a, 'data>(
 
 fn get_epilogue_mut<'a, 'data>(
     group_states: &'a mut [GroupState<'data>],
-) -> &'a mut EpilogueLayoutState<'data> {
+) -> &'a mut EpilogueLayoutState {
     let Some(FileLayoutState::Epilogue(epilogue)) =
         group_states.last_mut().and_then(|g| g.files.last_mut())
     else {
@@ -483,13 +503,13 @@ fn get_epilogue_mut<'a, 'data>(
 }
 
 fn merge_dynamic_symbol_definitions<'data>(
-    group_states: &mut [GroupState<'data>],
+    group_states: &[GroupState<'data>],
     symbol_db: &SymbolDb<'data>,
-) -> Result {
+) -> Result<(Vec<DynamicSymbolDefinition<'data>>, Option<GnuHashLayout>)> {
     timing_phase!("Merge dynamic symbol definitions");
 
     let mut dynamic_symbol_definitions = Vec::new();
-    for group in group_states.iter() {
+    for group in group_states {
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
     }
 
@@ -499,10 +519,31 @@ fn merge_dynamic_symbol_definitions<'data>(
         &mut dynamic_symbol_definitions,
     )?;
 
-    let epilogue = get_epilogue_mut(group_states);
-    epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
+    let mut opt_gnu_hash_layout = None;
 
-    Ok(())
+    // If we're going to emit .gnu.hash, then we need to stort the dynamic symbols by bucket.
+    // Tie-break by name for determinism. We can use an unstable sort because names should be
+    // unique. We use a parallel sort because we're processing symbols from potentially many input
+    // objects, so there can be a lot.
+    if symbol_db.args.hash_style.includes_gnu() {
+        // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
+        // symbols per bucket, but then we round up to a power of two.
+        let num_defs = dynamic_symbol_definitions.len();
+        let gnu_hash_layout = GnuHashLayout {
+            bucket_count: (num_defs / 2).next_power_of_two() as u32,
+            bloom_shift: 6,
+            bloom_count: 1,
+            // `symbol_base` is set later in `finalise_layout`.
+            symbol_base: 0,
+        };
+
+        dynamic_symbol_definitions
+            .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+
+        opt_gnu_hash_layout = Some(gnu_hash_layout);
+    }
+
+    Ok((dynamic_symbol_definitions, opt_gnu_hash_layout))
 }
 
 fn append_prelude_defsym_dynamic_symbols<'data>(
@@ -821,6 +862,7 @@ pub struct Layout<'data> {
     pub(crate) has_static_tls: bool,
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
+    pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 }
 
 #[derive(Debug)]
@@ -847,7 +889,7 @@ pub(crate) enum FileLayout<'data> {
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data>),
-    Epilogue(EpilogueLayout<'data>),
+    Epilogue(EpilogueLayout),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data>),
 }
@@ -911,7 +953,7 @@ enum FileLayoutState<'data> {
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data>),
-    Epilogue(EpilogueLayoutState<'data>),
+    Epilogue(EpilogueLayoutState),
     LinkerScript(LinkerScriptLayoutState<'data>),
 }
 
@@ -935,8 +977,7 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data> {
     internal_symbols: InternalSymbols<'data>,
 }
 
-pub(crate) struct EpilogueLayoutState<'data> {
-    dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+pub(crate) struct EpilogueLayoutState {
     sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
@@ -953,7 +994,7 @@ pub(crate) struct LinkerScriptLayoutState<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct GnuHashLayout {
     pub(crate) bucket_count: u32,
     pub(crate) bloom_shift: u32,
@@ -973,10 +1014,9 @@ pub(crate) struct SyntheticSymbolsLayout<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout<'data> {
+pub(crate) struct EpilogueLayout {
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
-    pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
@@ -1046,9 +1086,11 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
     fn finalise_symbol_sizes(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
         symbol_flags: &AtomicPerSymbolFlags,
+        resources: &FinaliseSizesResources,
     ) -> Result {
+        let symbol_db = resources.symbol_db;
+
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
@@ -1763,6 +1805,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
+    dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -2256,7 +2299,7 @@ fn compute_total_section_part_sizes(
     program_segments: &ProgramSegments,
     per_symbol_flags: &mut PerSymbolFlags,
     sections_with_content: OutputSectionMap<bool>,
-    symbol_db: &SymbolDb,
+    resources: &FinaliseSizesResources,
 ) -> Result<OutputSectionPartMap<u64>> {
     timing_phase!("Compute total section sizes");
 
@@ -2273,7 +2316,7 @@ fn compute_total_section_part_sizes(
         unreachable!();
     };
 
-    epilogue.apply_late_size_adjustments(&mut last_group.common, &mut total_sizes, symbol_db)?;
+    epilogue.apply_late_size_adjustments(&mut last_group.common, &mut total_sizes, resources)?;
 
     let first_group = group_states.first_mut().unwrap();
     let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first_mut() else {
@@ -2288,7 +2331,7 @@ fn compute_total_section_part_sizes(
         output_order,
         program_segments,
         per_symbol_flags,
-        symbol_db,
+        resources.symbol_db,
     )?;
 
     Ok(total_sizes)
@@ -2620,18 +2663,16 @@ impl<'data> GroupState<'data> {
 
     fn finalise_sizes(
         &mut self,
-        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+        resources: &FinaliseSizesResources<'data, '_>,
     ) -> Result {
         for file_state in &mut self.files {
             file_state.finalise_sizes(
                 &mut self.common,
-                symbol_db,
                 output_sections,
                 per_symbol_flags,
-                merged_strings,
+                resources,
             )?;
         }
 
@@ -2822,39 +2863,38 @@ impl<'data> FileLayoutState<'data> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+        resources: &FinaliseSizesResources<'data, '_>,
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, symbol_db, output_sections, per_symbol_flags);
-                s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+                s.finalise_sizes(common, output_sections, per_symbol_flags, resources);
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
                 s.finalise_sizes(common)?;
-                s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Prelude(s) => {
-                PreludeLayoutState::finalise_sizes(common, merged_strings);
-                s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+                PreludeLayoutState::finalise_sizes(common, resources.merged_strings);
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::SyntheticSymbols(s) => {
-                s.finalise_sizes(common, symbol_db, per_symbol_flags)?;
-                s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+                s.finalise_sizes(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Epilogue(s) => {
-                s.finalise_sizes(common, symbol_db);
+                s.finalise_sizes(common, resources);
             }
             FileLayoutState::LinkerScript(s) => {
-                s.finalise_sizes(common, symbol_db, per_symbol_flags)?;
-                s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
+                s.finalise_sizes(common, per_symbol_flags, resources)?;
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::NotLoaded(_) => {}
         }
 
-        finalise_gnu_version_size(common, symbol_db);
+        finalise_gnu_version_size(common, resources.symbol_db);
 
         Ok(())
     }
@@ -3024,7 +3064,7 @@ impl std::fmt::Display for PreludeLayoutState<'_> {
     }
 }
 
-impl std::fmt::Display for EpilogueLayoutState<'_> {
+impl std::fmt::Display for EpilogueLayoutState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
@@ -4011,9 +4051,11 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
     fn finalise_sizes(
         &self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
         per_symbol_flags: &AtomicPerSymbolFlags,
+        resources: &FinaliseSizesResources,
     ) -> Result {
+        let symbol_db = resources.symbol_db;
+
         if !symbol_db.args.strip_all() {
             self.internal_symbols.allocate_symbol_table_sizes(
                 &mut common.mem_sizes,
@@ -4045,8 +4087,8 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
     }
 }
 
-impl<'data> EpilogueLayoutState<'data> {
-    fn new(args: &Args) -> EpilogueLayoutState<'data> {
+impl EpilogueLayoutState {
+    fn new(args: &Args) -> EpilogueLayoutState {
         let build_id_size = match &args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
@@ -4055,7 +4097,6 @@ impl<'data> EpilogueLayoutState<'data> {
         };
 
         EpilogueLayoutState {
-            dynamic_symbol_definitions: Default::default(),
             sysv_hash_layout: None,
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
@@ -4069,11 +4110,11 @@ impl<'data> EpilogueLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState,
         total_sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb,
+        resources: &FinaliseSizesResources,
     ) -> Result {
-        if symbol_db.args.hash_style.includes_sysv() {
+        if resources.symbol_db.args.hash_style.includes_sysv() {
             let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
-            self.allocate_sysv_hash(&mut extra_sizes, total_sizes)?;
+            self.allocate_sysv_hash(&mut extra_sizes, total_sizes, resources)?;
 
             // See comments in Prelude::apply_late_size_adjustments.
             total_sizes.merge(&extra_sizes);
@@ -4141,7 +4182,13 @@ impl<'data> EpilogueLayoutState<'data> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 
-    fn finalise_sizes(&mut self, common: &mut CommonGroupState, symbol_db: &SymbolDb<'data>) {
+    fn finalise_sizes(
+        &mut self,
+        common: &mut CommonGroupState,
+        resources: &FinaliseSizesResources,
+    ) {
+        let symbol_db = resources.symbol_db;
+
         if symbol_db.output_kind.needs_dynamic() {
             let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
             common.allocate(
@@ -4157,20 +4204,21 @@ impl<'data> EpilogueLayoutState<'data> {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
 
-            if symbol_db.args.hash_style.includes_gnu() {
-                self.allocate_gnu_hash(common);
+            if let Some(gnu_hash_layout) = resources.gnu_hash_layout {
+                self.allocate_gnu_hash(common, gnu_hash_layout, resources);
             }
 
             common.allocate(
                 part_id::DYNSTR,
-                self.dynamic_symbol_definitions
+                resources
+                    .dynamic_symbol_definitions
                     .iter()
                     .map(|n| n.name.len() + 1)
                     .sum::<usize>() as u64,
             );
             common.allocate(
                 part_id::DYNSYM,
-                (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
+                (resources.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
             );
         }
 
@@ -4240,23 +4288,14 @@ impl<'data> EpilogueLayoutState<'data> {
 
     /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
     /// bucket as required by .gnu.hash.
-    fn allocate_gnu_hash(&mut self, common: &mut CommonGroupState) {
-        // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
-        // symbols per bucket, but then we round up to a power of two.
-        let num_defs = self.dynamic_symbol_definitions.len();
-        let gnu_hash_layout = GnuHashLayout {
-            bucket_count: (num_defs / 2).next_power_of_two() as u32,
-            bloom_shift: 6,
-            bloom_count: 1,
-            // `symbol_base` is set later in `finalise_layout`.
-            symbol_base: 0,
-        };
-        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort because
-        // names should be unique. We use a parallel sort because we're processing symbols from
-        // potentially many input objects, so there can be a lot.
-        self.dynamic_symbol_definitions
-            .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+    fn allocate_gnu_hash(
+        &mut self,
+        common: &mut CommonGroupState,
+        gnu_hash_layout: GnuHashLayout,
+        resources: &FinaliseSizesResources,
+    ) {
         let num_blume = 1;
+        let num_defs = resources.dynamic_symbol_definitions.len();
         common.allocate(
             part_id::GNU_HASH,
             (size_of::<elf::GnuHashHeader>()
@@ -4271,8 +4310,9 @@ impl<'data> EpilogueLayoutState<'data> {
         &mut self,
         sizes_out: &mut OutputSectionPartMap<u64>,
         total_sizes: &OutputSectionPartMap<u64>,
+        resources: &FinaliseSizesResources,
     ) -> Result {
-        let num_defs = self.dynamic_symbol_definitions.len();
+        let num_defs = resources.dynamic_symbol_definitions.len();
         if num_defs == 0 {
             return Ok(());
         }
@@ -4299,8 +4339,8 @@ impl<'data> EpilogueLayoutState<'data> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resources: &FinaliseLayoutResources<'_, 'data>,
-    ) -> Result<EpilogueLayout<'data>> {
+        resources: &FinaliseLayoutResources,
+    ) -> Result<EpilogueLayout> {
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -4315,7 +4355,7 @@ impl<'data> EpilogueLayoutState<'data> {
         }
 
         if let Some(sysv_hash_layout) = self.sysv_hash_layout.as_mut() {
-            let additional = u32::try_from(self.dynamic_symbol_definitions.len())
+            let additional = u32::try_from(resources.dynamic_symbol_definitions.len())
                 .context("Too many dynamic symbols for .hash")?;
             sysv_hash_layout.chain_count = dynsym_start_index
                 .checked_add(additional)
@@ -4328,7 +4368,7 @@ impl<'data> EpilogueLayoutState<'data> {
 
         memory_offsets.increment(
             part_id::DYNSYM,
-            self.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
+            resources.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
         );
 
         memory_offsets.increment(
@@ -4359,7 +4399,6 @@ impl<'data> EpilogueLayoutState<'data> {
         Ok(EpilogueLayout {
             sysv_hash_layout: self.sysv_hash_layout,
             gnu_hash_layout: self.gnu_hash_layout,
-            dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
             verdefs: self.verdefs,
@@ -4810,15 +4849,15 @@ impl<'data> ObjectLayoutState<'data> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
+        resources: &FinaliseSizesResources<'data, '_>,
     ) {
         common.mem_sizes.resize(output_sections.num_parts());
-        if !symbol_db.args.strip_all() {
-            self.allocate_symtab_space(common, symbol_db, per_symbol_flags);
+        if !resources.symbol_db.args.strip_all() {
+            self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags);
         }
-        let output_kind = symbol_db.output_kind;
+        let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
@@ -6339,12 +6378,12 @@ impl<'data> LinkerScriptLayoutState<'data> {
     fn finalise_sizes(
         &self,
         common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data>,
         per_symbol_flags: &AtomicPerSymbolFlags,
+        resources: &FinaliseSizesResources,
     ) -> Result {
         self.internal_symbols.allocate_symbol_table_sizes(
             &mut common.mem_sizes,
-            symbol_db,
+            resources.symbol_db,
             |symbol_id, _info| {
                 per_symbol_flags
                     .flags_for_symbol(symbol_id)
