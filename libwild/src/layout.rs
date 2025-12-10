@@ -201,7 +201,7 @@ pub fn compute<'data, A: Arch>(
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     let (dynamic_symbol_definitions, gnu_hash_layout) =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    merge_gnu_property_notes::<A>(&mut group_states, symbol_db.args.z_isa)?;
+    let gnu_property_notes = merge_gnu_property_notes::<A>(&group_states, symbol_db.args.z_isa)?;
     merge_eflags::<A>(&mut group_states)?;
     merge_riscv_attributes::<A>(&mut group_states);
 
@@ -210,6 +210,7 @@ pub fn compute<'data, A: Arch>(
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         gnu_hash_layout,
+        gnu_property_notes: &gnu_property_notes,
     };
 
     finalise_all_sizes(
@@ -300,6 +301,7 @@ pub fn compute<'data, A: Arch>(
         merged_strings: &merged_strings,
         per_symbol_flags: &per_symbol_flags,
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
+        gnu_property_notes: &gnu_property_notes,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -344,6 +346,7 @@ pub fn compute<'data, A: Arch>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
+        gnu_property_notes,
     })
 }
 
@@ -352,6 +355,7 @@ struct FinaliseSizesResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
+    gnu_property_notes: &'scope [GnuProperty],
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -616,9 +620,9 @@ pub(crate) enum PropertyClass {
 }
 
 fn merge_gnu_property_notes<A: Arch>(
-    group_states: &mut [GroupState],
+    group_states: &[GroupState],
     isa_needed: Option<NonZeroU32>,
-) -> Result {
+) -> Result<Vec<GnuProperty>> {
     timing_phase!("Merge GNU property notes");
 
     let properties_per_file = group_states
@@ -687,9 +691,7 @@ fn merge_gnu_property_notes<A: Arch>(
         })
         .collect_vec();
 
-    let epilogue = get_epilogue_mut(group_states);
-    epilogue.gnu_property_notes = output_properties;
-    Ok(())
+    Ok(output_properties)
 }
 
 fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
@@ -863,6 +865,7 @@ pub struct Layout<'data> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    pub(crate) gnu_property_notes: Vec<GnuProperty>,
 }
 
 #[derive(Debug)]
@@ -980,7 +983,6 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data> {
 pub(crate) struct EpilogueLayoutState {
     sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
-    gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
     riscv_attributes: Vec<RiscVAttribute>,
 
@@ -1018,7 +1020,6 @@ pub(crate) struct EpilogueLayout {
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynsym_start_index: u32,
-    pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
     pub(crate) riscv_attributes_length: u32,
@@ -1806,6 +1807,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
+    gnu_property_notes: &'scope [GnuProperty],
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -4099,7 +4101,6 @@ impl EpilogueLayoutState {
         EpilogueLayoutState {
             sysv_hash_layout: None,
             gnu_hash_layout: None,
-            gnu_property_notes: Default::default(),
             build_id_size,
             verdefs: Default::default(),
             riscv_attributes: Default::default(),
@@ -4124,13 +4125,13 @@ impl EpilogueLayoutState {
         Ok(())
     }
 
-    fn gnu_property_notes_section_size(&self) -> u64 {
-        if self.gnu_property_notes.is_empty() {
+    fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]) -> u64 {
+        if gnu_property_notes.is_empty() {
             0
         } else {
             (size_of::<NoteHeader>()
                 + GNU_NOTE_NAME.len()
-                + self.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
+                + gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
         }
     }
 
@@ -4224,7 +4225,7 @@ impl EpilogueLayoutState {
 
         common.allocate(
             part_id::NOTE_GNU_PROPERTY,
-            self.gnu_property_notes_section_size(),
+            Self::gnu_property_notes_section_size(resources.gnu_property_notes),
         );
         common.allocate(
             part_id::RISCV_ATTRIBUTES,
@@ -4373,7 +4374,7 @@ impl EpilogueLayoutState {
 
         memory_offsets.increment(
             part_id::NOTE_GNU_PROPERTY,
-            self.gnu_property_notes_section_size(),
+            Self::gnu_property_notes_section_size(resources.gnu_property_notes),
         );
         memory_offsets.increment(
             part_id::RISCV_ATTRIBUTES,
@@ -4400,7 +4401,6 @@ impl EpilogueLayoutState {
             sysv_hash_layout: self.sysv_hash_layout,
             gnu_hash_layout: self.gnu_hash_layout,
             dynsym_start_index,
-            gnu_property_notes: self.gnu_property_notes,
             verdefs: self.verdefs,
             riscv_attributes: self.riscv_attributes,
             riscv_attributes_length,

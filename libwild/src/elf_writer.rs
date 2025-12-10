@@ -2789,8 +2789,8 @@ fn write_epilogue<A: Arch>(
 
     write_dynamic_symbol_definitions(table_writer, layout)?;
 
-    if !&epilogue.gnu_property_notes.is_empty() {
-        write_gnu_property_notes(epilogue, buffers)?;
+    if !&layout.gnu_property_notes.is_empty() {
+        write_gnu_property_notes(layout, buffers)?;
     }
     if !&epilogue.riscv_attributes.is_empty() {
         write_riscv_attributes(epilogue, buffers)?;
@@ -2816,7 +2816,7 @@ fn write_epilogue<A: Arch>(
 }
 
 fn write_gnu_property_notes(
-    epilogue: &EpilogueLayout,
+    layout: &Layout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let e = LittleEndian;
@@ -2826,14 +2826,14 @@ fn write_gnu_property_notes(
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(
         e,
-        (epilogue.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
+        (layout.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
     let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    for note in &epilogue.gnu_property_notes {
+    for note in &layout.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
         property.pr_type = note.ptype;
