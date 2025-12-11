@@ -44,6 +44,7 @@ pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod riscv64;
 pub(crate) mod save_dir;
+pub(crate) mod sframe;
 pub(crate) mod sharding;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]

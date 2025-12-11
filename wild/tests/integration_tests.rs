@@ -79,6 +79,8 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
+//! RequiresGlibcVersion:{version} Specifies the minimum version of glibc required for this test.
+//!
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
@@ -469,6 +471,7 @@ struct Config {
     expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
+    requires_glibc_version: Option<String>,
     requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
@@ -535,6 +538,31 @@ struct DirectConfig {
     mode: Mode,
 }
 
+fn get_glibc_version() -> Option<Vec<u32>> {
+    static VERSION: std::sync::OnceLock<Option<Vec<u32>>> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let output = std::process::Command::new("getconf")
+                .arg("GNU_LIBC_VERSION")
+                .output()
+                .ok()?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let version_str = stdout.split_whitespace().last()?;
+                Some(
+                    version_str
+                        .split('.')
+                        .filter_map(|s| s.parse::<u32>().ok())
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+        .clone()
+}
+
 impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
@@ -543,6 +571,13 @@ impl Config {
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
+            || self.requires_glibc_version.as_ref().is_some_and(|version| {
+                let req_version: Vec<u32> = version
+                    .split('.')
+                    .filter_map(|s| s.parse::<u32>().ok())
+                    .collect();
+                get_glibc_version().is_some_and(|current_version| req_version > current_version)
+            })
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -724,6 +759,7 @@ impl Config {
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
+            requires_glibc_version: None,
             requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
             auto_add_objects: true,
@@ -933,6 +969,10 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
+                "RequiresGlibcVersion" => {
+                    config.requires_glibc = true;
+                    config.requires_glibc_version = Some(arg.trim().to_owned())
+                }
                 "RequiresCompilerFlags" => {
                     config
                         .requires_compiler_flags
@@ -1022,7 +1062,7 @@ impl ProgramInputs {
             .collect();
 
         if !config.remove_sections.is_empty() {
-            remove_sections(&link_output, &config.remove_sections)?;
+            remove_sections(&link_output, &config.remove_sections, cross_arch)?;
         }
 
         Ok(Program {
@@ -1135,8 +1175,17 @@ impl ProgramInputs {
 }
 
 /// Removes the specified sections from the output file.
-fn remove_sections(link_output: &LinkOutput, section_names: &[String]) -> Result {
-    let mut command = Command::new("objcopy");
+fn remove_sections(
+    link_output: &LinkOutput,
+    section_names: &[String],
+    cross_arch: Option<Architecture>,
+) -> Result {
+    let objcopy = match cross_arch {
+        Some(arch) => format!("{}-linux-gnu-objcopy", arch),
+        None => "objcopy".to_owned(),
+    };
+
+    let mut command = Command::new(objcopy);
     for section_name in section_names {
         command.arg("--remove-section").arg(section_name);
     }
