@@ -25,19 +25,19 @@ use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct MatchRules<'data> {
     pub(crate) general: BasicMatchRules<'data>,
     pub(crate) cxx: BasicMatchRules<'data>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct VersionBody<'data> {
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Version<'data> {
     pub(crate) name: &'data [u8],
     pub(crate) parent_index: Option<u16>,
@@ -45,7 +45,7 @@ pub(crate) struct Version<'data> {
 }
 
 /// A general version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RegularVersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
@@ -55,12 +55,12 @@ pub(crate) struct RegularVersionScript<'data> {
 /// It declares all symbols as local except for the explicitly listed global symbols.
 /// Only contains general (non-C++) exact symbol matchers.
 /// Doesn't use actual versioning.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RustVersionScript<'data> {
     pub(crate) global: Vec<&'data [u8]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 /// Possibly specialized version script.
 /// See `RegularVersionScript` for the general case.
 pub(crate) enum VersionScript<'data> {
@@ -88,7 +88,7 @@ pub(crate) enum SymbolMatcher<'data> {
     MatchesAll,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
