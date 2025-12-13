@@ -22,7 +22,9 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
+use crate::output_section_id::InitFiniOrder;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SecondaryOrder;
 use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
@@ -592,8 +594,105 @@ fn assign_section_ids<'data>(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
                 );
+                assign_init_fini_secondaries(
+                    s.file_id,
+                    s.object,
+                    non_dynamic.sections.as_mut_slice(),
+                    output_sections,
+                );
             }
         }
+    }
+}
+
+fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSection> {
+    match slot {
+        SectionSlot::Unloaded(sec) | SectionSlot::MustLoad(sec) => Some(sec),
+        _ => None,
+    }
+}
+
+fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
+    let idx = name.iter().rposition(|&b| b == b'.')?;
+    let suffix = name.get(idx + 1..)?;
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
+    Some(u16::try_from(value).unwrap_or(u16::MAX))
+}
+
+fn is_init_fini_name(name: &[u8]) -> bool {
+    // .init_array / .init_array.00005...
+    name == secnames::INIT_ARRAY_SECTION_NAME
+        || name.starts_with(b".init_array.")
+        // .fini_array / .fini_array.00005...
+        || name == secnames::FINI_ARRAY_SECTION_NAME
+        || name.starts_with(b".fini_array.")
+        // .ctors / .ctors.00005...
+        || name.starts_with(b".ctors")
+        // .dtors / .dtors.00005...
+        || name.starts_with(b".dtors")
+}
+
+fn classify_init_fini_priority(name: &[u8]) -> (u16, bool) {
+    let is_ctors_like = name.starts_with(b".ctors");
+
+    if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
+        return (u16::MAX, is_ctors_like);
+    }
+
+    if name.starts_with(b".init_array.") || name.starts_with(b".fini_array.") {
+        let prio = parse_priority_suffix(name).unwrap_or(u16::MAX);
+        return (prio, is_ctors_like);
+    }
+
+    if name.starts_with(b".ctors.") || name.starts_with(b".dtors.") {
+        let suffix = parse_priority_suffix(name).unwrap_or(u16::MAX);
+        let prio = u16::MAX.wrapping_sub(suffix);
+        return (prio, is_ctors_like);
+    }
+
+    if name == b".ctors" || name == b".dtors" {
+        return (u16::MAX, is_ctors_like);
+    }
+
+    (u16::MAX, is_ctors_like)
+}
+
+fn assign_init_fini_secondaries<'data>(
+    file_id: FileId,
+    object_file: &File<'data>,
+    sections: &mut [SectionSlot],
+    output_sections: &mut OutputSections<'data>,
+) {
+    for (index, slot) in sections.iter_mut().enumerate() {
+        let unloaded = match init_fini_unloaded_section(slot) {
+            Some(u) => u,
+            None => continue,
+        };
+
+        let header = match object_file.section(SectionIndex(index)) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let name = object_file.section_name(header).unwrap_or(b"");
+
+        if !is_init_fini_name(name) {
+            continue;
+        }
+
+        let (priority, is_ctors_like) = classify_init_fini_priority(name);
+        let secondary_id = unloaded.part_id.output_section_id();
+
+        output_sections.set_secondary_order(
+            secondary_id,
+            SecondaryOrder::InitFini(InitFiniOrder {
+                priority,
+                file_index: file_id.file() as u32,
+                is_ctors_like,
+            }),
+        );
     }
 }
 

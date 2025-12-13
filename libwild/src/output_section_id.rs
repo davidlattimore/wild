@@ -38,6 +38,7 @@ use crate::program_segments::ProgramSegments;
 use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
+use core::cmp::Ordering;
 use core::slice;
 use hashbrown::HashMap;
 use linker_utils::elf::SectionFlags;
@@ -382,6 +383,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) min_alignment: Alignment,
     pub(crate) entsize: u64,
     pub(crate) location: Option<linker_script::Location>,
+    pub(crate) secondary_order: Option<SecondaryOrder>,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -856,6 +858,33 @@ impl Debug for SectionName<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InitFiniOrder {
+    pub(crate) priority: u16,
+    pub(crate) file_index: u32,
+    pub(crate) is_ctors_like: bool,
+}
+
+impl Ord for InitFiniOrder {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.priority.cmp(&other.priority) {
+            Ordering::Equal => self.file_index.cmp(&other.file_index),
+            ord => ord,
+        }
+    }
+}
+
+impl PartialOrd for InitFiniOrder {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum SecondaryOrder {
+    InitFini(InitFiniOrder),
+}
+
 impl CustomSectionIds {
     fn build_output_order_and_program_segments(
         &self,
@@ -949,6 +978,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment,
                 entsize: 0,
                 location,
+                secondary_order: None,
             })
         })
     }
@@ -957,6 +987,7 @@ impl<'data> OutputSections<'data> {
         &mut self,
         primary_id: OutputSectionId,
         min_alignment: Alignment,
+        secondary_order: Option<SecondaryOrder>,
     ) -> OutputSectionId {
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
@@ -965,7 +996,12 @@ impl<'data> OutputSections<'data> {
             min_alignment,
             entsize: 0,
             location: None,
+            secondary_order,
         })
+    }
+
+    pub(crate) fn set_secondary_order(&mut self, id: OutputSectionId, order: SecondaryOrder) {
+        self.section_infos.get_mut(id).secondary_order = Some(order);
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
@@ -978,6 +1014,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment: d.min_alignment,
                 entsize: d.element_size,
                 location: None,
+                secondary_order: None,
             })
             .collect();
 
