@@ -334,6 +334,8 @@ const IGNORED_FLAGS: &[&str] = &[
     "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
+    "discard-all",
+    "x", // alias for --discard-all
 ];
 
 // These flags map to the default behavior of the linker.
@@ -2512,6 +2514,8 @@ mod tests {
         // Adding the same rpath multiple times should not create duplicates
         "-rpath",
         "foo/",
+        "-x",
+        "--discard-all",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];
