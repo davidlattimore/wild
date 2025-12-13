@@ -58,7 +58,6 @@ use crate::program_segments::ProgramSegments;
 use crate::resolution;
 use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
-use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ResolvedLinkerScript;
 use crate::resolution::ResolvedSyntheticSymbols;
@@ -146,14 +145,12 @@ use zerocopy::FromBytes;
 pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
     mut per_symbol_flags: PerSymbolFlags,
-    resolved: ResolutionOutputs<'data>,
+    mut groups: Vec<ResolvedGroup<'data>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
     input_data: &FileLoader<'data>,
 ) -> Result<Layout<'data>> {
     timing_phase!("Layout");
-
-    let ResolutionOutputs { mut groups } = resolved;
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 

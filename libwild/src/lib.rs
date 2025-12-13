@@ -225,12 +225,23 @@ impl Linker {
 
         symbol_db.apply_wrapped_symbol_overrides();
 
+        let mut resolver = resolution::Resolver::default();
+
+        resolver.resolve_symbols_and_select_archive_entries(&mut symbol_db)?;
+
         let layout_rules = layout_rules_builder.build();
 
-        let resolved = resolution::resolve_symbols_and_sections(
+        // Now that we know which archive entries are being loaded, we can resolve alternative
+        // symbol definitions.
+        crate::symbol_db::resolve_alternative_symbol_definitions(
             &mut symbol_db,
             &mut per_symbol_flags,
-            &self.herd,
+            &resolver.resolved_groups,
+        )?;
+
+        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
+            &mut symbol_db,
+            &mut per_symbol_flags,
             &mut output_sections,
             &layout_rules,
         )?;
