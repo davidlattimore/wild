@@ -80,7 +80,7 @@ jobs:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: davidlattimore/wild-action@latest
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -105,7 +105,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack,cargo-minimal-versions
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -131,7 +131,7 @@ jobs:
       with:
         components: clippy
     - uses: davidlattimore/wild-action@latest
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       with:
         path: |
           ~/.cargo/bin/
