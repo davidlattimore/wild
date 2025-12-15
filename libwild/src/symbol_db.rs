@@ -366,11 +366,11 @@ impl<'data> SymbolDb<'data> {
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
-        loaded: &LoadedInputs<'data>,
+        loaded: LoadedInputs<'data>,
     ) -> Result {
         timing_phase!("Load inputs into symbol DB");
 
-        let parsed_objects = parsing::parse_input_files(&loaded.inputs, self.args)?;
+        let parsed_objects = loaded.objects.into_iter().try_collect()?;
 
         let processed_linker_scripts = parsing::process_linker_scripts(
             &loaded.linker_scripts,

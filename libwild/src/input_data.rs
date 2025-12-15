@@ -14,6 +14,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::LinkerScript;
+use crate::parsing::ParsedInputObject;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
@@ -43,9 +44,10 @@ pub(crate) struct FileLoader<'data> {
 
 #[derive(Default)]
 pub(crate) struct LoadedInputs<'data> {
-    /// Files, or in the case of archives, parts of files that we should parse as input objects.
-    /// Doesn't include linker scripts.
-    pub(crate) inputs: Vec<InputBytes<'data>>,
+    /// The results of parsing all the input files and archive entries. We defer checking for
+    /// success until later, since otherwise a parse error would mean that the save-dir mechanism
+    /// wouldn't capture all the input files.
+    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data>>>>,
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
 }
@@ -140,9 +142,12 @@ struct LoadedFile<'data> {
 }
 
 enum LoadedFileState<'data> {
-    Loaded(&'data InputFile),
-    Archive(&'data InputFile, Vec<InputBytes<'data>>),
-    ThinArchive(Vec<&'data InputFile>),
+    Loaded(&'data InputFile, Result<Box<ParsedInputObject<'data>>>),
+    Archive(&'data InputFile, Vec<Result<Box<ParsedInputObject<'data>>>>),
+    ThinArchive(
+        Vec<&'data InputFile>,
+        Vec<Result<Box<ParsedInputObject<'data>>>>,
+    ),
     LinkerScript(LoadedLinkerScriptState<'data>),
     Error(Error),
 }
@@ -316,7 +321,7 @@ impl<'data> FileLoader<'data> {
         files: &mut [Option<LoadedFileState<'data>>],
     ) -> Result<LoadedInputs<'data>> {
         let mut loaded = LoadedInputs {
-            inputs: Vec::with_capacity(files.len()),
+            objects: Vec::with_capacity(files.len()),
             linker_scripts: Vec::new(),
         };
 
@@ -335,18 +340,16 @@ impl<'data> FileLoader<'data> {
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
             None => {}
-            Some(LoadedFileState::Loaded(input_file)) => {
-                loaded.inputs.push(InputBytes::from_file(input_file));
+            Some(LoadedFileState::Loaded(input_file, parse_result)) => {
+                loaded.objects.push(parse_result);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::Archive(input_file, mut parts)) => {
-                loaded.inputs.append(&mut parts);
+            Some(LoadedFileState::Archive(input_file, mut parsed_parts)) => {
+                loaded.objects.append(&mut parsed_parts);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::ThinArchive(mut input_files)) => {
-                loaded
-                    .inputs
-                    .extend(input_files.iter().map(|file| InputBytes::from_file(file)));
+            Some(LoadedFileState::ThinArchive(mut input_files, mut parsed_parts)) => {
+                loaded.objects.append(&mut parsed_parts);
                 self.loaded_files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
@@ -410,7 +413,10 @@ fn process_linker_script<'data>(
     })
 }
 
-fn process_archive(input_file: &InputFile) -> Result<LoadedFileState<'_>> {
+fn process_archive<'data>(
+    input_file: &'data InputFile,
+    args: &Args,
+) -> Result<LoadedFileState<'data>> {
     let mut extended_filenames = None;
     let mut outputs = Vec::new();
 
@@ -440,7 +446,8 @@ fn process_archive(input_file: &InputFile) -> Result<LoadedFileState<'_>> {
                         archive_and_member_name()
                     )
                 }
-                outputs.push(InputBytes {
+
+                let input_bytes = InputBytes {
                     kind,
                     input: InputRef {
                         file: input_file,
@@ -451,7 +458,11 @@ fn process_archive(input_file: &InputFile) -> Result<LoadedFileState<'_>> {
                     },
                     data: archive_entry.entry_data,
                     modifiers: input_file.modifiers,
-                });
+                };
+
+                let parsed = ParsedInputObject::new(&input_bytes, args);
+
+                outputs.push(parsed);
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
@@ -469,6 +480,7 @@ fn process_thin_archive<'data>(
     let parent_path = absolute_path.parent().unwrap();
     let mut extended_filenames = None;
     let mut files = Vec::new();
+    let mut parsed_files = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         match entry? {
@@ -496,13 +508,19 @@ fn process_thin_archive<'data>(
                     data: Some(file_data),
                 };
 
-                files.push(&*inputs_arena.alloc(input_file));
+                let input_file = &*inputs_arena.alloc(input_file);
+
+                parsed_files.push(ParsedInputObject::new(
+                    &InputBytes::from_file(input_file),
+                    args,
+                ));
+                files.push(input_file);
             }
             _ => {}
         }
     }
 
-    Ok(LoadedFileState::ThinArchive(files))
+    Ok(LoadedFileState::ThinArchive(files, parsed_files))
 }
 
 impl<'data> TemporaryState<'data> {
@@ -550,7 +568,7 @@ impl<'data> TemporaryState<'data> {
         let input_file = self.inputs_arena.alloc(input_file);
 
         match kind {
-            FileKind::Archive => process_archive(input_file),
+            FileKind::Archive => process_archive(input_file, self.args),
             FileKind::ThinArchive => process_thin_archive(input_file, self.args, self.inputs_arena),
             FileKind::Text => {
                 let script = process_linker_script(input_file, self.args)?;
@@ -572,7 +590,11 @@ impl<'data> TemporaryState<'data> {
                     script: script.script,
                 }))
             }
-            _ => Ok(LoadedFileState::Loaded(input_file)),
+            _ => {
+                let input_bytes = InputBytes::from_file(input_file);
+                let parsed = ParsedInputObject::new(&input_bytes, self.args);
+                Ok(LoadedFileState::Loaded(input_file, parsed))
+            }
         }
     }
 

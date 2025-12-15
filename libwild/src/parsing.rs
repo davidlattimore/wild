@@ -23,20 +23,6 @@ use crate::timing_phase;
 use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
-
-pub(crate) fn parse_input_files<'data>(
-    inputs: &[InputBytes<'data>],
-    args: &'data Args,
-) -> Result<Vec<ParsedInputObject<'data>>> {
-    timing_phase!("Parse input files");
-
-    inputs
-        .par_iter()
-        .map(|f| ParsedInputObject::new(f, args))
-        .collect::<Result<Vec<ParsedInputObject>>>()
-}
 
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
@@ -118,7 +104,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data> ParsedInputObject<'data> {
-    fn new(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
@@ -134,12 +120,12 @@ impl<'data> ParsedInputObject<'data> {
             )
         }
 
-        Ok(Self {
+        Ok(Box::new(Self {
             input: input.input.clone(),
             object,
             is_dynamic,
             modifiers: input.modifiers,
-        })
+        }))
     }
 
     pub(crate) fn num_symbols(&self) -> usize {

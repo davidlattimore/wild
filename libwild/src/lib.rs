@@ -220,7 +220,7 @@ impl Linker {
             &mut per_symbol_flags,
             &mut output_sections,
             &mut layout_rules_builder,
-            &loaded,
+            loaded,
         )?;
 
         symbol_db.apply_wrapped_symbol_overrides();
