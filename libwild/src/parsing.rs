@@ -121,7 +121,7 @@ impl<'data> ParsedInputObject<'data> {
         }
 
         Ok(Box::new(Self {
-            input: input.input.clone(),
+            input: input.input,
             object,
             is_dynamic,
             modifiers: input.modifiers,

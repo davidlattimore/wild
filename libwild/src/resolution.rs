@@ -276,7 +276,7 @@ fn resolve_group<'data, 'definitions>(
                     definitions_out_per_file.push(AtomicTake::empty());
 
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
-                        input: s.parsed.input.clone(),
+                        input: s.parsed.input,
                         file_id: s.file_id,
                         symbol_id_range: s.symbol_id_range,
                         // TODO: Consider alternative to cloning this.
@@ -864,7 +864,7 @@ impl<'data> ResolvedObject<'data> {
         }
 
         Self {
-            input: obj.parsed.input.clone(),
+            input: obj.parsed.input,
             object: &obj.parsed.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,

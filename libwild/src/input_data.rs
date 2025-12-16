@@ -95,7 +95,7 @@ pub(crate) struct FileData {
 
 /// Identifies an input object that may not be a regular file on disk, or may be an entry in an
 /// archive.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct InputRef<'data> {
     pub(crate) file: &'data InputFile,
     pub(crate) entry: Option<archive::EntryMeta<'data>>,
@@ -453,7 +453,8 @@ fn process_archive<'data>(
                         file: input_file,
                         entry: Some(EntryMeta {
                             identifier: archive_entry.identifier(extended_filenames),
-                            from: archive_entry.data_range(),
+                            start_offset: archive_entry.data_offset,
+                            end_offset: archive_entry.data_offset + archive_entry.entry_data.len(),
                         }),
                     },
                     data: archive_entry.entry_data,
