@@ -19,11 +19,7 @@ impl OutputKind {
             // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
             // set.
             OutputKind::DynamicExecutable(args.relocation_model)
-        } else if input_data
-            .loaded_files
-            .iter()
-            .any(|file| file.kind == crate::file_kind::FileKind::ElfDynamic)
-        {
+        } else if input_data.has_dynamic {
             // When attempting to create static executable, but DSO is added as an input we need to
             // proceed with dynamic executable.
             // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded,

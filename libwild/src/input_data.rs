@@ -39,6 +39,9 @@ pub(crate) struct FileLoader<'data> {
     /// The files that we've loaded so far.
     pub(crate) loaded_files: Vec<&'data InputFile>,
 
+    /// Whether we have at least one input file that is a dynamic object.
+    pub(crate) has_dynamic: bool,
+
     inputs_arena: &'data Arena<InputFile>,
 }
 
@@ -78,7 +81,6 @@ pub(crate) struct InputFile {
     /// The filename prior to path search. If this is absolute, then `filename` will be the same.
     original_filename: PathBuf,
 
-    pub(crate) kind: FileKind,
     pub(crate) modifiers: Modifiers,
 
     data: Option<FileData>,
@@ -212,6 +214,7 @@ impl<'data> FileLoader<'data> {
         Self {
             loaded_files: Vec::new(),
             inputs_arena,
+            has_dynamic: false,
         }
     }
 
@@ -341,6 +344,9 @@ impl<'data> FileLoader<'data> {
         match core::mem::take(&mut files[index.0]) {
             None => {}
             Some(LoadedFileState::Loaded(input_file, parse_result)) => {
+                if parse_result.as_ref().is_ok_and(|obj| obj.is_dynamic) {
+                    self.has_dynamic = true;
+                }
                 loaded.objects.push(parse_result);
                 self.loaded_files.push(input_file);
             }
@@ -500,7 +506,6 @@ fn process_thin_archive<'data>(
                 let input_file = InputFile {
                     filename: entry_path.clone(),
                     original_filename: entry_path,
-                    kind: FileKind::ElfObject,
                     modifiers: Modifiers {
                         archive_semantics: true,
                         ..input_file.modifiers
@@ -511,7 +516,7 @@ fn process_thin_archive<'data>(
                 let input_file = &*inputs_arena.alloc(input_file);
 
                 parsed_files.push(ParsedInputObject::new(
-                    &InputBytes::from_file(input_file),
+                    &InputBytes::from_file(input_file, FileKind::ElfObject),
                     args,
                 ));
                 files.push(input_file);
@@ -560,7 +565,6 @@ impl<'data> TemporaryState<'data> {
         let input_file = InputFile {
             filename: absolute_path.to_owned(),
             original_filename: request.paths.original,
-            kind,
             modifiers: request.modifiers,
             data: Some(data),
         };
@@ -591,7 +595,7 @@ impl<'data> TemporaryState<'data> {
                 }))
             }
             _ => {
-                let input_bytes = InputBytes::from_file(input_file);
+                let input_bytes = InputBytes::from_file(input_file, kind);
                 let parsed = ParsedInputObject::new(&input_bytes, self.args);
                 Ok(LoadedFileState::Loaded(input_file, parsed))
             }
@@ -647,7 +651,6 @@ fn read_script_data<'data>(
     let file = inputs_arena.alloc(InputFile {
         filename: path.to_owned(),
         original_filename: path.to_owned(),
-        kind: FileKind::Text,
         modifiers: Default::default(),
         data: Some(data),
     });
@@ -854,10 +857,13 @@ impl Display for InputBytes<'_> {
 }
 
 impl<'data> InputBytes<'data> {
-    pub(crate) fn from_file(file: &'data crate::input_data::InputFile) -> InputBytes<'data> {
+    pub(crate) fn from_file(
+        file: &'data crate::input_data::InputFile,
+        kind: FileKind,
+    ) -> InputBytes<'data> {
         InputBytes {
             input: InputRef { file, entry: None },
-            kind: file.kind,
+            kind,
             data: file.data(),
             modifiers: file.modifiers,
         }
