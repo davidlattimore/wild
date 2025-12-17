@@ -569,7 +569,7 @@ fn get_glibc_version() -> Option<Vec<u32>> {
 /// 1. Check environment variable overrides (WILD_SKIP_SFRAME_BACKTRACE /
 ///    WILD_FORCE_SFRAME_BACKTRACE)
 /// 2. Check glibc version (must be 2.42+)
-/// 3. Check if libc.so has .sframe section (indicates glibc was built with --enable-sframe)
+/// 3. Compile and run a test program that uses SFrame-only backtrace to verify it works at runtime
 fn is_sframe_backtrace_supported(arch: Architecture) -> bool {
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -603,45 +603,130 @@ fn check_sframe_support_for_arch(arch: Architecture) -> bool {
         return false;
     }
 
-    check_libc_has_sframe_section(arch)
+    run_sframe_backtrace_test(arch)
 }
 
-/// Checks if the libc.so.6 for the given architecture contains a .sframe section.
-fn check_libc_has_sframe_section(arch: Architecture) -> bool {
-    let libc_paths: &[&str] = match arch {
-        Architecture::X86_64 => &[
-            "/lib64/libc.so.6",
-            "/lib/x86_64-linux-gnu/libc.so.6",
-            "/usr/lib/libc.so.6",
-        ],
-        Architecture::AArch64 => &[
-            "/lib/aarch64-linux-gnu/libc.so.6",
-            "/usr/aarch64-linux-gnu/lib/libc.so.6",
-        ],
-        Architecture::RISCV64 => &[
-            "/lib/riscv64-linux-gnu/libc.so.6",
-            "/usr/riscv64-linux-gnu/lib/libc.so.6",
-        ],
+/// Compiles and runs a minimal test program to verify SFrame-based backtrace actually works.
+/// This catches cases where glibc has .sframe sections but backtrace() doesn't use them
+/// correctly (e.g., some Ubuntu 25.10 configurations).
+///
+/// TODO: This should be unnecessary once more various distributions have updated glibc.
+fn run_sframe_backtrace_test(arch: Architecture) -> bool {
+    let temp_dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(_) => return false,
     };
 
-    for path in libc_paths {
-        if std::path::Path::new(path).exists() {
-            let output = std::process::Command::new("readelf")
-                .args(["-S", path])
-                .output();
+    let source_path = temp_dir.path().join("sframe_test.c");
+    let obj_path = temp_dir.path().join("sframe_test.o");
+    let binary_path = temp_dir.path().join("sframe_test");
+    let test_code = r#"
+#define _GNU_SOURCE
+#include <execinfo.h>
+#include <stdlib.h>
 
-            if let Ok(output) = output {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    return stdout.contains(".sframe");
-                }
-            }
+__attribute__((noinline)) int check_bt(void) {
+    void *buffer[10];
+    int nptrs = backtrace(buffer, 10);
+    if (nptrs < 3){ return 1; }
+    for (int i = 0; i < 3; ++i) {
+        if (buffer[i] == 0 || (unsigned long)buffer[i] < 0x1000){ return 2; }
+    }
+    return 42;
+}
 
-            return false;
-        }
+__attribute__((noinline)) int inner(void) {
+    return check_bt();
+}
+
+int main(void) {
+    return inner();
+}
+"#;
+
+    if std::fs::write(&source_path, test_code).is_err() {
+        return false;
     }
 
-    false
+    let host_arch = get_host_architecture();
+    let is_cross = arch != host_arch;
+
+    let (compiler, sysroot) = if is_cross {
+        let cross_compiler = format!("{}-linux-gnu-gcc", arch);
+        let sysroot = arch.get_cross_sysroot_path();
+        (cross_compiler, Some(sysroot))
+    } else {
+        ("gcc".to_string(), None)
+    };
+
+    let mut compile_cmd = std::process::Command::new(&compiler);
+    compile_cmd
+        .arg("-c")
+        .arg("-O0")
+        .arg("-fomit-frame-pointer")
+        .arg("-Wa,--gsframe")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&obj_path);
+
+    if let Some(ref sysroot) = sysroot {
+        compile_cmd.arg(format!("--sysroot={}", sysroot));
+    }
+
+    if !compile_cmd
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let mut link_cmd = std::process::Command::new(&compiler);
+    link_cmd.arg(&obj_path).arg("-o").arg(&binary_path);
+
+    if let Some(ref sysroot) = sysroot {
+        link_cmd.arg(format!("--sysroot={}", sysroot));
+    }
+
+    if !link_cmd
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Remove .eh_frame and .eh_frame_hdr sections to force SFrame-only unwinding
+    let objcopy = if is_cross {
+        format!("{}-linux-gnu-objcopy", arch)
+    } else {
+        "objcopy".to_string()
+    };
+
+    let objcopy_result = std::process::Command::new(&objcopy)
+        .arg("--remove-section=.eh_frame")
+        .arg("--remove-section=.eh_frame_hdr")
+        .arg(&binary_path)
+        .output();
+
+    if !objcopy_result.map(|o| o.status.success()).unwrap_or(false) {
+        return false;
+    }
+
+    let run_result = if is_cross {
+        std::process::Command::new(format!("qemu-{arch}"))
+            .arg("-L")
+            .arg(arch.get_cross_sysroot_path())
+            .arg(&binary_path)
+            .output()
+    } else {
+        std::process::Command::new(&binary_path).output()
+    };
+
+    match run_result {
+        Ok(output) => output.status.code() == Some(42),
+        Err(_) => false,
+    }
 }
 
 impl Config {
