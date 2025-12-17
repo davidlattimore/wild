@@ -472,6 +472,7 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
+    requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
@@ -563,6 +564,86 @@ fn get_glibc_version() -> Option<Vec<u32>> {
         .clone()
 }
 
+/// Checks if the system's glibc supports SFrame-based stack unwinding for a given architecture.
+///
+/// 1. Check environment variable overrides (WILD_SKIP_SFRAME_BACKTRACE /
+///    WILD_FORCE_SFRAME_BACKTRACE)
+/// 2. Check glibc version (must be 2.42+)
+/// 3. Check if libc.so has .sframe section (indicates glibc was built with --enable-sframe)
+fn is_sframe_backtrace_supported(arch: Architecture) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static SUPPORTED: std::sync::OnceLock<Mutex<HashMap<Architecture, bool>>> =
+        std::sync::OnceLock::new();
+
+    let cache = SUPPORTED.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache_guard = cache.lock().unwrap();
+
+    if let Some(&result) = cache_guard.get(&arch) {
+        return result;
+    }
+
+    let result = check_sframe_support_for_arch(arch);
+    cache_guard.insert(arch, result);
+    result
+}
+
+fn check_sframe_support_for_arch(arch: Architecture) -> bool {
+    if std::env::var("WILD_SKIP_SFRAME_BACKTRACE").is_ok() {
+        return false;
+    }
+    if std::env::var("WILD_FORCE_SFRAME_BACKTRACE").is_ok() {
+        return true;
+    }
+
+    // Check glibc version (must be 2.42+)
+    let version = get_glibc_version();
+    if !version.as_ref().is_some_and(|v| v >= &vec![2, 42]) {
+        return false;
+    }
+
+    check_libc_has_sframe_section(arch)
+}
+
+/// Checks if the libc.so.6 for the given architecture contains a .sframe section.
+fn check_libc_has_sframe_section(arch: Architecture) -> bool {
+    let libc_paths: &[&str] = match arch {
+        Architecture::X86_64 => &[
+            "/lib64/libc.so.6",
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/usr/lib/libc.so.6",
+        ],
+        Architecture::AArch64 => &[
+            "/lib/aarch64-linux-gnu/libc.so.6",
+            "/usr/aarch64-linux-gnu/lib/libc.so.6",
+        ],
+        Architecture::RISCV64 => &[
+            "/lib/riscv64-linux-gnu/libc.so.6",
+            "/usr/riscv64-linux-gnu/lib/libc.so.6",
+        ],
+    };
+
+    for path in libc_paths {
+        if std::path::Path::new(path).exists() {
+            let output = std::process::Command::new("readelf")
+                .args(["-S", path])
+                .output();
+
+            if let Ok(output) = output {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    return stdout.contains(".sframe");
+                }
+            }
+
+            return false;
+        }
+    }
+
+    false
+}
+
 impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
@@ -578,6 +659,7 @@ impl Config {
                     .collect();
                 get_glibc_version().is_some_and(|current_version| req_version > current_version)
             })
+            || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -760,6 +842,7 @@ impl Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_glibc_version: None,
+            requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
             auto_add_objects: true,
@@ -972,6 +1055,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "RequiresGlibcVersion" => {
                     config.requires_glibc = true;
                     config.requires_glibc_version = Some(arg.trim().to_owned())
+                }
+                "RequiresSFrameBacktrace" => {
+                    config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
                 }
                 "RequiresCompilerFlags" => {
                     config

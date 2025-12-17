@@ -17,6 +17,7 @@
 //#RemoveSection:.eh_frame
 //#RemoveSection:.eh_frame_hdr
 //#RequiresGlibcVersion:2.42
+//#RequiresSFrameBacktrace:true
 //#SkipLinker:ld
 
 #define _GNU_SOURCE
