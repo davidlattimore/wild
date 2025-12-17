@@ -1962,7 +1962,7 @@ impl<'data> Layout<'data> {
                         path: obj.input.file.filename.clone(),
                         archive_entry: obj.input.entry.as_ref().map(|e| {
                             linker_layout::ArchiveEntryInfo {
-                                range: e.from.clone(),
+                                range: e.byte_range(),
                                 identifier: e.identifier.as_slice().to_owned(),
                             }
                         }),
