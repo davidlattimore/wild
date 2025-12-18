@@ -258,26 +258,11 @@ fn write_sframe_section(sframe_buffer: &mut [u8], layout: &Layout) -> Result {
     timing_phase!("Write .sframe");
 
     let sframe_start_address = layout.mem_address_of_built_in(output_section_id::SFRAME);
-    let mut sframe_ranges = Vec::new();
-
-    for group in &layout.group_layouts {
-        for file in &group.files {
-            if let FileLayout::Object(object) = file {
-                for (section_slot, resolution) in
-                    object.sections.iter().zip(&object.section_resolutions)
-                {
-                    if let SectionSlot::Loaded(section) = section_slot
-                        && section.part_id.output_section_id() == output_section_id::SFRAME
-                    {
-                        let offset =
-                            (resolution.address().unwrap() - sframe_start_address) as usize;
-                        let len = section.size as usize;
-                        sframe_ranges.push(offset..offset + len);
-                    }
-                }
-            }
-        }
-    }
+    let sframe_ranges: Vec<_> = layout
+        .group_layouts
+        .iter()
+        .flat_map(|group| group.sframe_ranges.iter().cloned())
+        .collect();
 
     sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)
 }
