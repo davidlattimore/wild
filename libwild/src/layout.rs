@@ -942,6 +942,8 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) relocations: RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
+    /// SFrame section ranges for this object, relative to the start of the .sframe output section.
+    pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Debug)]
@@ -1653,10 +1655,6 @@ pub(crate) struct GroupLayout<'data> {
 
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
-
-    /// Ranges of SFrame sections within the merged .sframe output section.
-    /// Each range is relative to the start of the .sframe section.
-    pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Debug)]
@@ -2626,29 +2624,6 @@ impl<'data> GroupState<'data> {
 
         set_last_verneed(&self.common, resources, memory_offsets, &mut files);
 
-        // Collect SFrame section ranges for this group
-        let sframe_start_address = resources
-            .section_layouts
-            .get(output_section_id::SFRAME)
-            .mem_offset;
-        let mut sframe_ranges = Vec::new();
-        for file in &files {
-            if let FileLayout::Object(object) = file {
-                for (section_slot, resolution) in
-                    object.sections.iter().zip(&object.section_resolutions)
-                {
-                    if let SectionSlot::Loaded(section) = section_slot
-                        && section.part_id.output_section_id() == output_section_id::SFRAME
-                        && let Some(address) = resolution.address()
-                    {
-                        let offset = (address - sframe_start_address) as usize;
-                        let len = section.size as usize;
-                        sframe_ranges.push(offset..offset + len);
-                    }
-                }
-            }
-        }
-
         Ok(GroupLayout {
             files,
             strtab_start_offset,
@@ -2656,7 +2631,6 @@ impl<'data> GroupState<'data> {
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
             eh_frame_start_address,
-            sframe_ranges,
         })
     }
 }
@@ -4830,6 +4804,12 @@ impl<'data> ObjectLayoutState<'data> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
+        let sframe_start_address = resources
+            .section_layouts
+            .get(output_section_id::SFRAME)
+            .mem_offset;
+        let mut sframe_ranges = Vec::new();
+
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
         for slot in &mut self.sections {
             let resolution = match slot {
@@ -4839,6 +4819,12 @@ impl<'data> ObjectLayoutState<'data> {
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
                     *memory_offsets.get_mut(part_id) += sec.capacity();
+                    // Collect SFrame section ranges while we're already iterating
+                    if part_id.output_section_id() == output_section_id::SFRAME {
+                        let offset = (address - sframe_start_address) as usize;
+                        let len = sec.size as usize;
+                        sframe_ranges.push(offset..offset + len);
+                    }
                     SectionResolution { address }
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
@@ -4885,6 +4871,7 @@ impl<'data> ObjectLayoutState<'data> {
             relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
+            sframe_ranges,
         })
     }
 

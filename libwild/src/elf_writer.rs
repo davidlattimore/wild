@@ -261,7 +261,15 @@ fn write_sframe_section(sframe_buffer: &mut [u8], layout: &Layout) -> Result {
     let sframe_ranges: Vec<_> = layout
         .group_layouts
         .iter()
-        .flat_map(|group| group.sframe_ranges.iter().cloned())
+        .flat_map(|group| group.files.iter())
+        .filter_map(|file| {
+            if let FileLayout::Object(object) = file {
+                Some(object.sframe_ranges.iter().cloned())
+            } else {
+                None
+            }
+        })
+        .flatten()
         .collect();
 
     sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)
