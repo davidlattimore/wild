@@ -39,7 +39,6 @@ tests = [
   "package-metadata.sh",
   "physical-image-base.sh",
   "print-dependencies.sh",
-  "range-extension-thunk.sh",          # `--section-start`
   "relocatable-archive.sh",
   "relocatable-c++.sh",
   "relocatable-debug-info.sh",
@@ -57,7 +56,6 @@ tests = [
   "run.sh",
   "section-align.sh",                  # `--section-align`
   "section-order.sh",
-  "section-start.sh",
   "separate-debug-file-sort.sh",
   "separate-debug-file.sh",
   "shuffle-sections-seed.sh",
@@ -70,7 +68,6 @@ tests = [
   "static-archive.sh",                 # `--trace`
   "synthetic-symbols.sh",              # `--image-base`
   "thin-archive.sh",                   # `--trace`
-  "tls-irregular-start-addr.sh",       # `--section-start`
   "trace-symbol-symver.sh",
   "trace-symbol.sh",
   "trace.sh",
