@@ -4424,39 +4424,41 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
     // significant work here. Do work when activate is called instead. Doing it there also means
     // that we don't do the work unless the object is actually needed.
 
-    if let Some(non_dynamic) = input_state.non_dynamic {
-        FileLayoutState::Object(ObjectLayoutState {
-            file_id: input_state.file_id,
-            symbol_id_range: input_state.symbol_id_range,
-            input: input_state.input,
-            object: input_state.object,
-            eh_frame_section: None,
-            eh_frame_size: 0,
-            sections: non_dynamic.sections,
-            relocations: non_dynamic.relocations,
-            cies: Default::default(),
-            gnu_property_notes: Default::default(),
-            riscv_attributes: Default::default(),
-            exception_frames: Default::default(),
-        })
-    } else {
-        FileLayoutState::Dynamic(DynamicLayoutState {
-            file_id: input_state.file_id,
-            symbol_id_range: input_state.symbol_id_range,
-            lib_name: input_state.input.lib_name(),
-            symbol_versions: input_state.object.versym,
-            object: input_state.object,
-            input: input_state.input,
-            copy_relocations: Default::default(),
+    FileLayoutState::Object(ObjectLayoutState {
+        file_id: input_state.common.file_id,
+        symbol_id_range: input_state.common.symbol_id_range,
+        input: input_state.common.input,
+        object: input_state.common.object,
+        eh_frame_section: None,
+        eh_frame_size: 0,
+        sections: input_state.sections,
+        relocations: input_state.relocations,
+        cies: Default::default(),
+        gnu_property_notes: Default::default(),
+        riscv_attributes: Default::default(),
+        exception_frames: Default::default(),
+    })
+}
 
-            // These fields are filled in properly when we activate.
-            symbol_versions_needed: Default::default(),
+fn new_dynamic_object_layout_state<'data>(
+    input_state: &resolution::ResolvedDynamic<'data>,
+) -> FileLayoutState<'data> {
+    FileLayoutState::Dynamic(DynamicLayoutState {
+        file_id: input_state.common.file_id,
+        symbol_id_range: input_state.common.symbol_id_range,
+        lib_name: input_state.common.input.lib_name(),
+        symbol_versions: input_state.common.object.versym,
+        object: input_state.common.object,
+        input: input_state.common.input,
+        copy_relocations: Default::default(),
 
-            // These fields are filled in when we finalise sizes.
-            verneed_info: None,
-            non_addressable_indexes: Default::default(),
-        })
-    }
+        // These fields are filled in properly when we activate.
+        symbol_versions_needed: Default::default(),
+
+        // These fields are filled in when we finalise sizes.
+        verneed_info: None,
+        non_addressable_indexes: Default::default(),
+    })
 }
 
 impl<'data> ObjectLayoutState<'data> {
@@ -5673,6 +5675,7 @@ impl<'data> resolution::ResolvedFile<'data> {
     fn create_layout_state(self) -> FileLayoutState<'data> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
+            resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s))
             }

@@ -308,12 +308,8 @@ fn group_merge_string_sections_by_output<'data>(
             let ResolvedFile::Object(obj) = file else {
                 continue;
             };
-            let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
-                continue;
-            };
-            for extra in &non_dynamic.string_merge_extras {
-                let SectionSlot::MergeStrings(sec) = &mut non_dynamic.sections[extra.index.0]
-                else {
+            for extra in &obj.string_merge_extras {
+                let SectionSlot::MergeStrings(sec) = &mut obj.sections[extra.index.0] else {
                     bail!("Internal error: expected SectionSlot::MergeStrings");
                 };
 

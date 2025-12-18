@@ -771,9 +771,9 @@ impl<'data> SymbolDb<'data> {
         resolved: &[ResolvedGroup],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
-            let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+        if let Some(common) = resolved[file_id.group()].files[file_id.file()].common() {
+            let local_index = symbol_id.to_input(common.symbol_id_range);
+            let Ok(obj_symbol) = common.object.symbol(local_index) else {
                 // Errors from this function should have been reported elsewhere.
                 return SymbolStrength::Undefined;
             };
@@ -799,13 +799,13 @@ impl<'data> SymbolDb<'data> {
             return false;
         };
 
-        let local_index = symbol_id.to_input(obj.symbol_id_range);
-        let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+        let local_index = symbol_id.to_input(obj.common.symbol_id_range);
+        let Ok(obj_symbol) = obj.common.object.symbol(local_index) else {
             return false;
         };
 
         let section_index = object::SectionIndex(usize::from(obj_symbol.st_shndx(LittleEndian)));
-        let Ok(header) = obj.object.section(section_index) else {
+        let Ok(header) = obj.common.object.section(section_index) else {
             return false;
         };
 
