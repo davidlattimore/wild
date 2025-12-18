@@ -99,6 +99,9 @@ pub struct Args {
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
 
+    /// Section start addresses from `--section-start` options. Maps section name to address.
+    pub(crate) section_start: HashMap<String, u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -420,6 +423,7 @@ impl Default for Args {
             export_list: Vec::new(),
             export_list_path: None,
             defsym: Vec::new(),
+            section_start: HashMap::new(),
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -2077,6 +2081,28 @@ fn setup_argument_parser() -> ArgumentParser {
             };
 
             args.defsym.push((symbol_name, defsym_value));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("section-start")
+        .help("Set start address for a section: --section-start=.section=address")
+        .execute(|args, _modifier_stack, value| {
+            let parts: Vec<&str> = value.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                bail!("Invalid --section-start format. Expected: --section-start=.section=address");
+            }
+
+            let section_name = parts[0].to_owned();
+            let address = parse_number(parts[1]).with_context(|| {
+                format!(
+                    "Invalid address `{}` in --section-start={}",
+                    parts[1], value
+                )
+            })?;
+            args.section_start.insert(section_name, address);
+
             Ok(())
         });
 
