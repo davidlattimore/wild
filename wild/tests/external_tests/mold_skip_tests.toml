@@ -23,8 +23,8 @@ tests = [
   "filler.sh",
   "filter.sh",
   "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
-  "icf.sh",                            # `--icf`
   "icf-gcc-except-table.sh",           # `--icf`
+  "icf.sh",                            # `--icf`
   "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
@@ -49,8 +49,8 @@ tests = [
   "relocatable-mergeable-sections.sh",
   "relocatable.sh",
   "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
-  "response-file-quoting.sh",
   "require-defined.sh",
+  "response-file-quoting.sh",
   "retain-symbols-file.sh",
   "reverse-sections.sh",
   "rosegment.sh",
@@ -123,7 +123,7 @@ tests = [
 reason = "x86_64 specific tests"
 tests = [
   "arch-x86_64-address-equality.sh",
-  "arch-x86_64-empty-arg.sh",                   # Different message formats
+  "arch-x86_64-empty-arg.sh",                  # Different message formats
   "arch-x86_64-empty-mergeable-section.sh",
   "arch-x86_64-execstack-if-needed.sh",
   "arch-x86_64-gnu-linkonce.sh",
@@ -247,6 +247,7 @@ tests = [
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
+  "relro-alignment.sh",
   "rodata-name.sh",
   "section-attributes.sh",
   "strip.sh",
@@ -259,7 +260,7 @@ tests = [
   "symtab-section-symbols.sh",
   "symtab.sh",
   "textrel2.sh",
-  "unkown-section-type.sh",
+  "unknown-section-type.sh",
   "versioned-undef.sh",
   "warn-symbol-type.sh",
   "weak-export-exe.sh",
