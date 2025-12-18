@@ -81,6 +81,9 @@
 //!
 //! RequiresGlibcVersion:{version} Specifies the minimum version of glibc required for this test.
 //!
+//! RequiresSFrameBacktrace:{bool} Defaults to false. Set to true to disable this test if we're
+//! running on a system without sframe backtrace support.
+//!
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
