@@ -189,7 +189,14 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
             matches!(section_info.kind, SectionKind::Primary(_)),
             "Attempted to directly emit secondary section {section_id}"
         );
-        if let Some(location) = section_info.location {
+
+        // Only emit SetLocation if the section has ALLOC flag, meaning it can be placed
+        // in a segment. Sections without ALLOC (like custom sections before their flags
+        // are propagated) will have their location handled directly in layout_section_parts
+        // via section_info.location.
+        if let Some(location) = section_info.location
+            && section_info.section_flags.contains(shf::ALLOC)
+        {
             self.events.push(OrderEvent::SetLocation(location));
         }
 
