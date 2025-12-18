@@ -1,6 +1,7 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::timing_phase;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
@@ -129,6 +130,7 @@ pub(crate) fn sort_sframe_section(
     if section.is_empty() {
         return Ok(());
     }
+    timing_phase!("Sort .sframe");
 
     let mut entries = Vec::new();
     let section_base = i128::from(section_base_address);
