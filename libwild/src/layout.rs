@@ -1018,6 +1018,8 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) relocations: RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
+    /// SFrame section ranges for this object, relative to the start of the .sframe output section.
+    pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
 }
 
 #[derive(Debug)]
@@ -4640,10 +4642,16 @@ impl<'data> ObjectLayoutState<'data> {
 
         common.section_loaded(part_id, header, section);
 
-        resources
-            .sections_with_content
-            .get(part_id.output_section_id())
-            .fetch_or(true, atomic::Ordering::Relaxed);
+        let section_id = section.output_section_id();
+        let should_mark_content =
+            section.size > 0 || section_id.marks_zero_sized_inputs_as_content();
+
+        if should_mark_content {
+            resources
+                .sections_with_content
+                .get(section_id)
+                .fetch_or(true, atomic::Ordering::Relaxed);
+        }
 
         if section.size > 0 {
             self.process_section_exception_frames::<A>(
@@ -4915,6 +4923,12 @@ impl<'data> ObjectLayoutState<'data> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
+        let sframe_start_address = resources
+            .section_layouts
+            .get(output_section_id::SFRAME)
+            .mem_offset;
+        let mut sframe_ranges = Vec::new();
+
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
         for slot in &mut self.sections {
             let resolution = match slot {
@@ -4924,6 +4938,12 @@ impl<'data> ObjectLayoutState<'data> {
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
                     *memory_offsets.get_mut(part_id) += sec.capacity();
+                    // Collect SFrame section ranges while we're already iterating
+                    if part_id.output_section_id() == output_section_id::SFRAME {
+                        let offset = (address - sframe_start_address) as usize;
+                        let len = sec.size as usize;
+                        sframe_ranges.push(offset..offset + len);
+                    }
                     SectionResolution { address }
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
@@ -4970,6 +4990,7 @@ impl<'data> ObjectLayoutState<'data> {
             relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
+            sframe_ranges,
         })
     }
 

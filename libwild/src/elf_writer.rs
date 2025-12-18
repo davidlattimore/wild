@@ -69,6 +69,7 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
+use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
@@ -134,10 +135,13 @@ pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) ->
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+
     if layout.args().should_write_eh_frame_hdr {
-        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
     }
+
+    write_sframe_section(section_buffers.get_mut(output_section_id::SFRAME), layout)?;
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
     Ok(())
@@ -245,6 +249,31 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     section_buffers.for_each_mut(|_, out| {
         out.fill(0);
     });
+}
+
+fn write_sframe_section(sframe_buffer: &mut [u8], layout: &Layout) -> Result {
+    if sframe_buffer.is_empty() {
+        return Ok(());
+    }
+
+    timing_phase!("Write .sframe");
+
+    let sframe_start_address = layout.mem_address_of_built_in(output_section_id::SFRAME);
+    let sframe_ranges: Vec<_> = layout
+        .group_layouts
+        .iter()
+        .flat_map(|group| group.files.iter())
+        .filter_map(|file| {
+            if let FileLayout::Object(object) = file {
+                Some(object.sframe_ranges.iter().cloned())
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+
+    sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)
 }
 
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {

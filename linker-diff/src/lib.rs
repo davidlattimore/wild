@@ -151,7 +151,6 @@ impl Config {
                 "section.phdr",
                 // We don't yet support these sections.
                 "section.data.rel.ro",
-                "section.sframe",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
                 "section.plt.got.entsize",
@@ -248,7 +247,6 @@ impl Config {
                 "segment.PHDR.*",
                 "segment.GNU_RELRO.*",
                 "segment.GNU_STACK.*",
-                "segment.GNU_SFRAME.*",
                 // Wild currently generates PT_NOTE even for non-alloc note sections, while the
                 // other linkers don't.
                 "segment.NOTE.*",
@@ -258,6 +256,10 @@ impl Config {
                 // Wild does.
                 "segment.GNU_PROPERTY.alignment",
                 "segment.GNU_PROPERTY.flags",
+                // GNU ld and lld sometimes don’t generate .sframe sections in cases where we do.
+                // TODO: Figure out why this is happening.
+                "segment.GNU_SFRAME.alignment",
+                "segment.GNU_SFRAME.flags",
             ]
             .into_iter()
             .map(ToOwned::to_owned),

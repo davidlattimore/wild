@@ -12,11 +12,13 @@
 //#Config:eh-frame:default
 //#CompArgs:-O0 -fomit-frame-pointer
 
-// TODO: Enable
-// //#Config:sframe:default
-// //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
-// //#RemoveSection:.eh_frame
-// //#RemoveSection:.eh_frame_hdr
+//#Config:sframe:default
+//#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
+//#RemoveSection:.eh_frame
+//#RemoveSection:.eh_frame_hdr
+//#RequiresGlibcVersion:2.42
+//#RequiresSFrameBacktrace:true
+//#SkipLinker:ld
 
 #define _GNU_SOURCE
 #include <execinfo.h>

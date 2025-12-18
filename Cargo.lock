@@ -2077,6 +2077,7 @@ dependencies = [
  "serde",
  "serde-keyvalue",
  "strum",
+ "tempfile",
  "toml",
  "wait-timeout",
  "which",
