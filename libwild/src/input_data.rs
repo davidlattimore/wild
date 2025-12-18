@@ -25,10 +25,8 @@ use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
-use std::ffi::OsStr;
 use std::fmt::Display;
 use std::ops::Deref;
-use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -344,7 +342,7 @@ impl<'data> FileLoader<'data> {
         match core::mem::take(&mut files[index.0]) {
             None => {}
             Some(LoadedFileState::Loaded(input_file, parse_result)) => {
-                if parse_result.as_ref().is_ok_and(|obj| obj.is_dynamic) {
+                if parse_result.as_ref().is_ok_and(|obj| obj.is_dynamic()) {
                     self.has_dynamic = true;
                 }
                 loaded.objects.push(parse_result);
@@ -377,12 +375,6 @@ impl<'data> FileLoader<'data> {
         }
 
         Ok(())
-    }
-
-    pub(crate) fn has_file(&self, name: &'data [u8]) -> bool {
-        self.loaded_files
-            .iter()
-            .any(|file| file.filename.ends_with(Path::new(OsStr::from_bytes(name))))
     }
 }
 

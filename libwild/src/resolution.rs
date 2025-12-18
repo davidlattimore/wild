@@ -424,8 +424,8 @@ fn work_items_do<'definitions, 'data>(
         Group::Objects(parsed_input_objects) => {
             let obj = &parsed_input_objects[file_id.file()];
             let common = ResolvedCommon::new(obj);
-            let resolved_object = if obj.is_dynamic() {
-                ResolvedFile::Dynamic(ResolvedDynamic::new(common))
+            let resolved_object = if let Some(dynamic_tag_values) = obj.parsed.dynamic_tag_values {
+                ResolvedFile::Dynamic(ResolvedDynamic::new(common, dynamic_tag_values))
             } else {
                 ResolvedFile::Object(ResolvedObject::new(common))
             };
@@ -569,6 +569,7 @@ pub(crate) struct ResolvedObject<'data> {
 #[derive(Debug)]
 pub(crate) struct ResolvedDynamic<'data> {
     pub(crate) common: ResolvedCommon<'data>,
+    dynamic_tag_values: crate::parsing::DynamicTagValues<'data>,
 }
 
 #[derive(Debug)]
@@ -879,8 +880,18 @@ impl<'data> ResolvedObject<'data> {
 }
 
 impl<'data> ResolvedDynamic<'data> {
-    fn new(common: ResolvedCommon<'data>) -> Self {
-        Self { common }
+    fn new(
+        common: ResolvedCommon<'data>,
+        dynamic_tag_values: crate::parsing::DynamicTagValues<'data>,
+    ) -> Self {
+        Self {
+            common,
+            dynamic_tag_values,
+        }
+    }
+
+    pub(crate) fn lib_name(&self) -> &'data [u8] {
+        self.dynamic_tag_values.lib_name(&self.common.input)
     }
 }
 

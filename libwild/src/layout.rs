@@ -36,7 +36,6 @@ use crate::error::warning;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::input_data::FileId;
-use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
@@ -83,6 +82,7 @@ use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
+use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
@@ -148,9 +148,10 @@ pub fn compute<'data, A: Arch>(
     mut groups: Vec<ResolvedGroup<'data>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
-    input_data: &FileLoader<'data>,
 ) -> Result<Layout<'data>> {
     timing_phase!("Layout");
+
+    let sonames = Sonames::new(&symbol_db.groups);
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -175,7 +176,7 @@ pub fn compute<'data, A: Arch>(
                 &symbol_db,
                 &atomic_per_symbol_flags,
                 &output_sections,
-                input_data,
+                sonames,
             )
         },
     );
@@ -1781,13 +1782,13 @@ struct GraphResources<'data, 'scope> {
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 
-    input_data: &'scope FileLoader<'data>,
-
     /// The number of groups that haven't yet completed activation.
     activations_remaining: AtomicUsize,
 
     /// Groups that cannot be processed until all groups have completed activation.
     delay_processing: ArrayQueue<GroupState<'data>>,
+
+    sonames: Sonames<'data>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -2523,7 +2524,7 @@ fn find_required_sections<'data, A: Arch>(
     symbol_db: &SymbolDb<'data>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    input_data: &FileLoader<'data>,
+    sonames: Sonames<'data>,
 ) -> Result<GcOutputs<'data>> {
     timing_phase!("Find required sections");
 
@@ -2548,9 +2549,9 @@ fn find_required_sections<'data, A: Arch>(
         has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
-        input_data,
         activations_remaining: AtomicUsize::new(num_groups),
         delay_processing: ArrayQueue::new(1),
+        sonames,
     };
     let resources_ref = &resources;
 
@@ -4446,7 +4447,7 @@ fn new_dynamic_object_layout_state<'data>(
     FileLayoutState::Dynamic(DynamicLayoutState {
         file_id: input_state.common.file_id,
         symbol_id_range: input_state.common.symbol_id_range,
-        lib_name: input_state.common.input.lib_name(),
+        lib_name: input_state.lib_name(),
         symbol_versions: input_state.common.object.versym,
         object: input_state.common.object,
         input: input_state.common.input,
@@ -5910,11 +5911,6 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result {
         self.symbol_versions_needed = vec![false; self.object.verdefnum as usize];
 
-        let dt_info = DynamicTagValues::read(self.object)?;
-        if let Some(soname) = dt_info.soname {
-            self.lib_name = soname;
-        }
-
         common.allocate(
             part_id::DYNAMIC,
             size_of::<crate::elf::DynamicEntry>() as u64,
@@ -6334,7 +6330,7 @@ impl<'data> DynamicLayoutState<'data> {
                     let Ok(name) = self.object.symbols.strings().get(value as u32) else {
                         return false;
                     };
-                    if !resources.input_data.has_file(name) {
+                    if !resources.sonames.contains(name) {
                         return false;
                     }
                 }
@@ -6441,40 +6437,6 @@ fn assign_copy_relocation_address(
     let a = *bss;
     *bss += alignment.align_up(local_symbol.st_size(LittleEndian));
     Ok(a)
-}
-
-#[derive(Default)]
-struct DynamicTagValues<'data> {
-    verdefnum: u64,
-    soname: Option<&'data [u8]>,
-}
-
-impl<'data> DynamicTagValues<'data> {
-    fn read(file: &File<'data>) -> Result<Self> {
-        let mut values = DynamicTagValues::default();
-        let Ok(dynamic_tags) = file.dynamic_tags() else {
-            return Ok(values);
-        };
-        let e = LittleEndian;
-        for entry in dynamic_tags {
-            let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
-                object::elf::DT_VERDEFNUM => {
-                    values.verdefnum = value;
-                }
-                object::elf::DT_SONAME => {
-                    values.soname = Some(
-                        file.symbols
-                            .strings()
-                            .get(value as u32)
-                            .map_err(|()| error!("Invalid DT_SONAME 0x{value:x}"))?,
-                    );
-                }
-                _ => {}
-            }
-        }
-        Ok(values)
-    }
 }
 
 fn take_dynsym_index(
@@ -6724,6 +6686,40 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
     })?;
 
     Ok(())
+}
+
+pub(crate) struct Sonames<'data>(HashSet<&'data [u8]>);
+
+impl<'data> Sonames<'data> {
+    /// Builds an index of the DT_SONAMEs of the input dynamic objects. Note, that we include
+    /// --as-needed shared objects that we're not actually linking against. This means that we can
+    /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
+    /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
+    fn new(groups: &[Group<'data>]) -> Self {
+        timing_phase!("Build SONAME index");
+
+        Sonames(
+            groups
+                .iter()
+                .flat_map(|group| {
+                    let objects = match group {
+                        Group::Objects(objects) => *objects,
+                        _ => &[],
+                    };
+                    objects.iter().filter_map(|input| {
+                        input
+                            .parsed
+                            .dynamic_tag_values
+                            .map(|tag_values| tag_values.lib_name(&input.parsed.input))
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn contains(&self, name: &[u8]) -> bool {
+        self.0.contains(name)
+    }
 }
 
 #[derive(derive_more::Debug)]

@@ -253,7 +253,6 @@ impl Linker {
             resolved,
             output_sections,
             &mut output,
-            file_loader,
         )?;
 
         output.write(&layout, elf_writer::write::<A>)?;
