@@ -97,7 +97,7 @@ impl<'data> Resolver<'data> {
 
         let mut syn = symbol_db.new_synthetic_symbols_group();
 
-        assign_section_ids(&mut self.resolved_groups, output_sections);
+        assign_section_ids(&mut self.resolved_groups, output_sections, symbol_db.args);
 
         canonicalise_undefined_symbols(
             self.undefined_symbols,
@@ -580,6 +580,7 @@ pub(crate) struct ResolvedSyntheticSymbols<'data> {
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &mut OutputSections<'data>,
+    args: &Args,
 ) {
     timing_phase!("Assign section IDs");
 
@@ -591,6 +592,7 @@ fn assign_section_ids<'data>(
                 output_sections.add_sections(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
+                    args,
                 );
             }
         }

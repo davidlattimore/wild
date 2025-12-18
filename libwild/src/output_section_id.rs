@@ -18,6 +18,7 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
+use crate::args::Args;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
@@ -188,7 +189,14 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
             matches!(section_info.kind, SectionKind::Primary(_)),
             "Attempted to directly emit secondary section {section_id}"
         );
-        if let Some(location) = section_info.location {
+
+        // Only emit SetLocation if the section has ALLOC flag, meaning it can be placed
+        // in a segment. Sections without ALLOC (like custom sections before their flags
+        // are propagated) will have their location handled directly in layout_section_parts
+        // via section_info.location.
+        if let Some(location) = section_info.location
+            && section_info.section_flags.contains(shf::ALLOC)
+        {
             self.events.push(OrderEvent::SetLocation(location));
         }
 
@@ -944,9 +952,16 @@ impl<'data> OutputSections<'data> {
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
+        args: &Args,
     ) {
         for custom in custom_sections {
-            let section_id = self.add_named_section(custom.name, custom.alignment, None);
+            let name_str = std::str::from_utf8(custom.name.bytes()).ok();
+            let location = name_str.and_then(|name| {
+                args.section_start
+                    .get(name)
+                    .map(|&address| linker_script::Location { address })
+            });
+            let section_id = self.add_named_section(custom.name, custom.alignment, location);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
