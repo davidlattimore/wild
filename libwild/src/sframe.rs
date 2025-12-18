@@ -246,9 +246,8 @@ pub(crate) fn sort_sframe_section(
                 bail!("SFrame FRE data truncated");
             }
 
-            let mut fre_bytes = vec![0u8; curr_fre_len];
-            fre_bytes
-                .copy_from_slice(&section[curr_fre_abs_start..curr_fre_abs_start + curr_fre_len]);
+            let fre_bytes =
+                section[curr_fre_abs_start..curr_fre_abs_start + curr_fre_len].to_owned();
 
             entries.push(Entry {
                 bytes,
