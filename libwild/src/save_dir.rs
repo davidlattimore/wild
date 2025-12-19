@@ -1,5 +1,6 @@
 //! Support for saving inputs for later use.
 
+use crate::Args;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::args::Modifiers;
@@ -10,6 +11,7 @@ use crate::file_kind::FileKind;
 use crate::input_data::FileData;
 use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
+use foldhash::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
@@ -28,6 +30,7 @@ const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 struct SaveDirState {
     dir: PathBuf,
     args: Vec<String>,
+    files_to_copy: HashSet<PathBuf>,
 }
 
 impl SaveDir {
@@ -44,18 +47,24 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self, input_data: &FileLoader) -> Result {
+    pub(crate) fn finish(&self, input_data: &FileLoader, parsed_args: &Args) -> Result {
         if let Some(state) = self.0.as_ref() {
-            state.finish(input_data.loaded_files.iter().map(|file| &file.filename))?;
+            let mut files_to_copy = state.files_to_copy.clone();
+            files_to_copy.extend(
+                input_data
+                    .loaded_files
+                    .iter()
+                    .map(|file| file.filename.clone()),
+            );
+            state.finish(files_to_copy.iter(), parsed_args)?;
         }
         Ok(())
     }
 
-    pub(crate) fn handle_file(&mut self, arg: &str) -> Result {
+    pub(crate) fn handle_file(&mut self, arg: &str) {
         if let Some(state) = self.0.as_mut() {
-            state.handle_file(arg)?;
+            state.files_to_copy.insert(Path::new(arg).to_path_buf());
         }
-        Ok(())
     }
 }
 
@@ -109,15 +118,23 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
 
 impl SaveDirState {
     fn new(dir: PathBuf, args: Vec<String>) -> Self {
-        SaveDirState { dir, args }
+        SaveDirState {
+            dir,
+            args,
+            files_to_copy: Default::default(),
+        }
     }
 
     /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
     /// `run-with` file and if the environment variable is set to indicate that we should skip
     /// linking, then exit.
-    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
+    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(
+        &self,
+        filenames: I,
+        parsed_args: &Args,
+    ) -> Result {
         for filename in filenames {
-            self.copy_file(&std::path::absolute(filename)?)?;
+            self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
         }
 
         let run_with_file = self.dir.join("run-with");
@@ -209,17 +226,17 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path) -> Result {
+    fn copy_file(&self, source_path: &Path, parsed_args: &Args) -> Result {
         let dest_path = self.output_path(source_path);
 
-        if dest_path.exists() {
+        if dest_path.exists() || !source_path.exists() {
             return Ok(());
         }
 
         // The parent directory might be an actual directory or it might be a symlink. Either way,
         // we want to copy it before we copy our file.
         if let Some(parent) = source_path.parent() {
-            self.copy_file(parent)?;
+            self.copy_file(parent, parsed_args)?;
         }
 
         // We need to check again if `dest_path` exists because paths containing ".." mean that
@@ -240,7 +257,7 @@ impl SaveDirState {
                 .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
 
             if target.is_absolute() {
-                self.copy_file(&target)?;
+                self.copy_file(&target, parsed_args)?;
                 target = make_relative_path(&target, directory).with_context(|| {
                     format!(
                         "Failed to make path `{}` relative to `{}` while copying symlink",
@@ -250,7 +267,7 @@ impl SaveDirState {
                 })?;
             } else {
                 let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target)?;
+                self.copy_file(&absolute_target, parsed_args)?;
             }
 
             std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
@@ -263,14 +280,28 @@ impl SaveDirState {
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
-                    Ok(FileKind::ThinArchive) => self.handle_thin_archive(source_path)?,
+                    Ok(FileKind::ThinArchive) => {
+                        self.handle_thin_archive(source_path, parsed_args)?;
+                    }
                     Ok(FileKind::Text) => {
-                        // We don't want to prevent the save-dir mechanism from working just because
-                        // we failed to parse a linker script, so in case of failure, we fall
-                        // through to just copying the file as-is.
-                        if let Ok(updated_bytes) = make_linker_script_relative(&data, source_path) {
-                            std::fs::write(dest_path, updated_bytes)?;
-                            return Ok(());
+                        let is_in_sysroot = parsed_args
+                            .sysroot
+                            .as_ref()
+                            .is_some_and(|sysroot| source_path.starts_with(sysroot));
+
+                        // We make paths in linker scripts relative, but only if they're not inside
+                        // of the sysroot. If they're inside the sysroot, then they need to remain
+                        // absolute and will be interpreted as relative to the sysroot when linking.
+                        if !is_in_sysroot {
+                            // We don't want to prevent the save-dir mechanism from working just
+                            // because we failed to parse a linker script, so in case of failure, we
+                            // fall through to just copying the file as-is.
+                            if let Ok(updated_bytes) =
+                                make_linker_script_relative(&data, source_path)
+                            {
+                                std::fs::write(dest_path, updated_bytes)?;
+                                return Ok(());
+                            }
                         }
                     }
                     _ => {}
@@ -293,17 +324,8 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn handle_file(&self, arg: &str) -> Result {
-        let path = std::path::absolute(Path::new(arg))?;
-        if std::fs::exists(&path).is_ok_and(|exists| exists) {
-            self.copy_file(&path)
-        } else {
-            Ok(())
-        }
-    }
-
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path) -> Result {
+    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
         let mut extended_filenames = None;
@@ -322,7 +344,7 @@ impl SaveDirState {
                     }
                     let absolute_entry_path = parent_path.join(entry_path);
 
-                    self.copy_file(&absolute_entry_path)?;
+                    self.copy_file(&absolute_entry_path, parsed_args)?;
                 }
                 _ => {}
             }
