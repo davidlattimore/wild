@@ -439,6 +439,132 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+#[must_use]
+pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+    if let Some(name) = const_name_by_value![
+        r_type,
+        R_LARCH_32,
+        R_LARCH_64,
+        R_LARCH_B16,
+        R_LARCH_CFA,
+        R_LARCH_B21,
+        R_LARCH_B26,
+        R_LARCH_NONE,
+        R_LARCH_ADD6,
+        R_LARCH_SUB8,
+        R_LARCH_COPY,
+        R_LARCH_ADD8,
+        R_LARCH_SUB6,
+        R_LARCH_ADD16,
+        R_LARCH_ADD64,
+        R_LARCH_SUB32,
+        R_LARCH_ADD24,
+        R_LARCH_ADD32,
+        R_LARCH_SUB16,
+        R_LARCH_SUB24,
+        R_LARCH_SOP_SL,
+        R_LARCH_SOP_SR,
+        R_LARCH_SUB64,
+        R_LARCH_RELAX,
+        R_LARCH_ALIGN,
+        R_LARCH_SOP_SUB,
+        R_LARCH_SOP_ADD,
+        R_LARCH_SOP_AND,
+        R_LARCH_MARK_LA,
+        R_LARCH_CALL36,
+        R_LARCH_SOP_NOT,
+        R_LARCH_DELETE,
+        R_LARCH_GOT_HI20,
+        R_LARCH_GOT_LO12,
+        R_LARCH_32_PCREL,
+        R_LARCH_64_PCREL,
+        R_LARCH_ABS_HI20,
+        R_LARCH_ABS_LO12,
+        R_LARCH_JUMP_SLOT,
+        R_LARCH_RELATIVE,
+        R_LARCH_PCREL20_S2,
+        R_LARCH_ABS64_HI12,
+        R_LARCH_ABS64_LO20,
+        R_LARCH_TLS_LD_HI20,
+        R_LARCH_GOT64_HI12,
+        R_LARCH_GOT64_LO20,
+        R_LARCH_TLS_LE_LO12,
+        R_LARCH_GOT_PC_LO12,
+        R_LARCH_TLS_LE_ADD_R,
+        R_LARCH_SOP_POP_32_U,
+        R_LARCH_SOP_IF_ELSE,
+        R_LARCH_TLS_DESC_LD,
+        R_LARCH_SOP_ASSERT,
+        R_LARCH_MARK_PCREL,
+        R_LARCH_PCALA_HI20,
+        R_LARCH_PCALA_LO12,
+        R_LARCH_GOT_PC_HI20,
+        R_LARCH_TLS_LE_HI20,
+        R_LARCH_IRELATIVE,
+        R_LARCH_TLS_GD_HI20,
+        R_LARCH_TLS_IE_HI20,
+        R_LARCH_TLS_IE_LO12,
+        R_LARCH_SOP_PUSH_DUP,
+        R_LARCH_TLS_TPREL32,
+        R_LARCH_TLS_LE_LO12_R,
+        R_LARCH_TLS_TPREL64,
+        R_LARCH_TLS_LE_HI20_R,
+        R_LARCH_GNU_VTENTRY,
+        R_LARCH_SUB_ULEB128,
+        R_LARCH_ADD_ULEB128,
+        R_LARCH_TLS_DTPREL32,
+        R_LARCH_GOT64_PC_HI12,
+        R_LARCH_TLS_GD_PC_HI20,
+        R_LARCH_TLS_IE64_LO20,
+        R_LARCH_TLS_DESC_CALL,
+        R_LARCH_TLS_LE64_LO20,
+        R_LARCH_TLS_DTPMOD32,
+        R_LARCH_PCALA64_LO20,
+        R_LARCH_TLS_DTPMOD64,
+        R_LARCH_TLS_IE64_HI12,
+        R_LARCH_TLS_DTPREL64,
+        R_LARCH_TLS_DESC_HI20,
+        R_LARCH_GOT64_PC_LO20,
+        R_LARCH_TLS_IE_PC_HI20,
+        R_LARCH_TLS_IE_PC_LO12,
+        R_LARCH_TLS_DESC_LO12,
+        R_LARCH_TLS_LE64_HI12,
+        R_LARCH_TLS_LD_PC_HI20,
+        R_LARCH_PCALA64_HI12,
+        R_LARCH_SOP_POP_32_S_10_5,
+        R_LARCH_SOP_PUSH_PCREL,
+        R_LARCH_SOP_POP_32_S_5_20,
+        R_LARCH_SOP_PUSH_GPREL,
+        R_LARCH_SOP_PUSH_TLS_GD,
+        R_LARCH_GNU_VTINHERIT,
+        R_LARCH_TLS_IE64_PC_LO20,
+        R_LARCH_SOP_POP_32_S_10_12,
+        R_LARCH_TLS_DESC_PC_HI20,
+        R_LARCH_TLS_DESC_PC_LO12,
+        R_LARCH_SOP_POP_32_S_10_16,
+        R_LARCH_SOP_POP_32_U_10_12,
+        R_LARCH_TLS_DESC64_HI12,
+        R_LARCH_SOP_PUSH_TLS_GOT,
+        R_LARCH_TLS_IE64_PC_HI12,
+        R_LARCH_TLS_DESC64_LO20,
+        R_LARCH_TLS_LD_PCREL20_S2,
+        R_LARCH_TLS_GD_PCREL20_S2,
+        R_LARCH_TLS_DESC64_PC_HI12,
+        R_LARCH_SOP_PUSH_ABSOLUTE,
+        R_LARCH_TLS_DESC64_PC_LO20,
+        R_LARCH_SOP_PUSH_PLT_PCREL,
+        R_LARCH_SOP_PUSH_TLS_TPREL,
+        R_LARCH_SOP_POP_32_S_10_16_S2,
+        R_LARCH_TLS_DESC_PCREL20_S2,
+        R_LARCH_SOP_POP_32_S_0_5_10_16_S2,
+        R_LARCH_SOP_POP_32_S_0_10_10_16_S2,
+    ] {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("Unknown loongarch relocation type 0x{r_type:x}"))
+    }
+}
+
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
@@ -810,6 +936,7 @@ pub enum RelocationKind {
 
     /// The absolute address of a symbol or section. We are going to extract only the offset
     /// within a page, so dynamic relocation creation must be skipped.
+    /// TODO: rename
     AbsoluteAArch64,
 
     /// Subtract addresses of two symbols and encode the value using ULEB128.
@@ -817,6 +944,12 @@ pub enum RelocationKind {
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
+
+    /// The address of the symbol, relative to the place of the relocation with addition of 0x800.
+    Relative2KBiased,
+
+    /// TODO
+    RelativeLoongArchHigh,
 
     /// The address of the symbol, relative to the place of the relocation. The address of the
     /// relocation points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used
@@ -1043,6 +1176,22 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn loongarch64_r_type(&self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_LARCH_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_LARCH_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_LARCH_TLS_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_LARCH_TLS_DTPREL64,
+            DynamicRelocationKind::TpOff => object::elf::R_LARCH_TLS_TPREL64,
+            DynamicRelocationKind::Relative => object::elf::R_LARCH_RELATIVE,
+            DynamicRelocationKind::Absolute => object::elf::R_LARCH_64,
+            DynamicRelocationKind::GotEntry => object::elf::R_LARCH_64,
+            DynamicRelocationKind::TlsDesc => todo!(),
+            DynamicRelocationKind::JumpSlot => object::elf::R_LARCH_JUMP_SLOT,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1100,9 +1249,19 @@ pub enum RiscVInstruction {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum LoongArch64Instruction {
+    Shift5,
+    Shift10,
+    Shift32,
+    Shift52,
+    Branch21or26,
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationInstruction {
     AArch64(AArch64Instruction),
     RiscV(RiscVInstruction),
+    LoongArch64(LoongArch64Instruction),
 }
 
 impl RelocationInstruction {
@@ -1127,6 +1286,7 @@ impl RelocationInstruction {
         match self {
             Self::AArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
             Self::RiscV(insn) => insn.write_to_value(extracted_value, negative, dest),
+            Self::LoongArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
         }
     }
 
@@ -1137,6 +1297,7 @@ impl RelocationInstruction {
         match self {
             Self::AArch64(insn) => insn.read_value(bytes),
             Self::RiscV(insn) => insn.read_value(bytes),
+            Self::LoongArch64(insn) => insn.read_value(bytes),
         }
     }
 
@@ -1146,6 +1307,7 @@ impl RelocationInstruction {
         match self {
             Self::AArch64(..) => 4,
             Self::RiscV(..) => 10,
+            Self::LoongArch64(..) => 4,
         }
     }
 }
@@ -1191,6 +1353,18 @@ impl RelocationSize {
             bit_end,
         ))
     }
+
+    pub(crate) const fn bit_mask_loongarch64(
+        bit_start: u32,
+        bit_end: u32,
+        instruction: LoongArch64Instruction,
+    ) -> RelocationSize {
+        Self::BitMasking(BitMask::new(
+            RelocationInstruction::LoongArch64(instruction),
+            bit_start,
+            bit_end,
+        ))
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1199,11 +1373,20 @@ pub struct BitMask {
     pub range: BitRange,
 }
 
+pub const SIZE_2KB: u64 = 1 << 11;
+pub const SIZE_4KB: u64 = 1 << 12;
+pub const SIZE_2GB: u64 = 1 << 31;
+pub const SIZE_4GB: u64 = 1 << 32;
+
+pub const PAGE_MASK_4KB: u64 = SIZE_4KB - 1;
+pub const PAGE_MASK_4GB: u64 = SIZE_4GB - 1;
+
 #[derive(Debug, Clone, Copy)]
 pub enum PageMask {
-    SymbolPlusAddendAndPosition,
-    GotEntryAndPosition,
-    GotBase,
+    SymbolPlusAddendAndPosition(u64),
+    GotEntryAndPosition(u64),
+    GotBase(u64),
+    Position(u64),
 }
 
 // Allow range (half-open) of a computed value of a relocation

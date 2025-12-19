@@ -3443,6 +3443,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
         | RelocationKind::RelativeRiscVLow12
+        | RelocationKind::Relative2KBiased
+        | RelocationKind::RelativeLoongArchHigh
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase

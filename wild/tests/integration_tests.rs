@@ -340,6 +340,8 @@ enum Architecture {
     AArch64,
     #[strum(serialize = "riscv64")]
     RISCV64,
+    #[strum(serialize = "loongarch64")]
+    LoongArch64,
 }
 
 const ALL_ARCHITECTURES: &[Architecture] = &[
@@ -354,6 +356,7 @@ impl Architecture {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
             Architecture::RISCV64 => "elf64lriscv",
+            Architecture::LoongArch64 => "elf64loongarch",
         }
     }
 
@@ -379,6 +382,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
         Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
+        Some(Architecture::LoongArch64) => todo!(),
     }
 }
 

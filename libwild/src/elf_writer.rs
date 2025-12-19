@@ -81,11 +81,16 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+use linker_utils::elf::SIZE_2GB;
+use linker_utils::elf::SIZE_2KB;
+use linker_utils::elf::SIZE_4GB;
+use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
@@ -2012,21 +2017,32 @@ fn apply_relocation<'data, A: Arch>(
     // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
     let place = section_address + offset_in_section;
 
+    let loong_arch_highest_with_biased = |symbol_with_addend: u64, pc: u64| -> u64 {
+        // Documentation definition:
+        // (*(uint32_t *) PC) [24 ... 5] = (((S+A+0x8000'0000 + (((S+A) & 0x800) ?
+        // (0x1000-0x1'0000'0000) : 0)) & ~0xfff) - (PC-8 & ~0xfff)) [51 ... 32]
+        ((symbol_with_addend.wrapping_add(SIZE_2GB)
+            + (if symbol_with_addend & SIZE_2KB != 0 {
+                SIZE_4KB.wrapping_sub(SIZE_4GB)
+            } else {
+                0
+            }))
+            & PAGE_MASK_4KB)
+            - ((pc.wrapping_sub(8)) & PAGE_MASK_4KB)
+    };
+
     let mask = get_page_mask(rel_info.mask);
     let mut value = match rel_info.kind {
-        RelocationKind::Absolute => {
-            assert!(rel_info.mask.is_none());
-            write_absolute_relocation::<A>(
-                table_writer,
-                resolution,
-                place,
-                addend,
-                section_info,
-                symbol_index,
-                object_layout,
-                layout,
-            )?
-        }
+        RelocationKind::Absolute => write_absolute_relocation::<A>(
+            table_writer,
+            resolution,
+            place,
+            addend,
+            section_info,
+            symbol_index,
+            object_layout,
+            layout,
+        )?,
         RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
@@ -2057,6 +2073,30 @@ fn apply_relocation<'data, A: Arch>(
             )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::Relative2KBiased => resolution
+            .value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?
+            .wrapping_add(SIZE_2KB)
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::RelativeLoongArchHigh => {
+            // TODO: explain
+            loong_arch_highest_with_biased(
+                resolution.value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?,
+                mask.place,
+            )
+        }
         RelocationKind::RelativeRiscVLow12 => {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of
             // relocations where the later one actually points to a label of the HI20

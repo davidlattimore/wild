@@ -11,6 +11,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use object::elf::EM_AARCH64;
+use object::elf::EM_LOONGARCH;
 use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::borrow::Cow;
@@ -63,6 +64,7 @@ pub(crate) enum Architecture {
     X86_64,
     AArch64,
     RISCV64,
+    LoongArch64,
 }
 
 impl TryFrom<u16> for Architecture {
@@ -73,6 +75,7 @@ impl TryFrom<u16> for Architecture {
             EM_X86_64 => Ok(Self::X86_64),
             EM_AARCH64 => Ok(Self::AArch64),
             EM_RISCV => Ok(Self::RISCV64),
+            EM_LOONGARCH => Ok(Self::LoongArch64),
             _ => bail!("Unsupported architecture: 0x{:x}", arch),
         }
     }
@@ -84,6 +87,7 @@ impl Display for Architecture {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64",
             Architecture::RISCV64 => "riscv64",
+            Architecture::LoongArch64 => "loongarch64",
         };
         write!(f, "{arch}")
     }

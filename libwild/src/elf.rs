@@ -4,7 +4,6 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::resolution::LoadedMetrics;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
@@ -515,18 +514,22 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     };
 
     match mask {
-        PageMask::SymbolPlusAddendAndPosition => PageMaskValue {
-            symbol_plus_addend: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
-            place: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+        PageMask::SymbolPlusAddendAndPosition(mask) => PageMaskValue {
+            symbol_plus_addend: !mask,
+            place: !mask,
             ..Default::default()
         },
-        PageMask::GotEntryAndPosition => PageMaskValue {
-            got_entry: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
-            place: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+        PageMask::GotEntryAndPosition(mask) => PageMaskValue {
+            got_entry: !mask,
+            place: !mask,
             ..Default::default()
         },
-        PageMask::GotBase => PageMaskValue {
-            got: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+        PageMask::GotBase(mask) => PageMaskValue {
+            got: !mask,
+            ..Default::default()
+        },
+        PageMask::Position(mask) => PageMaskValue {
+            place: !mask,
             ..Default::default()
         },
     }
