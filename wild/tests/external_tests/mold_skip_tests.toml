@@ -199,6 +199,7 @@ tests = [
   "stdout.sh",
   "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
   "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
+  "unkown-section-type.sh",         # Wild doesn't yet error on unknown section types
   "unresolved-symbols.sh",          # Different message formats
   "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
