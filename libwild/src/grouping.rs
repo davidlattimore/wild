@@ -268,7 +268,7 @@ impl<'data> SequencedInputObject<'data> {
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.parsed.is_dynamic
+        self.parsed.dynamic_tag_values.is_some()
     }
 }
 
