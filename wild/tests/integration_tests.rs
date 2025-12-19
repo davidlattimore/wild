@@ -602,7 +602,7 @@ fn check_sframe_support_for_arch(arch: Architecture) -> bool {
 
     // Check glibc version (must be 2.42+)
     let version = get_glibc_version();
-    if !version.as_ref().is_some_and(|v| v >= &vec![2, 42]) {
+    if version.as_ref().is_none_or(|v| v < &vec![2, 42]) {
         return false;
     }
 
