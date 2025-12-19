@@ -3,3 +3,11 @@ flate = "flate"
 rela = "rela"
 ot = "ot"
 FRE = "FRE"
+
+[files]
+extend-exclude = [
+  "external_test_suites",
+  "wild/tests/bins",
+  "wild/tests/external_tests/mold_skip_tests.toml"
+]
+
