@@ -348,6 +348,7 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::X86_64,
     Architecture::AArch64,
     Architecture::RISCV64,
+    Architecture::LoongArch64,
 ];
 
 impl Architecture {
@@ -382,7 +383,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
         Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
-        Some(Architecture::LoongArch64) => todo!(),
+        Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
     }
 }
 
@@ -440,6 +441,10 @@ fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "riscv64")]
     {
         Architecture::RISCV64
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        Architecture::LoongArch64
     }
 }
 
@@ -1715,12 +1720,16 @@ fn get_c_compiler(
         (None, "clang", CLanguage::C) => Ok("clang".to_string()),
         (None, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
-            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
+            Some(
+                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+            ),
             "gcc" | "g++",
             CLanguage::C,
         ) => Ok(format!("{arch}-linux-gnu-gcc")),
         (
-            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
+            Some(
+                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+            ),
             "gcc" | "g++",
             CLanguage::Cpp,
         ) => Ok(format!("{arch}-linux-gnu-g++")),
@@ -2969,17 +2978,21 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 }
 
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
-    [Architecture::AArch64, Architecture::RISCV64]
-        .into_iter()
-        .map(|arch| {
-            let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
-            if path.exists() {
-                (arch, path)
-            } else {
-                (arch, PathBuf::from(name))
-            }
-        })
-        .collect()
+    [
+        Architecture::AArch64,
+        Architecture::RISCV64,
+        Architecture::LoongArch64,
+    ]
+    .into_iter()
+    .map(|arch| {
+        let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
+        if path.exists() {
+            (arch, path)
+        } else {
+            (arch, PathBuf::from(name))
+        }
+    })
+    .collect()
 }
 
 static INIT: Once = Once::new();
