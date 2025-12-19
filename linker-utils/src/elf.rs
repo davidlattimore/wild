@@ -1253,8 +1253,6 @@ pub enum RiscVInstruction {
 pub enum LoongArch64Instruction {
     Shift5,
     Shift10,
-    Shift32,
-    Shift52,
     Branch21or26,
 }
 

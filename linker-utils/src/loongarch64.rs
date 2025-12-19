@@ -29,7 +29,8 @@ impl RelaxationKind {
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
-    // TODO: add link
+    // The relocation listing following the order defined in the standard:
+    // https://github.com/loongson/la-abi-specs/blob/release/laelf.adoc#relocation-types
     let (kind, size, mask, range, alignment) = match r_type {
         object::elf::R_LARCH_NONE => (
             RelocationKind::None,
@@ -213,14 +214,6 @@ impl LoongArch64Instruction {
             }
             LoongArch64Instruction::Shift10 => {
                 let mask = extracted_value << 10;
-                or_from_slice(dest, &(mask as u32).to_le_bytes());
-            }
-            LoongArch64Instruction::Shift32 => {
-                let mask = extracted_value;
-                or_from_slice(dest, &(mask as u32).to_le_bytes());
-            }
-            LoongArch64Instruction::Shift52 => {
-                let mask = extracted_value << 20;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             LoongArch64Instruction::Branch21or26 => {
