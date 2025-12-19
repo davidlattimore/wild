@@ -2021,14 +2021,14 @@ fn apply_relocation<'data, A: Arch>(
         // Documentation definition:
         // (*(uint32_t *) PC) [24 ... 5] = (((S+A+0x8000'0000 + (((S+A) & 0x800) ?
         // (0x1000-0x1'0000'0000) : 0)) & ~0xfff) - (PC-8 & ~0xfff)) [51 ... 32]
-        ((symbol_with_addend.wrapping_add(SIZE_2GB)
-            + (if symbol_with_addend & SIZE_2KB != 0 {
+        ((symbol_with_addend.wrapping_add(SIZE_2GB).wrapping_add(
+            if symbol_with_addend & SIZE_2KB != 0 {
                 SIZE_4KB.wrapping_sub(SIZE_4GB)
             } else {
                 0
-            }))
-            & PAGE_MASK_4KB)
-            - ((pc.wrapping_sub(8)) & PAGE_MASK_4KB)
+            },
+        )) & PAGE_MASK_4KB)
+            .wrapping_sub((pc.wrapping_sub(8)) & PAGE_MASK_4KB)
     };
 
     let mask = get_page_mask(rel_info.mask);
