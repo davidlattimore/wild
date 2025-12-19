@@ -39,7 +39,8 @@ impl<'data> SymbolInfoPrinter<'data> {
                 group.files.iter().filter_map(|file| match file {
                     ResolvedFile::NotLoaded(_) => None,
                     ResolvedFile::Prelude(_) => Some(PRELUDE_FILE_ID),
-                    ResolvedFile::Object(obj) => Some(obj.file_id),
+                    ResolvedFile::Object(obj) => Some(obj.common.file_id),
+                    ResolvedFile::Dynamic(obj) => Some(obj.common.file_id),
                     ResolvedFile::LinkerScript(obj) => Some(obj.file_id),
                     ResolvedFile::SyntheticSymbols(obj) => Some(obj.file_id),
                 })

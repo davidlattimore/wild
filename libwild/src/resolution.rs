@@ -195,8 +195,12 @@ fn resolve_symbols_and_select_archive_entries<'data>(
     verbose_timing_phase!("Gather loaded objects");
 
     for obj in outputs.loaded {
-        let file_id = obj.file_id;
-        resolver.resolved_groups[file_id.group()].files[file_id.file()] = ResolvedFile::Object(obj);
+        let file_id = match &obj {
+            ResolvedFile::Object(o) => o.common.file_id,
+            ResolvedFile::Dynamic(o) => o.common.file_id,
+            _ => unreachable!(),
+        };
+        resolver.resolved_groups[file_id.group()].files[file_id.file()] = obj;
     }
 
     resolver.undefined_symbols.extend(outputs.undefined_symbols);
@@ -320,23 +324,16 @@ fn resolve_sections<'data>(
                 let ResolvedFile::Object(obj) = file else {
                     continue;
                 };
-                let Some(mut non_dynamic) = obj.non_dynamic.take() else {
-                    continue;
-                };
 
-                non_dynamic.sections = resolve_sections_for_object(
+                obj.sections = resolve_sections_for_object(
                     obj,
-                    &mut non_dynamic.custom_sections,
-                    &mut non_dynamic.string_merge_extras,
                     symbol_db.args,
                     allocator,
                     &loaded_metrics,
                     &layout_rules.section_rules,
                 )?;
 
-                non_dynamic.relocations = obj.object.parse_relocations()?;
-
-                obj.non_dynamic = Some(non_dynamic);
+                obj.relocations = obj.common.object.parse_relocations()?;
             }
             Ok(())
         },
@@ -426,8 +423,14 @@ fn work_items_do<'definitions, 'data>(
     match &symbol_db.groups[file_id.group()] {
         Group::Objects(parsed_input_objects) => {
             let obj = &parsed_input_objects[file_id.file()];
+            let common = ResolvedCommon::new(obj);
+            let resolved_object = if obj.is_dynamic() {
+                ResolvedFile::Dynamic(ResolvedDynamic::new(common))
+            } else {
+                ResolvedFile::Object(ResolvedObject::new(common))
+            };
             // Push won't fail because we allocated enough space for all the objects.
-            outputs.loaded.push(ResolvedObject::new(obj)).unwrap();
+            outputs.loaded.push(resolved_object).unwrap();
         }
         _ => {}
     }
@@ -466,6 +469,7 @@ pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
     Prelude(ResolvedPrelude<'data>),
     Object(ResolvedObject<'data>),
+    Dynamic(ResolvedDynamic<'data>),
     LinkerScript(ResolvedLinkerScript<'data>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data>),
 }
@@ -540,19 +544,19 @@ pub(crate) struct ResolvedPrelude<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
+/// Resolved state common to dynamic and regular objects.
 #[derive(Debug)]
-pub(crate) struct ResolvedObject<'data> {
+pub(crate) struct ResolvedCommon<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: &'data File<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-
-    pub(crate) non_dynamic: Option<NonDynamicResolved<'data>>,
 }
 
-/// Parts of a resolved object that are only applicable to non-dynamic objects.
 #[derive(Debug)]
-pub(crate) struct NonDynamicResolved<'data> {
+pub(crate) struct ResolvedObject<'data> {
+    pub(crate) common: ResolvedCommon<'data>,
+
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: object::read::elf::RelocationSections,
 
@@ -560,6 +564,11 @@ pub(crate) struct NonDynamicResolved<'data> {
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedDynamic<'data> {
+    pub(crate) common: ResolvedCommon<'data>,
 }
 
 #[derive(Debug)]
@@ -586,14 +595,8 @@ fn assign_section_ids<'data>(
 
     for group in resolved {
         for file in &mut group.files {
-            if let ResolvedFile::Object(s) = file
-                && let Some(non_dynamic) = s.non_dynamic.as_mut()
-            {
-                output_sections.add_sections(
-                    &non_dynamic.custom_sections,
-                    non_dynamic.sections.as_mut_slice(),
-                    args,
-                );
+            if let ResolvedFile::Object(s) = file {
+                output_sections.add_sections(&s.custom_sections, s.sections.as_mut_slice(), args);
             }
         }
     }
@@ -601,7 +604,7 @@ fn assign_section_ids<'data>(
 
 struct Outputs<'data> {
     /// Where we put objects once we've loaded them.
-    loaded: ArrayQueue<ResolvedObject<'data>>,
+    loaded: ArrayQueue<ResolvedFile<'data>>,
 
     /// Any errors that we encountered.
     errors: ArrayQueue<Error>,
@@ -851,34 +854,38 @@ fn allocate_start_stop_symbol_id<'data>(
     Some(symbol_id)
 }
 
-impl<'data> ResolvedObject<'data> {
+impl<'data> ResolvedCommon<'data> {
     fn new(obj: &'data SequencedInputObject<'data>) -> Self {
-        let mut non_dynamic = None;
-
-        if !obj.is_dynamic() {
-            // We'll fill this in during section resolution.
-            non_dynamic = Some(NonDynamicResolved {
-                sections: Default::default(),
-                relocations: Default::default(),
-                string_merge_extras: Default::default(),
-                custom_sections: Default::default(),
-            });
-        }
-
         Self {
             input: obj.parsed.input,
             object: &obj.parsed.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,
-            non_dynamic,
         }
     }
 }
 
+impl<'data> ResolvedObject<'data> {
+    fn new(common: ResolvedCommon<'data>) -> Self {
+        Self {
+            common,
+            // We'll fill this the rest during section resolution.
+            sections: Default::default(),
+            relocations: Default::default(),
+            string_merge_extras: Default::default(),
+            custom_sections: Default::default(),
+        }
+    }
+}
+
+impl<'data> ResolvedDynamic<'data> {
+    fn new(common: ResolvedCommon<'data>) -> Self {
+        Self { common }
+    }
+}
+
 fn resolve_sections_for_object<'data>(
-    obj: &ResolvedObject<'data>,
-    custom_sections: &mut Vec<CustomSectionDetails<'data>>,
-    string_merge_extras: &mut Vec<StringMergeSectionExtra<'data>>,
+    obj: &mut ResolvedObject<'data>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
@@ -887,14 +894,12 @@ fn resolve_sections_for_object<'data>(
     // Note, we build up the collection with push rather than collect because at the time of
     // writing, object's `SectionTable::enumerate` isn't an exact-size iterator, so using collect
     // would result in resizing.
-    let mut sections = Vec::with_capacity(obj.object.sections.len());
-    for (input_section_index, input_section) in obj.object.sections.enumerate() {
+    let mut sections = Vec::with_capacity(obj.common.object.sections.len());
+    for (input_section_index, input_section) in obj.common.object.sections.enumerate() {
         sections.push(resolve_section(
             input_section_index,
             input_section,
             obj,
-            custom_sections,
-            string_merge_extras,
             args,
             allocator,
             loaded_metrics,
@@ -908,22 +913,24 @@ fn resolve_sections_for_object<'data>(
 fn resolve_section<'data>(
     input_section_index: SectionIndex,
     input_section: &SectionHeader,
-    obj: &ResolvedObject<'data>,
-    custom_sections: &mut Vec<CustomSectionDetails<'data>>,
-    string_merge_extras: &mut Vec<StringMergeSectionExtra<'data>>,
+    obj: &mut ResolvedObject<'data>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
 ) -> Result<SectionSlot> {
-    let section_name = obj.object.section_name(input_section).unwrap_or_default();
+    let section_name = obj
+        .common
+        .object
+        .section_name(input_section)
+        .unwrap_or_default();
 
     if section_name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
         bail!("GCC IR (LTO mode) is not supported yet");
     }
 
     let section_flags = SectionFlags::from_header(input_section);
-    let raw_alignment = obj.object.section_alignment(input_section)?;
+    let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
     let should_merge_sections = part_id::should_merge_sections(section_flags, raw_alignment, args);
 
@@ -976,19 +983,20 @@ fn resolve_section<'data>(
             index: input_section_index,
         };
 
-        custom_sections.push(custom_section);
+        obj.custom_sections.push(custom_section);
     }
 
     let slot = if should_merge_sections {
-        let section_data = obj
-            .object
-            .section_data(input_section, allocator, loaded_metrics)?;
+        let section_data =
+            obj.common
+                .object
+                .section_data(input_section, allocator, loaded_metrics)?;
         let section_flags = SectionFlags::from_header(input_section);
 
         if section_data.is_empty() {
             SectionSlot::Discard
         } else {
-            string_merge_extras.push(StringMergeSectionExtra {
+            obj.string_merge_extras.push(StringMergeSectionExtra {
                 index: input_section_index,
                 section_data,
                 section_flags,
@@ -1110,7 +1118,13 @@ fn resolve_symbol<'data, 'scope>(
 
 impl std::fmt::Display for ResolvedObject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.input, f)
+        std::fmt::Display::fmt(&self.common.input, f)
+    }
+}
+
+impl std::fmt::Display for ResolvedDynamic<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.common.input, f)
     }
 }
 
@@ -1126,6 +1140,7 @@ impl std::fmt::Display for ResolvedFile<'_> {
             ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
             ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
+            ResolvedFile::Dynamic(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
         }
@@ -1167,6 +1182,16 @@ impl FrameIndex {
 
     pub(crate) fn as_usize(self) -> usize {
         self.0.get() as usize - 1
+    }
+}
+
+impl<'data> ResolvedFile<'data> {
+    pub(crate) fn common(&self) -> Option<&ResolvedCommon<'data>> {
+        match self {
+            ResolvedFile::Object(o) => Some(&o.common),
+            ResolvedFile::Dynamic(o) => Some(&o.common),
+            _ => None,
+        }
     }
 }
 
