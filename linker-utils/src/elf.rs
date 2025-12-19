@@ -1188,7 +1188,8 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::Relative => object::elf::R_LARCH_RELATIVE,
             DynamicRelocationKind::Absolute => object::elf::R_LARCH_64,
             DynamicRelocationKind::GotEntry => object::elf::R_LARCH_64,
-            DynamicRelocationKind::TlsDesc => todo!(),
+            // TODO: add new object constant: https://github.com/gimli-rs/object/pull/827
+            DynamicRelocationKind::TlsDesc => 14,
             DynamicRelocationKind::JumpSlot => object::elf::R_LARCH_JUMP_SLOT,
         }
     }
