@@ -202,7 +202,7 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'data>> {
         let loaded = file_loader.load_inputs(&args.inputs, args)?;
 
-        args.save_dir.finish(file_loader)?;
+        args.save_dir.finish(file_loader, args)?;
 
         let output_kind = OutputKind::new(args, file_loader);
 

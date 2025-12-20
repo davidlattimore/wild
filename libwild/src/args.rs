@@ -943,7 +943,7 @@ impl ArgumentParser {
             return Ok(());
         }
 
-        args.save_dir.handle_file(arg)?;
+        args.save_dir.handle_file(arg);
         args.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,
@@ -1176,7 +1176,7 @@ fn setup_argument_parser() -> ArgumentParser {
             };
 
             let dir = handle_sysroot(Path::new(value));
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.lib_search_path.push(dir);
             Ok(())
         });
@@ -1948,7 +1948,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("version-script")
         .help("Use version script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.version_script_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1959,7 +1959,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.add_script(value);
             Ok(())
         });
@@ -2188,7 +2188,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("sysroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
             for path in &mut args.lib_search_path {
