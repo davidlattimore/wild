@@ -300,6 +300,7 @@ impl Config {
                 .map(ToOwned::to_owned),
             ),
             ArchKind::X86_64 => {}
+            ArchKind::LoongArch64 => {}
         }
 
         self.equiv.push((
@@ -656,6 +657,9 @@ impl Report {
 
             ArchKind::RISCV64 => {
                 self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
+            }
+            ArchKind::LoongArch64 => {
+                // TODO
             }
         }
     }
