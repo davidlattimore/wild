@@ -3,6 +3,8 @@
 //#RunEnabled:false
 //#Archive:exclude-libs-archive.c
 //#ExpectDynSym:foo
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
 
 // Right now, we don't support excluding specific archives, so this only makes
 // sure that `--exclude-libs archive` doesn't exclude symbols from all archives.
