@@ -1,6 +1,5 @@
 //#Config:default
 //#SkipLinker:ld
-//#CompArgs:-fPIC
 //#RunEnabled:false
 //#ExpectError: Symbol foo has undefined version VERSION_XYZ
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map -z now

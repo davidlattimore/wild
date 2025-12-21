@@ -32,15 +32,12 @@ pub(crate) struct Identifier<'data> {
     data: &'data [u8],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct EntryMeta<'data> {
     pub(crate) identifier: Identifier<'data>,
 
     /// Where in the original archive file the entry came from, not including the entry header.
-    pub(crate) start_offset: usize,
-
-    // Exclusive end offset of where the entry came from in the archive.
-    pub(crate) end_offset: usize,
+    pub(crate) from: Range<usize>,
 }
 
 pub(crate) struct ArchiveContent<'data> {
@@ -292,6 +289,10 @@ impl<'data> ArchiveContent<'data> {
 
         evaluate_identifier(self.ident, extended_filenames)
     }
+
+    pub(crate) fn data_range(&self) -> Range<usize> {
+        self.data_offset..self.data_offset + self.entry_data.len()
+    }
 }
 
 impl<'data> ThinEntry<'data> {
@@ -334,12 +335,6 @@ impl<'data> Iterator for ArchiveIterator<'data> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_result().transpose()
-    }
-}
-
-impl<'data> EntryMeta<'data> {
-    pub(crate) fn byte_range(&self) -> Range<usize> {
-        self.start_offset..self.end_offset
     }
 }
 

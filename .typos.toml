@@ -2,11 +2,4 @@
 flate = "flate"
 rela = "rela"
 ot = "ot"
-FRE = "FRE"
-
-[files]
-extend-exclude = [
-  "external_test_suites",
-  "wild/tests/bins",
-]
-
+unkown = "unkown"

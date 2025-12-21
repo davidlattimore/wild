@@ -194,12 +194,12 @@ impl Arch for X86_64 {
         relaxation_kind.apply(section_bytes, offset_in_section, addend);
     }
 
-    fn decode_instructions_in_range(
-        section_bytes: &[u8],
+    fn decode_instructions_in_range<'data>(
+        section_bytes: &'data [u8],
         section_address: u64,
         function_offset_in_section: u64,
         range: std::ops::Range<u64>,
-    ) -> Vec<Instruction<'_, Self>> {
+    ) -> Vec<Instruction<'data, Self>> {
         let mut instructions = Vec::new();
 
         let mut decoder = AsmDecoder::new(

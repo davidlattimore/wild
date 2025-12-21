@@ -8,6 +8,7 @@ use crate::slice_from_all_bytes;
 use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
+use ascii_table::AsciiTable;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use itertools::Itertools;
@@ -25,9 +26,6 @@ use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use tabled::Table;
-use tabled::settings::Style;
-use tabled::settings::style::HorizontalLine;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Converter {
@@ -376,28 +374,29 @@ pub(crate) fn diff_array(
     if all_equal(&arrays) {
         return vec![];
     }
+
+    let mut table = AsciiTable::default();
     let mut rows = Vec::new();
 
-    for values in arrays {
-        for (i, value) in values.into_iter().enumerate() {
-            if rows.len() <= i {
-                rows.push(Vec::new());
-            }
-            rows[i].push(value.formatted);
+    // Ensure all columns have the same width.
+    let column_width = (table.max_width() - 3) / binaries.len() - 3;
+
+    for ((i, bin), values) in binaries.iter().enumerate().zip(arrays) {
+        let column = table.column(i);
+        column.set_header(&bin.name);
+        column.set_max_width(column_width);
+        if rows.len() < values.len() {
+            rows.resize_with(values.len(), || vec![String::new(); i]);
+        }
+        for (row, value) in rows.iter_mut().zip(values) {
+            assert_eq!(row.len(), i);
+            row.push(value.formatted);
         }
     }
-    rows.insert(0, Vec::from_iter(binaries.iter().map(|b| b.name.clone())));
-
-    let mut table = Table::from_iter(rows);
-    table.with(
-        Style::modern()
-            .remove_horizontal()
-            .horizontals([(1, HorizontalLine::inherit(Style::modern()))]),
-    );
 
     vec![Diff {
         key: table_name.to_owned(),
-        values: DiffValues::PreFormatted(table.to_string()),
+        values: DiffValues::PreFormatted(table.format(rows)),
     }]
 }
 

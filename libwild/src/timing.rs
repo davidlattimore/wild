@@ -2,53 +2,18 @@
 
 use crate::args::CounterKind;
 use crate::error::AlreadyInitialised;
-use crate::error::Result;
 use crate::perf::CounterList;
-use anyhow::Context;
-use anyhow::anyhow;
 use crossbeam_queue::ArrayQueue;
 use std::fmt::Display;
-use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use tracing::field::Visit;
 
-const PERFETTO_ENV_VAR: &str = "WILD_PERFETTO_OUT";
-
-pub fn setup() -> Result {
-    if perfetto_output_file().is_some() {
-        perfetto_recorder::start().map_err(
-            |_: perfetto_recorder::TracingDisabledAtBuildTime| {
-                anyhow!(
-                    "{PERFETTO_ENV_VAR} was set, but wild was built without --features perfetto"
-                )
-            },
-        )?;
-    }
-    Ok(())
-}
-
-#[macro_export]
-macro_rules! timing_guard {
-    ($($args:tt)*) => {
-        (tracing::info_span!($($args)*).entered(), perfetto_recorder::start_span!($($args)*))
-    };
-}
-
 #[macro_export]
 macro_rules! timing_phase {
-    ($($args:tt)*) => {
-        let _guard = $crate::timing_guard!($($args)*);
-    };
-}
-
-/// More verbose timing instrumentation that by default doesn't show up in the output of --time.
-/// Suitable for use from threads other than main.
-#[macro_export]
-macro_rules! verbose_timing_phase {
-    ($($args:tt)*) => {
-        perfetto_recorder::scope!($($args)*);
+    ($phase:expr) => {
+        let span = tracing::span!(tracing::Level::INFO, $phase);
+        let _guard = span.enter();
     };
 }
 
@@ -274,36 +239,4 @@ impl Display for Reading {
 
         Ok(())
     }
-}
-
-fn perfetto_output_file() -> Option<PathBuf> {
-    std::env::var(PERFETTO_ENV_VAR).ok().map(PathBuf::from)
-}
-
-pub(crate) fn finalise_perfetto_trace() -> Result {
-    let Some(path) = perfetto_output_file() else {
-        return Ok(());
-    };
-
-    let mut trace = perfetto_recorder::TraceBuilder::new()?;
-
-    trace.process_thread_data(&perfetto_recorder::ThreadTraceData::take_current_thread());
-    let trace = Mutex::new(trace);
-
-    rayon::in_place_scope(|scope| {
-        scope.spawn_broadcast(|_scope, _ctx| {
-            trace
-                .lock()
-                .unwrap()
-                .process_thread_data(&perfetto_recorder::ThreadTraceData::take_current_thread());
-        });
-    });
-
-    trace
-        .into_inner()
-        .unwrap()
-        .write_to_file(&path)
-        .with_context(|| format!("Failed to write perfetto trace to `{}`", path.display()))?;
-
-    Ok(())
 }

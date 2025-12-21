@@ -108,7 +108,7 @@ elf_constant_newtype!(
     GNU_RELRO,
     GNU_PROPERTY,
     GNU_SFRAME,
-    RISCV_ATTRIBUTES,
+    RISCV_ATTRIBUTES = 0x70000003,
 );
 
 impl SegmentType {
@@ -582,8 +582,6 @@ pub mod secnames {
     pub const EH_FRAME_SECTION_NAME: &[u8] = EH_FRAME_SECTION_NAME_STR.as_bytes();
     pub const EH_FRAME_HDR_SECTION_NAME_STR: &str = ".eh_frame_hdr";
     pub const EH_FRAME_HDR_SECTION_NAME: &[u8] = EH_FRAME_HDR_SECTION_NAME_STR.as_bytes();
-    pub const SFRAME_SECTION_NAME_STR: &str = ".sframe";
-    pub const SFRAME_SECTION_NAME: &[u8] = SFRAME_SECTION_NAME_STR.as_bytes();
     pub const SHSTRTAB_SECTION_NAME_STR: &str = ".shstrtab";
     pub const SHSTRTAB_SECTION_NAME: &[u8] = SHSTRTAB_SECTION_NAME_STR.as_bytes();
     pub const SYMTAB_SECTION_NAME_STR: &str = ".symtab";

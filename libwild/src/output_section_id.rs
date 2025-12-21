@@ -18,7 +18,6 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::args::Args;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
@@ -88,7 +87,6 @@ pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
 pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
-pub(crate) const SFRAME: OutputSectionId = part_id::SFRAME.output_section_id();
 pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
 pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();
 pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
@@ -196,14 +194,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
             matches!(section_info.kind, SectionKind::Primary(_)),
             "Attempted to directly emit secondary section {section_id}"
         );
-
-        // Only emit SetLocation if the section has ALLOC flag, meaning it can be placed
-        // in a segment. Sections without ALLOC (like custom sections before their flags
-        // are propagated) will have their location handled directly in layout_section_parts
-        // via section_info.location.
-        if let Some(location) = section_info.location
-            && section_info.section_flags.contains(shf::ALLOC)
-        {
+        if let Some(location) = section_info.location {
             self.events.push(OrderEvent::SetLocation(location));
         }
         for segment_id in start {
@@ -211,7 +202,8 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
         self.events.push(OrderEvent::Section(section_id));
 
-        let secondaries: Vec<OutputSectionId> = self.secondary.get(section_id).to_vec();
+        let secondaries: Vec<OutputSectionId> =
+            self.secondary.get(section_id).to_vec();
         // stable ordering: tie-break by original index
         let mut keyed: Vec<(u16, usize, OutputSectionId)> = secondaries
             .into_iter()
@@ -427,7 +419,6 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
-    pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
     is_relro: bool,
@@ -443,7 +434,6 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
-    mark_zero_sized_input_as_content: true,
     element_size: 0,
     ty: sht::NULL,
     is_relro: false,
@@ -527,15 +517,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
         target_segment_type: Some(pt::GNU_EH_FRAME),
-        ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
-        ty: sht::GNU_SFRAME,
-        section_flags: shf::ALLOC,
-        min_alignment: alignment::USIZE,
-        target_segment_type: Some(pt::GNU_SFRAME),
-        mark_zero_sized_input_as_content: false,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -824,14 +805,6 @@ impl OutputSectionId {
             .map_or(alignment::MIN, |d| d.min_alignment)
     }
 
-    pub(crate) fn marks_zero_sized_inputs_as_content(self) -> bool {
-        if let Some(details) = self.opt_built_in_details() {
-            details.mark_zero_sized_input_as_content
-        } else {
-            true
-        }
-    }
-
     pub(crate) fn is_regular(self) -> bool {
         self.0 >= NUM_SINGLE_PART_SECTIONS
     }
@@ -924,9 +897,9 @@ impl CustomSectionIds {
         builder.add_section(FILE_HEADER);
         builder.add_section(PROGRAM_HEADERS);
         builder.add_section(SECTION_HEADERS);
+        builder.add_section(INTERP);
         builder.add_section(NOTE_GNU_PROPERTY);
         builder.add_section(NOTE_GNU_BUILD_ID);
-        builder.add_section(INTERP);
         builder.add_section(NOTE_ABI_TAG);
         builder.add_section(HASH);
         builder.add_section(GNU_HASH);
@@ -940,7 +913,6 @@ impl CustomSectionIds {
         builder.add_section(RODATA);
         builder.add_section(EH_FRAME_HDR);
         builder.add_section(EH_FRAME);
-        builder.add_section(SFRAME);
         builder.add_section(GCC_EXCEPT_TABLE);
         builder.add_sections(&self.ro);
 
@@ -984,16 +956,9 @@ impl<'data> OutputSections<'data> {
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
-        args: &Args,
     ) {
         for custom in custom_sections {
-            let name_str = std::str::from_utf8(custom.name.bytes()).ok();
-            let location = name_str.and_then(|name| {
-                args.section_start
-                    .get(name)
-                    .map(|&address| linker_script::Location { address })
-            });
-            let section_id = self.add_named_section(custom.name, custom.alignment, location);
+            let section_id = self.add_named_section(custom.name, custom.alignment, None);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -1352,7 +1317,6 @@ fn test_constant_ids() {
         (DATA, DATA_SECTION_NAME),
         (EH_FRAME, EH_FRAME_SECTION_NAME),
         (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
-        (SFRAME, SFRAME_SECTION_NAME),
         (SHSTRTAB, SHSTRTAB_SECTION_NAME),
         (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
         (SYMTAB_GLOBAL, &[]),

@@ -18,4 +18,3 @@ result
 fakes-debug/out
 fakes-debug/-
 /wild/out/test
-*.pftrace

@@ -3,7 +3,7 @@
 # docker build --progress=plain -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
 # docker run -it wild-dev-opensuse
 
-FROM opensuse/tumbleweed@sha256:8d69b95c7b85a0d0ce734ff1b20bcf8b665e4afdd229ba7cbdbcfd5f22e3df7f AS chef
+FROM opensuse/tumbleweed@sha256:983eecae40d0a9f3db1d13fbad4d4ee3d32b102ec4474b4a67650b69dcece89b AS chef
 RUN zypper install -y -t pattern devel_C_C++ && \
     zypper install -y \
         rustup \
@@ -17,10 +17,15 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         lld \
         vim \
         less
-RUN rustup toolchain install nightly \
-        --allow-downgrade \
-        --target x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl \
-        --component rustc-codegen-cranelift-preview
+RUN rustup toolchain install nightly && \
+    rustup target add --toolchain nightly \
+        x86_64-unknown-linux-musl \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        riscv64gc-unknown-linux-gnu \
+        riscv64gc-unknown-linux-musl \
+        && \
+    rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 RUN cargo install --locked cargo-chef
 WORKDIR /wild
 

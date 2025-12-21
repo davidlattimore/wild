@@ -25,53 +25,30 @@ use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct MatchRules<'data> {
     pub(crate) general: BasicMatchRules<'data>,
     pub(crate) cxx: BasicMatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct VersionBody<'data> {
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct Version<'data> {
     pub(crate) name: &'data [u8],
     pub(crate) parent_index: Option<u16>,
     pub(crate) version_body: VersionBody<'data>,
 }
 
-/// A general version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct RegularVersionScript<'data> {
+/// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
+#[derive(Debug, Default)]
+pub(crate) struct VersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
-}
-
-/// An optimized version script for Rustc.
-/// It declares all symbols as local except for the explicitly listed global symbols.
-/// Only contains general (non-C++) exact symbol matchers.
-/// Doesn't use actual versioning.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct RustVersionScript<'data> {
-    pub(crate) global: Vec<&'data [u8]>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-/// Possibly specialized version script.
-/// See `RegularVersionScript` for the general case.
-pub(crate) enum VersionScript<'data> {
-    Regular(RegularVersionScript<'data>),
-    Rust(RustVersionScript<'data>),
-}
-
-impl Default for VersionScript<'_> {
-    fn default() -> Self {
-        VersionScript::Regular(RegularVersionScript::default())
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -88,7 +65,7 @@ pub(crate) enum SymbolMatcher<'data> {
     MatchesAll,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
@@ -259,7 +236,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
     }
 }
 
-impl<'data> RegularVersionScript<'data> {
+impl<'data> VersionScript<'data> {
     fn find_match(
         &self,
         name: &PreHashed<UnversionedSymbolName>,
@@ -334,7 +311,6 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
     skip_comments_and_whitespace(input)?;
 
     // Simple version script, only defines symbols visibility
-    // May be rust-style version script.
     if input.starts_with(b"{") {
         let version_body = parse_version_section(input)?;
 
@@ -342,11 +318,16 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 
         skip_comments_and_whitespace(input)?;
 
-        return Ok(version_body.into());
+        return Ok(VersionScript {
+            versions: vec![Version {
+                version_body,
+                ..Default::default()
+            }],
+            version_name_mapping: HashMap::new(),
+        });
     }
 
-    // Multiple versions, won't be rust-style.
-    let mut version_script = RegularVersionScript::default();
+    let mut version_script = VersionScript::default();
 
     // Base version placeholder
     version_names.push(b"");
@@ -357,7 +338,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 
         skip_comments_and_whitespace(input)?;
 
-        let version_body = parse_version_section(input)?.into();
+        let version_body = parse_version_section(input)?;
 
         let parent_name = take_until(0.., b';').parse_next(input)?;
 
@@ -393,8 +374,9 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
             .insert(name, version_script.versions.len() - 1);
     }
 
-    Ok(VersionScript::Regular(version_script))
+    Ok(version_script)
 }
+
 impl<'data> VersionScript<'data> {
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<VersionScript<'data>> {
         timing_phase!("Parse version script");
@@ -402,42 +384,6 @@ impl<'data> VersionScript<'data> {
         parse_version_script
             .parse(BStr::new(data.raw))
             .map_err(|err| error!("Failed to parse version script:\n{err}"))
-    }
-
-    pub(crate) fn version_count(&self) -> u16 {
-        match self {
-            VersionScript::Regular(script) => script.version_count(),
-            VersionScript::Rust(_) => 0,
-        }
-    }
-
-    pub(crate) fn parent_count(&self) -> u16 {
-        match self {
-            VersionScript::Regular(script) => script.parent_count(),
-            VersionScript::Rust(_) => 0,
-        }
-    }
-    pub(crate) fn version_for_symbol(
-        &self,
-        name: &PreHashed<UnversionedSymbolName>,
-        version_name: Option<&[u8]>,
-    ) -> Result<Option<u16>> {
-        match self {
-            VersionScript::Regular(script) => script.version_for_symbol(name, version_name),
-            VersionScript::Rust(_) => Ok(None),
-        }
-    }
-}
-
-impl<'data> RegularVersionScript<'data> {
-    #[cfg(test)]
-    fn parse(data: ScriptData<'data>) -> Result<RegularVersionScript<'data>> {
-        match VersionScript::parse(data)? {
-            VersionScript::Regular(script) => Ok(script),
-            VersionScript::Rust(_) => {
-                bail!("Rust-style version script cannot be used as a regular version script")
-            }
-        }
     }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
@@ -494,93 +440,10 @@ impl<'data> RegularVersionScript<'data> {
     }
 }
 
-#[derive(Debug, Default)]
-/// A generaic parsed version body before version script specialization optimizations.
-struct RawVersionBody<'data> {
-    pub globals: Vec<ParsedSymbolMatcher<'data>>,
-    pub locals: Vec<ParsedSymbolMatcher<'data>>,
-}
-
-impl<'data> RawVersionBody<'data> {
-    fn rust_like(&self) -> bool {
-        // one of the local has to be match-all `*` wildcard
-        if !self.locals.iter().any(|matcher| {
-            matches!(
-                matcher,
-                ParsedSymbolMatcher::Single(SymbolMatcher::MatchesAll)
-            )
-        }) {
-            return false;
-        }
-
-        // and only exact matchers in global
-        self.globals.iter().all(|matcher| {
-            matches!(
-                matcher,
-                ParsedSymbolMatcher::Single(SymbolMatcher::Exact(_))
-            )
-        })
-    }
-}
-
-impl<'data> TryFrom<RawVersionBody<'data>> for RustVersionScript<'data> {
-    type Error = RawVersionBody<'data>;
-
-    fn try_from(body: RawVersionBody<'data>) -> Result<Self, Self::Error> {
-        if !body.rust_like() {
-            return Err(body);
-        }
-        let global = body
-            .globals
-            .into_iter()
-            .map(|matcher| {
-                if let ParsedSymbolMatcher::Single(SymbolMatcher::Exact(name)) = matcher {
-                    name
-                } else {
-                    unreachable!()
-                }
-            })
-            .collect();
-
-        Ok(RustVersionScript { global })
-    }
-}
-
-impl<'data> From<RawVersionBody<'data>> for VersionScript<'data> {
-    fn from(body: RawVersionBody<'data>) -> Self {
-        match RustVersionScript::try_from(body) {
-            Ok(rust_script) => VersionScript::Rust(rust_script),
-            Err(body) => {
-                let version_body = body.into();
-                VersionScript::Regular(RegularVersionScript {
-                    versions: vec![Version {
-                        version_body,
-                        ..Default::default()
-                    }],
-                    version_name_mapping: HashMap::new(),
-                })
-            }
-        }
-    }
-}
-
-impl<'data> From<RawVersionBody<'data>> for VersionBody<'data> {
-    fn from(body: RawVersionBody<'data>) -> Self {
-        let mut out = VersionBody::default();
-        for global in body.globals {
-            out.globals.push(global);
-        }
-        for local in body.locals {
-            out.locals.push(local);
-        }
-        out
-    }
-}
-
-fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVersionBody<'data>> {
+fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<VersionBody<'data>> {
     let mut section = None;
 
-    let mut out = RawVersionBody::default();
+    let mut out = VersionBody::default();
 
     '{'.parse_next(input)?;
 
@@ -826,36 +689,11 @@ mod tests {
     use itertools::Itertools;
     use itertools::assert_equal;
 
-    fn is_matching_global<'data>(script: &RegularVersionScript<'data>, name: &str) -> bool {
+    fn is_matching_global<'data>(script: &VersionScript<'data>, name: &str) -> bool {
         let Some(m) = script.find_match(&UnversionedSymbolName::prehashed(name.as_bytes())) else {
             return true;
         };
         matches!(m.1, VersionRuleSection::Global)
-    }
-
-    #[test]
-    fn parse_rust_version_script() {
-        let data = ScriptData {
-            raw: br#"
-                    {
-                    global:
-                        foo;
-                        bar;
-                    local:
-                        *;
-                    };"#,
-        };
-        let script = VersionScript::parse(data).unwrap();
-        let VersionScript::Rust(rust_script) = script else {
-            panic!("Expected Rust-style version script");
-        };
-        assert_equal(
-            rust_script
-                .global
-                .iter()
-                .map(|sym| String::from_utf8_lossy(sym)),
-            ["foo", "bar"],
-        );
     }
 
     #[test]
@@ -875,7 +713,7 @@ mod tests {
                         *;
                     };"#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
         assert_equal(
             version_body
@@ -918,7 +756,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         assert_eq!(script.versions.len(), 3);
 
         let version = &script.versions[1];
@@ -965,7 +803,7 @@ mod tests {
         let data = ScriptData {
             raw: br#"VERSION42 { global: *; };"#,
         };
-        RegularVersionScript::parse(data).unwrap();
+        VersionScript::parse(data).unwrap();
     }
 
     #[test]
@@ -984,7 +822,7 @@ mod tests {
                         };
                 };"#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[1].version_body;
 
         assert_equal(
@@ -1045,7 +883,7 @@ mod tests {
                         };
                 };"#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[1].version_body;
 
         assert_equal(
@@ -1070,7 +908,7 @@ mod tests {
                     };
                 };"#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         assert_equal(
@@ -1092,7 +930,7 @@ mod tests {
                     };
                 };"#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         assert_equal(
@@ -1147,7 +985,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;
 
         // Exact match wins
@@ -1176,7 +1014,7 @@ mod tests {
                 };
             "#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         let escaped_patterns: HashSet<&[u8]> = version_body
@@ -1226,7 +1064,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = RegularVersionScript::parse(data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;
 
         assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);

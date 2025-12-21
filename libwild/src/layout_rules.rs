@@ -360,10 +360,6 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
     SectionRule::exact(
-        secnames::SFRAME_SECTION_NAME,
-        SectionRuleOutcome::Section(SectionOutputInfo::keep(output_section_id::SFRAME)),
-    ),
-    SectionRule::exact(
         secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
         SectionRuleOutcome::NoteGnuProperty,
     ),

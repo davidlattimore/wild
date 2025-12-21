@@ -14,7 +14,7 @@ repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
 version = "0.7.0"
 readme = "README.md"
-rust-version = "1.90"
+rust-version = "1.89"
 edition = "2024"
 
 # Note, the versions listed here are minimum supported versions and should only be increased when
@@ -26,10 +26,11 @@ edition = "2024"
 [workspace.dependencies]
 anyhow = "1.0.97"
 ar = "0.9.0"
+ascii_table = "4.0.0"
 atomic-take = "1.0.0"
 bitflags = "2.4.0"
 blake3 = { version = "1.0.0", features = ["rayon"] }
-bumpalo-herd = "0.1.2"
+bumpalo-herd = "0.1.0"
 bytesize = "2.0.0"
 clap = { version = "4.0.0", features = ["derive"] }
 colored = "3.0.0"
@@ -56,11 +57,11 @@ indexmap = "2.9.0"
 itertools = "0.14.0"
 jobserver = "0.1.30"
 leb128 = "0.2.5"
-libc = "0.2.171"
+libc = "0.2.168"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { version = "0.38.0", default-features = false, features = [
+object = { version = "0.37.3", default-features = false, features = [
     "elf",
     "read_core",
     "std",
@@ -70,7 +71,6 @@ object = { version = "0.38.0", default-features = false, features = [
 os_info = "3.0.0"
 paste = "1.0.15"
 perf-event = "0.4.8"
-perfetto-recorder = "0.2.0"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.5.1"
 rstest = "0.26.1"
@@ -82,7 +82,6 @@ smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
 symbolic-common = "12.0.0"
 symbolic-demangle = {version = "12.0.0", default-features = false, features = ["cpp", "rust"]}
-tabled = "0.20.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
 toml = "0.9.0"

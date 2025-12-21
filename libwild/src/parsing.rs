@@ -1,3 +1,4 @@
+use crate::LayoutRules;
 use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::Args;
@@ -18,25 +19,70 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
-use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
-use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
-use object::LittleEndian;
-use object::read::elf::Dyn as _;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
+
+pub(crate) fn parse_input_files<'data>(
+    inputs: &[InputBytes<'data>],
+    mut linker_scripts: Vec<ProcessedLinkerScript<'data>>,
+    args: &'data Args,
+    output_kind: OutputKind,
+) -> Result<ParsedInputs<'data>> {
+    timing_phase!("Parse input files");
+
+    let (objects, prelude) = rayon::join(
+        || {
+            inputs
+                .par_iter()
+                .map(|f| ParsedInputObject::new(f, args))
+                .collect::<Result<Vec<ParsedInputObject>>>()
+        },
+        move || Prelude::new(args, output_kind),
+    );
+
+    let objects = objects?;
+    let mut prelude = prelude;
+
+    move_linker_script_defsyms_to_prelude(&mut prelude, &mut linker_scripts);
+
+    let num_symbols = count_symbols(&prelude, &objects, &linker_scripts);
+
+    Ok(ParsedInputs {
+        prelude,
+        objects,
+        linker_scripts,
+        num_symbols,
+    })
+}
 
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
     output_sections: &mut OutputSections<'data>,
-    layout_rules_builder: &mut LayoutRulesBuilder<'data>,
-) -> Result<Vec<ProcessedLinkerScript<'data>>> {
+) -> Result<(Vec<ProcessedLinkerScript<'data>>, LayoutRules<'data>)> {
     timing_phase!("Process linker scripts");
 
-    linker_scripts_in
+    let mut builder = LayoutRulesBuilder::default();
+
+    let linker_scripts = linker_scripts_in
         .iter()
-        .map(|script| layout_rules_builder.process_linker_script(script, output_sections))
-        .collect::<Result<Vec<ProcessedLinkerScript>>>()
+        .map(|script| builder.process_linker_script(script, output_sections))
+        .collect::<Result<Vec<ProcessedLinkerScript>>>()?;
+
+    Ok((linker_scripts, builder.build()))
+}
+
+pub(crate) struct ParsedInputs<'data> {
+    pub(crate) prelude: Prelude<'data>,
+    pub(crate) objects: Vec<ParsedInputObject<'data>>,
+    pub(crate) linker_scripts: Vec<ProcessedLinkerScript<'data>>,
+
+    /// Total number of symbols in the prelude, input objects and defined by linker scripts.
+    /// Doesn't include symbols defined by the epilogue, since we don't know what they will be
+    /// until later.
+    pub(crate) num_symbols: usize,
 }
 
 #[derive(Debug)]
@@ -48,7 +94,7 @@ pub(crate) struct Prelude<'data> {
 pub(crate) struct ParsedInputObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: File<'data>,
-    pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
+    pub(crate) is_dynamic: bool,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -59,9 +105,9 @@ pub(crate) struct ProcessedLinkerScript<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SyntheticSymbols {
+pub(crate) struct Epilogue {
     pub(crate) file_id: FileId,
-    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) start_symbol_id: SymbolId,
 }
 
 #[derive(Clone, Copy, derive_more::Debug)]
@@ -106,8 +152,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data> ParsedInputObject<'data> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
-        verbose_timing_phase!("Parse file");
+    fn new(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let object = File::parse(input.data, is_dynamic)
@@ -122,29 +167,21 @@ impl<'data> ParsedInputObject<'data> {
             )
         }
 
-        let dynamic_tag_values = is_dynamic.then(|| DynamicTagValues::read(&object));
-
-        Ok(Box::new(Self {
-            input: input.input,
+        Ok(Self {
+            input: input.input.clone(),
             object,
-            dynamic_tag_values,
+            is_dynamic,
             modifiers: input.modifiers,
-        }))
+        })
     }
 
-    pub(crate) fn is_dynamic(&self) -> bool {
-        self.dynamic_tag_values.is_some()
-    }
-
-    pub(crate) fn num_symbols(&self) -> usize {
+    fn num_symbols(&self) -> usize {
         self.object.symbols.len()
     }
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new(args: &'data Args, output_kind: OutputKind) -> Self {
-        verbose_timing_phase!("Construct prelude");
-
+    fn new(args: &'data Args, output_kind: OutputKind) -> Self {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions =
             vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
@@ -218,42 +255,42 @@ impl<'data> Prelude<'data> {
     }
 }
 
+fn move_linker_script_defsyms_to_prelude<'data>(
+    prelude: &mut Prelude<'data>,
+    linker_scripts: &mut [ProcessedLinkerScript<'data>],
+) {
+    for script in linker_scripts {
+        script.symbol_defs.retain(|def| {
+            let is_defsym = matches!(
+                def.placement,
+                SymbolPlacement::DefsymAbsolute(_) | SymbolPlacement::DefsymSymbol(_)
+            );
+            if is_defsym {
+                prelude.symbol_definitions.push(*def);
+            }
+            !is_defsym
+        });
+    }
+}
+
+fn count_symbols(
+    prelude: &Prelude,
+    objects: &[ParsedInputObject],
+    linker_scripts: &[ProcessedLinkerScript],
+) -> usize {
+    let in_objects = objects.iter().map(|o| o.num_symbols()).sum::<usize>();
+
+    let in_linker_scripts = linker_scripts
+        .iter()
+        .map(|l| l.num_symbols())
+        .sum::<usize>();
+
+    prelude.symbol_definitions.len() + in_objects + in_linker_scripts
+}
+
 impl<'data> ProcessedLinkerScript<'data> {
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbol_defs.len()
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct DynamicTagValues<'data> {
-    pub(crate) verdefnum: u64,
-    pub(crate) soname: Option<&'data [u8]>,
-}
-
-impl<'data> DynamicTagValues<'data> {
-    fn read(file: &File<'data>) -> Self {
-        let mut values = DynamicTagValues::default();
-        let Ok(dynamic_tags) = file.dynamic_tags() else {
-            return values;
-        };
-        let e = LittleEndian;
-        for entry in dynamic_tags {
-            let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
-                object::elf::DT_VERDEFNUM => {
-                    values.verdefnum = value;
-                }
-                object::elf::DT_SONAME => {
-                    values.soname = file.symbols.strings().get(value as u32).ok();
-                }
-                _ => {}
-            }
-        }
-        values
-    }
-
-    pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
-        self.soname.unwrap_or_else(|| input.lib_name())
     }
 }
 

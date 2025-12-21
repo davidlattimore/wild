@@ -17,7 +17,7 @@ pub(crate) struct RawFlags(u16);
 /// Flags for each symbol.
 #[derive(Debug)]
 pub(crate) struct PerSymbolFlags {
-    pub(crate) flags: Vec<RawFlags>,
+    flags: Vec<RawFlags>,
 }
 
 // Flags for each symbol where we can perform atomic updates via a shared reference.
@@ -234,10 +234,6 @@ impl AtomicValueFlags {
     pub(crate) fn or_assign(&self, flags: ValueFlags) {
         self.0.fetch_or(flags.bits(), Ordering::Relaxed);
     }
-
-    pub(crate) fn remove(&self, flags_to_remove: ValueFlags) {
-        self.0.fetch_and(!flags_to_remove.bits(), Ordering::Relaxed);
-    }
 }
 
 impl std::fmt::Display for ValueFlags {
@@ -247,12 +243,8 @@ impl std::fmt::Display for ValueFlags {
 }
 
 impl PerSymbolFlags {
-    pub(crate) fn new() -> Self {
-        Self { flags: Vec::new() }
-    }
-
-    pub(crate) fn reserve(&mut self, additional: usize) {
-        self.flags.reserve(additional);
+    pub(crate) fn new(flags: Vec<RawFlags>) -> Self {
+        Self { flags }
     }
 
     pub(crate) fn borrow_atomic(&'_ mut self) -> AtomicPerSymbolFlags<'_> {
@@ -271,10 +263,6 @@ impl PerSymbolFlags {
 
     pub(crate) fn set_flag(&mut self, symbol_id: SymbolId, extra: ValueFlags) {
         self.flags[symbol_id.as_usize()].0 |= extra.raw().0;
-    }
-
-    pub(crate) fn flags_mut(&mut self) -> &mut [RawFlags] {
-        &mut self.flags
     }
 }
 

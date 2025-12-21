@@ -34,9 +34,12 @@ Follow-these steps:
     * Modify (or add) the `.cargo/config.toml` file in your chosen crate (example for `ripgrep`)
 
 ```toml
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-Clink-arg=--ld-path=wild"]
+  [target.x86_64-unknown-linux-gnu]
+linker = "/usr/bin/clang"
+
+rustflags = [
+    "-C", "link-arg=--ld-path=wild"
+]
 ```
 
 * Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which
@@ -220,26 +223,29 @@ interesting benchmark because it's a shared object rather than an executable.
 Before building rustc, edit or create `bootstrap.toml` in your `rust` directory to contain:
 
 ```toml
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-Clink-arg=--ld-path=wild"]
+[rust]
+# use lld from $PATH instead of rust's bundled lld
+bootstrap-override-lld = true
 ```
 
-Now rustc will use wild as the linker on every build. You must have wild in your PATH.
-In the following command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
-need to have already built wild with `cargo build --release`.
+Now we can build rustc using wild as the linker. In the following
+command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
+need to have already built wild with `cargo build --release`. For more information about building rustc see [building instructions on the
+rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
 
-To build rustc just cd into the rust repo root and run:
-
+Cd into the rust repo root and run:
 ```sh
-PATH="$WILD_REPO_PATH/target/release:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x build rustc
+touch compiler/rustc_driver/src/lib.rs
+PATH=$WILD_REPO_PATH/fakes:$PATH echo "Using $(ld.lld --version) to link rustc"
+PATH=$WILD_REPO_PATH/fakes:$PATH WILD_SAVE_BASE=$HOME/tmp/rustc-link ./x build --keep-stage 1
+# verify that wild was used to link rustc
+readelf -p .comment build/x86_64-unknown-linux-gnu/stage1/bin/rustc | grep -i 'linker:'
 ```
 
-For more information about building rustc see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
-You should now have a few subdirectories under `/tmp/rustc-link`. You can identify which one is
+You should now have a few subdirectories under `$HOME/tmp/rustc-link`. You can identify which one is
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
-If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
+If the directory `$HOME/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
 link.
 
 ### Other tools
@@ -300,26 +306,6 @@ If a benchmark has shown a significant increase in say CPU cycles or instruction
 useful to check which phase or phases that increase has occurred in. You can get per-phase cycle and
 instruction counts by running with `--time=cycles,instructions`. To see the full list of counters,
 search `args.rs` for "branch-misses".
-
-### Perfetto
-
-The `--time` flag only shows the course stages of the linker. To see what each thread is doing
-during each stage, we can capture a perfetto trace and view the results in the perfetto UI.
-
-Start by building with the `perfetto` feature enabled:
-
-```sh
-cargo build --release --features perfetto
-```
-
-Run the linker with `WILD_PERFETTO_OUT` set to some file. e.g.:
-
-```sh
-WILD_PERFETTO_OUT=$HOME/tmp/tmp.pftrace ./run-with wild
-```
-
-Open the [perfetto UI](https://ui.perfetto.dev/). Click "Open trace file" and select `tmp.pftrace`.
-Use the keys w, a, s, d to navigate (scroll and zoom).
 
 ### Samply
 

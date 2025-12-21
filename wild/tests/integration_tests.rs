@@ -79,11 +79,6 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
-//! RequiresGlibcVersion:{version} Specifies the minimum version of glibc required for this test.
-//!
-//! RequiresSFrameBacktrace:{bool} Defaults to false. Set to true to disable this test if we're
-//! running on a system without sframe backtrace support.
-//!
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
@@ -101,8 +96,6 @@
 //! This testing runs wild twice with the second run having the --update-in-place and the file
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
-//!
-//! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
 //! ## Inputs
 //!
@@ -474,12 +467,9 @@ struct Config {
     expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
-    requires_glibc_version: Option<String>,
-    requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
-    remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
     test_update_in_place: bool,
@@ -542,196 +532,6 @@ struct DirectConfig {
     mode: Mode,
 }
 
-fn get_glibc_version() -> Option<Vec<u32>> {
-    static VERSION: std::sync::OnceLock<Option<Vec<u32>>> = std::sync::OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let output = std::process::Command::new("getconf")
-                .arg("GNU_LIBC_VERSION")
-                .output()
-                .ok()?;
-
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let version_str = stdout.split_whitespace().last()?;
-                Some(
-                    version_str
-                        .split('.')
-                        .filter_map(|s| s.parse::<u32>().ok())
-                        .collect(),
-                )
-            } else {
-                None
-            }
-        })
-        .clone()
-}
-
-/// Checks if the system's glibc supports SFrame-based stack unwinding for a given architecture.
-///
-/// 1. Check environment variable overrides (WILD_SKIP_SFRAME_BACKTRACE /
-///    WILD_FORCE_SFRAME_BACKTRACE)
-/// 2. Check glibc version (must be 2.42+)
-/// 3. Compile and run a test program that uses SFrame-only backtrace to verify it works at runtime
-fn is_sframe_backtrace_supported(arch: Architecture) -> bool {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    static SUPPORTED: std::sync::OnceLock<Mutex<HashMap<Architecture, bool>>> =
-        std::sync::OnceLock::new();
-
-    let cache = SUPPORTED.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache_guard = cache.lock().unwrap();
-
-    if let Some(&result) = cache_guard.get(&arch) {
-        return result;
-    }
-
-    let result = check_sframe_support_for_arch(arch);
-    cache_guard.insert(arch, result);
-    result
-}
-
-fn check_sframe_support_for_arch(arch: Architecture) -> bool {
-    if std::env::var("WILD_SKIP_SFRAME_BACKTRACE").is_ok() {
-        return false;
-    }
-    if std::env::var("WILD_FORCE_SFRAME_BACKTRACE").is_ok() {
-        return true;
-    }
-
-    // Check glibc version (must be 2.42+)
-    let version = get_glibc_version();
-    if version.as_ref().is_none_or(|v| v < &vec![2, 42]) {
-        return false;
-    }
-
-    run_sframe_backtrace_test(arch)
-}
-
-/// Compiles and runs a minimal test program to verify SFrame-based backtrace actually works.
-/// This catches cases where glibc has .sframe sections but backtrace() doesn't use them
-/// correctly (e.g., some Ubuntu 25.10 configurations).
-///
-/// TODO: This should be unnecessary once more various distributions have updated glibc.
-fn run_sframe_backtrace_test(arch: Architecture) -> bool {
-    let temp_dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-
-    let source_path = temp_dir.path().join("sframe_test.c");
-    let obj_path = temp_dir.path().join("sframe_test.o");
-    let binary_path = temp_dir.path().join("sframe_test");
-    let test_code = r#"
-#define _GNU_SOURCE
-#include <execinfo.h>
-#include <stdlib.h>
-
-__attribute__((noinline)) int check_bt(void) {
-    void *buffer[10];
-    int nptrs = backtrace(buffer, 10);
-    if (nptrs < 3){ return 1; }
-    for (int i = 0; i < 3; ++i) {
-        if (buffer[i] == 0 || (unsigned long)buffer[i] < 0x1000){ return 2; }
-    }
-    return 42;
-}
-
-__attribute__((noinline)) int inner(void) {
-    return check_bt();
-}
-
-int main(void) {
-    return inner();
-}
-"#;
-
-    if std::fs::write(&source_path, test_code).is_err() {
-        return false;
-    }
-
-    let host_arch = get_host_architecture();
-    let is_cross = arch != host_arch;
-
-    let (compiler, sysroot) = if is_cross {
-        let cross_compiler = format!("{}-linux-gnu-gcc", arch);
-        let sysroot = arch.get_cross_sysroot_path();
-        (cross_compiler, Some(sysroot))
-    } else {
-        ("gcc".to_string(), None)
-    };
-
-    let mut compile_cmd = std::process::Command::new(&compiler);
-    compile_cmd
-        .arg("-c")
-        .arg("-O0")
-        .arg("-fomit-frame-pointer")
-        .arg("-Wa,--gsframe")
-        .arg(&source_path)
-        .arg("-o")
-        .arg(&obj_path);
-
-    if let Some(ref sysroot) = sysroot {
-        compile_cmd.arg(format!("--sysroot={}", sysroot));
-    }
-
-    if !compile_cmd
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    let mut link_cmd = std::process::Command::new(&compiler);
-    link_cmd.arg(&obj_path).arg("-o").arg(&binary_path);
-
-    if let Some(ref sysroot) = sysroot {
-        link_cmd.arg(format!("--sysroot={}", sysroot));
-    }
-
-    if !link_cmd
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return false;
-    }
-
-    // Remove .eh_frame and .eh_frame_hdr sections to force SFrame-only unwinding
-    let objcopy = if is_cross {
-        format!("{}-linux-gnu-objcopy", arch)
-    } else {
-        "objcopy".to_string()
-    };
-
-    let objcopy_result = std::process::Command::new(&objcopy)
-        .arg("--remove-section=.eh_frame")
-        .arg("--remove-section=.eh_frame_hdr")
-        .arg(&binary_path)
-        .output();
-
-    if !objcopy_result.map(|o| o.status.success()).unwrap_or(false) {
-        return false;
-    }
-
-    let run_result = if is_cross {
-        std::process::Command::new(format!("qemu-{arch}"))
-            .arg("-L")
-            .arg(arch.get_cross_sysroot_path())
-            .arg(&binary_path)
-            .output()
-    } else {
-        std::process::Command::new(&binary_path).output()
-    };
-
-    match run_result {
-        Ok(output) => output.status.code() == Some(42),
-        Err(_) => false,
-    }
-}
-
 impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
@@ -740,14 +540,6 @@ impl Config {
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
-            || self.requires_glibc_version.as_ref().is_some_and(|version| {
-                let req_version: Vec<u32> = version
-                    .split('.')
-                    .filter_map(|s| s.parse::<u32>().ok())
-                    .collect();
-                get_glibc_version().is_some_and(|current_version| req_version > current_version)
-            })
-            || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -921,7 +713,6 @@ impl Config {
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
-            remove_sections: Vec::new(),
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
@@ -929,8 +720,6 @@ impl Config {
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
-            requires_glibc_version: None,
-            requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
             auto_add_objects: true,
@@ -1130,7 +919,6 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         template,
                     })
                 }
-                "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
                     config.support_architectures = arg
@@ -1140,13 +928,6 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
-                "RequiresGlibcVersion" => {
-                    config.requires_glibc = true;
-                    config.requires_glibc_version = Some(arg.trim().to_owned())
-                }
-                "RequiresSFrameBacktrace" => {
-                    config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
-                }
                 "RequiresCompilerFlags" => {
                     config
                         .requires_compiler_flags
@@ -1234,10 +1015,6 @@ impl ProgramInputs {
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
             .collect();
-
-        if !config.remove_sections.is_empty() {
-            remove_sections(&link_output, &config.remove_sections, cross_arch)?;
-        }
 
         Ok(Program {
             link_output,
@@ -1346,33 +1123,6 @@ impl ProgramInputs {
 
         Ok(())
     }
-}
-
-/// Removes the specified sections from the output file.
-fn remove_sections(
-    link_output: &LinkOutput,
-    section_names: &[String],
-    cross_arch: Option<Architecture>,
-) -> Result {
-    let objcopy = match cross_arch {
-        Some(arch) => format!("{}-linux-gnu-objcopy", arch),
-        None => "objcopy".to_owned(),
-    };
-
-    let mut command = Command::new(objcopy);
-    for section_name in section_names {
-        command.arg("--remove-section").arg(section_name);
-    }
-    command.arg(&link_output.binary);
-    let output = command.output().context("Failed to run objcopy")?;
-    if !output.status.success() {
-        bail!(
-            "objcopy reported error:\n{}{}",
-            String::from_utf8_lossy(&output.stderr),
-            String::from_utf8_lossy(&output.stdout)
-        );
-    }
-    Ok(())
 }
 
 /// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
@@ -3143,7 +2893,6 @@ fn integration_test(
         "string-merge-missing-null.c",
         "comments.c",
         "custom-note.s",
-        "backtrace.c",
         "eh_frame.c",
         "symbol-priority.c",
         "hidden-ref.c",
@@ -3197,8 +2946,7 @@ fn integration_test(
         "hash-style.c",
         "defsym.c",
         "linker-script-defsym-notfound.c",
-        "tls-common.c",
-        "section-start.c"
+        "tls-common.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

@@ -60,10 +60,6 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: pf::READABLE,
     },
     ProgramSegmentDef {
-        segment_type: pt::GNU_SFRAME,
-        segment_flags: pf::READABLE,
-    },
-    ProgramSegmentDef {
         segment_type: pt::DYNAMIC,
         segment_flags: pf::READABLE.with(pf::WRITABLE),
     },
@@ -175,7 +171,10 @@ impl ProgramSegmentId {
         )
     }
 
-    pub(crate) fn display(self, program_segments: &ProgramSegments) -> ProgramSegmentDisplay<'_> {
+    pub(crate) fn display<'a>(
+        self,
+        program_segments: &'a ProgramSegments,
+    ) -> ProgramSegmentDisplay<'a> {
         ProgramSegmentDisplay {
             id: self,
             program_segments,

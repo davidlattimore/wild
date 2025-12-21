@@ -18,7 +18,6 @@ RUN pacman --noconfirm -Syu \
     clang \
     lld \
     aarch64-linux-gnu-gcc \
-    riscv64-linux-gnu-gcc \
     qemu-user \
     git \
     base-devel \
@@ -46,14 +45,17 @@ RUN wget -qO- https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.
 
 RUN wget https://sh.rustup.rs -O rustup-installer && \
     chmod +x rustup-installer && \
-    ./rustup-installer -y --default-toolchain 1.90.0
+    ./rustup-installer -y --default-toolchain 1.89.0
 
 ENV PATH="/root/.cargo/bin:$PATH"
 
-RUN rustup toolchain install nightly \
-        --allow-downgrade \
-        --target x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl \
-        --component rustc-codegen-cranelift-preview
+RUN rustup toolchain install nightly && \
+    rustup target add --toolchain nightly \
+        x86_64-unknown-linux-musl \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        && \
+    rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 
 WORKDIR /wild
 
