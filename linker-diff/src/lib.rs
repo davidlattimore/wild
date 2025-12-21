@@ -300,7 +300,11 @@ impl Config {
                 .map(ToOwned::to_owned),
             ),
             ArchKind::X86_64 => {}
-            ArchKind::LoongArch64 => {}
+            ArchKind::LoongArch64 => self.ignore.extend(
+                ["section.sdata", "section.iplt"]
+                    .into_iter()
+                    .map(ToOwned::to_owned),
+            ),
         }
 
         self.equiv.push((
