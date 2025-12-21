@@ -3442,6 +3442,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
         | RelocationKind::AbsoluteAdditionWord6
+        | RelocationKind::AbsoluteAdditionULEB128
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative

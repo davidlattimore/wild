@@ -927,6 +927,10 @@ pub enum RelocationKind {
     AbsoluteAddition,
 
     /// Add the absolute address of a symbol or section at the place of the relocation
+    /// to the value at the place (using ULEB128 encoding).
+    AbsoluteAdditionULEB128,
+
+    /// Add the absolute address of a symbol or section at the place of the relocation
     /// to the value at the place (use WORD6 type for the operation)
     AbsoluteAdditionWord6,
 
@@ -948,6 +952,11 @@ pub enum RelocationKind {
     AbsoluteAArch64,
 
     /// Subtract addresses of two symbols and encode the value using ULEB128.
+    ///
+    /// Note: The assembler must allocate sufficient space to accommodate the final value for the
+    /// R_RISCV_SET_ULEB128 and R_RISCV_SUB_ULEB128 relocation pair and fill the space with a
+    /// single ULEB128-encoded value. This is achieved by prepending the redundant 0x80 byte as
+    /// necessary. The linker must not alter the length of the ULEB128-encoded value.
     PairSubtractionULEB128,
 
     /// The address of the symbol, relative to the place of the relocation.

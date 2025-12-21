@@ -138,10 +138,16 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO
-        object::elf::R_LARCH_ADD_ULEB128 | object::elf::R_LARCH_SUB_ULEB128 => (
-            RelocationKind::Absolute,
-            RelocationSize::ByteSize(0),
+        object::elf::R_LARCH_ADD_ULEB128 => (
+            RelocationKind::AbsoluteAdditionULEB128,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB_ULEB128 => (
+            RelocationKind::AbsoluteSubtractionULEB128,
+            RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
             1,

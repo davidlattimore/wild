@@ -2292,6 +2292,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionULEB128
             | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
@@ -2531,6 +2532,7 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::None
         | RelocationKind::PairSubtractionULEB128
         | RelocationKind::AbsoluteSubtractionULEB128
+        | RelocationKind::AbsoluteAdditionULEB128
         | RelocationKind::Alignment => {
             return None;
         }
@@ -3420,6 +3422,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition
+                | RelocationKind::AbsoluteAdditionULEB128
                 | RelocationKind::AbsoluteAdditionWord6
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6

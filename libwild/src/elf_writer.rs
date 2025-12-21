@@ -1873,7 +1873,9 @@ fn adjust_relocation_based_on_value(
 
     let current_value = if matches!(
         rel_info.kind,
-        RelocationKind::AbsoluteSubtractionULEB128 | RelocationKind::PairSubtractionULEB128
+        RelocationKind::AbsoluteSubtractionULEB128
+            | RelocationKind::AbsoluteAdditionULEB128
+            | RelocationKind::PairSubtractionULEB128
     ) {
         let mut reader = Cursor::new(&out[offset_in_section..]);
         leb128::read::unsigned(&mut reader)?
@@ -1895,7 +1897,9 @@ fn adjust_relocation_based_on_value(
             let value = value & LOW6_MASK;
             Ok(value | (current_value & !LOW6_MASK))
         }
-        RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+        RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteAdditionULEB128 => {
+            Ok(current_value.wrapping_add(value))
+        }
         RelocationKind::AbsoluteAdditionWord6 => {
             // Preserve the 2 most significant bits of u8.
             let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
@@ -2064,6 +2068,7 @@ fn apply_relocation<'data, A: Arch>(
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
         | RelocationKind::AbsoluteAdditionWord6
+        | RelocationKind::AbsoluteAdditionULEB128
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => resolution.value_with_addend(
             addend,
@@ -2342,6 +2347,7 @@ fn apply_relocation<'data, A: Arch>(
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteSubtractionWord6
             | RelocationKind::AbsoluteSubtractionULEB128
+            | RelocationKind::AbsoluteAdditionULEB128
     ) {
         value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
@@ -2426,7 +2432,8 @@ fn apply_debug_relocation<'data, A: Arch>(
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
             | RelocationKind::AbsoluteSubtraction
-            | RelocationKind::AbsoluteSubtractionWord6 => {
+            | RelocationKind::AbsoluteSubtractionWord6
+            | RelocationKind::AbsoluteAdditionULEB128 => {
                 let mut value = resolution.value_with_addend(
                     addend,
                     symbol_index,
@@ -2442,6 +2449,7 @@ fn apply_debug_relocation<'data, A: Arch>(
                         | RelocationKind::AbsoluteSetWord6
                         | RelocationKind::AbsoluteSubtractionWord6
                         | RelocationKind::AbsoluteSubtractionULEB128
+                        | RelocationKind::AbsoluteAdditionULEB128
                 ) {
                     value = adjust_relocation_based_on_value(
                         value,
