@@ -21,8 +21,11 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use crate::timing_phase;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use indexmap::IndexSet;
+use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
@@ -31,6 +34,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::mem::take;
 use std::num::NonZero;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
@@ -95,6 +99,9 @@ pub struct Args {
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
 
+    /// Section start addresses from `--section-start` options. Maps section name to address.
+    pub(crate) section_start: HashMap<String, u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -131,6 +138,8 @@ pub struct Args {
     pub(crate) available_threads: NonZeroUsize,
 
     pub(crate) numeric_experiments: Vec<Option<u64>>,
+
+    rpath_set: IndexSet<String>,
 
     jobserver_client: Option<Client>,
 }
@@ -328,6 +337,8 @@ const IGNORED_FLAGS: &[&str] = &[
     "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
+    "discard-all",
+    "x", // alias for --discard-all
 ];
 
 // These flags map to the default behavior of the linker.
@@ -412,6 +423,7 @@ impl Default for Args {
             export_list: Vec::new(),
             export_list_path: None,
             defsym: Vec::new(),
+            section_start: HashMap::new(),
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -423,6 +435,7 @@ impl Default for Args {
             z_interpose: false,
             z_isa: None,
             numeric_experiments: Vec::new(),
+            rpath_set: Default::default(),
         }
     }
 }
@@ -477,6 +490,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
+    if !args.rpath_set.is_empty() {
+        args.rpath = Some(take(&mut args.rpath_set).into_iter().join(":"));
+    }
+
     if !args.unrecognized_options.is_empty() {
         let options_list = args.unrecognized_options.join(", ");
         bail!("unrecognized option(s): {}", options_list);
@@ -502,7 +519,7 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
+pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
     arguments_from_string(&contents)
@@ -510,6 +527,7 @@ fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
 
 impl Args {
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+        timing_phase!("Parse args");
         parse(input)
     }
 
@@ -573,6 +591,8 @@ impl Args {
     ///
     /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
     pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
+        timing_phase!("Activate thread pool");
+
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
             if let Some(client) = &self.jobserver_client {
@@ -620,15 +640,6 @@ fn parse_number(s: &str) -> Result<u64> {
         Ok(u64::from_str_radix(s, 16)?)
     } else {
         Ok(s.parse::<u64>()?)
-    }
-}
-
-fn append_rpath(rpath: &mut Option<String>, rpath_value: &str) {
-    if let Some(rpath) = &mut *rpath {
-        rpath.push(':');
-        rpath.push_str(rpath_value);
-    } else {
-        *rpath = Some(rpath_value.to_string());
     }
 }
 
@@ -932,7 +943,7 @@ impl ArgumentParser {
             return Ok(());
         }
 
-        args.save_dir.handle_file(arg)?;
+        args.save_dir.handle_file(arg);
         args.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,
@@ -1165,7 +1176,7 @@ fn setup_argument_parser() -> ArgumentParser {
             };
 
             let dir = handle_sysroot(Path::new(value));
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.lib_search_path.push(dir);
             Ok(())
         });
@@ -1431,7 +1442,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 args.unrecognized_options
                     .push(format!("-R,{value}(filename)"));
             } else {
-                append_rpath(&mut args.rpath, value);
+                args.rpath_set.insert(value.to_string());
             }
             Ok(())
         });
@@ -1784,7 +1795,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("rpath")
         .help("Add directory to runtime library search path")
         .execute(|args, _modifier_stack, value| {
-            append_rpath(&mut args.rpath, value);
+            args.rpath_set.insert(value.to_string());
             Ok(())
         });
 
@@ -1937,7 +1948,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("version-script")
         .help("Use version script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.version_script_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1948,7 +1959,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.add_script(value);
             Ok(())
         });
@@ -2075,6 +2086,28 @@ fn setup_argument_parser() -> ArgumentParser {
 
     parser
         .declare_with_param()
+        .long("section-start")
+        .help("Set start address for a section: --section-start=.section=address")
+        .execute(|args, _modifier_stack, value| {
+            let parts: Vec<&str> = value.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                bail!("Invalid --section-start format. Expected: --section-start=.section=address");
+            }
+
+            let section_name = parts[0].to_owned();
+            let address = parse_number(parts[1]).with_context(|| {
+                format!(
+                    "Invalid address `{}` in --section-start={}",
+                    parts[1], value
+                )
+            })?;
+            args.section_start.insert(section_name, address);
+
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
         .execute(|args, _modifier_stack, value| {
@@ -2155,7 +2188,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("sysroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
             for path in &mut args.lib_search_path {
@@ -2504,6 +2537,11 @@ mod tests {
         "-Rbaz",
         "-R",
         "somewhere",
+        // Adding the same rpath multiple times should not create duplicates
+        "-rpath",
+        "foo/",
+        "-x",
+        "--discard-all",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];

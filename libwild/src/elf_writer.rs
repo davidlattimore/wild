@@ -55,6 +55,7 @@ use crate::layout::Resolution;
 use crate::layout::RiscVAttribute;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
@@ -68,6 +69,7 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
+use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
@@ -76,6 +78,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -122,7 +125,6 @@ use std::ops::Range;
 use std::ops::Sub;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
-use tracing::instrument;
 use uuid::Uuid;
 use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
@@ -133,10 +135,13 @@ pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) ->
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+
     if layout.args().should_write_eh_frame_hdr {
-        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
     }
+
+    write_sframe_section(section_buffers.get_mut(output_section_id::SFRAME), layout)?;
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
     Ok(())
@@ -179,8 +184,8 @@ fn write_gnu_build_id_note(
     Ok(())
 }
 
-#[instrument(skip_all, name = "Compute build ID")]
 fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+    timing_phase!("Compute build ID");
     blake3::Hasher::new()
         .update_rayon(&sized_output.out)
         .finalize()
@@ -195,6 +200,8 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     groups_and_buffers
         .into_par_iter()
         .try_for_each(|(group, mut buffers)| -> Result {
+            verbose_timing_phase!("Write group");
+
             let mut table_writer = TableWriter::from_layout(
                 layout,
                 group.dynstr_start_offset,
@@ -242,6 +249,31 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     section_buffers.for_each_mut(|_, out| {
         out.fill(0);
     });
+}
+
+fn write_sframe_section(sframe_buffer: &mut [u8], layout: &Layout) -> Result {
+    if sframe_buffer.is_empty() {
+        return Ok(());
+    }
+
+    timing_phase!("Write .sframe");
+
+    let sframe_start_address = layout.mem_address_of_built_in(output_section_id::SFRAME);
+    let sframe_ranges: Vec<_> = layout
+        .group_layouts
+        .iter()
+        .flat_map(|group| group.files.iter())
+        .filter_map(|file| {
+            if let FileLayout::Object(object) = file {
+                Some(object.sframe_ranges.iter().cloned())
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+
+    sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)
 }
 
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
@@ -320,7 +352,7 @@ fn populate_file_header<A: Arch>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
     );
-    header.e_flags.set(e, header_info.eflags);
+    header.e_flags.set(e, header_info.eflags.0);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
     header
@@ -351,6 +383,7 @@ fn write_file<A: Arch>(
         FileLayout::Object(s) => write_object::<A>(s, buffers, table_writer, layout, trace)?,
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<A>(s, table_writer, layout)?,
@@ -1161,6 +1194,8 @@ fn write_object<A: Arch>(
     layout: &Layout,
     trace: &TraceOutput,
 ) -> Result {
+    verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
+
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().trace_span_for_file(object.file_id);
     for sec in &object.sections {
@@ -2444,6 +2479,8 @@ fn write_prelude<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write prelude");
+
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
@@ -2730,6 +2767,8 @@ fn write_linker_script_state<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write linker script state");
+
     write_internal_symbols(
         &script.internal_symbols,
         layout,
@@ -2741,36 +2780,49 @@ fn write_linker_script_state<A: Arch>(
     Ok(())
 }
 
+fn write_synthetic_symbols<A: Arch>(
+    syn: &SyntheticSymbolsLayout,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    verbose_timing_phase!("Write epilogue");
+
+    write_internal_symbols_plt_got_entries::<A>(&syn.internal_symbols, table_writer, layout)?;
+
+    if !layout.args().strip_all() {
+        write_internal_symbols(
+            &syn.internal_symbols,
+            layout,
+            &mut table_writer.debug_symbol_writer,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn write_epilogue<A: Arch>(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write epilogue");
+
     let mut epilogue_offsets = EpilogueOffsets::default();
 
-    write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
-
-    if !layout.args().strip_all() {
-        write_internal_symbols(
-            &epilogue.internal_symbols,
-            layout,
-            &mut table_writer.debug_symbol_writer,
-        )?;
-    }
     if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
-    write_sysv_hash_table(epilogue, buffers)?;
-    write_gnu_hash_tables(epilogue, buffers)?;
+    write_sysv_hash_table(layout, epilogue, buffers)?;
+    write_gnu_hash_tables(layout, epilogue, buffers)?;
 
-    write_dynamic_symbol_definitions(epilogue, table_writer, layout)?;
+    write_dynamic_symbol_definitions(table_writer, layout)?;
 
-    if !&epilogue.gnu_property_notes.is_empty() {
-        write_gnu_property_notes(epilogue, buffers)?;
+    if !layout.gnu_property_notes.is_empty() {
+        write_gnu_property_notes(layout, buffers)?;
     }
-    if !&epilogue.riscv_attributes.is_empty() {
-        write_riscv_attributes(epilogue, buffers)?;
+    if layout.riscv_attributes.section_size != 0 {
+        write_riscv_attributes(epilogue, layout, buffers)?;
     }
 
     if let Some(verdefs) = &epilogue.verdefs {
@@ -2793,7 +2845,7 @@ fn write_epilogue<A: Arch>(
 }
 
 fn write_gnu_property_notes(
-    epilogue: &EpilogueLayout,
+    layout: &Layout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let e = LittleEndian;
@@ -2803,14 +2855,14 @@ fn write_gnu_property_notes(
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(
         e,
-        (epilogue.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
+        (layout.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
     let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    for note in &epilogue.gnu_property_notes {
+    for note in &layout.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
         property.pr_type = note.ptype;
@@ -2824,6 +2876,7 @@ fn write_gnu_property_notes(
 
 fn write_riscv_attributes(
     epilogue: &EpilogueLayout,
+    layout: &Layout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
@@ -2841,7 +2894,7 @@ fn write_riscv_attributes(
             .to_le_bytes()
             .as_slice(),
     )?;
-    for tag in &epilogue.riscv_attributes {
+    for tag in &layout.riscv_attributes.attributes {
         match tag {
             &RiscVAttribute::StackAlign(align) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_STACK_ALIGN)?;
@@ -2875,6 +2928,7 @@ fn write_riscv_attributes(
 }
 
 fn write_sysv_hash_table(
+    layout: &Layout,
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -2921,7 +2975,7 @@ fn write_sysv_hash_table(
     chains.fill(0);
     let mut last_in_bucket: Vec<Option<usize>> = vec![None; bucket_count];
 
-    for (i, sym_def) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+    for (i, sym_def) in layout.dynamic_symbol_definitions.iter().enumerate() {
         let additional = u32::try_from(i).context("Too many dynamic symbols for .hash")?;
         let sym_index = epilogue
             .dynsym_start_index
@@ -2945,6 +2999,7 @@ fn write_sysv_hash_table(
 }
 
 fn write_gnu_hash_tables(
+    layout: &Layout,
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -2968,7 +3023,7 @@ fn write_gnu_hash_tables(
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
             .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
     let (chains, rest) =
-        object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
+        object::slice_from_bytes_mut::<u32>(rest, layout.dynamic_symbol_definitions.len())
             .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
 
     debug_assert_eq!(rest.len(), 0);
@@ -2978,7 +3033,7 @@ fn write_gnu_hash_tables(
     buckets.fill(0);
     bloom.fill(0);
 
-    let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
+    let mut sym_defs = layout.dynamic_symbol_definitions.iter().peekable();
 
     let elf_class_bits = size_of::<u64>() as u32 * 8;
 
@@ -3013,15 +3068,11 @@ fn write_gnu_hash_tables(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions(
-    epilogue: &EpilogueLayout,
-    table_writer: &mut TableWriter,
-    layout: &Layout,
-) -> Result {
+fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let chunk_size =
-        10.max(epilogue.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
+        10.max(layout.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
 
-    epilogue
+    layout
         .dynamic_symbol_definitions
         .chunks(chunk_size)
         .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
@@ -3066,7 +3117,13 @@ fn write_dynamic_symbol_definitions(
                             layout,
                             sym_def.symbol_id,
                             script,
-                        )?;
+                        )
+                        .with_context(|| {
+                            format!(
+                                "Failed to write linker script dynsym: {}",
+                                layout.symbol_debug(sym_def.symbol_id)
+                            )
+                        })?;
                     }
                     FileLayout::Prelude(prelude) => {
                         write_prelude_dynsym(
@@ -3105,14 +3162,13 @@ fn write_linker_script_dynsym(
 
     let info = &script.internal_symbols.symbol_definitions[local_index];
 
-    debug_assert!(
-        !matches!(
-            info.placement,
-            crate::parsing::SymbolPlacement::DefsymSymbol(_)
-                | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-        ),
-        "Defsym symbols from linker scripts should be emitted via the prelude"
-    );
+    if matches!(
+        info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol(_)
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ) {
+        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
+    }
 
     let section_id = info
         .section_id()
@@ -3655,12 +3711,12 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.dt_flags_1(),
     ),
     DynamicEntryWriter::optional(
-        crate::elf::DT_AARCH64_VARIANT_PCS,
+        object::elf::DT_AARCH64_VARIANT_PCS,
         |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::AArch64,
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
-        crate::elf::DT_RISCV_VARIANT_CC,
+        object::elf::DT_RISCV_VARIANT_CC,
         |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RISCV64,
         |_inputs| 0,
     ),
@@ -3965,6 +4021,8 @@ fn write_dynamic_file<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write dynamic");
+
     write_so_name(object, table_writer)?;
 
     write_copy_relocations::<A>(object, table_writer, layout)?;

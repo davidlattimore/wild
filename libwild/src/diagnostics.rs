@@ -39,9 +39,10 @@ impl<'data> SymbolInfoPrinter<'data> {
                 group.files.iter().filter_map(|file| match file {
                     ResolvedFile::NotLoaded(_) => None,
                     ResolvedFile::Prelude(_) => Some(PRELUDE_FILE_ID),
-                    ResolvedFile::Object(obj) => Some(obj.file_id),
+                    ResolvedFile::Object(obj) => Some(obj.common.file_id),
+                    ResolvedFile::Dynamic(obj) => Some(obj.common.file_id),
                     ResolvedFile::LinkerScript(obj) => Some(obj.file_id),
-                    ResolvedFile::Epilogue(obj) => Some(obj.file_id),
+                    ResolvedFile::SyntheticSymbols(obj) => Some(obj.file_id),
                 })
             })
             .collect();
@@ -118,9 +119,9 @@ impl<'data> SymbolInfoPrinter<'data> {
                         sym_debug = "Linker script symbol".to_owned();
                         input = s.parsed.input.to_string();
                     }
-                    SequencedInput::Epilogue(_) => {
-                        input = "  <epilogue>".to_owned();
-                        sym_debug = "Epilogue symbol".to_owned();
+                    SequencedInput::SyntheticSymbols(_) => {
+                        input = "  <synthetic>".to_owned();
+                        sym_debug = "Synthetic symbol".to_owned();
                     }
                 }
 
