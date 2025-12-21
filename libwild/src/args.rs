@@ -130,6 +130,7 @@ pub struct Args {
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
+    pub(crate) max_page_size: Option<Alignment>,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -434,6 +435,7 @@ impl Default for Args {
             allow_multiple_definitions: false,
             z_interpose: false,
             z_isa: None,
+            max_page_size: None,
             numeric_experiments: Vec::new(),
             rpath_set: Default::default(),
         }
@@ -569,6 +571,10 @@ impl Args {
     }
 
     pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
+        if let Some(max_page_size) = self.max_page_size {
+            return max_page_size;
+        }
+
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
@@ -1431,7 +1437,19 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .execute(|_args, _modifier_stack, _value| Ok(()));
+        .execute(|args, _modifier_stack, value| {
+            if let Some(size_str) = value.strip_prefix("max-page-size=") {
+                let size: u64 = parse_number(size_str)?;
+                if !size.is_power_of_two() {
+                    bail!("Invalid alignment {size:#x}");
+                }
+
+                args.max_page_size = Some(Alignment {
+                    exponent: size.trailing_zeros() as u8,
+                });
+            }
+            Ok(())
+        });
 
     parser
         .declare_with_param()
