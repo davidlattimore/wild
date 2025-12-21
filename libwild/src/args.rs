@@ -780,9 +780,23 @@ struct WithParam;
 struct WithOptionalParam;
 
 #[derive(Clone, Copy)]
+enum SubOptionHandler {
+    /// Handler without value parameter (exact match)
+    NoValue(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
+    /// Handler with value parameter (prefix match)
+    WithValue(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
+}
+
+#[derive(Clone, Copy)]
 struct SubOption {
     help: &'static str,
-    handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+    handler: SubOptionHandler,
+}
+
+impl SubOption {
+    fn with_value(&self) -> bool {
+        matches!(self.handler, SubOptionHandler::WithValue(_))
+    }
 }
 
 impl Default for ArgumentParser {
@@ -928,7 +942,19 @@ impl ArgumentParser {
 
                 // Check if this value corresponds to a registered sub-option
                 if let Some(sub) = handler.sub_options.get(value.as_str()) {
-                    (sub.handler)(args, modifier_stack, &value)?;
+                    match sub.handler {
+                        SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
+                        SubOptionHandler::WithValue(f) => f(args, modifier_stack, &value)?,
+                    }
+                } else if let Some((sub_name, sub)) = handler
+                    .sub_options
+                    .iter()
+                    .find(|(name, sub)| sub.with_value() && value.starts_with(*name))
+                {
+                    let param_value = &value[sub_name.len()..];
+                    if let SubOptionHandler::WithValue(f) = sub.handler {
+                        f(args, modifier_stack, param_value)?;
+                    }
                 } else {
                     // Fall back to the main handler for unregistered sub-options
                     (handler.handler)(args, modifier_stack, &value)?;
@@ -1011,8 +1037,14 @@ impl ArgumentParser {
                 sub_options.sort_by_key(|(name, _)| *name);
 
                 for (sub_name, sub) in sub_options {
+                    let display_name = if sub.with_value() && sub_name.ends_with('=') {
+                        // sub_name ends with '=' (e.g., "max-page-size="), so add <VALUE>
+                        format!("{sub_name}<VALUE>")
+                    } else {
+                        sub_name.to_string()
+                    };
                     help.push_str(&format!(
-                        "      -{prefix} {sub_name:<30} {sub_help}\n",
+                        "      -{prefix} {display_name:<30} {sub_help}\n",
                         sub_help = sub.help
                     ));
                 }
@@ -1082,9 +1114,32 @@ impl<'a, T> OptionDeclaration<'a, T> {
         mut self,
         name: &'static str,
         help: &'static str,
+        handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>,
+    ) -> Self {
+        self.sub_options.insert(
+            name,
+            SubOption {
+                help,
+                handler: SubOptionHandler::NoValue(handler),
+            },
+        );
+        self
+    }
+
+    #[must_use]
+    fn sub_option_with_value(
+        mut self,
+        name: &'static str,
+        help: &'static str,
         handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
     ) -> Self {
-        self.sub_options.insert(name, SubOption { help, handler });
+        self.sub_options.insert(
+            name,
+            SubOption {
+                help,
+                handler: SubOptionHandler::WithValue(handler),
+            },
+        );
         self
     }
 }
@@ -1191,7 +1246,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("l")
         .help("Link with library")
-        .sub_option(
+        .sub_option_with_value(
             ":filename",
             "Link with specific file",
             |args, modifier_stack, value| {
@@ -1205,7 +1260,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .sub_option(
+        .sub_option_with_value(
             "libname",
             "Link with library libname.so or libname.a",
             |args, modifier_stack, value| {
@@ -1245,18 +1300,14 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("m")
         .help("Set target architecture")
-        .sub_option(
-            "elf_x86_64",
-            "x86-64 ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::X86_64;
-                Ok(())
-            },
-        )
+        .sub_option("elf_x86_64", "x86-64 ELF target", |args, _| {
+            args.arch = Architecture::X86_64;
+            Ok(())
+        })
         .sub_option(
             "elf_x86_64_sol2",
             "x86-64 ELF target (Solaris)",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 if args.dynamic_linker.is_none() {
                     args.dynamic_linker = Some(Path::new("/lib/amd64/ld.so.1").into());
                 }
@@ -1264,30 +1315,18 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .sub_option(
-            "aarch64elf",
-            "AArch64 ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::AArch64;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "aarch64linux",
-            "AArch64 ELF target (Linux)",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::AArch64;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "elf64lriscv",
-            "RISC-V 64-bit ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::RISCV64;
-                Ok(())
-            },
-        )
+        .sub_option("aarch64elf", "AArch64 ELF target", |args, _| {
+            args.arch = Architecture::AArch64;
+            Ok(())
+        })
+        .sub_option("aarch64linux", "AArch64 ELF target (Linux)", |args, _| {
+            args.arch = Architecture::AArch64;
+            Ok(())
+        })
+        .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
+            args.arch = Architecture::RISCV64;
+            Ok(())
+        })
         .execute(|_args, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
@@ -1296,49 +1335,33 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("z")
         .help("Linker option")
-        .sub_option(
-            "now",
-            "Resolve all symbols immediately",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("now", "Resolve all symbols immediately", |_, _| Ok(()))
         .sub_option(
             "origin",
             "Mark object as requiring immediate $ORIGIN",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.needs_origin_handling = true;
                 Ok(())
             },
         )
-        .sub_option(
-            "relro",
-            "Enable RELRO program header",
-            |args, _modifier_stack, _value| {
-                args.relro = true;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "norelro",
-            "Disable RELRO program header",
-            |args, _modifier_stack, _value| {
-                args.relro = false;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "notext",
-            "Do not report DT_TEXTREL as an error",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
-        .sub_option(
-            "nostart-stop-gc",
-            "Disable start/stop symbol GC",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("relro", "Enable RELRO program header", |args, _| {
+            args.relro = true;
+            Ok(())
+        })
+        .sub_option("norelro", "Disable RELRO program header", |args, _| {
+            args.relro = false;
+            Ok(())
+        })
+        .sub_option("notext", "Do not report DT_TEXTREL as an error", |_, _| {
+            Ok(())
+        })
+        .sub_option("nostart-stop-gc", "Disable start/stop symbol GC", |_, _| {
+            Ok(())
+        })
         .sub_option(
             "execstack",
             "Mark object as requiring an executable stack",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.execstack = true;
                 Ok(())
             },
@@ -1346,24 +1369,20 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "noexecstack",
             "Mark object as not requiring an executable stack",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.execstack = false;
                 Ok(())
             },
         )
-        .sub_option(
-            "nocopyreloc",
-            "Disable copy relocations",
-            |args, _modifier_stack, _value| {
-                args.copy_relocations =
-                    CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
-                Ok(())
-            },
-        )
+        .sub_option("nocopyreloc", "Disable copy relocations", |args, _| {
+            args.copy_relocations =
+                CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
+            Ok(())
+        })
         .sub_option(
             "nodelete",
             "Mark shared object as non-deletable",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.needs_nodelete_handling = true;
                 Ok(())
             },
@@ -1371,7 +1390,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "defs",
             "Report unresolved symbol references in object files",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.no_undefined = true;
                 Ok(())
             },
@@ -1379,28 +1398,20 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "undefs",
             "Do not report unresolved symbol references in object files",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.no_undefined = false;
                 Ok(())
             },
         )
-        .sub_option(
-            "muldefs",
-            "Allow multiple definitions",
-            |args, _modifier_stack, _value| {
-                args.allow_multiple_definitions = true;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "lazy",
-            "Use lazy binding (default)",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("muldefs", "Allow multiple definitions", |args, _| {
+            args.allow_multiple_definitions = true;
+            Ok(())
+        })
+        .sub_option("lazy", "Use lazy binding (default)", |_, _| Ok(()))
         .sub_option(
             "interpose",
             "Mark object to interpose all DSOs but executable",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.z_interpose = true;
                 Ok(())
             },
@@ -1408,46 +1419,40 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "x86-64-baseline",
             "Mark x86-64-baseline ISA as needed",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_BASELINE);
                 Ok(())
             },
         )
-        .sub_option(
-            "x86-64-v2",
-            "Mark x86-64-v2 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V2);
-                Ok(())
-            },
-        )
-        .sub_option(
-            "x86-64-v3",
-            "Mark x86-64-v3 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V3);
-                Ok(())
-            },
-        )
-        .sub_option(
-            "x86-64-v4",
-            "Mark x86-64-v4 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V4);
-                Ok(())
-            },
-        )
-        .execute(|args, _modifier_stack, value| {
-            if let Some(size_str) = value.strip_prefix("max-page-size=") {
-                let size: u64 = parse_number(size_str)?;
+        .sub_option("x86-64-v2", "Mark x86-64-v2 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V2);
+            Ok(())
+        })
+        .sub_option("x86-64-v3", "Mark x86-64-v3 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V3);
+            Ok(())
+        })
+        .sub_option("x86-64-v4", "Mark x86-64-v4 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V4);
+            Ok(())
+        })
+        .sub_option_with_value(
+            "max-page-size=",
+            "Set maximum page size for load segments",
+            |args, _, value| {
+                let size: u64 = parse_number(value)?;
                 if !size.is_power_of_two() {
                     bail!("Invalid alignment {size:#x}");
                 }
-
                 args.max_page_size = Some(Alignment {
                     exponent: size.trailing_zeros() as u8,
                 });
-            }
+
+                Ok(())
+            },
+        )
+        .execute(|_args, _modifier_stack, value| {
+            warn_unsupported(&("-z ".to_owned() + value))?;
             Ok(())
         });
 
