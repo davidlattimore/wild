@@ -1937,7 +1937,10 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Exclude libraries")
         .execute(|args, _modifier_stack, value| {
             if value != "ALL" {
+                // For now, just warn and ignore.
+                // FIXME: Support excluding specific libraries.
                 warn_unsupported("--exclude-libs other than ALL")?;
+                return Ok(());
             }
             args.exclude_libs = true;
             Ok(())
