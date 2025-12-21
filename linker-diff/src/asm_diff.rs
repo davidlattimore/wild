@@ -2305,7 +2305,8 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TpOff
             | RelocationKind::TpOff2KBiased
             | RelocationKind::TlsDescCall
-            | RelocationKind::PairSubtraction
+            | RelocationKind::PairSubtractionULEB128
+            | RelocationKind::AbsoluteSubtractionULEB128
             | RelocationKind::None
             | RelocationKind::Alignment => 0,
         };
@@ -2528,7 +2529,8 @@ fn value_kind_for_relocation<A: Arch>(
         }
         RelocationKind::TlsDescCall
         | RelocationKind::None
-        | RelocationKind::PairSubtraction
+        | RelocationKind::PairSubtractionULEB128
+        | RelocationKind::AbsoluteSubtractionULEB128
         | RelocationKind::Alignment => {
             return None;
         }
@@ -3433,7 +3435,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelative
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
-                | RelocationKind::PairSubtraction
+                | RelocationKind::PairSubtractionULEB128
+                | RelocationKind::AbsoluteSubtractionULEB128
                 | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot

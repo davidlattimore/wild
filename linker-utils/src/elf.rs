@@ -935,6 +935,10 @@ pub enum RelocationKind {
     AbsoluteSubtraction,
 
     /// Subtract the absolute address of a symbol or section at the place of the relocation
+    /// from the value at the place (using ULEB128 encoding).
+    AbsoluteSubtractionULEB128,
+
+    /// Subtract the absolute address of a symbol or section at the place of the relocation
     /// from the value at the place (use WORD6 type for the operation)
     AbsoluteSubtractionWord6,
 
@@ -944,7 +948,7 @@ pub enum RelocationKind {
     AbsoluteAArch64,
 
     /// Subtract addresses of two symbols and encode the value using ULEB128.
-    PairSubtraction,
+    PairSubtractionULEB128,
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
@@ -1255,10 +1259,6 @@ pub enum RiscVInstruction {
 
     // Specifies a field as the immediate field in a CJ-type (compressed jump) instruction
     CjType,
-
-    // Encode the value using ULEB128 encoding (the size of the output is variable based on the
-    // value)
-    Uleb128,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1318,7 +1318,7 @@ impl RelocationInstruction {
     pub fn write_windows_size(self) -> usize {
         match self {
             Self::AArch64(..) => 4,
-            Self::RiscV(..) => 10,
+            Self::RiscV(..) => 4,
             Self::LoongArch64(..) => 4,
         }
     }

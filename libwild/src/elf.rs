@@ -7,6 +7,7 @@ use crate::resolution::LoadedMetrics;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
+use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionType;
@@ -20,6 +21,7 @@ use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use rayon::prelude::*;
 use std::borrow::Cow;
+use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
 use std::ops::Range;
@@ -543,30 +545,37 @@ pub(crate) fn write_relocation_to_buffer(
 ) -> Result<()> {
     rel_info.verify(value as i64)?;
 
-    match rel_info.size {
-        RelocationSize::ByteSize(byte_size) => {
-            ensure!(
-                byte_size <= output.len(),
-                "Relocation outside of bounds of section"
-            );
-            let value_bytes = value.to_le_bytes();
-            output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
-        }
-        RelocationSize::BitMasking(BitMask {
-            range,
-            instruction: insn,
-        }) => {
-            let extracted_value = value.extract_bits(range.start..range.end);
-            let negative = (value as i64).is_negative();
-            let output_len = output.len();
-            insn.write_to_value(
-                extracted_value,
-                negative,
-                // We can write a non-text section, so we might need to limit the output buffer
-                // slice e.g. .gcc_except_table is written on riscv64 using the
-                // ULEB128 encoding
-                &mut output[..insn.write_windows_size().min(output_len)],
-            );
+    if matches!(
+        rel_info.kind,
+        RelocationKind::PairSubtractionULEB128 | RelocationKind::AbsoluteSubtractionULEB128
+    ) {
+        // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
+        let mut writer = Cursor::new(vec![0u8; 10]);
+        let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
+        ensure!(
+            output.len() >= n,
+            "cannot write encoded ULEB128 value of {n} bytes"
+        );
+        output[..n].copy_from_slice(&writer.into_inner()[..n]);
+    } else {
+        match rel_info.size {
+            RelocationSize::ByteSize(byte_size) => {
+                ensure!(
+                    byte_size <= output.len(),
+                    "Relocation outside of bounds of section"
+                );
+                let value_bytes = value.to_le_bytes();
+                output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+            }
+            RelocationSize::BitMasking(BitMask {
+                range,
+                instruction: insn,
+            }) => {
+                let extracted_value = value.extract_bits(range.start..range.end);
+                let negative = (value as i64).is_negative();
+                let output_len = output.len();
+                insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
+            }
         }
     }
 

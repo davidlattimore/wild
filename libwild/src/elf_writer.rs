@@ -1871,13 +1871,22 @@ fn adjust_relocation_based_on_value(
 ) -> Result<u64> {
     const LOW6_MASK: u64 = 0b0011_1111;
 
-    let mut read_data = [0u8; 8];
-    let RelocationSize::ByteSize(rel_size) = rel_info.size else {
-        bail!("Unexpected size for the addition/subtraction relocation");
+    let current_value = if matches!(
+        rel_info.kind,
+        RelocationKind::AbsoluteSubtractionULEB128 | RelocationKind::PairSubtractionULEB128
+    ) {
+        let mut reader = Cursor::new(&out[offset_in_section..]);
+        leb128::read::unsigned(&mut reader)?
+    } else {
+        let mut read_data = [0u8; 8];
+        let RelocationSize::ByteSize(rel_size) = rel_info.size else {
+            bail!("Unexpected size for the addition/subtraction relocation");
+        };
+        // Read only N bytes from the current value based on the size of the relocation.
+        read_data[..rel_size]
+            .copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
+        u64::from_le_bytes(read_data)
     };
-    // Read only N bytes from the current value based on the size of the relocation.
-    read_data[..rel_size].copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
-    let current_value = u64::from_le_bytes(read_data);
 
     // Handle addition and subtraction relocation kinds.
     match rel_info.kind {
@@ -1892,7 +1901,9 @@ fn adjust_relocation_based_on_value(
             let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
             Ok(value | (current_value & !LOW6_MASK))
         }
-        RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
+        RelocationKind::AbsoluteSubtraction | RelocationKind::AbsoluteSubtractionULEB128 => {
+            Ok(current_value.wrapping_sub(value))
+        }
         RelocationKind::AbsoluteSubtractionWord6 => {
             // Preserve the 2 most significant bits of u8.
             let value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK;
@@ -2049,6 +2060,7 @@ fn apply_relocation<'data, A: Arch>(
             layout,
         )?,
         RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSubtractionULEB128
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
         | RelocationKind::AbsoluteAdditionWord6
@@ -2183,7 +2195,7 @@ fn apply_relocation<'data, A: Arch>(
                 ),
             }
         }
-        RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
+        RelocationKind::PairSubtractionULEB128 => get_pair_subtraction_relocation_value::<A>(
             object_layout,
             rel,
             layout,
@@ -2329,6 +2341,7 @@ fn apply_relocation<'data, A: Arch>(
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteSubtractionWord6
+            | RelocationKind::AbsoluteSubtractionULEB128
     ) {
         value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
@@ -2408,6 +2421,7 @@ fn apply_debug_relocation<'data, A: Arch>(
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteSubtractionULEB128
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
@@ -2427,6 +2441,7 @@ fn apply_debug_relocation<'data, A: Arch>(
                         | RelocationKind::AbsoluteSubtraction
                         | RelocationKind::AbsoluteSetWord6
                         | RelocationKind::AbsoluteSubtractionWord6
+                        | RelocationKind::AbsoluteSubtractionULEB128
                 ) {
                     value = adjust_relocation_based_on_value(
                         value,
@@ -2441,7 +2456,7 @@ fn apply_debug_relocation<'data, A: Arch>(
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
-            RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
+            RelocationKind::PairSubtractionULEB128 => get_pair_subtraction_relocation_value::<A>(
                 object_layout,
                 rel,
                 layout,

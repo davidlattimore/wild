@@ -3452,7 +3452,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::TpOff
         | RelocationKind::TpOff2KBiased
         | RelocationKind::SymRelGotBase
-        | RelocationKind::PairSubtraction => ValueFlags::DIRECT,
+        | RelocationKind::PairSubtractionULEB128
+        | RelocationKind::AbsoluteSubtractionULEB128 => ValueFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {
             ValueFlags::empty()
         }
