@@ -3419,9 +3419,10 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
             ValueFlags::PLT | ValueFlags::GOT
         }
-        RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
-            ValueFlags::GOT
-        }
+        RelocationKind::Got
+        | RelocationKind::GotRelGotBase
+        | RelocationKind::GotRelative
+        | RelocationKind::GotRelativeLoongArch64 => ValueFlags::GOT,
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot

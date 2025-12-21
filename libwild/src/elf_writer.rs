@@ -2198,6 +2198,10 @@ fn apply_relocation<'data, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::GotRelativeLoongArch64 => loong_arch_highest_with_biased(
+            resolution.got_address()?.wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
             .bitand(mask.got_entry)

@@ -978,6 +978,8 @@ pub enum RelocationKind {
 
     /// The address of the symbol's GOT entry, relative to the place of the relocation.
     GotRelative,
+    // TODO
+    GotRelativeLoongArch64,
 
     /// The address of a TLSGD structure, relative to the place of the relocation. A TLSGD
     /// (thread-local storage general dynamic) structure is a pair of values containing a module ID

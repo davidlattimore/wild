@@ -253,6 +253,20 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
+        object::elf::R_LARCH_GOT64_PC_HI12 => (
+            RelocationKind::GotRelativeLoongArch64,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_GOT64_PC_LO20 => (
+            RelocationKind::GotRelativeLoongArch64,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         // CFG-related relocations.
         object::elf::R_LARCH_B16 => (
             RelocationKind::Relative,
