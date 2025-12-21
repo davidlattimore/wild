@@ -1880,7 +1880,7 @@ fn adjust_relocation_based_on_value(
         let mut reader = Cursor::new(&out[offset_in_section..]);
         let v = leb128::read::unsigned(&mut reader)?;
         if matches!(rel_info.kind, RelocationKind::AbsoluteAdditionULEB128) {
-            dbg!(v);
+            ensure!(v == 0, "zero expected");
         }
         v
     } else {
