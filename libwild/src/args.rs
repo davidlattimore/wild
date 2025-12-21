@@ -227,8 +227,12 @@ pub(crate) enum FileWriteMode {
 
     /// The existing output file, if any, will be edited in-place. Any hard links to the file will
     /// update accordingly. If the file is locked due to currently being executed, then our write
-    /// will fail. Specified indicates whether the mode was explicitly specified by the user or not.
-    UpdateInPlace { specified: bool },
+    /// will fail.
+    UpdateInPlace,
+
+    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
+    /// unlinking and replacing.
+    UpdateInPlaceWithFallback,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -2279,7 +2283,16 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("update-in-place")
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
-            args.file_write_mode = Some(FileWriteMode::UpdateInPlace { specified: true });
+            args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-update-in-place")
+        .help("Delete and recreate the file")
+        .execute(|args, _modifier_stack| {
+            args.file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
             Ok(())
         });
 
