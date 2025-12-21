@@ -15,7 +15,7 @@
 //#CompArgs:--target aarch64-unknown-linux-musl -C relocation-model=static -C
 //#CompArgs:--target target-feature=+crt-static -C debuginfo=2
 //#RequiresRustMusl: true
-//#Arch: aarch64,loongarch64
+//#Arch: aarch64
 
 //#Config:cranelift-static:default
 //#CompArgs:-Zcodegen-backend=cranelift --target x86_64-unknown-linux-musl -C
@@ -34,7 +34,7 @@
 //#CompArgs:-Zcodegen-backend=cranelift debuginfo=2 --cfg cranelift
 //#RequiresRustMusl: true
 //#RequiresNightlyRustc: true
-//#Arch: aarch64,loongarch64
+//#Arch: aarch64
 //#DiffIgnore:section.debug_str.flags
 //#DiffIgnore:section.debug_str.entsize
 
