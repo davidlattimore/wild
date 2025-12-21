@@ -1146,7 +1146,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.38.0"
-source = "git+https://github.com/gimli-rs/object.git#345c78b1c74bda8307855e0dba8a5e0791ac10f3"
+source = "git+https://github.com/gimli-rs/object.git?rev=345c78b1c74bda8307855e0dba8a5e0791ac10f3#345c78b1c74bda8307855e0dba8a5e0791ac10f3"
 dependencies = [
  "memchr",
 ]
