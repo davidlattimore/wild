@@ -2303,6 +2303,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
+            | RelocationKind::TpOff2KBiased
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtraction
             | RelocationKind::None
@@ -2504,7 +2505,9 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::GotRelative
         | RelocationKind::GotRelativeLoongArch64 => ValueKind::Got(BasicValueKind::Pointer),
         RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
-        RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
+        RelocationKind::TpOff | RelocationKind::TpOff2KBiased => {
+            ValueKind::Unwrapped(A::get_basic_value_for_tp_offset())
+        }
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
@@ -3440,6 +3443,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsLdGotBase
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
+                | RelocationKind::TpOff2KBiased
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {

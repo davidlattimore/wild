@@ -332,6 +332,20 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
+        object::elf::R_LARCH_TLS_LE_HI20_R => (
+            RelocationKind::TpOff2KBiased,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LE_LO12_R => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         object::elf::R_LARCH_TLS_IE_PC_HI20 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
@@ -418,7 +432,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
 
         // Misc relocations.
-        object::elf::R_LARCH_RELAX => (
+        object::elf::R_LARCH_RELAX | object::elf::R_LARCH_TLS_LE_ADD_R => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             None,
@@ -426,7 +440,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_LARCH_ALIGN => (
-            RelocationKind::Alignment,
+            RelocationKind::None,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),

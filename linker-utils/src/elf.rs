@@ -1024,6 +1024,8 @@ pub enum RelocationKind {
 
     /// The offset of a TLS variable within the executable's TLS storage.
     TpOff,
+    // TODO
+    TpOff2KBiased,
 
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,

@@ -2296,6 +2296,11 @@ fn apply_relocation<'data, A: Arch>(
             .value()
             .wrapping_sub(A::tp_offset_start(layout))
             .wrapping_add(addend as u64),
+        RelocationKind::TpOff2KBiased => resolution
+            .value()
+            .wrapping_sub(A::tp_offset_start(layout))
+            .wrapping_add(addend as u64)
+            .wrapping_add(SIZE_2KB),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
             .bitand(mask.got_entry)
