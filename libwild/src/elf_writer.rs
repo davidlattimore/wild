@@ -1878,7 +1878,11 @@ fn adjust_relocation_based_on_value(
             | RelocationKind::PairSubtractionULEB128
     ) {
         let mut reader = Cursor::new(&out[offset_in_section..]);
-        leb128::read::unsigned(&mut reader)?
+        let v = leb128::read::unsigned(&mut reader)?;
+        if matches!(rel_info.kind, RelocationKind::AbsoluteAdditionULEB128) {
+            dbg!(v);
+        }
+        v
     } else {
         let mut read_data = [0u8; 8];
         let RelocationSize::ByteSize(rel_size) = rel_info.size else {
