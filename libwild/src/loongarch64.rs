@@ -2,6 +2,7 @@ use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -88,8 +89,12 @@ impl crate::arch::Arch for LoongArch64 {
         None
     }
 
-    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
-        Ok(0)
+    fn merge_eflags(eflags: &[u32]) -> Result<u32> {
+        eflags
+            .iter()
+            .all_equal_value()
+            .copied()
+            .map_err(|_e| error!("non-unique e_flags"))
     }
 }
 
