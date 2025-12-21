@@ -521,6 +521,10 @@ const fn default_target_arch() -> Architecture {
     {
         Architecture::RISCV64
     }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        Architecture::LoongArch64
+    }
 }
 
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {

@@ -37,7 +37,10 @@ pub(crate) mod part_id;
 pub(crate) mod perf;
 #[cfg(any(
     not(target_os = "linux"),
-    all(target_os = "linux", target_arch = "riscv64")
+    all(
+        target_os = "linux",
+        any(target_arch = "riscv64", target_arch = "loongarch64")
+    )
 ))]
 #[path = "perf_unsupported.rs"]
 pub(crate) mod perf;
