@@ -983,6 +983,7 @@ pub enum RelocationKind {
 
     /// The address of the symbol's GOT entry, relative to the place of the relocation.
     GotRelative,
+    GotRelative2KBiased,
     // TODO
     GotRelativeLoongArch64,
 

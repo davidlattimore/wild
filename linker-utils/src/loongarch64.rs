@@ -250,7 +250,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         // GOT-relative relocations
         object::elf::R_LARCH_GOT_PC_HI20 => (
-            RelocationKind::GotRelative,
+            RelocationKind::GotRelative2KBiased,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
