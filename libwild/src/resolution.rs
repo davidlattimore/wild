@@ -21,9 +21,8 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
-use crate::output_section_id::InitFiniOrder;
+use crate::output_section_id::InitFiniSectionDetail;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SecondaryOrder;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
@@ -55,7 +54,6 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
-use object::SectionIndex;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelBridge;
@@ -308,6 +306,7 @@ fn resolve_sections<'data>(
                 non_dynamic.sections = resolve_sections_for_object(
                     obj,
                     &mut non_dynamic.custom_sections,
+                    &mut non_dynamic.init_fini_sections,
                     &mut non_dynamic.string_merge_extras,
                     symbol_db.args,
                     allocator,
@@ -545,6 +544,8 @@ pub(crate) struct NonDynamicResolved<'data> {
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
+
+    init_fini_sections: Vec<InitFiniSectionDetail>,
 }
 
 #[derive(Debug)]
@@ -577,21 +578,13 @@ fn assign_section_ids<'data>(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
                 );
-                assign_init_fini_secondaries(
-                    s.file_id,
-                    s.object,
+                apply_init_fini_secondaries(
+                    &non_dynamic.init_fini_sections,
                     non_dynamic.sections.as_mut_slice(),
                     output_sections,
                 );
             }
         }
-    }
-}
-
-fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSection> {
-    match slot {
-        SectionSlot::Unloaded(sec) | SectionSlot::MustLoad(sec) => Some(sec),
-        _ => None,
     }
 }
 
@@ -605,78 +598,16 @@ fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
     Some(u16::try_from(value).unwrap_or(u16::MAX))
 }
 
-fn is_init_fini_name(name: &[u8]) -> bool {
-    // .init_array / .init_array.00005...
-    name == secnames::INIT_ARRAY_SECTION_NAME
-        || name.starts_with(b".init_array.")
-        // .fini_array / .fini_array.00005...
-        || name == secnames::FINI_ARRAY_SECTION_NAME
-        || name.starts_with(b".fini_array.")
-        // .ctors / .ctors.00005...
-        || name.starts_with(b".ctors")
-        // .dtors / .dtors.00005...
-        || name.starts_with(b".dtors")
-}
-
-fn classify_init_fini_priority(name: &[u8]) -> (u16, bool) {
-    let is_ctors_like = name.starts_with(b".ctors");
-
+fn init_fini_priority(name: &[u8]) -> Option<u16> {
     if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
-        return (u16::MAX, is_ctors_like);
+        return Some(u16::MAX);
     }
 
     if name.starts_with(b".init_array.") || name.starts_with(b".fini_array.") {
-        let prio = parse_priority_suffix(name).unwrap_or(u16::MAX);
-        return (prio, is_ctors_like);
+        return parse_priority_suffix(name);
     }
 
-    if name.starts_with(b".ctors.") || name.starts_with(b".dtors.") {
-        let suffix = parse_priority_suffix(name).unwrap_or(u16::MAX);
-        let prio = u16::MAX.wrapping_sub(suffix);
-        return (prio, is_ctors_like);
-    }
-
-    if name == b".ctors" || name == b".dtors" {
-        return (u16::MAX, is_ctors_like);
-    }
-
-    (u16::MAX, is_ctors_like)
-}
-
-fn assign_init_fini_secondaries<'data>(
-    file_id: FileId,
-    object_file: &File<'data>,
-    sections: &mut [SectionSlot],
-    output_sections: &mut OutputSections<'data>,
-) {
-    for (index, slot) in sections.iter_mut().enumerate() {
-        let unloaded = match init_fini_unloaded_section(slot) {
-            Some(u) => u,
-            None => continue,
-        };
-
-        let header = match object_file.section(SectionIndex(index)) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-        let name = object_file.section_name(header).unwrap_or(b"");
-
-        if !is_init_fini_name(name) {
-            continue;
-        }
-
-        let (priority, is_ctors_like) = classify_init_fini_priority(name);
-        let secondary_id = unloaded.part_id.output_section_id();
-
-        output_sections.set_secondary_order(
-            secondary_id,
-            SecondaryOrder::InitFini(InitFiniOrder {
-                priority,
-                file_index: file_id.file() as u32,
-                is_ctors_like,
-            }),
-        );
-    }
+    None
 }
 
 struct Outputs<'data> {
@@ -935,6 +866,7 @@ impl<'data> ResolvedObject<'data> {
                 relocations: Default::default(),
                 string_merge_extras: Default::default(),
                 custom_sections: Default::default(),
+                init_fini_sections: Default::default(),
             });
         }
 
@@ -948,9 +880,32 @@ impl<'data> ResolvedObject<'data> {
     }
 }
 
+fn apply_init_fini_secondaries<'data>(
+    details: &[InitFiniSectionDetail],
+    sections: &mut [SectionSlot],
+    output_sections: &mut OutputSections<'data>,
+) {
+    for d in details {
+        let Some(slot) = sections.get_mut(d.index as usize) else {
+            continue;
+        };
+
+        let unloaded = match slot {
+            SectionSlot::Unloaded(u) | SectionSlot::MustLoad(u) => u,
+            _ => continue,
+        };
+
+        let alignment = unloaded.part_id.alignment();
+        let sid =
+            output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, alignment);
+        unloaded.part_id = sid.part_id_with_alignment(alignment);
+    }
+}
+
 fn resolve_sections_for_object<'data>(
     obj: &ResolvedObject<'data>,
     custom_sections: &mut Vec<CustomSectionDetails<'data>>,
+    init_fini_sections: &mut Vec<InitFiniSectionDetail>,
     string_merge_extras: &mut Vec<StringMergeSectionExtra<'data>>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
@@ -986,6 +941,13 @@ fn resolve_sections_for_object<'data>(
                     must_load |= output_info.must_keep;
 
                     unloaded_section = UnloadedSection::new(part_id);
+                    if let Some(priority) = init_fini_priority(section_name) {
+                        init_fini_sections.push(InitFiniSectionDetail {
+                            index: input_section_index.0 as u32,
+                            primary: output_info.section_id,
+                            priority,
+                        });
+                    }
                 }
                 SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
                 SectionRuleOutcome::EhFrame => {

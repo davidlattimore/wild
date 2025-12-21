@@ -42,12 +42,10 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
-use crate::output_section_id::InitFiniOrder;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SecondaryOrder;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -1960,44 +1958,10 @@ fn merge_secondary_parts(
     output_sections: &OutputSections,
     section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
 ) {
-    // primary -> 通常 secondary のリスト（元の順序を保持）
-    let mut normal_secondaries: OutputSectionMap<Vec<OutputSectionId>> =
-        output_sections.new_section_map_with(Vec::new);
-    // primary -> Init/Fini secondary の (順序キー, id) リスト
-    let mut init_fini_secondaries: OutputSectionMap<Vec<(InitFiniOrder, OutputSectionId)>> =
-        output_sections.new_section_map_with(Vec::new);
-    // まずは全セクションを走査して secondary を分類する
     for (id, info) in output_sections.ids_with_info() {
         if let SectionKind::Secondary(primary_id) = info.kind {
-            match info.secondary_order {
-                Some(SecondaryOrder::InitFini(order)) => {
-                    // .init_array/.fini_array/.ctors/.dtors 系
-                    init_fini_secondaries.get_mut(primary_id).push((order, id));
-                }
-                _ => {
-                    // それ以外の secondary は従来通りの順序でマージ
-                    normal_secondaries.get_mut(primary_id).push(id);
-                }
-            }
-        }
-    }
-
-    // primary ごとに、normal → Init/Fini の順でマージする
-    for (primary_id, _info) in output_sections.ids_with_info() {
-        // 1. 通常 secondary を元の順序のままマージ
-        for secondary_id in normal_secondaries.get(primary_id) {
-            let secondary_layout = take(section_layouts.get_mut(*secondary_id));
+            let secondary_layout = take(section_layouts.get_mut(id));
             section_layouts.get_mut(primary_id).merge(&secondary_layout);
-        }
-
-        // 2. Init/Fini secondary を InitFiniOrder でソートしてからマージ
-        let list = init_fini_secondaries.get_mut(primary_id);
-        list.sort_by(|(a, _), (b, _)| a.cmp(b));
-        if !list.is_empty() {
-            for &(_, secondary_id) in list.iter() {
-                let secondary_layout = take(section_layouts.get_mut(secondary_id));
-                section_layouts.get_mut(primary_id).merge(&secondary_layout);
-            }
         }
     }
 }

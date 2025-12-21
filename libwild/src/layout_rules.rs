@@ -285,7 +285,7 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    pub const fn prefix_section_keep(
+    const fn prefix_section_keep(
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
