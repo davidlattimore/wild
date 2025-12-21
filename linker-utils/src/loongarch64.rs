@@ -192,14 +192,16 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_PCALA64_HI12 => (
             RelocationKind::RelativeLoongArchHigh,
             RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
-            Some(PageMask::Position(PAGE_MASK_4KB)),
+            // Mark is applied directly in the relocation!
+            None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_LARCH_PCALA64_LO20 => (
             RelocationKind::RelativeLoongArchHigh,
             RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
-            Some(PageMask::Position(PAGE_MASK_4KB)),
+            // Mark is applied directly in the relocation!
+            None,
             AllowedRange::no_check(),
             1,
         ),
@@ -242,12 +244,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_GOT_PC_HI20 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
-            Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_LARCH_GOT_PC_LO12 => (
-            RelocationKind::GotRelative,
+            RelocationKind::Got,
             RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
             None,
             AllowedRange::no_check(),
@@ -256,6 +258,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_GOT64_PC_HI12 => (
             RelocationKind::GotRelativeLoongArch64,
             RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            // Mark is applied directly in the relocation!
             None,
             AllowedRange::no_check(),
             1,
@@ -263,6 +266,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_GOT64_PC_LO20 => (
             RelocationKind::GotRelativeLoongArch64,
             RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            // Mark is applied directly in the relocation!
             None,
             AllowedRange::no_check(),
             1,
@@ -363,6 +367,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_TLS_IE64_PC_LO20 => (
             RelocationKind::GotTpOffLoongArch64,
             RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            // Mark is applied directly in the relocation!
             None,
             AllowedRange::no_check(),
             1,
@@ -370,6 +375,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_TLS_IE64_PC_HI12 => (
             RelocationKind::GotTpOffLoongArch64,
             RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            // Mark is applied directly in the relocation!
             None,
             AllowedRange::no_check(),
             1,

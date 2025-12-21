@@ -2100,7 +2100,7 @@ fn apply_relocation<'data, A: Arch>(
                     &layout.merged_strings,
                     &layout.merged_string_start_addresses,
                 )?,
-                mask.place,
+                place,
             )
         }
         RelocationKind::RelativeRiscVLow12 => {
