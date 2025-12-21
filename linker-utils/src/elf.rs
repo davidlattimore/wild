@@ -957,7 +957,7 @@ pub enum RelocationKind {
     /// R_RISCV_SET_ULEB128 and R_RISCV_SUB_ULEB128 relocation pair and fill the space with a
     /// single ULEB128-encoded value. This is achieved by prepending the redundant 0x80 byte as
     /// necessary. The linker must not alter the length of the ULEB128-encoded value.
-    PairSubtractionULEB128,
+    PairSubtractionULEB128(u32),
 
     /// The address of the symbol, relative to the place of the relocation.
     Relative,

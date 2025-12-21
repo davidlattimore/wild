@@ -1875,7 +1875,7 @@ fn adjust_relocation_based_on_value(
         rel_info.kind,
         RelocationKind::AbsoluteSubtractionULEB128
             | RelocationKind::AbsoluteAdditionULEB128
-            | RelocationKind::PairSubtractionULEB128
+            | RelocationKind::PairSubtractionULEB128(..)
     ) {
         let mut reader = Cursor::new(&out[offset_in_section..]);
         let v = leb128::read::unsigned(&mut reader)?;
@@ -1930,17 +1930,20 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     symbol_index: SymbolIndex,
     addend: i64,
     mut relocations_to_search: impl Iterator<Item = &'a Crel>,
+    expected_r_type: u32,
 ) -> Result<u64> {
     let set_rel = relocations_to_search
         .next()
         .with_context(|| "Missing previous relocation".to_string())?;
     ensure!(
         set_rel.r_offset == rel.r_offset,
-        "R_RISCV_SET_ULEB128 relocation must have equal offset"
+        "PairSubtractionULEB128 relocation must have equal offset"
     );
     ensure!(
-        set_rel.r_type == object::elf::R_RISCV_SET_ULEB128,
-        "R_RISCV_SET_ULEB128 must be the previous relocation"
+        set_rel.r_type == expected_r_type,
+        "unexpected previous relocation: expected: {}, was: {}",
+        A::rel_type_to_string(expected_r_type),
+        A::rel_type_to_string(set_rel.r_type)
     );
     let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
@@ -2204,16 +2207,19 @@ fn apply_relocation<'data, A: Arch>(
                 ),
             }
         }
-        RelocationKind::PairSubtractionULEB128 => get_pair_subtraction_relocation_value::<A>(
-            object_layout,
-            rel,
-            layout,
-            resolution,
-            symbol_index,
-            addend,
-            // It must be the previous relocation
-            iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
-        )?,
+        RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+            get_pair_subtraction_relocation_value::<A>(
+                object_layout,
+                rel,
+                layout,
+                resolution,
+                symbol_index,
+                addend,
+                // It must be the previous relocation
+                iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
+                expected_r_type,
+            )?
+        }
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)
@@ -2468,16 +2474,19 @@ fn apply_debug_relocation<'data, A: Arch>(
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
-            RelocationKind::PairSubtractionULEB128 => get_pair_subtraction_relocation_value::<A>(
-                object_layout,
-                rel,
-                layout,
-                resolution,
-                symbol_index,
-                addend,
-                // Must be the previous relocation.
-                iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
-            )?,
+            RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+                get_pair_subtraction_relocation_value::<A>(
+                    object_layout,
+                    rel,
+                    layout,
+                    resolution,
+                    symbol_index,
+                    addend,
+                    // Must be the previous relocation.
+                    iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
+                    expected_r_type,
+                )?
+            }
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
             kind => bail!("Unsupported debug relocation kind {kind:?}"),

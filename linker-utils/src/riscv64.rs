@@ -326,7 +326,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_RISCV_SUB_ULEB128 => (
-            RelocationKind::PairSubtractionULEB128,
+            RelocationKind::PairSubtractionULEB128(object::elf::R_RISCV_SET_ULEB128),
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),

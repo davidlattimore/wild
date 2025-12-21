@@ -547,7 +547,7 @@ pub(crate) fn write_relocation_to_buffer(
 
     if matches!(
         rel_info.kind,
-        RelocationKind::PairSubtractionULEB128
+        RelocationKind::PairSubtractionULEB128(..)
             | RelocationKind::AbsoluteAdditionULEB128
             | RelocationKind::AbsoluteSubtractionULEB128
     ) {
