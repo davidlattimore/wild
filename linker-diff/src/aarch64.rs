@@ -307,8 +307,8 @@ const CHAINS: &[&[RType]] = &[
 
 const REL_ADR_PAGE: BitMask = BitMask::new(
     RelocationInstruction::AArch64(AArch64Instruction::Adr),
-    SIZE_4KB.leading_zeros(),
-    SIZE_4KB.leading_zeros() + 21,
+    SIZE_4KB.trailing_zeros(),
+    SIZE_4KB.trailing_zeros() + 21,
 );
 
 const REL_LDR_OFFSET: BitMask = BitMask::new(

@@ -8,10 +8,11 @@ use crate::layout::PropertyClass;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
-use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
@@ -74,7 +75,7 @@ impl crate::arch::Arch for AArch64 {
         ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
         AArch64Instruction::Adr.write_to_value(
             // The immediate value represents a distance in pages.
-            offset / PAGE_MASK_4KB,
+            offset / SIZE_4KB,
             false,
             &mut plt_entry[0..4],
         );
