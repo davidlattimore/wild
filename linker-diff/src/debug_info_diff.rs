@@ -130,7 +130,8 @@ fn diff_debug_info(
             let unit = info.get(ref_unit_ident);
             match unit {
                 Some(unit_size) => {
-                    if ref_unit_size != unit_size {
+                    // Sometimes ld can GC some of the Compilation Units and so the size is smaller.
+                    if ref_unit_size != unit_size && &objects[object_id].name != "ld" {
                         mismatches.push(Diff {
                             key: format!("{DEBUG_INFO_ERROR_KEY}.size_mismatch"),
                             values: DiffValues::PreFormatted(format!(
