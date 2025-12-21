@@ -39,6 +39,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
+        // Addition and subtraction relocations.
         object::elf::R_LARCH_32 => (
             RelocationKind::Absolute,
             RelocationSize::ByteSize(4),
@@ -53,8 +54,127 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-
-        // TODO: reorder
+        object::elf::R_LARCH_ADD6 => (
+            RelocationKind::AbsoluteAdditionWord6,
+            RelocationSize::ByteSize(1),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ADD8 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(1),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ADD16 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(2),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ADD24 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(3),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ADD32 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ADD64 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB6 => (
+            RelocationKind::AbsoluteSubtractionWord6,
+            RelocationSize::ByteSize(1),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB8 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(1),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB16 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(2),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB24 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(3),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB32 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_SUB64 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // TODO
+        object::elf::R_LARCH_ADD_ULEB128 | object::elf::R_LARCH_SUB_ULEB128 => (
+            RelocationKind::Absolute,
+            RelocationSize::ByteSize(0),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // General relocations
+        object::elf::R_LARCH_ABS_HI20 => (
+            RelocationKind::Absolute,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ABS_LO12 => (
+            RelocationKind::Absolute,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ABS64_HI12 => (
+            RelocationKind::Absolute,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_ABS64_LO20 => (
+            RelocationKind::Absolute,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         object::elf::R_LARCH_PCALA_HI20 => (
             RelocationKind::Relative2KBiased,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
@@ -83,13 +203,42 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_LARCH_B16 => (
+        object::elf::R_LARCH_32_PCREL => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_loongarch64(2, 18, LoongArch64Instruction::Shift10),
+            RelocationSize::ByteSize(4),
             None,
             AllowedRange::no_check(),
             1,
         ),
+        object::elf::R_LARCH_PCREL20_S2 => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_loongarch64(2, 22, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_64_PCREL => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_PCADD_HI20 => (
+            RelocationKind::Relative2KBiased,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_PCADD_LO12 => (
+            RelocationKind::RelativeRiscVLow12,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // GOT-relative relocations
         object::elf::R_LARCH_GOT_PC_HI20 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
@@ -100,6 +249,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_LARCH_GOT_PC_LO12 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // CFG-related relocations.
+        object::elf::R_LARCH_B16 => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_loongarch64(2, 18, LoongArch64Instruction::Shift10),
             None,
             AllowedRange::no_check(),
             1,
@@ -118,55 +275,135 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_LARCH_ADD16 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(2),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_ADD32 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(4),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_ADD64 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(8),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_SUB16 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(2),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_SUB32 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(4),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_SUB64 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(8),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_LARCH_32_PCREL => (
+        object::elf::R_LARCH_CALL36 => (
             RelocationKind::Relative,
-            RelocationSize::ByteSize(4),
+            RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Branch21or26),
             None,
             AllowedRange::no_check(),
             1,
         ),
+        object::elf::R_LARCH_CALL30 => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_loongarch64(2, 19, LoongArch64Instruction::Call30),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // TLS-related relocations.
+        object::elf::R_LARCH_TLS_LE_HI20 => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LE_LO12 => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LE64_LO20 => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LE64_HI12 => (
+            RelocationKind::TpOff,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE_PC_HI20 => (
+            RelocationKind::GotTpOff,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE_PC_LO12 => (
+            RelocationKind::GotTpOffGot,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE64_PC_LO20 => (
+            RelocationKind::GotTpOffLoongArch64,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE64_PC_HI12 => (
+            RelocationKind::GotTpOffLoongArch64,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE_HI20 => (
+            RelocationKind::GotTpOffGot,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE_LO12 => (
+            RelocationKind::GotTpOffGot,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE64_HI12 => (
+            RelocationKind::GotTpOffGot,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_IE64_LO20 => (
+            RelocationKind::GotTpOffGot,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LD_PC_HI20 => (
+            RelocationKind::TlsLd,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_LD_HI20 => (
+            RelocationKind::TlsLdGot,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_GD_PC_HI20 => (
+            RelocationKind::TlsGd,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_LARCH_TLS_GD_HI20 => (
+            RelocationKind::TlsGdGot,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+
+        // Misc relocations.
         object::elf::R_LARCH_RELAX => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
@@ -174,25 +411,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-
-        // TODO
         object::elf::R_LARCH_ALIGN => (
-            RelocationKind::None,
+            RelocationKind::Alignment,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
             1,
         ),
-
-        // TODO
-        object::elf::R_LARCH_ADD6 | object::elf::R_LARCH_SUB6 => (
-            RelocationKind::None,
-            RelocationSize::ByteSize(0),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-
         _ => return None,
     };
 
@@ -220,6 +445,11 @@ impl LoongArch64Instruction {
                 let low_part = extracted_value >> 16;
                 let high_part = (extracted_value & 0xffff) << 10;
                 or_from_slice(dest, &((low_part | high_part) as u32).to_le_bytes());
+            }
+            LoongArch64Instruction::Call30 => {
+                let low_part = (extracted_value & 0x1ff) << (32 + 10);
+                let high_part = (extracted_value & !0x1ff) << 5;
+                or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
         };
     }

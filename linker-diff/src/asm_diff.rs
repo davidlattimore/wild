@@ -2274,6 +2274,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsLd
             | RelocationKind::TlsDesc
             | RelocationKind::GotTpOff
+            | RelocationKind::GotTpOffLoongArch64
             | RelocationKind::GotRelative => self.section_address + offset,
             RelocationKind::SymRelGotBase
             | RelocationKind::GotRelGotBase
@@ -2290,6 +2291,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
             | RelocationKind::Got
@@ -2479,6 +2481,7 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => {
             if address_index.is_relocatable() {
@@ -2501,6 +2504,7 @@ fn value_kind_for_relocation<A: Arch>(
         RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
         RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
         RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
         RelocationKind::TlsDesc | RelocationKind::TlsDescGot | RelocationKind::TlsDescGotBase => {
@@ -3398,6 +3402,7 @@ impl<'data> GotIndex<'data> {
 
             match relocation_kind {
                 RelocationKind::GotTpOff
+                | RelocationKind::GotTpOffLoongArch64
                 | RelocationKind::GotTpOffGot
                 | RelocationKind::GotTpOffGotBase => {
                     Ok(Referent::UnmatchedTlsOffset(raw_value as i64))
@@ -3408,6 +3413,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition
+                | RelocationKind::AbsoluteAdditionWord6
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative

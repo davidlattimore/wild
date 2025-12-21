@@ -926,6 +926,10 @@ pub enum RelocationKind {
     /// to the value at the place.
     AbsoluteAddition,
 
+    /// Add the absolute address of a symbol or section at the place of the relocation
+    /// to the value at the place (use WORD6 type for the operation)
+    AbsoluteAdditionWord6,
+
     /// Subtract the absolute address of a symbol or section at the place of the relocation
     /// from the value at the place.
     AbsoluteSubtraction,
@@ -954,6 +958,7 @@ pub enum RelocationKind {
     /// The address of the symbol, relative to the place of the relocation. The address of the
     /// relocation points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used
     /// and that is the place we make this relocation relative to.
+    /// TODO: rename
     RelativeRiscVLow12,
 
     /// The address of the symbol, relative to the base address of the GOT.
@@ -1003,6 +1008,9 @@ pub enum RelocationKind {
     /// The address of a GOT entry containing the offset of a TLS variable within the executable's
     /// TLS storage, relative to the place of the relocation.
     GotTpOff,
+
+    // TODO
+    GotTpOffLoongArch64,
 
     /// The address of a GOT entry containing the offset of a TLS variable within the executable's
     /// TLS storage.
@@ -1254,6 +1262,7 @@ pub enum LoongArch64Instruction {
     Shift5,
     Shift10,
     Branch21or26,
+    Call30,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]

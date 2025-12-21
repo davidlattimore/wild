@@ -3423,6 +3423,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
             ValueFlags::GOT
         }
         RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueFlags::GOT_TLS_OFFSET,
         RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
@@ -3439,6 +3440,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative

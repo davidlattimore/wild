@@ -1887,6 +1887,11 @@ fn adjust_relocation_based_on_value(
             Ok(value | (current_value & !LOW6_MASK))
         }
         RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+        RelocationKind::AbsoluteAdditionWord6 => {
+            // Preserve the 2 most significant bits of u8.
+            let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
+            Ok(value | (current_value & !LOW6_MASK))
+        }
         RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
         RelocationKind::AbsoluteSubtractionWord6 => {
             // Preserve the 2 most significant bits of u8.
@@ -2046,6 +2051,7 @@ fn apply_relocation<'data, A: Arch>(
         RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => resolution.value_with_addend(
             addend,
@@ -2269,6 +2275,10 @@ fn apply_relocation<'data, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::GotTpOffLoongArch64 => loong_arch_highest_with_biased(
+            resolution.got_address()?.wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::GotTpOffGot => resolution
             .got_address()?
             .bitand(mask.got_entry)
@@ -2306,6 +2316,7 @@ fn apply_relocation<'data, A: Arch>(
     if matches!(
         rel_info.kind,
         RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteSubtractionWord6
