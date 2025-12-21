@@ -6,17 +6,21 @@
 //#DiffIgnore:dynsym.*
 
 //#Config:llvm-static:default
-//#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
+//#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C
+//#CompArgs:--target target-feature=+crt-static -C debuginfo=2
 //#RequiresRustMusl: true
 //#Arch: x86_64
 
 //#Config:llvm-static-aarch64:default
-//#CompArgs:--target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
+//#CompArgs:--target aarch64-unknown-linux-musl -C relocation-model=static -C
+//#CompArgs:--target target-feature=+crt-static -C debuginfo=2
 //#RequiresRustMusl: true
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
 //#Config:cranelift-static:default
-//#CompArgs:-Zcodegen-backend=cranelift --target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
+//#CompArgs:-Zcodegen-backend=cranelift --target x86_64-unknown-linux-musl -C
+//#CompArgs:-Zcodegen-backend=cranelift relocation-model=static -C target-feature=+crt-static -C
+//#CompArgs:-Zcodegen-backend=cranelift debuginfo=2 --cfg cranelift
 //#RequiresNightlyRustc: true
 //#RequiresRustMusl: true
 //#Arch: x86_64
@@ -25,10 +29,12 @@
 //#DiffIgnore:section.debug_str.entsize
 
 //#Config:cranelift-static-aarch64:default
-//#CompArgs:-Zcodegen-backend=cranelift --target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
+//#CompArgs:-Zcodegen-backend=cranelift --target aarch64-unknown-linux-musl -C
+//#CompArgs:-Zcodegen-backend=cranelift relocation-model=static -C target-feature=+crt-static -C
+//#CompArgs:-Zcodegen-backend=cranelift debuginfo=2 --cfg cranelift
 //#RequiresRustMusl: true
 //#RequiresNightlyRustc: true
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 //#DiffIgnore:section.debug_str.flags
 //#DiffIgnore:section.debug_str.entsize
 
