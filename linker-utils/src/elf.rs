@@ -927,20 +927,12 @@ pub enum RelocationKind {
     AbsoluteAddition,
 
     /// Add the absolute address of a symbol or section at the place of the relocation
-    /// to the value at the place (using ULEB128 encoding).
-    AbsoluteAdditionULEB128,
-
-    /// Add the absolute address of a symbol or section at the place of the relocation
     /// to the value at the place (use WORD6 type for the operation)
     AbsoluteAdditionWord6,
 
     /// Subtract the absolute address of a symbol or section at the place of the relocation
     /// from the value at the place.
     AbsoluteSubtraction,
-
-    /// Subtract the absolute address of a symbol or section at the place of the relocation
-    /// from the value at the place (using ULEB128 encoding).
-    AbsoluteSubtractionULEB128,
 
     /// Subtract the absolute address of a symbol or section at the place of the relocation
     /// from the value at the place (use WORD6 type for the operation)

@@ -138,15 +138,17 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
+        // We process the subtraction in the SUB_ULEB128 relocation,
+        // thus we skip the first relocation in the pair.
         object::elf::R_LARCH_ADD_ULEB128 => (
-            RelocationKind::AbsoluteAdditionULEB128,
-            RelocationSize::ByteSize(8),
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_LARCH_SUB_ULEB128 => (
-            RelocationKind::AbsoluteSubtractionULEB128,
+            RelocationKind::PairSubtractionULEB128(object::elf::R_LARCH_ADD_ULEB128),
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),

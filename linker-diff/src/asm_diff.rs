@@ -2292,7 +2292,6 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
-            | RelocationKind::AbsoluteAdditionULEB128
             | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
@@ -2307,7 +2306,6 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TpOff2KBiased
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtractionULEB128(..)
-            | RelocationKind::AbsoluteSubtractionULEB128
             | RelocationKind::None
             | RelocationKind::Alignment => 0,
         };
@@ -2531,8 +2529,6 @@ fn value_kind_for_relocation<A: Arch>(
         RelocationKind::TlsDescCall
         | RelocationKind::None
         | RelocationKind::PairSubtractionULEB128(..)
-        | RelocationKind::AbsoluteSubtractionULEB128
-        | RelocationKind::AbsoluteAdditionULEB128
         | RelocationKind::Alignment => {
             return None;
         }
@@ -3422,7 +3418,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition
-                | RelocationKind::AbsoluteAdditionULEB128
                 | RelocationKind::AbsoluteAdditionWord6
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
@@ -3439,7 +3434,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
                 | RelocationKind::PairSubtractionULEB128(..)
-                | RelocationKind::AbsoluteSubtractionULEB128
                 | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot

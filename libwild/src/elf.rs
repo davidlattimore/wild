@@ -545,12 +545,7 @@ pub(crate) fn write_relocation_to_buffer(
 ) -> Result<()> {
     rel_info.verify(value as i64)?;
 
-    if matches!(
-        rel_info.kind,
-        RelocationKind::PairSubtractionULEB128(..)
-            | RelocationKind::AbsoluteAdditionULEB128
-            | RelocationKind::AbsoluteSubtractionULEB128
-    ) {
+    if matches!(rel_info.kind, RelocationKind::PairSubtractionULEB128(..)) {
         // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
         let mut writer = Cursor::new(vec![0u8; 10]);
         let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
