@@ -940,24 +940,32 @@ impl ArgumentParser {
                     rest.to_owned()
                 };
 
-                // Check if this value corresponds to a registered sub-option
-                if let Some(sub) = handler.sub_options.get(value.as_str()) {
-                    match sub.handler {
-                        SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
-                        SubOptionHandler::WithValue(f) => f(args, modifier_stack, &value)?,
-                    }
-                } else if let Some((sub_name, sub)) = handler
-                    .sub_options
-                    .iter()
-                    .find(|(name, sub)| sub.with_value() && value.starts_with(*name))
-                {
-                    let param_value = &value[sub_name.len()..];
-                    if let SubOptionHandler::WithValue(f) = sub.handler {
-                        f(args, modifier_stack, param_value)?;
+                if let Some((key, param_value)) = value.split_once('=') {
+                    // Value has '=', look up key with trailing '='
+                    if let Some(sub) = handler.sub_options.get(format!("{key}=").as_str()) {
+                        match sub.handler {
+                            SubOptionHandler::NoValue(_) => {
+                                (handler.handler)(args, modifier_stack, &value)?;
+                            }
+                            SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
+                        }
+                    } else {
+                        // Fall back to the main handler
+                        (handler.handler)(args, modifier_stack, &value)?;
                     }
                 } else {
-                    // Fall back to the main handler for unregistered sub-options
-                    (handler.handler)(args, modifier_stack, &value)?;
+                    // No '=' in value, look up exact match
+                    if let Some(sub) = handler.sub_options.get(value.as_str()) {
+                        match sub.handler {
+                            SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
+                            SubOptionHandler::WithValue(_) => {
+                                bail!("Option -{prefix} {value} requires a value");
+                            }
+                        }
+                    } else {
+                        // Fall back to the main handler
+                        (handler.handler)(args, modifier_stack, &value)?;
+                    }
                 }
                 return Ok(());
             }
