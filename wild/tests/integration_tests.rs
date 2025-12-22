@@ -199,8 +199,10 @@ fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn build_dir() -> PathBuf {
-    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
+fn determine_build_dir(test_name: &str) -> PathBuf {
+    std::env::var("WILD_TEST_BUILD_DIR")
+        .map_or(base_dir().join("tests/build"), PathBuf::from)
+        .join(test_name)
 }
 
 #[derive(Debug)]
@@ -455,6 +457,7 @@ fn is_musl_used() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
+    build_dir: PathBuf,
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
@@ -908,8 +911,9 @@ impl ArgumentSet {
 }
 
 impl Config {
-    fn new(test_config: &TestConfig) -> Self {
+    fn new(test_config: &TestConfig, build_dir: PathBuf) -> Self {
         Self {
+            build_dir,
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
@@ -1203,7 +1207,6 @@ fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
 
 impl ProgramInputs {
     fn new(source_file: &'static str) -> Result<Self> {
-        std::fs::create_dir_all(build_dir())?;
         Ok(Self { source_file })
     }
 
@@ -1887,10 +1890,12 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(&file.filename).with_extension(format!(
-        "{}-{arch_str}-{command_hash:x}{suffix}",
-        config.name
-    )));
+    let output_path = config
+        .build_dir
+        .join(Path::new(&file.filename).with_extension(format!(
+            "{}-{arch_str}-{command_hash:x}{suffix}",
+            config.name
+        )));
 
     match compiler_kind {
         CompilerKind::C => {
@@ -2173,7 +2178,9 @@ impl Linker {
         cross_arch: Option<Architecture>,
     ) -> PathBuf {
         let cross = cross_name(cross_arch);
-        build_dir().join(format!("{basename}-{}-{cross}.{self}", config.name))
+        config
+            .build_dir
+            .join(format!("{basename}-{}-{cross}.{self}", config.name))
     }
 }
 
@@ -3242,6 +3249,10 @@ fn integration_test(
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
+    let build_dir = determine_build_dir(program_name);
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("Failed to create directory `{}`", build_dir.display()))?;
+
     let program_inputs = ProgramInputs::new(program_name)?;
 
     let linkers = available_linkers()?;
@@ -3249,7 +3260,7 @@ fn integration_test(
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &Config::new(&test_config))
+    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
     let host_arch = get_host_architecture();
