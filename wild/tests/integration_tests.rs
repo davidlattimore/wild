@@ -43,6 +43,9 @@
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
+//! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
+//! the specified alignment.
+//!
 //! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
@@ -822,6 +825,7 @@ struct Assertions {
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
+    expected_load_alignment: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1059,6 +1063,18 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
+                "ExpectLoadAlignment" => {
+                    let alignment_str = arg.trim();
+                    let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
+                        u64::from_str_radix(hex, 16)
+                            .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
+                    } else {
+                        alignment_str
+                            .parse()
+                            .with_context(|| format!("Invalid alignment: {alignment_str}"))?
+                    };
+                    config.assertions.expected_load_alignment = Some(alignment);
+                }
                 "Mode" => {
                     let mode: Mode = arg
                         .parse()
@@ -2521,6 +2537,7 @@ impl Assertions {
         self.verify_symbols_absent(obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
+        self.verify_load_alignment(&obj)?;
         Ok(())
     }
 
@@ -2572,6 +2589,27 @@ impl Assertions {
             }
         }
         Ok(())
+    }
+
+    fn verify_load_alignment(&self, obj: &ElfFile64) -> Result {
+        let Some(expected) = self.expected_load_alignment else {
+            return Ok(());
+        };
+
+        let endian = LittleEndian;
+        let segments = obj.elf_program_headers();
+        for segment in segments {
+            if segment.p_type(endian) == object::elf::PT_LOAD {
+                let alignment = segment.p_align(endian);
+                if alignment != expected {
+                    bail!("Expected LOAD segment alignment {expected:#x}, but got {alignment:#x}");
+                }
+
+                return Ok(());
+            }
+        }
+
+        bail!("No LOAD segment found");
     }
 
     fn verify_symbols_absent(
@@ -3198,7 +3236,8 @@ fn integration_test(
         "defsym.c",
         "linker-script-defsym-notfound.c",
         "tls-common.c",
-        "section-start.c"
+        "section-start.c",
+        "max-page-size.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
