@@ -166,7 +166,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::fs::File;
 use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -1688,10 +1687,6 @@ fn build_linker_input(
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let so_lockfile = first_obj_path.with_extension(format!("{linker}.so.lock"));
-            let so_lock = File::create(&so_lockfile)?;
-            let _write_lock = so_lock.lock();
-
             let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
@@ -1905,18 +1900,6 @@ fn build_obj(
             command.env("WILD_SAVE_DIR", &output_path);
         }
     }
-
-    // If multiple threads try to create a file at the same time, only one should do so and the
-    // others should wait.
-    let lock_path = output_path.with_file_name(format!(
-        ".{}.lock",
-        output_path
-            .file_name()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-    ));
-    let output_file_lock = File::create(&lock_path)?;
-    let _write_lock = output_file_lock.lock();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(BuiltObject {
