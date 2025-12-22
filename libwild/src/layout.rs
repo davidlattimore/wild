@@ -419,7 +419,8 @@ fn update_defsym_symbol_resolution(
         return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
     };
 
-    if let Some(target_value) = resolutions[target_symbol_id.as_usize()]
+    let canonical_target_id = symbol_db.definition(target_symbol_id);
+    if let Some(target_value) = resolutions[canonical_target_id.as_usize()]
         .as_ref()
         .map(|r| r.raw_value)
         && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
