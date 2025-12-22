@@ -106,7 +106,6 @@ tests = [
   "z-cet-report.sh",
   "z-dynamic-undefined-weak-exe.sh",
   "z-dynamic-undefined-weak.sh",
-  "z-max-page-size.sh",
   "z-nodefaultlib.sh",
   "z-nodump.sh",
   "z-pack-relative-relocs.sh",
