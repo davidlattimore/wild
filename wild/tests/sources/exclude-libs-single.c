@@ -1,7 +1,7 @@
 //#LinkArgs:-z now -Bshareable --exclude-libs somelib
 //#Mode:dynamic
 //#RunEnabled:false
-//#Archive:exclude-libs-archive.c
+//#Archive:exclude-libs-single-1.c
 //#ExpectDynSym:foo
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
