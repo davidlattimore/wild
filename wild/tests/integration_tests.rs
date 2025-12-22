@@ -3227,7 +3227,8 @@ fn integration_test(
         "linker-script-defsym-notfound.c",
         "tls-common.c",
         "section-start.c",
-        "max-page-size.c"
+        "max-page-size.c",
+        "call-via-defsym.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
