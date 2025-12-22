@@ -3516,14 +3516,19 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
-        self.mark_defsyms_as_used(resources);
+        self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
         Ok(())
     }
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used(&self, resources: &GraphResources) {
+    fn mark_defsyms_as_used<'scope, A: Arch>(
+        &self,
+        resources: &'scope GraphResources<'data, '_>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) {
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(index);
             if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3531,11 +3536,40 @@ impl<'data> PreludeLayoutState<'data> {
             }
 
             match def_info.placement {
-                SymbolPlacement::DefsymAbsolute(_) | SymbolPlacement::DefsymSymbol(_) => {
+                SymbolPlacement::DefsymAbsolute(_) => {
                     resources
                         .per_symbol_flags
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
+                }
+                SymbolPlacement::DefsymSymbol(target_name) => {
+                    resources
+                        .per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .or_assign(ValueFlags::DIRECT);
+
+                    // Also mark the target symbol as used and queue it for loading to prevent it
+                    // from being GC'd.
+                    if let Some(target_symbol_id) = resources
+                        .symbol_db
+                        .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+                    {
+                        let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
+                        let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+                        let old_flags = resources
+                            .per_symbol_flags
+                            .get_atomic(canonical_target_id)
+                            .fetch_or(ValueFlags::DIRECT);
+
+                        if !old_flags.has_resolution() {
+                            queue.send_work::<A>(
+                                resources,
+                                file_id,
+                                WorkItem::LoadGlobalSymbol(canonical_target_id),
+                                scope,
+                            );
+                        }
+                    }
                 }
                 _ => {}
             }
