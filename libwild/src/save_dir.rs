@@ -284,10 +284,13 @@ impl SaveDirState {
                         self.handle_thin_archive(source_path, parsed_args)?;
                     }
                     Ok(FileKind::Text) => {
-                        let is_in_sysroot = parsed_args
-                            .sysroot
-                            .as_ref()
-                            .is_some_and(|sysroot| source_path.starts_with(sysroot));
+                        let is_in_sysroot = match (
+                            normalize_abs_path(source_path),
+                            parsed_args.sysroot.as_ref(),
+                        ) {
+                            (Some(source_path), Some(sysroot)) => source_path.starts_with(sysroot),
+                            _ => false,
+                        };
 
                         // We make paths in linker scripts relative, but only if they're not inside
                         // of the sysroot. If they're inside the sysroot, then they need to remain
