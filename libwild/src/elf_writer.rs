@@ -2035,8 +2035,8 @@ fn apply_relocation<'data, A: Arch>(
             } else {
                 0
             },
-        )) & PAGE_MASK_4KB)
-            .wrapping_sub((pc.wrapping_sub(8)) & PAGE_MASK_4KB)
+        )) & !PAGE_MASK_4KB)
+            .wrapping_sub((pc.wrapping_sub(8)) & !PAGE_MASK_4KB)
     };
 
     let mask = get_page_mask(rel_info.mask);
