@@ -32,6 +32,7 @@ itertools = { workspace = true }
 jobserver = { workspace = true }
 leb128 = {workspace = true}
 libc = { workspace = true }
+libloading = { workspace = true, optional = true }
 linker-layout = { path = "../linker-layout", version = "0.8.0" }
 linker-trace = { path = "../linker-trace", version = "0.8.0" }
 linker-utils = { path = "../linker-utils", version = "0.8.0" }
@@ -63,6 +64,9 @@ tempfile = { workspace = true }
 [features]
 # Support for running the linker as a subprocess.
 fork = []
+
+# Support for linker-plugins.
+plugins = ["libloading"]
 
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]

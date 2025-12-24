@@ -37,9 +37,11 @@ wait-timeout = { workspace = true }
 which = { workspace = true }
 
 [features]
-default = ["fork"]
+default = ["fork", "plugins"]
 
 fork = ["libwild/fork"]
+
+plugins = ["libwild/plugins"]
 
 perfetto = ["libwild/perfetto"]
 
