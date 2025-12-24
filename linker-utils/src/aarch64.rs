@@ -38,6 +38,10 @@ pub enum RelaxationKind {
 
     /// Replace with ldr x0
     LdrX0,
+
+    /// Replace add with adr. We don't apply this, but lld does, so this is used by linker-diff.
+    AddToAdr,
+    LdrToAdr,
 }
 
 impl RelaxationKind {
@@ -82,6 +86,12 @@ impl RelaxationKind {
             RelaxationKind::AdrpToAdr => {
                 // Clear the op bit of the instruction. See C6.2.12 and C6.2.13.
                 section_bytes[offset + 3] &= !0x80;
+            }
+            RelaxationKind::AddToAdr => {
+                section_bytes[offset + 3] &= !0x89;
+            }
+            RelaxationKind::LdrToAdr => {
+                section_bytes[offset + 3] &= !0x89;
             }
             RelaxationKind::AdrpX0 => {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
