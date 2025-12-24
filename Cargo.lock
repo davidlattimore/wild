@@ -480,7 +480,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1241,13 +1241,14 @@ dependencies = [
 
 [[package]]
 name = "perfetto-recorder"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61bf1e6015b1f6e9eacdfb095717e87021323f30652edc61da38d662842eabff"
+checksum = "fe40ee4444b9e307b0f8d2f281b099fe8dfb9e65f0cc2cfb87800bc7ffb71dbf"
 dependencies = [
  "nix",
  "prost",
  "rand",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1532,7 +1533,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1788,7 +1789,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

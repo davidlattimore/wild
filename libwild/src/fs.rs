@@ -1,6 +1,9 @@
+#[cfg(unix)]
 use crate::error::Result;
+#[cfg(unix)]
 use std::fs::File;
 
+#[cfg(unix)]
 pub(crate) fn make_executable(file: &File) -> Result {
     use std::os::unix::prelude::PermissionsExt;
 

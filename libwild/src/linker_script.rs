@@ -463,6 +463,20 @@ mod tests {
     use super::*;
     use crate::args::InputSpec;
     use itertools::assert_equal;
+    use std::path::PathBuf;
+
+    fn abs_test_path(path: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = path.trim_start_matches('/');
+            let path = path.replace('/', "\\");
+            PathBuf::from(format!(r"C:\{path}"))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from(path)
+        }
+    }
 
     fn parse_script(text: &str) -> Result<LinkerScript<'_>> {
         LinkerScript::parse(text.as_bytes(), Path::new("test-linker-script.txt"))
@@ -529,58 +543,59 @@ mod tests {
 
     #[test]
     fn test_sysroot_application() {
-        let sysroot = Path::new("/usr/aarch64-linux-gnu");
+        let sysroot = abs_test_path("/usr/aarch64-linux-gnu");
+        let linker_script_outside_sysroot = abs_test_path("/lib/libc.so");
         // Linker script is located in the sysroot
         assert_equal(
             maybe_apply_sysroot(
                 &sysroot.join("lib/libc.so"),
                 Path::new("/lib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Linker script is not located in the sysroot
         assert_equal(
             maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
+                &linker_script_outside_sysroot,
                 Path::new("/lib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             None,
         );
         // Sysroot enforced by `=/`
         assert_equal(
             maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
+                &linker_script_outside_sysroot,
                 Path::new("=/lib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `=`
         assert_equal(
             maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
+                &linker_script_outside_sysroot,
                 Path::new("=lib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `$SYSROOT`
         assert_equal(
             maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
+                &linker_script_outside_sysroot,
                 Path::new("$SYSROOT/lib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
         // Sysroot enforced by `$SYSROOT`
         assert_equal(
             maybe_apply_sysroot(
-                Path::new("/lib/libc.so"),
+                &linker_script_outside_sysroot,
                 Path::new("$SYSROOTlib/libc.so.6"),
-                sysroot,
+                &sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
