@@ -1,3 +1,4 @@
+//#Config:default
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment
@@ -5,6 +6,14 @@
 //#DiffIgnore:dynsym.*
 //#CompArgs:-C debuginfo=2
 //#Shared:rdyn1.rs
+
+//#Config:lto:default
+//#RequiresLinkerPlugin:true
+//#LinkerDriver:clang
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#CompArgs:-Clinker-plugin-lto -Clink-arg=-flto -Clink-arg=-Wl,-znow
+//#DiffEnabled:false
 
 extern "C" {
     fn foo() -> i32;

@@ -43,6 +43,8 @@ default = ["fork"]
 
 fork = ["libwild/fork"]
 
+plugins = ["libwild/plugins"]
+
 perfetto = ["libwild/perfetto"]
 
 # external tests

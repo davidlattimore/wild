@@ -6,6 +6,7 @@ use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
 use crate::bail;
+use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -73,8 +74,7 @@ pub struct SymbolDb<'data> {
 
     buckets: Vec<SymbolBucket<'data>>,
 
-    /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
-    /// section start/stop symbols.
+    /// Which file each symbol ID belongs to.
     symbol_file_ids: Vec<FileId>,
 
     /// Mapping from symbol IDs to the canonical definition of that symbol. For global symbols that
@@ -398,6 +398,8 @@ impl<'data> SymbolDb<'data> {
 
         grouping::create_groups(self, parsed_objects, processed_linker_scripts);
 
+        self.create_lto_input_groups(loaded.lto_objects)?;
+
         let new_groups = &self.groups[pre_existing_groups..];
 
         let num_symbols = new_groups.iter().map(|group| group.num_symbols()).sum();
@@ -450,6 +452,63 @@ impl<'data> SymbolDb<'data> {
             },
         );
 
+        Ok(())
+    }
+
+    #[cfg(feature = "plugins")]
+    fn create_lto_input_groups(
+        &mut self,
+        lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
+    ) -> Result {
+        if lto_objects.is_empty() {
+            return Ok(());
+        }
+
+        verbose_timing_phase!("Create LTO input groups");
+
+        let lto_objects = lto_objects.into_iter().collect::<Result<Vec<_>>>()?;
+
+        for group_objects in lto_objects
+            .into_iter()
+            .chunks(crate::input_data::MAX_FILES_PER_GROUP as usize)
+            .into_iter()
+        {
+            let mut next_symbol_id = self.next_symbol_id();
+            let group_index = self.next_group_index();
+
+            self.groups.push(Group::LtoInputs(
+                group_objects
+                    .into_iter()
+                    .enumerate()
+                    .map(|(file_index, o)| {
+                        let symbol_id_range = SymbolIdRange::input(next_symbol_id, o.num_symbols());
+                        let input_obj = o.into_input_object(
+                            FileId::new(group_index, file_index as u32),
+                            symbol_id_range,
+                        );
+                        next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
+                        input_obj
+                    })
+                    .collect(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "plugins"))]
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_value,
+        clippy::needless_pass_by_ref_mut
+    )]
+    fn create_lto_input_groups(
+        &mut self,
+        lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
+    ) -> Result {
+        if !lto_objects.is_empty() {
+            return Err(linker_plugin_disabled_error());
+        }
         Ok(())
     }
 
@@ -550,6 +609,10 @@ impl<'data> SymbolDb<'data> {
             }
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(lto_objects) => {
+                lto_objects[file_id.file()].symbol_visibility(symbol_id)
+            }
         }
     }
 
@@ -584,6 +647,8 @@ impl<'data> SymbolDb<'data> {
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(lto_objects) => Ok(lto_objects[file_id.file()].symbol_name(symbol_id)),
         }
     }
 
@@ -612,14 +677,23 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions.len()
     }
 
-    pub(crate) fn num_objects(&self) -> usize {
+    pub(crate) fn num_regular_objects(&self) -> usize {
         self.groups
             .iter()
             .map(|group| match group {
-                Group::Prelude(_) => 0,
-                Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
-                Group::LinkerScripts(_) => 0,
-                Group::SyntheticSymbols(_) => 0,
+                Group::Objects(objects) => objects.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    pub(crate) fn num_lto_objects(&self) -> usize {
+        self.groups
+            .iter()
+            .map(|group| match group {
+                #[cfg(feature = "plugins")]
+                Group::LtoInputs(objects) => objects.len(),
+                _ => 0,
             })
             .sum()
     }
@@ -703,6 +777,8 @@ impl<'data> SymbolDb<'data> {
             }
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(lto_objects) => SequencedInput::LtoInput(&lto_objects[file_id.file()]),
         }
     }
 
@@ -770,6 +846,25 @@ impl<'data> SymbolDb<'data> {
         match &resolved[file_id.group()].files[file_id.file()] {
             ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
             ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
+            #[cfg(feature = "plugins")]
+            ResolvedFile::LtoInput(obj) => {
+                use crate::linker_plugins::SymbolKind;
+
+                let SequencedInput::LtoInput(obj) = self.file(obj.file_id) else {
+                    unreachable!();
+                };
+                if !obj.enabled {
+                    return SymbolStrength::Undefined;
+                }
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+                let obj_symbol = &obj.symbols[local_index.0];
+                match obj_symbol.kind {
+                    Some(SymbolKind::Def) => SymbolStrength::Strong,
+                    Some(SymbolKind::WeakDef) => SymbolStrength::Weak,
+                    Some(SymbolKind::Common) => SymbolStrength::Common(obj_symbol.size),
+                    _ => SymbolStrength::Undefined,
+                }
+            }
             _ => SymbolStrength::Undefined,
         }
     }
@@ -894,6 +989,21 @@ impl<'data> SymbolDb<'data> {
     pub(crate) fn add_group(&mut self, group: Group<'data>) {
         self.groups.push(group);
     }
+
+    #[cfg(feature = "plugins")]
+    pub(crate) fn disable_lto_inputs(&mut self) {
+        for group in &mut self.groups {
+            if let Group::LtoInputs(objects) = group {
+                for obj in objects {
+                    obj.enabled = false;
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn linker_plugin_disabled_error() -> Error {
+    error!("Wild was compiled without linker-plugin support, but LTO inputs were detected")
 }
 
 struct SymbolVecWriters<'out> {
@@ -1297,9 +1407,39 @@ fn read_symbols_for_group<'data>(
         Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
+        #[cfg(feature = "plugins")]
+        Group::LtoInputs(lto_objects) => {
+            for obj in lto_objects {
+                load_lto_symbols(shard, &mut outputs, obj);
+            }
+        }
     }
 
     Ok(outputs)
+}
+
+#[cfg(feature = "plugins")]
+fn load_lto_symbols<'data>(
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data>,
+    outputs: &mut SymbolLoadOutputs<'data>,
+    obj: &crate::linker_plugins::LtoInput<'data>,
+) {
+    for (symbol_id, sym) in obj.symbols_iter() {
+        if sym.is_definition() {
+            if let Some(version) = sym.version {
+                outputs.add_versioned(PendingVersionedSymbol::from_prehashed(
+                    symbol_id,
+                    UnversionedSymbolName::prehashed(sym.name.bytes()),
+                    version,
+                ));
+            } else {
+                outputs.add_non_versioned(PendingSymbol::new(symbol_id, sym.name.bytes()));
+            }
+            symbols_out.set_next(ValueFlags::empty(), symbol_id, obj.file_id);
+        } else {
+            symbols_out.set_next(ValueFlags::empty(), SymbolId::undefined(), obj.file_id);
+        }
+    }
 }
 
 fn populate_symbol_db<'data>(
@@ -1788,6 +1928,8 @@ impl std::fmt::Display for SymbolDebug<'_> {
                 SequencedInput::SyntheticSymbols(_) => {
                     write!(f, "<unnamed custom-section symbol>")?;
                 }
+                #[cfg(feature = "plugins")]
+                SequencedInput::LtoInput(_) => write!(f, "<unnamed symbol from LTO object>")?,
             }
         } else {
             write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;
