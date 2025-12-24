@@ -8,8 +8,6 @@ particular:
 
 * Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the linkers.
 * Wild defaults to `-z now`, so best to pass that to all linkers.
-* Wild doesn't support linker plugins and various other flags. Generally use of these flags will
-  result in a warning.
 
 ## How to benchmark
 
