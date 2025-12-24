@@ -221,6 +221,9 @@ impl Config {
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
+                // LLD does some different relaxations to us
+                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.dynamic-pie",
+                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.dynamic-pie",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
@@ -258,6 +261,8 @@ impl Config {
                 // TODO: Figure out why this is happening.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                // LLD generates this section. GNU ld and Wild don't.
+                "section.relro_padding",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
