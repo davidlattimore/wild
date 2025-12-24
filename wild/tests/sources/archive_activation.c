@@ -33,6 +33,42 @@
 //#BsdArchive:empty.a
 //#TestUpdateInPlace:true
 
+//#Config:lto-gcc:default
+//#Compiler:gcc
+//#LinkerDriver:gcc
+//#SkipLinker:lld
+//#CompArgs:-flto -DNO_GC_UNDEF_CHECK
+//#LinkArgs:-nostdlib -flto -Wl,--gc-sections,-znow
+//#Archive:archive_activation0.c
+//#Archive:archive_activation1.c
+//#Archive:runtime.c
+//#Archive:empty.a
+//#DiffIgnore:section.got
+
+//#Config:lto-clang:default
+//#Compiler:clang
+//#LinkerDriver:clang
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#CompArgs:-flto
+//#LinkArgs:-nostdlib -flto -Wl,--gc-sections,-znow
+//#Archive:archive_activation0.c
+//#Archive:archive_activation1.c
+//#Archive:runtime.c
+//#Archive:empty.a
+
+//#Config:lto-clang-thin:default
+//#Compiler:clang
+//#LinkerDriver:clang
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#CompArgs:-flto
+//#LinkArgs:-nostdlib -flto -Wl,--gc-sections,-znow
+//#ThinArchive:archive_activation0.c
+//#ThinArchive:archive_activation1.c
+//#ThinArchive:runtime.c
+//#ThinArchive:empty.a
+
 #include "runtime.h"
 
 int bar(void);
@@ -62,7 +98,9 @@ void _start(void) {
 void load_bar(void) {
   bar();
 
+#ifndef NO_GC_UNDEF_CHECK
   // While we're here, make sure that we can reference a function that isn't
   // defined anywhere and not fail to link, since this code gets GCed.
   does_not_exist();
+#endif
 }
