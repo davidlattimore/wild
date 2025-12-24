@@ -1926,7 +1926,18 @@ fn build_obj(
         }
     }
 
-    if is_newer(&output_path, std::iter::once(&src_path)) {
+    let needs_run_with = command.get_envs().any(|(key, _)| key == "WILD_SAVE_DIR");
+
+    // If we're creating a run-with file, then check timestamp on that rather than the directory.
+    // Otherwise if a previous run created the directory but failed to create the file, we won't
+    // rerun.
+    let output_file = if needs_run_with {
+        run_with_path(&output_path)
+    } else {
+        output_path.clone()
+    };
+
+    if is_newer(&output_file, std::iter::once(&src_path)) {
         return Ok(BuiltObject {
             path: output_path,
             inputs,
@@ -1940,10 +1951,6 @@ fn build_obj(
         )
     })?;
 
-    if output_path.is_dir() {
-        post_process_run_script(&output_path)?;
-    }
-
     if !output.status.success() {
         bail!(
             "Compilation failed to run: {}\nOutput:\n{}{}",
@@ -1951,6 +1958,17 @@ fn build_obj(
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    if needs_run_with {
+        post_process_rust_run_script(&output_path).with_context(|| {
+            format!(
+                "Failed to process run-with script after running: {}\nOutput\n{}{}",
+                command_as_str(&command),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        })?;
     }
 
     Ok(BuiltObject {
@@ -2025,20 +2043,27 @@ fn cross_name(cross_arch: Option<Architecture>) -> String {
 /// the output filename. So it doesn't really work for us to make them match. Instead, we remove the
 /// -soname flag from the run-with script. Without the DT_SONAME, the linker will fall back to using
 /// the actual name of the .so file, which is what we want.
-fn post_process_run_script(output_path: &Path) -> Result {
-    let run_with_filename = output_path.join("run-with");
-    if let Ok(contents) = std::fs::read_to_string(&run_with_filename) {
-        let mut out = String::new();
-        for line in contents.lines() {
-            if !line.contains("-soname") {
-                out.push_str(line);
-                out.push('\n');
-            }
+fn post_process_rust_run_script(output_path: &Path) -> Result {
+    let run_with_filename = run_with_path(output_path);
+    let contents =
+        std::fs::read_to_string(&run_with_filename).context("Failed to write run-with script")?;
+
+    let mut out = String::new();
+    for line in contents.lines() {
+        if !line.contains("-soname") {
+            out.push_str(line);
+            out.push('\n');
         }
-        std::fs::write(&run_with_filename, out)
-            .with_context(|| format!("Failed to write `{}`", run_with_filename.display()))?;
     }
+
+    std::fs::write(&run_with_filename, out)
+        .with_context(|| format!("Failed to write `{}`", run_with_filename.display()))?;
+
     Ok(())
+}
+
+fn run_with_path(output_path: &Path) -> PathBuf {
+    output_path.join("run-with")
 }
 
 fn write_cmd_file(output_path: &Path, command_str: &str) -> Result {
@@ -2283,9 +2308,11 @@ impl LinkCommand {
                         command = Command::new(linker_driver.name());
                     }
 
-                    let save_dir = output_path.with_extension("save");
-                    command.env("WILD_SAVE_DIR", &save_dir);
-                    opt_save_dir = Some(save_dir);
+                    if linker.is_wild() {
+                        let save_dir = output_path.with_extension("save");
+                        command.env("WILD_SAVE_DIR", &save_dir);
+                        opt_save_dir = Some(save_dir);
+                    }
 
                     match linker_driver {
                         Compiler::Clang(_) => {
@@ -2457,7 +2484,8 @@ impl LinkCommand {
                         String::from_utf8_lossy(&output.stderr),
                     );
                     bail!(
-                        "Linker expected to report error `{expected_error}` on stderr, but didn't"
+                        "Linker expected to report error `{expected_error}` on stderr, but didn't. \
+                         Command:\n{self}"
                     );
                 }
             }
@@ -2496,11 +2524,25 @@ impl LinkCommand {
             .output()
             .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
+        let mut messages = String::from_utf8_lossy(&output.stdout).into_owned();
+        messages.push_str(&String::from_utf8_lossy(&output.stderr));
+
         if !output.status.success() {
-            let mut messages = String::from_utf8_lossy(&output.stdout).into_owned();
-            messages.push_str(&String::from_utf8_lossy(&output.stderr));
             bail!("Linker failed:\n{messages}\nRelink with:\n{self}");
         }
+
+        if let Some(save_dir) = self.opt_save_dir.as_ref() {
+            let run_with = run_with_path(save_dir);
+            if !run_with.exists() {
+                // Note, we print self.command here not self. Printing self will print the command
+                // to run using the run-with script, which doesn't exist.
+                bail!(
+                    "run-with script didn't get written. Command:\n{:?}\nOutput:\n{messages}",
+                    self.command
+                );
+            }
+        }
+
         Ok(())
     }
 }
@@ -2531,7 +2573,7 @@ fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut 
 fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
     let path = &inputs[0].path;
     if path.is_dir() {
-        return Some((path.join("run-with"), &inputs[1..]));
+        return Some((run_with_path(path), &inputs[1..]));
     }
     None
 }
@@ -3137,6 +3179,14 @@ fn run_with_config(
     }
 
     let start = Instant::now();
+
+    if config.should_diff || config.should_run {
+        for program in &programs {
+            if !program.link_output.binary.exists() {
+                bail!("Linker failed to write binary. {program}");
+            }
+        }
+    }
 
     if config.test_config.run_all_diffs {
         diff_shared_objects(config, &programs)?;
