@@ -4,11 +4,13 @@ use crate::args::CounterKind;
 use crate::error::AlreadyInitialised;
 use crate::error::Result;
 use crate::perf::CounterList;
-use anyhow::Context;
 use anyhow::anyhow;
 use crossbeam_queue::ArrayQueue;
 use std::fmt::Display;
 use std::path::PathBuf;
+#[cfg(feature = "perfetto")]
+use anyhow::Context;
+#[cfg(feature = "perfetto")]
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
@@ -16,6 +18,7 @@ use tracing::field::Visit;
 
 const PERFETTO_ENV_VAR: &str = "WILD_PERFETTO_OUT";
 
+#[cfg(feature = "perfetto")]
 pub fn setup() -> Result {
     if perfetto_output_file().is_some() {
         perfetto_recorder::start().map_err(
@@ -29,10 +32,35 @@ pub fn setup() -> Result {
     Ok(())
 }
 
+#[cfg(not(feature = "perfetto"))]
+pub fn setup() -> Result {
+    if perfetto_output_file().is_some() {
+        return Err(
+            anyhow!(
+                "{PERFETTO_ENV_VAR} was set, but wild was built without --features perfetto"
+            )
+            .into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "perfetto")]
 #[macro_export]
 macro_rules! timing_guard {
     ($($args:tt)*) => {
         (tracing::info_span!($($args)*).entered(), perfetto_recorder::start_span!($($args)*))
+    };
+}
+
+#[cfg(not(feature = "perfetto"))]
+#[macro_export]
+macro_rules! timing_guard {
+    ($($args:tt)*) => {
+        (
+            tracing::info_span!($($args)*).entered(),
+            $crate::timing::PerfettoGuard::new(),
+        )
     };
 }
 
@@ -45,11 +73,33 @@ macro_rules! timing_phase {
 
 /// More verbose timing instrumentation that by default doesn't show up in the output of --time.
 /// Suitable for use from threads other than main.
+#[cfg(feature = "perfetto")]
 #[macro_export]
 macro_rules! verbose_timing_phase {
     ($($args:tt)*) => {
         perfetto_recorder::scope!($($args)*);
     };
+}
+
+#[cfg(not(feature = "perfetto"))]
+#[macro_export]
+macro_rules! verbose_timing_phase {
+    ($($args:tt)*) => {};
+}
+
+#[cfg(not(feature = "perfetto"))]
+pub(crate) struct PerfettoGuard;
+
+#[cfg(not(feature = "perfetto"))]
+impl PerfettoGuard {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(feature = "perfetto"))]
+impl Drop for PerfettoGuard {
+    fn drop(&mut self) {}
 }
 
 struct TimingLayer {
@@ -280,6 +330,7 @@ fn perfetto_output_file() -> Option<PathBuf> {
     std::env::var(PERFETTO_ENV_VAR).ok().map(PathBuf::from)
 }
 
+#[cfg(feature = "perfetto")]
 pub(crate) fn finalise_perfetto_trace() -> Result {
     let Some(path) = perfetto_output_file() else {
         return Ok(());
@@ -305,5 +356,10 @@ pub(crate) fn finalise_perfetto_trace() -> Result {
         .write_to_file(&path)
         .with_context(|| format!("Failed to write perfetto trace to `{}`", path.display()))?;
 
+    Ok(())
+}
+
+#[cfg(not(feature = "perfetto"))]
+pub(crate) fn finalise_perfetto_trace() -> Result {
     Ok(())
 }

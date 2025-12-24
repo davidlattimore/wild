@@ -2703,6 +2703,7 @@ mod tests {
         inline_and_file_options_assertions(&args);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_parse_recursive_file_option() {
         // Create a temporary file containing a @file option

@@ -527,6 +527,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_sysroot_application() {
         let sysroot = Path::new("/usr/aarch64-linux-gnu");
