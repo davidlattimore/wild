@@ -5,10 +5,12 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+#[cfg(unix)]
 use std::ffi::OsStr;
 use std::ops::Range;
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
-use std::path::Path;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
@@ -18,6 +20,16 @@ pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
     Thin(ThinEntry<'data>),
+}
+
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+}
+
+#[cfg(not(unix))]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 #[derive(Clone, Copy)]
@@ -324,8 +336,8 @@ impl<'data> Identifier<'data> {
         }
     }
 
-    pub(crate) fn as_path(&self) -> &'data std::path::Path {
-        Path::new(OsStr::from_bytes(self.as_slice()))
+    pub(crate) fn as_path(&self) -> PathBuf {
+        path_from_bytes(self.as_slice())
     }
 }
 
@@ -346,11 +358,16 @@ impl<'data> EntryMeta<'data> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::bail;
+    #[cfg(unix)]
     use crate::error::Result;
+    #[cfg(unix)]
     use std::io::Read;
+    #[cfg(unix)]
     use std::path::Path;
 
+    #[cfg(unix)]
     #[derive(Default)]
     struct Summary {
         entries: Vec<Vec<u8>>,
@@ -358,6 +375,7 @@ mod tests {
         symbols: Vec<Vec<u8>>,
     }
 
+    #[cfg(unix)]
     fn ar_read_entries(path: &Path) -> Result<Summary> {
         let mut summary = Summary::default();
         let mut archive = ar::Archive::new(std::fs::File::open(path)?);
@@ -379,6 +397,7 @@ mod tests {
         Ok(summary)
     }
 
+    #[cfg(unix)]
     fn check_consistency(path: &Path, limit: &mut u32) -> Result {
         fn inner(path: &Path, limit: &mut u32) -> Result {
             if *limit == 0 {
@@ -450,6 +469,7 @@ mod tests {
         inner(path, limit).with_context(|| format!("Failed to process {}", path.display()))
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_ar_consistency() {
         let mut limit = 1;

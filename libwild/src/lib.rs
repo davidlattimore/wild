@@ -47,9 +47,9 @@ pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
 pub(crate) mod string_merging;
-#[cfg(feature = "fork")]
+#[cfg(all(feature = "fork", unix))]
 pub(crate) mod subprocess;
-#[cfg(not(feature = "fork"))]
+#[cfg(not(all(feature = "fork", unix)))]
 #[path = "subprocess_unsupported.rs"]
 pub(crate) mod subprocess;
 pub(crate) mod symbol;

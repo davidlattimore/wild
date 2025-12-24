@@ -252,31 +252,44 @@ impl SaveDirState {
             std::fs::create_dir(&dest_path)
                 .with_context(|| format!("Failed to create directory `{}`", dest_path.display()))?;
         } else if meta.is_symlink() {
-            let directory = source_path.parent().context("Invalid path")?;
-            let mut target = std::fs::read_link(source_path)
-                .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
+            #[cfg(unix)]
+            {
+                let directory = source_path.parent().context("Invalid path")?;
+                let mut target = std::fs::read_link(source_path).with_context(|| {
+                    format!("Failed to read symlink `{}`", source_path.display())
+                })?;
 
-            if target.is_absolute() {
-                self.copy_file(&target, parsed_args)?;
-                target = make_relative_path(&target, directory).with_context(|| {
+                if target.is_absolute() {
+                    self.copy_file(&target, parsed_args)?;
+                    target = make_relative_path(&target, directory).with_context(|| {
+                        format!(
+                            "Failed to make path `{}` relative to `{}` while copying symlink",
+                            target.display(),
+                            directory.display()
+                        )
+                    })?;
+                } else {
+                    let absolute_target = directory.join(&target);
+                    self.copy_file(&absolute_target, parsed_args)?;
+                }
+
+                std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
                     format!(
-                        "Failed to make path `{}` relative to `{}` while copying symlink",
-                        target.display(),
-                        directory.display()
+                        "Failed to symlink {} to {}",
+                        dest_path.display(),
+                        target.display()
                     )
                 })?;
-            } else {
-                let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target, parsed_args)?;
             }
-
-            std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
-                format!(
-                    "Failed to symlink {} to {}",
-                    dest_path.display(),
-                    target.display()
-                )
-            })?;
+            #[cfg(not(unix))]
+            {
+                std::fs::copy(source_path, &dest_path).with_context(|| {
+                    format!(
+                        "Failed to copy symlink target for `{}`",
+                        source_path.display()
+                    )
+                })?;
+            }
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
@@ -458,8 +471,10 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
+    #[cfg(unix)]
     fn test_make_relative_path(target: &Path, directory: &Path) {
         let relative = make_relative_path(target, directory).unwrap();
 
@@ -478,6 +493,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn make_relative_path_works() {
         let cases = [
