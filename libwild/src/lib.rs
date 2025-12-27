@@ -44,6 +44,7 @@ pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod riscv64;
 pub(crate) mod save_dir;
+pub(crate) mod sframe;
 pub(crate) mod sharding;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
@@ -61,13 +62,16 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
+use crate::error::Result;
 use crate::identity::linker_identity;
+use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
+use crate::value_flags::PerSymbolFlags;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
-use input_data::InputData;
+use input_data::FileLoader;
 use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
@@ -88,6 +92,8 @@ pub fn run(args: Args) -> error::Result {
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args)?;
+    drop(linker);
+    timing::finalise_perfetto_trace()?;
     Ok(())
 }
 
@@ -116,7 +122,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// pages) will still happen anyway.
 pub struct Linker {
     /// We store our input files here once we've read them.
-    inputs: Arena<InputFile>,
+    inputs_arena: Arena<InputFile>,
 
     /// Anything that doesn't need a custom Drop implementation can go in here. In practice, it's
     /// mostly just the decompressed copy of compressed string-merge sections.
@@ -124,10 +130,12 @@ pub struct Linker {
 
     /// We'll fill this in when we're done linking and start shutting down. Once this is dropped,
     /// that signals the end of shutdown for the purposes of timing measurement.
-    shutdown_scope: AtomicCell<Option<Box<tracing::span::EnteredSpan>>>,
+    #[allow(dyn_drop)]
+    shutdown_scope: AtomicCell<Vec<Box<dyn Drop>>>,
 
     /// A timing scope that exists for the whole time we're linking.
-    _link_scope: tracing::span::EnteredSpan,
+    #[allow(dyn_drop)]
+    _link_scope: Vec<Box<dyn Drop>>,
 }
 
 pub struct LinkerOutput<'layout_inputs> {
@@ -140,11 +148,13 @@ pub struct LinkerOutput<'layout_inputs> {
 impl Linker {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
+        let (guard_a, guard_b) = timing_guard!("Link");
+
         Self {
-            inputs: Arena::new(),
+            inputs_arena: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
-            _link_scope: tracing::info_span!("Link").entered(),
+            _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
         }
     }
 
@@ -174,52 +184,65 @@ impl Linker {
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let input_data = input_data::InputData::from_args(args, &self.inputs)?;
-
-        let output_kind = OutputKind::new(args, &input_data);
-
-        let output = file_writer::Output::new(args, output_kind);
+        let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, args, output_kind);
+        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
 
-        input_data.verify_inputs_unchanged()?;
+        file_loader.verify_inputs_unchanged()?;
 
         result
     }
 
-    fn link_with_input_data<'data, A: arch::Arch>(
+    fn load_inputs_and_link<'data, A: arch::Arch>(
         &'data self,
-        mut output: file_writer::Output,
-        input_data: &InputData<'data>,
+        file_loader: &mut FileLoader<'data>,
         args: &'data Args,
-        output_kind: OutputKind,
     ) -> error::Result<LinkerOutput<'data>> {
+        let loaded = file_loader.load_inputs(&args.inputs, args)?;
+
+        args.save_dir.finish(file_loader, args)?;
+
+        let output_kind = OutputKind::new(args, file_loader);
+
+        let mut output = file_writer::Output::new(args, output_kind);
+
         let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
-        let (linker_scripts, layout_rules) =
-            parsing::process_linker_scripts(&input_data.linker_scripts, &mut output_sections)?;
+        let mut layout_rules_builder = LayoutRulesBuilder::default();
 
-        let parsed_inputs =
-            parsing::parse_input_files(&input_data.inputs, linker_scripts, args, output_kind)?;
+        let auxiliary = input_data::AuxiliaryFiles::new(args, &self.inputs_arena)?;
 
-        let groups = grouping::group_files(parsed_inputs, args, &self.herd);
+        let mut symbol_db = symbol_db::SymbolDb::new(args, output_kind, &auxiliary, &self.herd)?;
+        let mut per_symbol_flags = PerSymbolFlags::new();
 
-        let (mut symbol_db, mut per_symbol_flags) = symbol_db::SymbolDb::build(
-            groups,
-            input_data.version_script_data,
-            args,
-            &input_data.linker_scripts,
-            &self.herd,
-            input_data.export_list_data,
-            output_kind,
+        symbol_db.add_inputs(
+            &mut per_symbol_flags,
+            &mut output_sections,
+            &mut layout_rules_builder,
+            loaded,
         )?;
 
-        let resolved = resolution::resolve_symbols_and_sections(
+        symbol_db.apply_wrapped_symbol_overrides();
+
+        let mut resolver = resolution::Resolver::default();
+
+        resolver.resolve_symbols_and_select_archive_entries(&mut symbol_db)?;
+
+        let layout_rules = layout_rules_builder.build();
+
+        // Now that we know which archive entries are being loaded, we can resolve alternative
+        // symbol definitions.
+        crate::symbol_db::resolve_alternative_symbol_definitions(
             &mut symbol_db,
             &mut per_symbol_flags,
-            &self.herd,
+            &resolver.resolved_groups,
+        )?;
+
+        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
+            &mut symbol_db,
+            &mut per_symbol_flags,
             &mut output_sections,
             &layout_rules,
         )?;
@@ -230,16 +253,14 @@ impl Linker {
             resolved,
             output_sections,
             &mut output,
-            input_data,
         )?;
 
         output.write(&layout, elf_writer::write::<A>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
-        let shutdown_span = tracing::info_span!("Shutdown");
-        self.shutdown_scope
-            .store(Some(Box::new(shutdown_span.entered())));
+        let (g1, g2) = timing_guard!("Shutdown");
+        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
         Ok(LinkerOutput {
             layout: Some(layout),
@@ -255,15 +276,21 @@ impl Default for Linker {
 
 impl Drop for Linker {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop inputs").entered();
-        self.inputs = Arena::new();
+        timing_phase!("Drop inputs");
+        self.inputs_arena = Arena::new();
         self.herd = Default::default();
     }
 }
 
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop layout").entered();
+        timing_phase!("Drop layout");
         self.layout.take();
     }
+}
+
+/// Possibly initialise timing if a timing-related environment variable is active and it was enabled
+/// in the build, otherwise, do nothing. See `BENCHMARKING.md` for details.
+pub fn init_timing() -> Result {
+    timing::setup()
 }

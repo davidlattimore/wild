@@ -1,5 +1,6 @@
 //! Support for saving inputs for later use.
 
+use crate::Args;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::args::Modifiers;
@@ -8,7 +9,9 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileData;
+use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
+use foldhash::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
@@ -27,6 +30,7 @@ const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 struct SaveDirState {
     dir: PathBuf,
     args: Vec<String>,
+    files_to_copy: HashSet<PathBuf>,
 }
 
 impl SaveDir {
@@ -43,18 +47,24 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
+    pub(crate) fn finish(&self, input_data: &FileLoader, parsed_args: &Args) -> Result {
         if let Some(state) = self.0.as_ref() {
-            state.finish(filenames)?;
+            let mut files_to_copy = state.files_to_copy.clone();
+            files_to_copy.extend(
+                input_data
+                    .loaded_files
+                    .iter()
+                    .map(|file| file.filename.clone()),
+            );
+            state.finish(files_to_copy.iter(), parsed_args)?;
         }
         Ok(())
     }
 
-    pub(crate) fn handle_file(&mut self, arg: &str) -> Result {
+    pub(crate) fn handle_file(&mut self, arg: &str) {
         if let Some(state) = self.0.as_mut() {
-            state.handle_file(arg)?;
+            state.files_to_copy.insert(Path::new(arg).to_path_buf());
         }
-        Ok(())
     }
 }
 
@@ -108,15 +118,23 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
 
 impl SaveDirState {
     fn new(dir: PathBuf, args: Vec<String>) -> Self {
-        SaveDirState { dir, args }
+        SaveDirState {
+            dir,
+            args,
+            files_to_copy: Default::default(),
+        }
     }
 
     /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
     /// `run-with` file and if the environment variable is set to indicate that we should skip
     /// linking, then exit.
-    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
+    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(
+        &self,
+        filenames: I,
+        parsed_args: &Args,
+    ) -> Result {
         for filename in filenames {
-            self.copy_file(&std::path::absolute(filename)?)?;
+            self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
         }
 
         let run_with_file = self.dir.join("run-with");
@@ -133,17 +151,35 @@ impl SaveDirState {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
-        self.write_args(&mut out)?;
+
+        let mut original_output_file = None;
+        self.write_args(&self.args, &mut out, &mut original_output_file)?;
+
+        if let Some(orig) = original_output_file {
+            out.write_all(b"\n# Original output file: ")?;
+            out.write_all(orig.as_bytes())?;
+        }
+
         drop(out);
         crate::fs::make_executable(&file)?;
         Ok(())
     }
 
-    fn write_args(&self, out: &mut BufWriter<&mut std::fs::File>) -> Result {
-        let mut original_output_file = None;
-        let mut args = self.args.iter();
+    fn write_args(
+        &self,
+        args: &[String],
+        out: &mut BufWriter<&mut std::fs::File>,
+        original_output_file: &mut Option<String>,
+    ) -> Result {
+        let mut args = args.iter();
 
         while let Some(arg) = args.next() {
+            if let Some(args_path) = arg.strip_prefix("@") {
+                let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
+                self.write_args(&args_from_file, out, original_output_file)?;
+                continue;
+            }
+
             out.write_all(b" \\\n  ")?;
 
             if let Some(mut path) = arg.strip_prefix("-o") {
@@ -151,7 +187,7 @@ impl SaveDirState {
                     path = args.next().map(|s| s.as_str()).unwrap_or_default();
                 }
                 out.write_all(b"-o $OUT")?;
-                original_output_file = Some(path);
+                *original_output_file = Some(path.to_owned());
             } else if let Some(mut dir) = arg.strip_prefix("-L") {
                 if dir.is_empty() {
                     dir = args.next().map(|s| s.as_str()).unwrap_or_default();
@@ -182,10 +218,6 @@ impl SaveDirState {
             }
         }
 
-        if let Some(orig) = original_output_file {
-            out.write_all(b"\n# Original output file: ")?;
-            out.write_all(orig.as_bytes())?;
-        }
         Ok(())
     }
 
@@ -194,17 +226,17 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path) -> Result {
+    fn copy_file(&self, source_path: &Path, parsed_args: &Args) -> Result {
         let dest_path = self.output_path(source_path);
 
-        if dest_path.exists() {
+        if dest_path.exists() || !source_path.exists() {
             return Ok(());
         }
 
         // The parent directory might be an actual directory or it might be a symlink. Either way,
         // we want to copy it before we copy our file.
         if let Some(parent) = source_path.parent() {
-            self.copy_file(parent)?;
+            self.copy_file(parent, parsed_args)?;
         }
 
         // We need to check again if `dest_path` exists because paths containing ".." mean that
@@ -225,11 +257,17 @@ impl SaveDirState {
                 .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
 
             if target.is_absolute() {
-                self.copy_file(&target)?;
-                target = make_relative_path(&target, directory);
+                self.copy_file(&target, parsed_args)?;
+                target = make_relative_path(&target, directory).with_context(|| {
+                    format!(
+                        "Failed to make path `{}` relative to `{}` while copying symlink",
+                        target.display(),
+                        directory.display()
+                    )
+                })?;
             } else {
                 let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target)?;
+                self.copy_file(&absolute_target, parsed_args)?;
             }
 
             std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
@@ -242,14 +280,31 @@ impl SaveDirState {
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
-                    Ok(FileKind::ThinArchive) => self.handle_thin_archive(source_path)?,
+                    Ok(FileKind::ThinArchive) => {
+                        self.handle_thin_archive(source_path, parsed_args)?;
+                    }
                     Ok(FileKind::Text) => {
-                        // We don't want to prevent the save-dir mechanism from working just because
-                        // we failed to parse a linker script, so in case of failure, we fall
-                        // through to just copying the file as-is.
-                        if let Ok(updated_bytes) = make_linker_script_relative(&data, source_path) {
-                            std::fs::write(dest_path, updated_bytes)?;
-                            return Ok(());
+                        let is_in_sysroot = match (
+                            normalize_abs_path(source_path),
+                            parsed_args.sysroot.as_ref(),
+                        ) {
+                            (Some(source_path), Some(sysroot)) => source_path.starts_with(sysroot),
+                            _ => false,
+                        };
+
+                        // We make paths in linker scripts relative, but only if they're not inside
+                        // of the sysroot. If they're inside the sysroot, then they need to remain
+                        // absolute and will be interpreted as relative to the sysroot when linking.
+                        if !is_in_sysroot {
+                            // We don't want to prevent the save-dir mechanism from working just
+                            // because we failed to parse a linker script, so in case of failure, we
+                            // fall through to just copying the file as-is.
+                            if let Ok(updated_bytes) =
+                                make_linker_script_relative(&data, source_path)
+                            {
+                                std::fs::write(dest_path, updated_bytes)?;
+                                return Ok(());
+                            }
                         }
                     }
                     _ => {}
@@ -272,17 +327,8 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn handle_file(&self, arg: &str) -> Result {
-        let path = std::path::absolute(Path::new(arg))?;
-        if std::fs::exists(&path).is_ok_and(|exists| exists) {
-            self.copy_file(&path)
-        } else {
-            Ok(())
-        }
-    }
-
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path) -> Result {
+    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
         let mut extended_filenames = None;
@@ -301,7 +347,7 @@ impl SaveDirState {
                     }
                     let absolute_entry_path = parent_path.join(entry_path);
 
-                    self.copy_file(&absolute_entry_path)?;
+                    self.copy_file(&absolute_entry_path, parsed_args)?;
                 }
                 _ => {}
             }
@@ -331,6 +377,10 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     for path in absolute_paths {
         let relative_path = make_relative_path(&path, script_dir);
+        // This shouldn't happen, but we don't want to fail in case it does.
+        let Some(relative_path) = relative_path else {
+            continue;
+        };
         let relative_str = relative_path.to_str().context("Path isn't valid UTF-8")?;
         let path_str = path.to_str().context("Path isn't valid UTF-8")?;
         text = text.replace(path_str, relative_str);
@@ -339,23 +389,58 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
     Ok(text.into_bytes())
 }
 
-/// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
-fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
+/// Removes any backtracking components (`..`) and the next component from `path`
+/// For example, `/a/b/../c` becomes `/a/c`.
+/// The path must be absolute. Will return `None` if backtracking past the root is attempted.
+fn normalize_abs_path(path: &Path) -> Option<PathBuf> {
+    assert!(path.is_absolute());
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        if comp.as_os_str() == ".." {
+            if !out.pop() {
+                return None;
+            }
+        } else {
+            out.push(comp);
+        }
+    }
+    Some(out)
+}
+
+/// Returns a relative path to reach `target` from `directory`. Both must be absolute paths.
+/// Returns `None` if the paths are invalid (e.g. contain backtracking past the root).
+fn make_relative_path(target: &Path, directory: &Path) -> Option<PathBuf> {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
-    let mut p = directory;
 
-    // If `target` and `directory` share some common prefix, then our path may not be as short as
-    // possible, but it should still work.
-    while let Some(parent) = p.parent() {
+    let target = normalize_abs_path(target)?;
+    let directory = normalize_abs_path(directory)?;
+
+    let mut target_comps = target.components().peekable();
+    let mut dir_comps = directory.components().peekable();
+
+    // We consume identical components until they diverge.
+    loop {
+        match (target_comps.peek(), dir_comps.peek()) {
+            // identical paths
+            (None, None) => return Some(PathBuf::from(".")),
+            (Some(t), Some(d)) if t == d => {
+                target_comps.next();
+                dir_comps.next();
+            }
+            _ => break,
+        }
+    }
+    // Now we just have the components that differ.
+
+    for _ in dir_comps {
         out.push("..");
-        p = parent;
     }
 
-    out.extend(target.iter());
+    out.extend(target_comps);
 
-    out
+    Some(out)
 }
 
 fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
@@ -369,4 +454,54 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_make_relative_path(target: &Path, directory: &Path) {
+        let relative = make_relative_path(target, directory).unwrap();
+
+        let result = normalize_abs_path(&directory.join(&relative)).unwrap();
+        let factual_target = normalize_abs_path(target).unwrap();
+
+        assert_eq!(
+            result,
+            factual_target,
+            "from `{}` to `{}`: got `{}` (resolves to `{}`), expected to resolve to `{}`",
+            directory.display(),
+            target.display(),
+            relative.display(),
+            result.display(),
+            factual_target.display()
+        );
+    }
+
+    #[test]
+    fn make_relative_path_works() {
+        let cases = [
+            ("/a/b/c", "/a/b"),
+            ("/a/b/c/d", "/a/b"),
+            ("/a/b/c", "/a/b/x"),
+            ("/a/b/c/d", "/a/b/x/y"),
+            ("/a/b/c/d/e", "/a/b/x/y"),
+            ("/a/b/c", "/a/b/c"),
+            ("/a/b/c/d", "/a/b/c"),
+            ("/a/b/c", "/a/b/c/d"),
+            ("/a/b/c/d", "/a/b/c/d"),
+            ("/a/b", "/d/c/e"),
+            (
+                "/usr/lib/libm.so.6",
+                "/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/15.2.1/../../../../lib64/libm.so",
+            ),
+        ];
+
+        for (a, b) in cases {
+            let a = PathBuf::from(a);
+            let b = PathBuf::from(b);
+            test_make_relative_path(&a, &b);
+            test_make_relative_path(&b, &a);
+        }
+    }
 }

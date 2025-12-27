@@ -44,6 +44,7 @@ fn subprocess_result(args: Args) -> Result<i32> {
             let args = args.activate_thread_pool()?;
             let linker = crate::Linker::new();
             let _outputs = linker.run(&args)?;
+            crate::timing::finalise_perfetto_trace()?;
             inform_parent_done(&fds);
             Ok(0)
         }

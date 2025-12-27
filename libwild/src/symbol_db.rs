@@ -10,6 +10,7 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::export_list::ExportList;
+use crate::grouping;
 use crate::grouping::Group;
 use crate::grouping::SequencedInput;
 use crate::grouping::SequencedInputObject;
@@ -17,15 +18,21 @@ use crate::grouping::SequencedLinkerScript;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
+use crate::input_data::AuxiliaryFiles;
 use crate::input_data::FileId;
+use crate::input_data::LoadedInputs;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::input_data::ScriptData;
+use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
+use crate::parsing;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
+use crate::parsing::SyntheticSymbols;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
+use crate::resolution::ResolvedSyntheticSymbols;
 use crate::sharding::ShardKey;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
@@ -36,6 +43,8 @@ use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::RawFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
+use crate::version_script::RustVersionScript;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -46,6 +55,7 @@ use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator as _;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
@@ -71,13 +81,8 @@ pub struct SymbolDb<'data> {
     /// value at index 5 will be the symbol ID 5.
     symbol_definitions: Vec<SymbolId>,
 
-    /// The number of symbols in each group, keyed by the index of the group.
-    pub(crate) num_symbols_per_group: Vec<usize>,
-
-    epilogue_file_id: FileId,
-
     /// The names of symbols that mark the start / stop of sections. These are indexed by the
-    /// offset into the epilogue's symbol IDs.
+    /// offset into the SyntheticSymbols' symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
@@ -87,6 +92,7 @@ pub struct SymbolDb<'data> {
     entry: Option<&'data [u8]>,
 
     pub(crate) output_kind: OutputKind,
+    pub(crate) herd: &'data bumpalo_herd::Herd,
 }
 
 /// Borrows from a SymbolDb, but allows temporary atomic access to some of the tables. These tables
@@ -159,13 +165,6 @@ impl SymbolIdRange {
     pub(crate) fn prelude(num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id: SymbolId::undefined(),
-            num_symbols,
-        }
-    }
-
-    pub(crate) fn epilogue(start_symbol_id: SymbolId, num_symbols: usize) -> SymbolIdRange {
-        SymbolIdRange {
-            start_symbol_id,
             num_symbols,
         }
     }
@@ -279,45 +278,55 @@ struct PendingSymbolHashBucket<'data> {
 }
 
 impl<'data> SymbolDb<'data> {
-    pub fn build(
-        groups: Vec<Group<'data>>,
-        version_script_data: Option<ScriptData<'data>>,
-        args: &'data Args,
-        linker_scripts: &[InputLinkerScript<'data>],
-        herd: &'data bumpalo_herd::Herd,
-        export_list_data: Option<ScriptData<'data>>,
-        output_kind: OutputKind,
-    ) -> Result<(Self, PerSymbolFlags)> {
-        timing_phase!("Build symbol DB");
+    /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
+    /// This promotes symbols marked for global visibility in a Rust version script back to global.
+    /// Also adds the non-interposable flag to all local symbols.
+    fn handle_rust_version_script(
+        &self,
+        rust_vscript: &RustVersionScript<'data>,
+        per_symbol_flags: &mut PerSymbolFlags,
+    ) {
+        verbose_timing_phase!("Upgrade locals for export");
+        let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
-        let version_script = version_script_data
+        rust_vscript.global.par_iter().for_each(|symbol| {
+            let prehashed = UnversionedSymbolName::prehashed(symbol);
+            if let Some(symbol_id) = self.get_unversioned(&prehashed) {
+                let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
+                symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+            }
+        });
+
+        // Don't forget to add the non-interposable flag the local symbols.
+        // We coudn't do this earlier as we didn't know which symbols would remain
+        // local.
+        per_symbol_flags
+            .flags_mut()
+            .par_iter_mut()
+            .for_each(|flags| {
+                let flags_val = flags.get();
+                if flags_val.is_downgraded_to_local() {
+                    *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+                }
+            });
+    }
+
+    pub(crate) fn new(
+        args: &'data Args,
+        output_kind: OutputKind,
+        auxiliary: &AuxiliaryFiles<'data>,
+        herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Self> {
+        let version_script = auxiliary
+            .version_script_data
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
-        let mut export_list = export_list_data.map(ExportList::parse).transpose()?;
-        for symbol in &args.export_list {
-            export_list
-                .get_or_insert_default()
-                .add_symbol(symbol, true)?;
-        }
 
-        let Some(Group::Epilogue(epilogue)) = groups.last() else {
-            bail!("Epilogue should always be last");
-        };
-        let epilogue_file_id = epilogue.file_id;
-
-        let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
-        let num_symbols = num_symbols_per_group.iter().sum();
-
-        let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
-        let mut per_symbol_flags: Vec<RawFlags> = Vec::with_capacity(num_symbols);
-        let mut symbol_file_ids: Vec<FileId> = Vec::with_capacity(num_symbols);
-
-        let mut writers = SymbolVecWriters::new(
-            &mut symbol_definitions,
-            &mut per_symbol_flags,
-            &mut symbol_file_ids,
-        );
+        let export_list = auxiliary
+            .export_list_data
+            .map(ExportList::parse)
+            .transpose()?;
 
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();
@@ -328,57 +337,137 @@ impl<'data> SymbolDb<'data> {
             alternative_versioned_definitions: HashMap::new(),
         });
 
+        let mut symbol_db = SymbolDb {
+            args,
+            buckets,
+            symbol_file_ids: Vec::new(),
+            symbol_definitions: Vec::new(),
+            groups: Vec::new(),
+            start_stop_symbol_names: Default::default(),
+            version_script,
+            export_list,
+            entry: None,
+            output_kind,
+            herd,
+        };
+
+        for symbol in &args.export_list {
+            symbol_db
+                .export_list
+                .get_or_insert_default()
+                .add_symbol(symbol, true)?;
+        }
+
+        Ok(symbol_db)
+    }
+
+    pub(crate) fn add_inputs(
+        &mut self,
+        per_symbol_flags: &mut PerSymbolFlags,
+        output_sections: &mut OutputSections<'data>,
+        layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+        loaded: LoadedInputs<'data>,
+    ) -> Result {
+        timing_phase!("Load inputs into symbol DB");
+
+        let parsed_objects = loaded.objects.into_iter().try_collect()?;
+
+        let processed_linker_scripts = parsing::process_linker_scripts(
+            &loaded.linker_scripts,
+            output_sections,
+            layout_rules_builder,
+        )?;
+
+        self.add_version_script_from_linker_scripts(&loaded.linker_scripts)?;
+
+        let pre_existing_groups = self.groups.len();
+
+        if self.groups.is_empty() {
+            self.groups
+                .push(Group::Prelude(crate::parsing::Prelude::new(
+                    self.args,
+                    self.output_kind,
+                )));
+        }
+
+        grouping::create_groups(self, parsed_objects, processed_linker_scripts);
+
+        let new_groups = &self.groups[pre_existing_groups..];
+
+        let num_symbols = new_groups.iter().map(|group| group.num_symbols()).sum();
+
+        self.symbol_definitions.reserve(num_symbols);
+        per_symbol_flags.reserve(num_symbols);
+        self.symbol_file_ids.reserve(num_symbols);
+
+        let mut writers = SymbolVecWriters::new(
+            &mut self.symbol_definitions,
+            &mut per_symbol_flags.flags,
+            &mut self.symbol_file_ids,
+        );
+
+        let mut per_group_shards = new_groups
+            .iter()
+            .map(|group| writers.new_shard(group))
+            .collect_vec();
+
+        let per_group_outputs = read_symbols(
+            &self.version_script,
+            &mut per_group_shards,
+            self.args,
+            &self.export_list,
+            self.output_kind,
+        )?;
+
+        populate_symbol_db(&mut self.buckets, &per_group_outputs);
+
         {
-            let mut per_group_shards = groups
-                .iter()
-                .map(|group| writers.new_shard(group))
-                .collect_vec();
-
-            let per_group_outputs = read_symbols(
-                &version_script,
-                &mut per_group_shards,
-                args,
-                &export_list,
-                output_kind,
-            )?;
-
-            populate_symbol_db(&mut buckets, &per_group_outputs);
+            verbose_timing_phase!("Return shards");
 
             for shard in per_group_shards {
                 writers.return_shard(shard);
             }
         }
 
-        let mut index = SymbolDb {
-            args,
-            buckets,
-            epilogue_file_id,
-            symbol_file_ids,
-            symbol_definitions,
-            groups,
-            num_symbols_per_group,
-            start_stop_symbol_names: Default::default(),
-            version_script,
-            export_list,
-            entry: None,
-            output_kind,
-        };
+        rayon::join(
+            || {
+                // This can take a while, so do it in parallel with other work.
+                verbose_timing_phase!("Drop per-group outputs");
+                drop(per_group_outputs);
+            },
+            || {
+                // If it's a rust version script, apply the global symbol visibility now.
+                // We previously downgraded all symbols to local visibility.
+                if let VersionScript::Rust(rust_vscript) = &self.version_script {
+                    self.handle_rust_version_script(rust_vscript, per_symbol_flags);
+                }
 
-        index.apply_wrapped_symbol_overrides(args, herd);
+                verbose_timing_phase!("Apply linker scripts");
 
-        for script in linker_scripts {
-            index.apply_linker_script(script);
-        }
+                for script in &loaded.linker_scripts {
+                    self.apply_linker_script(script);
+                }
+            },
+        );
 
-        Ok((index, PerSymbolFlags::new(per_symbol_flags)))
+        Ok(())
     }
 
-    pub(crate) fn add_start_stop_symbol(
+    /// Adds a new synthetic symbol. `syn` must have been the most recently added group.
+    pub(crate) fn add_synthetic_symbol(
         &mut self,
         per_symbol_flags: &mut PerSymbolFlags,
         symbol_name: PreHashed<UnversionedSymbolName<'data>>,
+        syn: &ResolvedSyntheticSymbols<'data>,
     ) -> SymbolId {
+        debug_assert_eq!(syn.file_id.group() + 1, self.groups.len());
+
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
+
+        debug_assert_eq!(
+            symbol_id.0,
+            syn.start_symbol_id.0 + syn.symbol_definitions.len() as u32
+        );
 
         let num_buckets = self.buckets.len();
         self.buckets[symbol_name.hash() as usize % num_buckets].add_symbol(&PendingSymbol {
@@ -388,7 +477,11 @@ impl<'data> SymbolDb<'data> {
 
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
-        self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
+        let Group::SyntheticSymbols(s) = &mut self.groups[syn.file_id.group()] else {
+            panic!("Tried to add synthetic symbol to non-synthetic-symbol group");
+        };
+        s.symbol_id_range.num_symbols += 1;
+        self.symbol_file_ids.push(syn.file_id);
 
         per_symbol_flags.push(ValueFlags::NON_INTERPOSABLE);
 
@@ -401,14 +494,16 @@ impl<'data> SymbolDb<'data> {
     /// defines it will not go via the wrapper. This is in contrast to LLD where wrapping also
     /// affects references to symbols in compilation units where those symbols are defined. Our main
     /// reason for this choice of behaviour is that it's much simpler to implement.
-    fn apply_wrapped_symbol_overrides(&mut self, args: &Args, herd: &'data bumpalo_herd::Herd) {
-        if args.wrap.is_empty() {
+    pub(crate) fn apply_wrapped_symbol_overrides(&mut self) {
+        if self.args.wrap.is_empty() {
             return;
         }
 
-        let allocator = herd.get();
+        verbose_timing_phase!("Apply wrapped symbol overrides");
 
-        for name in &args.wrap {
+        let allocator = self.herd.get();
+
+        for name in &self.args.wrap {
             let wrap_name = format!("__wrap_{name}");
             let Some(wrap_id) =
                 self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
@@ -458,7 +553,7 @@ impl<'data> SymbolDb<'data> {
                 }
             }
             Group::LinkerScripts(_) => Visibility::Default,
-            Group::Epilogue(_) => Visibility::Default,
+            Group::SyntheticSymbols(_) => Visibility::Default,
         }
     }
 
@@ -490,8 +585,8 @@ impl<'data> SymbolDb<'data> {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
             Group::LinkerScripts(scripts) => Ok(scripts[file_id.file()].symbol_name(symbol_id)),
-            Group::Epilogue(epilogue) => {
-                Ok(self.start_stop_symbol_names[symbol_id.offset_from(epilogue.start_symbol_id)])
+            Group::SyntheticSymbols(syn) => {
+                Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
         }
     }
@@ -528,7 +623,7 @@ impl<'data> SymbolDb<'data> {
                 Group::Prelude(_) => 0,
                 Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
                 Group::LinkerScripts(_) => 0,
-                Group::Epilogue(_) => 0,
+                Group::SyntheticSymbols(_) => 0,
             })
             .sum()
     }
@@ -580,10 +675,7 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
-        self.symbol_file_ids
-            .get(symbol_id.as_usize())
-            .copied()
-            .unwrap_or(self.epilogue_file_id)
+        self.symbol_file_ids[symbol_id.as_usize()]
     }
 
     /// Returns whether the supplied symbol ID is the canonical ID. A symbol won't be canonical, if
@@ -607,14 +699,14 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> SequencedInput<'db> {
+    pub(crate) fn file(&self, file_id: FileId) -> SequencedInput<'_> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => SequencedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
                 SequencedInput::Object(&parsed_input_objects[file_id.file()])
             }
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
-            Group::Epilogue(epilogue) => SequencedInput::Epilogue(epilogue),
+            Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
         }
     }
 
@@ -679,9 +771,9 @@ impl<'data> SymbolDb<'data> {
         resolved: &[ResolvedGroup],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
-            let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+        if let Some(common) = resolved[file_id.group()].files[file_id.file()].common() {
+            let local_index = symbol_id.to_input(common.symbol_id_range);
+            let Ok(obj_symbol) = common.object.symbol(local_index) else {
                 // Errors from this function should have been reported elsewhere.
                 return SymbolStrength::Undefined;
             };
@@ -707,13 +799,13 @@ impl<'data> SymbolDb<'data> {
             return false;
         };
 
-        let local_index = symbol_id.to_input(obj.symbol_id_range);
-        let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+        let local_index = symbol_id.to_input(obj.common.symbol_id_range);
+        let Ok(obj_symbol) = obj.common.object.symbol(local_index) else {
             return false;
         };
 
         let section_index = object::SectionIndex(usize::from(obj_symbol.st_shndx(LittleEndian)));
-        let Ok(header) = obj.object.section(section_index) else {
+        let Ok(header) = obj.common.object.section(section_index) else {
             return false;
         };
 
@@ -764,6 +856,61 @@ impl<'data> SymbolDb<'data> {
                 self.entry = Some(*symbol_name);
             }
         }
+    }
+
+    pub(crate) fn next_symbol_id(&self) -> SymbolId {
+        self.groups.last().map_or(SymbolId::undefined(), |group| {
+            let range = group.symbol_id_range();
+            range.start().add_usize(range.len())
+        })
+    }
+
+    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data> {
+        let file_id = FileId::new(self.groups.len() as u32, 0);
+        let start_symbol_id = self.next_symbol_id();
+
+        self.groups.push(Group::SyntheticSymbols(SyntheticSymbols {
+            file_id,
+            symbol_id_range: SymbolIdRange::input(start_symbol_id, 0),
+        }));
+
+        ResolvedSyntheticSymbols {
+            file_id,
+            start_symbol_id,
+            symbol_definitions: Vec::new(),
+        }
+    }
+
+    fn add_version_script_from_linker_scripts(
+        &mut self,
+        linker_scripts: &[InputLinkerScript<'data>],
+    ) -> Result {
+        for script in linker_scripts {
+            // Check if the linker script contains a VERSION command
+            if let Some(version_content) = script.script.get_version_script_content() {
+                if self.version_script != VersionScript::default() {
+                    bail!("Multiple version scripts provided");
+                }
+
+                self.version_script = VersionScript::parse(crate::input_data::ScriptData {
+                    raw: version_content,
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn groups_reserve(&mut self, additional: usize) {
+        self.groups.reserve(additional);
+    }
+
+    pub(crate) fn next_group_index(&self) -> u32 {
+        self.groups.len() as u32
+    }
+
+    pub(crate) fn add_group(&mut self, group: Group<'data>) {
+        self.groups.push(group);
     }
 }
 
@@ -877,6 +1024,8 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let error_queue = SegQueue::new();
 
     buckets.par_iter_mut().for_each(|bucket| {
+        verbose_timing_phase!("Resolve alternative for bucket");
+
         process_alternatives(
             &mut bucket.alternative_definitions,
             &error_queue,
@@ -1118,6 +1267,12 @@ fn read_symbols_for_group<'data>(
     args: &Args,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
+    verbose_timing_phase!(
+        "Read group symbols",
+        group_id = shard.group.group_id(),
+        num_symbols = shard.group.num_symbols()
+    );
+
     let mut outputs = SymbolLoadOutputs {
         pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
     };
@@ -1145,7 +1300,7 @@ fn read_symbols_for_group<'data>(
                 load_linker_script_symbols(script, shard, &mut outputs);
             }
         }
-        Group::Epilogue(_) => {
+        Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
     }
@@ -1160,6 +1315,8 @@ fn populate_symbol_db<'data>(
     timing_phase!("Populate symbol map");
 
     buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
+        verbose_timing_phase!("Process symbol bucket");
+
         // The following approximation should be an upper bound on the number of global
         // names we'll have. There will likely be at least a few global symbols with the
         // same name, in which case the actual number will be slightly smaller.
@@ -1283,8 +1440,10 @@ trait SymbolLoader<'data> {
             if self.should_downgrade_to_local(&name) {
                 flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
                 // If we're downgrading to a local, then we're writing a shared object. Shared
-                // objects should never bypass the GOT for TLS variables.
-                if symbol.st_type() != object::elf::STT_TLS {
+                // objects should never bypass the GOT for TLS variables. However, if we're
+                // downgrading all symbols by default, that'd add the flag to all symbols, so we
+                // have to do this later.
+                if !self.downgrades_all() && symbol.st_type() != object::elf::STT_TLS {
                     flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
@@ -1311,6 +1470,11 @@ trait SymbolLoader<'data> {
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
+        false
+    }
+
+    /// Returns whether we will downgrade all symbols by default and later upgrade some to global.
+    fn downgrades_all(&self) -> bool {
         false
     }
 
@@ -1450,7 +1614,16 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     }
 
     fn should_downgrade_to_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        self.version_script.is_local(name)
+        match self.version_script {
+            // We first downgrade all symbols when using a Rust version script.
+            // We're gonna set the ones that are exported back to global later.
+            VersionScript::Rust(_) => true,
+            VersionScript::Regular(version_script) => version_script.is_local(name),
+        }
+    }
+
+    fn downgrades_all(&self) -> bool {
+        matches!(self.version_script, VersionScript::Rust(_))
     }
 
     fn get_symbol_name_and_version(
@@ -1597,7 +1770,9 @@ impl std::fmt::Display for SymbolDebug<'_> {
                 SequencedInput::LinkerScript(s) => {
                     write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
                 }
-                SequencedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
+                SequencedInput::SyntheticSymbols(_) => {
+                    write!(f, "<unnamed custom-section symbol>")?;
+                }
             }
         } else {
             write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;
@@ -1807,7 +1982,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.db.symbol_name_for_display(symbol_id)
     }
 
-    fn file<'a>(&'a self, file_id: FileId) -> SequencedInput<'a> {
+    fn file(&self, file_id: FileId) -> SequencedInput<'_> {
         self.db.file(file_id)
     }
 

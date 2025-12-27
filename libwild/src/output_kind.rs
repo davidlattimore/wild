@@ -1,6 +1,6 @@
 use crate::Args;
 use crate::args::RelocationModel;
-use crate::input_data::InputData;
+use crate::input_data::FileLoader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
@@ -10,7 +10,7 @@ pub(crate) enum OutputKind {
 }
 
 impl OutputKind {
-    pub(crate) fn new(args: &Args, input_data: &InputData<'_>) -> OutputKind {
+    pub(crate) fn new(args: &Args, input_data: &FileLoader<'_>) -> OutputKind {
         if !args.should_output_executable {
             OutputKind::SharedObject
         } else if args.dynamic_linker.is_some()
@@ -19,11 +19,7 @@ impl OutputKind {
             // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
             // set.
             OutputKind::DynamicExecutable(args.relocation_model)
-        } else if input_data
-            .inputs
-            .iter()
-            .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
-        {
+        } else if input_data.has_dynamic {
             // When attempting to create static executable, but DSO is added as an input we need to
             // proceed with dynamic executable.
             // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded,

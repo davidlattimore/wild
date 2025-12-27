@@ -43,6 +43,9 @@
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
+//! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
+//! the specified alignment.
+//!
 //! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
@@ -79,6 +82,11 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
+//! RequiresGlibcVersion:{version} Specifies the minimum version of glibc required for this test.
+//!
+//! RequiresSFrameBacktrace:{bool} Defaults to false. Set to true to disable this test if we're
+//! running on a system without sframe backtrace support.
+//!
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
@@ -96,6 +104,8 @@
 //! This testing runs wild twice with the second run having the --update-in-place and the file
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
+//!
+//! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
 //! ## Inputs
 //!
@@ -156,7 +166,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::fs::File;
 use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -189,8 +198,10 @@ fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn build_dir() -> PathBuf {
-    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
+fn determine_build_dir(test_name: &str) -> PathBuf {
+    std::env::var("WILD_TEST_BUILD_DIR")
+        .map_or(base_dir().join("tests/build"), PathBuf::from)
+        .join(test_name)
 }
 
 #[derive(Debug)]
@@ -445,6 +456,7 @@ fn is_musl_used() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
+    build_dir: PathBuf,
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
@@ -467,9 +479,12 @@ struct Config {
     expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
+    requires_glibc_version: Option<String>,
+    requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
+    remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
     test_update_in_place: bool,
@@ -532,6 +547,196 @@ struct DirectConfig {
     mode: Mode,
 }
 
+fn get_glibc_version() -> Option<Vec<u32>> {
+    static VERSION: std::sync::OnceLock<Option<Vec<u32>>> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let output = std::process::Command::new("getconf")
+                .arg("GNU_LIBC_VERSION")
+                .output()
+                .ok()?;
+
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let version_str = stdout.split_whitespace().last()?;
+                Some(
+                    version_str
+                        .split('.')
+                        .filter_map(|s| s.parse::<u32>().ok())
+                        .collect(),
+                )
+            } else {
+                None
+            }
+        })
+        .clone()
+}
+
+/// Checks if the system's glibc supports SFrame-based stack unwinding for a given architecture.
+///
+/// 1. Check environment variable overrides (WILD_SKIP_SFRAME_BACKTRACE /
+///    WILD_FORCE_SFRAME_BACKTRACE)
+/// 2. Check glibc version (must be 2.42+)
+/// 3. Compile and run a test program that uses SFrame-only backtrace to verify it works at runtime
+fn is_sframe_backtrace_supported(arch: Architecture) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    static SUPPORTED: std::sync::OnceLock<Mutex<HashMap<Architecture, bool>>> =
+        std::sync::OnceLock::new();
+
+    let cache = SUPPORTED.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache_guard = cache.lock().unwrap();
+
+    if let Some(&result) = cache_guard.get(&arch) {
+        return result;
+    }
+
+    let result = check_sframe_support_for_arch(arch);
+    cache_guard.insert(arch, result);
+    result
+}
+
+fn check_sframe_support_for_arch(arch: Architecture) -> bool {
+    if std::env::var("WILD_SKIP_SFRAME_BACKTRACE").is_ok() {
+        return false;
+    }
+    if std::env::var("WILD_FORCE_SFRAME_BACKTRACE").is_ok() {
+        return true;
+    }
+
+    // Check glibc version (must be 2.42+)
+    let version = get_glibc_version();
+    if version.as_ref().is_none_or(|v| v < &vec![2, 42]) {
+        return false;
+    }
+
+    run_sframe_backtrace_test(arch)
+}
+
+/// Compiles and runs a minimal test program to verify SFrame-based backtrace actually works.
+/// This catches cases where glibc has .sframe sections but backtrace() doesn't use them
+/// correctly (e.g., some Ubuntu 25.10 configurations).
+///
+/// TODO: This should be unnecessary once more various distributions have updated glibc.
+fn run_sframe_backtrace_test(arch: Architecture) -> bool {
+    let temp_dir = match tempfile::tempdir() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    let source_path = temp_dir.path().join("sframe_test.c");
+    let obj_path = temp_dir.path().join("sframe_test.o");
+    let binary_path = temp_dir.path().join("sframe_test");
+    let test_code = r#"
+#define _GNU_SOURCE
+#include <execinfo.h>
+#include <stdlib.h>
+
+__attribute__((noinline)) int check_bt(void) {
+    void *buffer[10];
+    int nptrs = backtrace(buffer, 10);
+    if (nptrs < 3){ return 1; }
+    for (int i = 0; i < 3; ++i) {
+        if (buffer[i] == 0 || (unsigned long)buffer[i] < 0x1000){ return 2; }
+    }
+    return 42;
+}
+
+__attribute__((noinline)) int inner(void) {
+    return check_bt();
+}
+
+int main(void) {
+    return inner();
+}
+"#;
+
+    if std::fs::write(&source_path, test_code).is_err() {
+        return false;
+    }
+
+    let host_arch = get_host_architecture();
+    let is_cross = arch != host_arch;
+
+    let (compiler, sysroot) = if is_cross {
+        let cross_compiler = format!("{}-linux-gnu-gcc", arch);
+        let sysroot = arch.get_cross_sysroot_path();
+        (cross_compiler, Some(sysroot))
+    } else {
+        ("gcc".to_string(), None)
+    };
+
+    let mut compile_cmd = std::process::Command::new(&compiler);
+    compile_cmd
+        .arg("-c")
+        .arg("-O0")
+        .arg("-fomit-frame-pointer")
+        .arg("-Wa,--gsframe")
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&obj_path);
+
+    if let Some(ref sysroot) = sysroot {
+        compile_cmd.arg(format!("--sysroot={}", sysroot));
+    }
+
+    if !compile_cmd
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    let mut link_cmd = std::process::Command::new(&compiler);
+    link_cmd.arg(&obj_path).arg("-o").arg(&binary_path);
+
+    if let Some(ref sysroot) = sysroot {
+        link_cmd.arg(format!("--sysroot={}", sysroot));
+    }
+
+    if !link_cmd
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+
+    // Remove .eh_frame and .eh_frame_hdr sections to force SFrame-only unwinding
+    let objcopy = if is_cross {
+        format!("{}-linux-gnu-objcopy", arch)
+    } else {
+        "objcopy".to_string()
+    };
+
+    let objcopy_result = std::process::Command::new(&objcopy)
+        .arg("--remove-section=.eh_frame")
+        .arg("--remove-section=.eh_frame_hdr")
+        .arg(&binary_path)
+        .output();
+
+    if !objcopy_result.map(|o| o.status.success()).unwrap_or(false) {
+        return false;
+    }
+
+    let run_result = if is_cross {
+        std::process::Command::new(format!("qemu-{arch}"))
+            .arg("-L")
+            .arg(arch.get_cross_sysroot_path())
+            .arg(&binary_path)
+            .output()
+    } else {
+        std::process::Command::new(&binary_path).output()
+    };
+
+    match run_result {
+        Ok(output) => output.status.code() == Some(42),
+        Err(_) => false,
+    }
+}
+
 impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
@@ -540,6 +745,14 @@ impl Config {
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
+            || self.requires_glibc_version.as_ref().is_some_and(|version| {
+                let req_version: Vec<u32> = version
+                    .split('.')
+                    .filter_map(|s| s.parse::<u32>().ok())
+                    .collect();
+                get_glibc_version().is_some_and(|current_version| req_version > current_version)
+            })
+            || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -614,6 +827,7 @@ struct Assertions {
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
+    expected_load_alignment: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,8 +910,9 @@ impl ArgumentSet {
 }
 
 impl Config {
-    fn new(test_config: &TestConfig) -> Self {
+    fn new(test_config: &TestConfig, build_dir: PathBuf) -> Self {
         Self {
+            build_dir,
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
@@ -713,6 +928,7 @@ impl Config {
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
+            remove_sections: Vec::new(),
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
@@ -720,6 +936,8 @@ impl Config {
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
+            requires_glibc_version: None,
+            requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
             auto_add_objects: true,
@@ -848,6 +1066,18 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
+                "ExpectLoadAlignment" => {
+                    let alignment_str = arg.trim();
+                    let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
+                        u64::from_str_radix(hex, 16)
+                            .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
+                    } else {
+                        alignment_str
+                            .parse()
+                            .with_context(|| format!("Invalid alignment: {alignment_str}"))?
+                    };
+                    config.assertions.expected_load_alignment = Some(alignment);
+                }
                 "Mode" => {
                     let mode: Mode = arg
                         .parse()
@@ -919,6 +1149,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         template,
                     })
                 }
+                "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
                     config.support_architectures = arg
@@ -928,6 +1159,13 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
+                "RequiresGlibcVersion" => {
+                    config.requires_glibc = true;
+                    config.requires_glibc_version = Some(arg.trim().to_owned())
+                }
+                "RequiresSFrameBacktrace" => {
+                    config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
+                }
                 "RequiresCompilerFlags" => {
                     config
                         .requires_compiler_flags
@@ -968,7 +1206,6 @@ fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
 
 impl ProgramInputs {
     fn new(source_file: &'static str) -> Result<Self> {
-        std::fs::create_dir_all(build_dir())?;
         Ok(Self { source_file })
     }
 
@@ -1015,6 +1252,10 @@ impl ProgramInputs {
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
             .collect();
+
+        if !config.remove_sections.is_empty() {
+            remove_sections(&link_output, &config.remove_sections, cross_arch)?;
+        }
 
         Ok(Program {
             link_output,
@@ -1123,6 +1364,33 @@ impl ProgramInputs {
 
         Ok(())
     }
+}
+
+/// Removes the specified sections from the output file.
+fn remove_sections(
+    link_output: &LinkOutput,
+    section_names: &[String],
+    cross_arch: Option<Architecture>,
+) -> Result {
+    let objcopy = match cross_arch {
+        Some(arch) => format!("{}-linux-gnu-objcopy", arch),
+        None => "objcopy".to_owned(),
+    };
+
+    let mut command = Command::new(objcopy);
+    for section_name in section_names {
+        command.arg("--remove-section").arg(section_name);
+    }
+    command.arg(&link_output.binary);
+    let output = command.output().context("Failed to run objcopy")?;
+    if !output.status.success() {
+        bail!(
+            "objcopy reported error:\n{}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    Ok(())
 }
 
 /// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
@@ -1419,10 +1687,6 @@ fn build_linker_input(
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let so_lockfile = first_obj_path.with_extension(format!("{linker}.so.lock"));
-            let so_lock = File::create(&so_lockfile)?;
-            let _write_lock = so_lock.lock();
-
             let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
@@ -1621,10 +1885,12 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(&file.filename).with_extension(format!(
-        "{}-{arch_str}-{command_hash:x}{suffix}",
-        config.name
-    )));
+    let output_path = config
+        .build_dir
+        .join(Path::new(&file.filename).with_extension(format!(
+            "{}-{arch_str}-{command_hash:x}{suffix}",
+            config.name
+        )));
 
     match compiler_kind {
         CompilerKind::C => {
@@ -1634,18 +1900,6 @@ fn build_obj(
             command.env("WILD_SAVE_DIR", &output_path);
         }
     }
-
-    // If multiple threads try to create a file at the same time, only one should do so and the
-    // others should wait.
-    let lock_path = output_path.with_file_name(format!(
-        ".{}.lock",
-        output_path
-            .file_name()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-    ));
-    let output_file_lock = File::create(&lock_path)?;
-    let _write_lock = output_file_lock.lock();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(BuiltObject {
@@ -1907,7 +2161,9 @@ impl Linker {
         cross_arch: Option<Architecture>,
     ) -> PathBuf {
         let cross = cross_name(cross_arch);
-        build_dir().join(format!("{basename}-{}-{cross}.{self}", config.name))
+        config
+            .build_dir
+            .join(format!("{basename}-{}-{cross}.{self}", config.name))
     }
 }
 
@@ -2271,6 +2527,7 @@ impl Assertions {
         self.verify_symbols_absent(obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
+        self.verify_load_alignment(&obj)?;
         Ok(())
     }
 
@@ -2322,6 +2579,27 @@ impl Assertions {
             }
         }
         Ok(())
+    }
+
+    fn verify_load_alignment(&self, obj: &ElfFile64) -> Result {
+        let Some(expected) = self.expected_load_alignment else {
+            return Ok(());
+        };
+
+        let endian = LittleEndian;
+        let segments = obj.elf_program_headers();
+        for segment in segments {
+            if segment.p_type(endian) == object::elf::PT_LOAD {
+                let alignment = segment.p_align(endian);
+                if alignment != expected {
+                    bail!("Expected LOAD segment alignment {expected:#x}, but got {alignment:#x}");
+                }
+
+                return Ok(());
+            }
+        }
+
+        bail!("No LOAD segment found");
     }
 
     fn verify_symbols_absent(
@@ -2885,7 +3163,8 @@ fn integration_test(
         "local_symbol_refs.s",
         "archive_activation.c",
         "relocation-in-non-alloc-section.s",
-        "exclude-libs.c",
+        "exclude-libs-all.c",
+        "exclude-libs-single.c",
         "exclude-section.s",
         "common_section.c",
         "string_merging.c",
@@ -2893,6 +3172,7 @@ fn integration_test(
         "string-merge-missing-null.c",
         "comments.c",
         "custom-note.s",
+        "backtrace.c",
         "eh_frame.c",
         "symbol-priority.c",
         "hidden-ref.c",
@@ -2946,11 +3226,18 @@ fn integration_test(
         "hash-style.c",
         "defsym.c",
         "linker-script-defsym-notfound.c",
-        "tls-common.c"
+        "tls-common.c",
+        "section-start.c",
+        "max-page-size.c",
+        "call-via-defsym.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
+    let build_dir = determine_build_dir(program_name);
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("Failed to create directory `{}`", build_dir.display()))?;
+
     let program_inputs = ProgramInputs::new(program_name)?;
 
     let linkers = available_linkers()?;
@@ -2958,7 +3245,7 @@ fn integration_test(
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &Config::new(&test_config))
+    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
     let host_arch = get_host_architecture();

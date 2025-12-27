@@ -12,8 +12,8 @@
   glibc,
   stdenv,
 }:
-assert lib.assertMsg (lib.versionAtLeast rustc.version "1.89.0")
-  "Wild requires at least Rust 1.89.0, this instance of nixpkgs has Rust ${rustc.version}";
+assert lib.assertMsg (lib.versionAtLeast rustc.version "1.90.0")
+  "Wild requires at least Rust 1.90.0, this instance of nixpkgs has Rust ${rustc.version}";
 
 let
   cargoToml = builtins.fromTOML (builtins.readFile ../Cargo.toml);

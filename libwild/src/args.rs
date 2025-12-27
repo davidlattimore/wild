@@ -21,8 +21,11 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use crate::timing_phase;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use indexmap::IndexSet;
+use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
@@ -31,6 +34,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::mem::take;
 use std::num::NonZero;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
@@ -95,6 +99,9 @@ pub struct Args {
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
 
+    /// Section start addresses from `--section-start` options. Maps section name to address.
+    pub(crate) section_start: HashMap<String, u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -123,6 +130,7 @@ pub struct Args {
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
+    pub(crate) max_page_size: Option<Alignment>,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -131,6 +139,8 @@ pub struct Args {
     pub(crate) available_threads: NonZeroUsize,
 
     pub(crate) numeric_experiments: Vec<Option<u64>>,
+
+    rpath_set: IndexSet<String>,
 
     jobserver_client: Option<Client>,
 }
@@ -218,8 +228,12 @@ pub(crate) enum FileWriteMode {
 
     /// The existing output file, if any, will be edited in-place. Any hard links to the file will
     /// update accordingly. If the file is locked due to currently being executed, then our write
-    /// will fail. Specified indicates whether the mode was explicitly specified by the user or not.
-    UpdateInPlace { specified: bool },
+    /// will fail.
+    UpdateInPlace,
+
+    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
+    /// unlinking and replacing.
+    UpdateInPlaceWithFallback,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -328,6 +342,8 @@ const IGNORED_FLAGS: &[&str] = &[
     "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
+    "discard-all",
+    "x", // alias for --discard-all
 ];
 
 // These flags map to the default behavior of the linker.
@@ -412,6 +428,7 @@ impl Default for Args {
             export_list: Vec::new(),
             export_list_path: None,
             defsym: Vec::new(),
+            section_start: HashMap::new(),
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -422,7 +439,9 @@ impl Default for Args {
             allow_multiple_definitions: false,
             z_interpose: false,
             z_isa: None,
+            max_page_size: None,
             numeric_experiments: Vec::new(),
+            rpath_set: Default::default(),
         }
     }
 }
@@ -477,6 +496,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
+    if !args.rpath_set.is_empty() {
+        args.rpath = Some(take(&mut args.rpath_set).into_iter().join(":"));
+    }
+
     if !args.unrecognized_options.is_empty() {
         let options_list = args.unrecognized_options.join(", ");
         bail!("unrecognized option(s): {}", options_list);
@@ -502,7 +525,7 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
+pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
     arguments_from_string(&contents)
@@ -510,6 +533,7 @@ fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
 
 impl Args {
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+        timing_phase!("Parse args");
         parse(input)
     }
 
@@ -551,6 +575,10 @@ impl Args {
     }
 
     pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
+        if let Some(max_page_size) = self.max_page_size {
+            return max_page_size;
+        }
+
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
@@ -573,6 +601,8 @@ impl Args {
     ///
     /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
     pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
+        timing_phase!("Activate thread pool");
+
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
             if let Some(client) = &self.jobserver_client {
@@ -620,15 +650,6 @@ fn parse_number(s: &str) -> Result<u64> {
         Ok(u64::from_str_radix(s, 16)?)
     } else {
         Ok(s.parse::<u64>()?)
-    }
-}
-
-fn append_rpath(rpath: &mut Option<String>, rpath_value: &str) {
-    if let Some(rpath) = &mut *rpath {
-        rpath.push(':');
-        rpath.push_str(rpath_value);
-    } else {
-        *rpath = Some(rpath_value.to_string());
     }
 }
 
@@ -763,9 +784,23 @@ struct WithParam;
 struct WithOptionalParam;
 
 #[derive(Clone, Copy)]
+enum SubOptionHandler {
+    /// Handler without value parameter (exact match)
+    NoValue(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
+    /// Handler with value parameter (prefix match)
+    WithValue(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
+}
+
+#[derive(Clone, Copy)]
 struct SubOption {
     help: &'static str,
-    handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+    handler: SubOptionHandler,
+}
+
+impl SubOption {
+    fn with_value(&self) -> bool {
+        matches!(self.handler, SubOptionHandler::WithValue(_))
+    }
 }
 
 impl Default for ArgumentParser {
@@ -909,12 +944,32 @@ impl ArgumentParser {
                     rest.to_owned()
                 };
 
-                // Check if this value corresponds to a registered sub-option
-                if let Some(sub) = handler.sub_options.get(value.as_str()) {
-                    (sub.handler)(args, modifier_stack, &value)?;
+                if let Some((key, param_value)) = value.split_once('=') {
+                    // Value has '=', look up key with trailing '='
+                    if let Some(sub) = handler.sub_options.get(format!("{key}=").as_str()) {
+                        match sub.handler {
+                            SubOptionHandler::NoValue(_) => {
+                                (handler.handler)(args, modifier_stack, &value)?;
+                            }
+                            SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
+                        }
+                    } else {
+                        // Fall back to the main handler
+                        (handler.handler)(args, modifier_stack, &value)?;
+                    }
                 } else {
-                    // Fall back to the main handler for unregistered sub-options
-                    (handler.handler)(args, modifier_stack, &value)?;
+                    // No '=' in value, look up exact match
+                    if let Some(sub) = handler.sub_options.get(value.as_str()) {
+                        match sub.handler {
+                            SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
+                            SubOptionHandler::WithValue(_) => {
+                                bail!("Option -{prefix} {value} requires a value");
+                            }
+                        }
+                    } else {
+                        // Fall back to the main handler
+                        (handler.handler)(args, modifier_stack, &value)?;
+                    }
                 }
                 return Ok(());
             }
@@ -932,7 +987,7 @@ impl ArgumentParser {
             return Ok(());
         }
 
-        args.save_dir.handle_file(arg)?;
+        args.save_dir.handle_file(arg);
         args.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,
@@ -994,8 +1049,14 @@ impl ArgumentParser {
                 sub_options.sort_by_key(|(name, _)| *name);
 
                 for (sub_name, sub) in sub_options {
+                    let display_name = if sub.with_value() && sub_name.ends_with('=') {
+                        // sub_name ends with '=' (e.g., "max-page-size="), so add <VALUE>
+                        format!("{sub_name}<VALUE>")
+                    } else {
+                        sub_name.to_string()
+                    };
                     help.push_str(&format!(
-                        "      -{prefix} {sub_name:<30} {sub_help}\n",
+                        "      -{prefix} {display_name:<30} {sub_help}\n",
                         sub_help = sub.help
                     ));
                 }
@@ -1065,9 +1126,32 @@ impl<'a, T> OptionDeclaration<'a, T> {
         mut self,
         name: &'static str,
         help: &'static str,
+        handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>,
+    ) -> Self {
+        self.sub_options.insert(
+            name,
+            SubOption {
+                help,
+                handler: SubOptionHandler::NoValue(handler),
+            },
+        );
+        self
+    }
+
+    #[must_use]
+    fn sub_option_with_value(
+        mut self,
+        name: &'static str,
+        help: &'static str,
         handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
     ) -> Self {
-        self.sub_options.insert(name, SubOption { help, handler });
+        self.sub_options.insert(
+            name,
+            SubOption {
+                help,
+                handler: SubOptionHandler::WithValue(handler),
+            },
+        );
         self
     }
 }
@@ -1165,7 +1249,7 @@ fn setup_argument_parser() -> ArgumentParser {
             };
 
             let dir = handle_sysroot(Path::new(value));
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.lib_search_path.push(dir);
             Ok(())
         });
@@ -1174,7 +1258,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("l")
         .help("Link with library")
-        .sub_option(
+        .sub_option_with_value(
             ":filename",
             "Link with specific file",
             |args, modifier_stack, value| {
@@ -1188,7 +1272,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .sub_option(
+        .sub_option_with_value(
             "libname",
             "Link with library libname.so or libname.a",
             |args, modifier_stack, value| {
@@ -1228,18 +1312,14 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("m")
         .help("Set target architecture")
-        .sub_option(
-            "elf_x86_64",
-            "x86-64 ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::X86_64;
-                Ok(())
-            },
-        )
+        .sub_option("elf_x86_64", "x86-64 ELF target", |args, _| {
+            args.arch = Architecture::X86_64;
+            Ok(())
+        })
         .sub_option(
             "elf_x86_64_sol2",
             "x86-64 ELF target (Solaris)",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 if args.dynamic_linker.is_none() {
                     args.dynamic_linker = Some(Path::new("/lib/amd64/ld.so.1").into());
                 }
@@ -1247,30 +1327,18 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .sub_option(
-            "aarch64elf",
-            "AArch64 ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::AArch64;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "aarch64linux",
-            "AArch64 ELF target (Linux)",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::AArch64;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "elf64lriscv",
-            "RISC-V 64-bit ELF target",
-            |args, _modifier_stack, _value| {
-                args.arch = Architecture::RISCV64;
-                Ok(())
-            },
-        )
+        .sub_option("aarch64elf", "AArch64 ELF target", |args, _| {
+            args.arch = Architecture::AArch64;
+            Ok(())
+        })
+        .sub_option("aarch64linux", "AArch64 ELF target (Linux)", |args, _| {
+            args.arch = Architecture::AArch64;
+            Ok(())
+        })
+        .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
+            args.arch = Architecture::RISCV64;
+            Ok(())
+        })
         .execute(|_args, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
@@ -1279,49 +1347,33 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("z")
         .help("Linker option")
-        .sub_option(
-            "now",
-            "Resolve all symbols immediately",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("now", "Resolve all symbols immediately", |_, _| Ok(()))
         .sub_option(
             "origin",
             "Mark object as requiring immediate $ORIGIN",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.needs_origin_handling = true;
                 Ok(())
             },
         )
-        .sub_option(
-            "relro",
-            "Enable RELRO program header",
-            |args, _modifier_stack, _value| {
-                args.relro = true;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "norelro",
-            "Disable RELRO program header",
-            |args, _modifier_stack, _value| {
-                args.relro = false;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "notext",
-            "Do not report DT_TEXTREL as an error",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
-        .sub_option(
-            "nostart-stop-gc",
-            "Disable start/stop symbol GC",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("relro", "Enable RELRO program header", |args, _| {
+            args.relro = true;
+            Ok(())
+        })
+        .sub_option("norelro", "Disable RELRO program header", |args, _| {
+            args.relro = false;
+            Ok(())
+        })
+        .sub_option("notext", "Do not report DT_TEXTREL as an error", |_, _| {
+            Ok(())
+        })
+        .sub_option("nostart-stop-gc", "Disable start/stop symbol GC", |_, _| {
+            Ok(())
+        })
         .sub_option(
             "execstack",
             "Mark object as requiring an executable stack",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.execstack = true;
                 Ok(())
             },
@@ -1329,24 +1381,20 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "noexecstack",
             "Mark object as not requiring an executable stack",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.execstack = false;
                 Ok(())
             },
         )
-        .sub_option(
-            "nocopyreloc",
-            "Disable copy relocations",
-            |args, _modifier_stack, _value| {
-                args.copy_relocations =
-                    CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
-                Ok(())
-            },
-        )
+        .sub_option("nocopyreloc", "Disable copy relocations", |args, _| {
+            args.copy_relocations =
+                CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
+            Ok(())
+        })
         .sub_option(
             "nodelete",
             "Mark shared object as non-deletable",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.needs_nodelete_handling = true;
                 Ok(())
             },
@@ -1354,7 +1402,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "defs",
             "Report unresolved symbol references in object files",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.no_undefined = true;
                 Ok(())
             },
@@ -1362,28 +1410,20 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "undefs",
             "Do not report unresolved symbol references in object files",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.no_undefined = false;
                 Ok(())
             },
         )
-        .sub_option(
-            "muldefs",
-            "Allow multiple definitions",
-            |args, _modifier_stack, _value| {
-                args.allow_multiple_definitions = true;
-                Ok(())
-            },
-        )
-        .sub_option(
-            "lazy",
-            "Use lazy binding (default)",
-            |_args, _modifier_stack, _value| Ok(()),
-        )
+        .sub_option("muldefs", "Allow multiple definitions", |args, _| {
+            args.allow_multiple_definitions = true;
+            Ok(())
+        })
+        .sub_option("lazy", "Use lazy binding (default)", |_, _| Ok(()))
         .sub_option(
             "interpose",
             "Mark object to interpose all DSOs but executable",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.z_interpose = true;
                 Ok(())
             },
@@ -1391,36 +1431,42 @@ fn setup_argument_parser() -> ArgumentParser {
         .sub_option(
             "x86-64-baseline",
             "Mark x86-64-baseline ISA as needed",
-            |args, _modifier_stack, _value| {
+            |args, _| {
                 args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_BASELINE);
                 Ok(())
             },
         )
-        .sub_option(
-            "x86-64-v2",
-            "Mark x86-64-v2 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V2);
+        .sub_option("x86-64-v2", "Mark x86-64-v2 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V2);
+            Ok(())
+        })
+        .sub_option("x86-64-v3", "Mark x86-64-v3 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V3);
+            Ok(())
+        })
+        .sub_option("x86-64-v4", "Mark x86-64-v4 ISA as needed", |args, _| {
+            args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V4);
+            Ok(())
+        })
+        .sub_option_with_value(
+            "max-page-size=",
+            "Set maximum page size for load segments",
+            |args, _, value| {
+                let size: u64 = parse_number(value)?;
+                if !size.is_power_of_two() {
+                    bail!("Invalid alignment {size:#x}");
+                }
+                args.max_page_size = Some(Alignment {
+                    exponent: size.trailing_zeros() as u8,
+                });
+
                 Ok(())
             },
         )
-        .sub_option(
-            "x86-64-v3",
-            "Mark x86-64-v3 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V3);
-                Ok(())
-            },
-        )
-        .sub_option(
-            "x86-64-v4",
-            "Mark x86-64-v4 ISA as needed",
-            |args, _modifier_stack, _value| {
-                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V4);
-                Ok(())
-            },
-        )
-        .execute(|_args, _modifier_stack, _value| Ok(()));
+        .execute(|_args, _modifier_stack, value| {
+            warn_unsupported(&("-z ".to_owned() + value))?;
+            Ok(())
+        });
 
     parser
         .declare_with_param()
@@ -1431,7 +1477,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 args.unrecognized_options
                     .push(format!("-R,{value}(filename)"));
             } else {
-                append_rpath(&mut args.rpath, value);
+                args.rpath_set.insert(value.to_string());
             }
             Ok(())
         });
@@ -1784,7 +1830,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("rpath")
         .help("Add directory to runtime library search path")
         .execute(|args, _modifier_stack, value| {
-            append_rpath(&mut args.rpath, value);
+            args.rpath_set.insert(value.to_string());
             Ok(())
         });
 
@@ -1926,7 +1972,10 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Exclude libraries")
         .execute(|args, _modifier_stack, value| {
             if value != "ALL" {
+                // For now, just warn and ignore.
+                // FIXME: Support excluding specific libraries.
                 warn_unsupported("--exclude-libs other than ALL")?;
+                return Ok(());
             }
             args.exclude_libs = true;
             Ok(())
@@ -1937,7 +1986,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("version-script")
         .help("Use version script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.version_script_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1948,7 +1997,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             args.add_script(value);
             Ok(())
         });
@@ -2075,6 +2124,28 @@ fn setup_argument_parser() -> ArgumentParser {
 
     parser
         .declare_with_param()
+        .long("section-start")
+        .help("Set start address for a section: --section-start=.section=address")
+        .execute(|args, _modifier_stack, value| {
+            let parts: Vec<&str> = value.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                bail!("Invalid --section-start format. Expected: --section-start=.section=address");
+            }
+
+            let section_name = parts[0].to_owned();
+            let address = parse_number(parts[1]).with_context(|| {
+                format!(
+                    "Invalid address `{}` in --section-start={}",
+                    parts[1], value
+                )
+            })?;
+            args.section_start.insert(section_name, address);
+
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
         .execute(|args, _modifier_stack, value| {
@@ -2155,7 +2226,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("sysroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
+            args.save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
             for path in &mut args.lib_search_path {
@@ -2243,7 +2314,16 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("update-in-place")
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
-            args.file_write_mode = Some(FileWriteMode::UpdateInPlace { specified: true });
+            args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-update-in-place")
+        .help("Delete and recreate the file")
+        .execute(|args, _modifier_stack| {
+            args.file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
             Ok(())
         });
 
@@ -2504,6 +2584,11 @@ mod tests {
         "-Rbaz",
         "-R",
         "somewhere",
+        // Adding the same rpath multiple times should not create duplicates
+        "-rpath",
+        "foo/",
+        "-x",
+        "--discard-all",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];
