@@ -154,6 +154,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             output_sections.add_secondary_section(
                                                 primary_section_id,
                                                 replace(&mut extra_min_alignment, alignment::MIN),
+                                                None,
                                             )
                                         };
 
@@ -288,10 +289,11 @@ impl<'data> SectionRule<'data> {
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
-        Self::prefix(
+        SectionRule {
             name,
-            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
-        )
+            is_prefix: true,
+            outcome: SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
+        }
     }
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {

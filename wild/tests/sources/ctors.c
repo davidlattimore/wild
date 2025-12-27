@@ -1,6 +1,8 @@
 //#LinkerDriver:gcc
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
+//#DiffIgnore:init_array
+//#DiffIgnore:fini_array
 
 static int ctors_init_val = 0;
 
