@@ -211,7 +211,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
         self.events.push(OrderEvent::Section(section_id));
 
-        let secondaries: Vec<OutputSectionId> = self.secondary.get(section_id).to_vec();
+        let secondaries: Vec<OutputSectionId> = self.secondary.get(section_id).clone();
         // stable ordering: tie-break by original index
         let mut keyed: Vec<(u16, usize, OutputSectionId)> = secondaries
             .into_iter()
