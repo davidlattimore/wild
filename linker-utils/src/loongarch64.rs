@@ -303,7 +303,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_LARCH_CALL36 => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Branch21or26),
+            RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Call36),
             None,
             AllowedRange::no_check(),
             1,
@@ -491,6 +491,11 @@ impl LoongArch64Instruction {
             LoongArch64Instruction::Call30 => {
                 let low_part = (extracted_value & 0x1ff) << (32 + 10);
                 let high_part = (extracted_value & !0x1ff) << 5;
+                or_from_slice(dest, &(low_part | high_part).to_le_bytes());
+            }
+            LoongArch64Instruction::Call36 => {
+                let low_part = (extracted_value & 0xffff) << (32 + 10);
+                let high_part = ((extracted_value >> 16) & 0xfffff) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
         };

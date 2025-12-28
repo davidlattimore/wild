@@ -1269,6 +1269,7 @@ pub enum LoongArch64Instruction {
     Shift10,
     Branch21or26,
     Call30,
+    Call36,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
