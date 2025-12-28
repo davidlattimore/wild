@@ -295,7 +295,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_LARCH_B26 => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::bit_mask_loongarch64(2, 28, LoongArch64Instruction::Branch21or26),
             None,
             AllowedRange::no_check(),
