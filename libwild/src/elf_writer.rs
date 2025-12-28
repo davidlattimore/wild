@@ -2423,6 +2423,7 @@ fn apply_debug_relocation<'data, A: Arch>(
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6 => {
                 let mut value = resolution.value_with_addend(
