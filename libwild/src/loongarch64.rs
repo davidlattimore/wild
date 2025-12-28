@@ -8,6 +8,7 @@ use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::SIZE_2KB;
 use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
@@ -66,7 +67,8 @@ impl crate::arch::Arch for LoongArch64 {
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
         let pcala_hi20 =
-            (((got_address & !PAGE_MASK_4KB) - (plt_address & !PAGE_MASK_4KB)) >> 12) << 5;
+            ((((got_address + SIZE_2KB) & !PAGE_MASK_4KB) - (plt_address & !PAGE_MASK_4KB)) >> 12)
+                << 5;
         let pcala_lo12 = (got_address & 0xfff) << 10;
         or_from_slice(&mut plt_entry[0..4], &(pcala_hi20 as u32).to_le_bytes());
         or_from_slice(&mut plt_entry[4..8], &(pcala_lo12 as u32).to_le_bytes());
