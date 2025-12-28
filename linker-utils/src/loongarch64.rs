@@ -484,8 +484,8 @@ impl LoongArch64Instruction {
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             LoongArch64Instruction::Branch21or26 => {
-                let low_part = extracted_value >> 16;
-                let high_part = (extracted_value & 0xffff) << 10;
+                let low_part = (extracted_value & 0xffff) << 10;
+                let high_part = extracted_value >> 16;
                 or_from_slice(dest, &((low_part | high_part) as u32).to_le_bytes());
             }
             LoongArch64Instruction::Call30 => {
