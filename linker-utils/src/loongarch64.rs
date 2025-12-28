@@ -495,7 +495,7 @@ impl LoongArch64Instruction {
             }
             LoongArch64Instruction::Call36 => {
                 let low_part = (extracted_value & 0xffff) << (32 + 10);
-                let high_part = ((extracted_value >> 16) & 0xfffff) << 5;
+                let high_part = ((extracted_value + 0x8000) >> 16) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
         };
