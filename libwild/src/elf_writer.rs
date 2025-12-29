@@ -2040,6 +2040,7 @@ fn apply_relocation<'data, A: Arch>(
     };
 
     let mask = get_page_mask(rel_info.mask);
+    let bias = rel_info.bias;
     let mut value = match rel_info.kind {
         RelocationKind::Absolute => write_absolute_relocation::<A>(
             table_writer,
@@ -2080,6 +2081,7 @@ fn apply_relocation<'data, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::Relative2KBiased => resolution
@@ -2090,6 +2092,7 @@ fn apply_relocation<'data, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(bias)
             .wrapping_add(SIZE_2KB)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
@@ -2160,14 +2163,17 @@ fn apply_relocation<'data, A: Arch>(
                         &layout.merged_strings,
                         &layout.merged_string_start_addresses,
                     )?
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::GotRelative => resolution
                     .got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::TlsGd => resolution
                     .tlsgd_got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::TlsLd => layout
                     .prelude()
@@ -2175,10 +2181,12 @@ fn apply_relocation<'data, A: Arch>(
                     .unwrap()
                     .get()
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::GotTpOff => resolution
                     .got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 _ => bail!(
                     "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
@@ -2201,12 +2209,14 @@ fn apply_relocation<'data, A: Arch>(
         }
         RelocationKind::GotRelative => resolution
             .got_address()?
-            .bitand(mask.got_entry)
+            .wrapping_add(bias)
             .wrapping_add(addend as u64)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelative2KBiased => resolution
             .got_address()?
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
             .wrapping_add(SIZE_2KB)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
@@ -2216,13 +2226,15 @@ fn apply_relocation<'data, A: Arch>(
         ),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
             .bitand(mask.got_entry)
-            .wrapping_sub(layout.got_base().bitand(mask.got))
-            .wrapping_add(addend as u64),
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::Got => resolution
             .got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::SymRelGotBase => resolution
             .value_with_addend(
                 addend,
@@ -2231,65 +2243,77 @@ fn apply_relocation<'data, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelGotBase => resolution
             .plt_address()?
+            .wrapping_add(bias)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelative => resolution
             .plt_address()?
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
             .wrapping_sub(place.bitand(mask.place)),
         // TLS-related relocations
         RelocationKind::TlsGd => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsGdGot => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsGdGotBase => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TlsLd => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsLdGot => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsLdGotBase => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
             .value()
-            .sub(layout.tls_start_address())
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .sub(layout.tls_start_address()),
         RelocationKind::DtpOff => resolution
             .value()
-            .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .wrapping_sub(layout.tls_end_address()),
         RelocationKind::GotTpOff => resolution
             .got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotTpOffLoongArch64 => loong_arch_highest_with_biased(
             resolution.got_address()?.wrapping_add(addend as u64),
@@ -2297,35 +2321,42 @@ fn apply_relocation<'data, A: Arch>(
         ),
         RelocationKind::GotTpOffGot => resolution
             .got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::GotTpOffGotBase => resolution
             .got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
-            .wrapping_sub(A::tp_offset_start(layout))
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .wrapping_sub(A::tp_offset_start(layout)),
         RelocationKind::TpOff2KBiased => resolution
             .value()
-            .wrapping_sub(A::tp_offset_start(layout))
             .wrapping_add(addend as u64)
-            .wrapping_add(SIZE_2KB),
+            .wrapping_add(bias)
+            .wrapping_add(SIZE_2KB)
+            .wrapping_sub(A::tp_offset_start(layout)),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsDescGot => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsDescGotBase => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
         RelocationKind::Alignment => unreachable!(),

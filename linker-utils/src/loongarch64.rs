@@ -5,6 +5,7 @@ use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::SIZE_2KB;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 
@@ -40,13 +41,14 @@ impl RelaxationKind {
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     // The relocation listing following the order defined in the standard:
     // https://github.com/loongson/la-abi-specs/blob/release/laelf.adoc#relocation-types
-    let (kind, size, mask, range, alignment) = match r_type {
+    let (kind, size, mask, range, alignment, bias) = match r_type {
         object::elf::R_LARCH_NONE => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // Addition and subtraction relocations.
         object::elf::R_LARCH_32 => (
@@ -55,6 +57,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
+            0,
         ),
         object::elf::R_LARCH_64 => (
             RelocationKind::Absolute,
@@ -62,6 +65,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD6 => (
             RelocationKind::AbsoluteAdditionWord6,
@@ -69,6 +73,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD8 => (
             RelocationKind::AbsoluteAddition,
@@ -76,6 +81,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD16 => (
             RelocationKind::AbsoluteAddition,
@@ -83,6 +89,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD24 => (
             RelocationKind::AbsoluteAddition,
@@ -90,6 +97,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD32 => (
             RelocationKind::AbsoluteAddition,
@@ -97,6 +105,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ADD64 => (
             RelocationKind::AbsoluteAddition,
@@ -104,6 +113,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB6 => (
             RelocationKind::AbsoluteSubtractionWord6,
@@ -111,6 +121,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB8 => (
             RelocationKind::AbsoluteSubtraction,
@@ -118,6 +129,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB16 => (
             RelocationKind::AbsoluteSubtraction,
@@ -125,6 +137,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB24 => (
             RelocationKind::AbsoluteSubtraction,
@@ -132,6 +145,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB32 => (
             RelocationKind::AbsoluteSubtraction,
@@ -139,6 +153,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB64 => (
             RelocationKind::AbsoluteSubtraction,
@@ -146,6 +161,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // We process the subtraction in the SUB_ULEB128 relocation,
         // thus we skip the first relocation in the pair.
@@ -155,6 +171,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_SUB_ULEB128 => (
             RelocationKind::PairSubtractionULEB128(object::elf::R_LARCH_ADD_ULEB128),
@@ -162,6 +179,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // General relocations
         object::elf::R_LARCH_ABS_HI20 => (
@@ -170,6 +188,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ABS_LO12 => (
             RelocationKind::Absolute,
@@ -177,6 +196,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ABS64_HI12 => (
             RelocationKind::Absolute,
@@ -184,6 +204,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ABS64_LO20 => (
             RelocationKind::Absolute,
@@ -191,6 +212,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCALA_HI20 => (
             RelocationKind::Relative2KBiased,
@@ -198,6 +220,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCALA_LO12 => (
             RelocationKind::AbsoluteAArch64,
@@ -205,6 +228,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCALA64_HI12 => (
             RelocationKind::RelativeLoongArchHigh,
@@ -213,6 +237,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCALA64_LO20 => (
             RelocationKind::RelativeLoongArchHigh,
@@ -221,6 +246,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_32_PCREL => (
             RelocationKind::Relative,
@@ -228,6 +254,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCREL20_S2 => (
             RelocationKind::Relative,
@@ -235,6 +262,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_64_PCREL => (
             RelocationKind::Relative,
@@ -242,6 +270,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCADD_HI20 => (
             RelocationKind::Relative2KBiased,
@@ -249,6 +278,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_PCADD_LO12 => (
             RelocationKind::RelativeRiscVLow12,
@@ -256,6 +286,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // GOT-relative relocations
         object::elf::R_LARCH_GOT_PC_HI20 => (
@@ -264,6 +295,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_GOT_PC_LO12 => (
             RelocationKind::Got,
@@ -271,6 +303,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_GOT64_PC_HI12 => (
             RelocationKind::GotRelativeLoongArch64,
@@ -279,6 +312,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_GOT64_PC_LO20 => (
             RelocationKind::GotRelativeLoongArch64,
@@ -287,6 +321,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // CFG-related relocations.
         object::elf::R_LARCH_B16 => (
@@ -295,6 +330,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_B21 => (
             RelocationKind::Relative,
@@ -302,6 +338,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_B26 => (
             RelocationKind::PltRelative,
@@ -309,6 +346,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_CALL36 => (
             RelocationKind::Relative,
@@ -316,6 +354,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_CALL30 => (
             RelocationKind::Relative,
@@ -323,6 +362,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // TLS-related relocations.
         object::elf::R_LARCH_TLS_LE_HI20 => (
@@ -331,6 +371,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_LE_LO12 => (
             RelocationKind::TpOff,
@@ -338,6 +379,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_LE64_LO20 => (
             RelocationKind::TpOff,
@@ -345,6 +387,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_LE64_HI12 => (
             RelocationKind::TpOff,
@@ -352,6 +395,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_LE_HI20_R => (
             RelocationKind::TpOff2KBiased,
@@ -359,6 +403,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_LE_LO12_R => (
             RelocationKind::TpOff,
@@ -366,6 +411,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE_PC_HI20 => (
             RelocationKind::GotTpOff,
@@ -373,6 +419,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_TLS_IE_PC_LO12 => (
             RelocationKind::GotTpOffGot,
@@ -380,6 +427,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE64_PC_LO20 => (
             RelocationKind::GotTpOffLoongArch64,
@@ -388,6 +436,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE64_PC_HI12 => (
             RelocationKind::GotTpOffLoongArch64,
@@ -396,6 +445,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE_HI20 => (
             RelocationKind::GotTpOffGot,
@@ -403,6 +453,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE_LO12 => (
             RelocationKind::GotTpOffGot,
@@ -410,6 +461,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE64_HI12 => (
             RelocationKind::GotTpOffGot,
@@ -417,6 +469,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_IE64_LO20 => (
             RelocationKind::GotTpOffGot,
@@ -424,6 +477,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         // It's a known limitation the ABI does not properly support TLS LD:
         // https://github.com/loongson/la-abi-specs/issues/19
@@ -433,6 +487,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_TLS_LD_HI20 => (
             RelocationKind::TlsGdGot,
@@ -440,6 +495,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_TLS_GD_PC_HI20 => (
             RelocationKind::TlsGd,
@@ -447,6 +503,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_TLS_GD_HI20 => (
             RelocationKind::TlsGdGot,
@@ -454,6 +511,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
 
         // Misc relocations.
@@ -463,6 +521,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         object::elf::R_LARCH_ALIGN => (
             RelocationKind::None,
@@ -470,6 +529,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             None,
             AllowedRange::no_check(),
             1,
+            0,
         ),
         _ => return None,
     };
@@ -480,6 +540,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         mask,
         range,
         alignment,
+        bias,
     })
 }
 

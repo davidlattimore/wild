@@ -346,6 +346,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         mask,
         range,
         alignment,
+        bias: 0,
     })
 }
 

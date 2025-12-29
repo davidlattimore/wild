@@ -1448,6 +1448,7 @@ pub struct RelocationKindInfo {
     pub mask: Option<PageMask>,
     pub range: AllowedRange,
     pub alignment: usize,
+    pub bias: u64,
 }
 
 impl RelocationKindInfo {
