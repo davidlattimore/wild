@@ -5646,9 +5646,7 @@ fn create_resolution(
             resolution.raw_value = plt_address.get();
         }
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if flags.needs_got() {
-        resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else {
+    } else if flags.is_tls() {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
         if flags.needs_got_tls_offset() {
@@ -5660,9 +5658,10 @@ fn create_resolution(
         if flags.needs_got_tls_descriptor() {
             num_got_slots += 2;
         }
-        if num_got_slots > 0 {
-            resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
-        }
+        debug_assert!(num_got_slots > 0);
+        resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
+    } else if flags.needs_got() {
+        resolution.got_address = Some(allocate_got(1, memory_offsets));
     }
     resolution
 }

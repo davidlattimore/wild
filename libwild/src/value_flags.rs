@@ -209,6 +209,13 @@ impl ValueFlags {
     }
 
     #[must_use]
+    pub(crate) fn is_tls(self) -> bool {
+        self.contains(ValueFlags::GOT_TLS_OFFSET)
+            || self.contains(ValueFlags::GOT_TLS_MODULE)
+            || self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
+    }
+
+    #[must_use]
     pub(crate) fn raw(self) -> RawFlags {
         RawFlags(self.bits())
     }
