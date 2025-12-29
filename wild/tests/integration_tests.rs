@@ -43,6 +43,9 @@
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
+//! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
+//! the specified alignment.
+//!
 //! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
@@ -163,7 +166,6 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::fs::File;
 use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
@@ -196,8 +198,10 @@ fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn build_dir() -> PathBuf {
-    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
+fn determine_build_dir(test_name: &str) -> PathBuf {
+    std::env::var("WILD_TEST_BUILD_DIR")
+        .map_or(base_dir().join("tests/build"), PathBuf::from)
+        .join(test_name)
 }
 
 #[derive(Debug)]
@@ -461,6 +465,7 @@ fn is_musl_used() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
+    build_dir: PathBuf,
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
@@ -831,6 +836,7 @@ struct Assertions {
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
+    expected_load_alignment: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -913,8 +919,9 @@ impl ArgumentSet {
 }
 
 impl Config {
-    fn new(test_config: &TestConfig) -> Self {
+    fn new(test_config: &TestConfig, build_dir: PathBuf) -> Self {
         Self {
+            build_dir,
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
@@ -1068,6 +1075,18 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
+                "ExpectLoadAlignment" => {
+                    let alignment_str = arg.trim();
+                    let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
+                        u64::from_str_radix(hex, 16)
+                            .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
+                    } else {
+                        alignment_str
+                            .parse()
+                            .with_context(|| format!("Invalid alignment: {alignment_str}"))?
+                    };
+                    config.assertions.expected_load_alignment = Some(alignment);
+                }
                 "Mode" => {
                     let mode: Mode = arg
                         .parse()
@@ -1196,7 +1215,6 @@ fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
 
 impl ProgramInputs {
     fn new(source_file: &'static str) -> Result<Self> {
-        std::fs::create_dir_all(build_dir())?;
         Ok(Self { source_file })
     }
 
@@ -1678,10 +1696,6 @@ fn build_linker_input(
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let so_lockfile = first_obj_path.with_extension(format!("{linker}.so.lock"));
-            let so_lock = File::create(&so_lockfile)?;
-            let _write_lock = so_lock.lock();
-
             let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
@@ -1884,10 +1898,12 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(&file.filename).with_extension(format!(
-        "{}-{arch_str}-{command_hash:x}{suffix}",
-        config.name
-    )));
+    let output_path = config
+        .build_dir
+        .join(Path::new(&file.filename).with_extension(format!(
+            "{}-{arch_str}-{command_hash:x}{suffix}",
+            config.name
+        )));
 
     match compiler_kind {
         CompilerKind::C => {
@@ -1897,18 +1913,6 @@ fn build_obj(
             command.env("WILD_SAVE_DIR", &output_path);
         }
     }
-
-    // If multiple threads try to create a file at the same time, only one should do so and the
-    // others should wait.
-    let lock_path = output_path.with_file_name(format!(
-        ".{}.lock",
-        output_path
-            .file_name()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or_default()
-    ));
-    let output_file_lock = File::create(&lock_path)?;
-    let _write_lock = output_file_lock.lock();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(BuiltObject {
@@ -2170,7 +2174,9 @@ impl Linker {
         cross_arch: Option<Architecture>,
     ) -> PathBuf {
         let cross = cross_name(cross_arch);
-        build_dir().join(format!("{basename}-{}-{cross}.{self}", config.name))
+        config
+            .build_dir
+            .join(format!("{basename}-{}-{cross}.{self}", config.name))
     }
 }
 
@@ -2534,6 +2540,7 @@ impl Assertions {
         self.verify_symbols_absent(obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
+        self.verify_load_alignment(&obj)?;
         Ok(())
     }
 
@@ -2585,6 +2592,27 @@ impl Assertions {
             }
         }
         Ok(())
+    }
+
+    fn verify_load_alignment(&self, obj: &ElfFile64) -> Result {
+        let Some(expected) = self.expected_load_alignment else {
+            return Ok(());
+        };
+
+        let endian = LittleEndian;
+        let segments = obj.elf_program_headers();
+        for segment in segments {
+            if segment.p_type(endian) == object::elf::PT_LOAD {
+                let alignment = segment.p_align(endian);
+                if alignment != expected {
+                    bail!("Expected LOAD segment alignment {expected:#x}, but got {alignment:#x}");
+                }
+
+                return Ok(());
+            }
+        }
+
+        bail!("No LOAD segment found");
     }
 
     fn verify_symbols_absent(
@@ -3215,11 +3243,17 @@ fn integration_test(
         "defsym.c",
         "linker-script-defsym-notfound.c",
         "tls-common.c",
-        "section-start.c"
+        "section-start.c",
+        "max-page-size.c",
+        "call-via-defsym.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
+    let build_dir = determine_build_dir(program_name);
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("Failed to create directory `{}`", build_dir.display()))?;
+
     let program_inputs = ProgramInputs::new(program_name)?;
 
     let linkers = available_linkers()?;
@@ -3227,7 +3261,7 @@ fn integration_test(
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &Config::new(&test_config))
+    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
     let host_arch = get_host_architecture();

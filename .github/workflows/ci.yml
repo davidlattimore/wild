@@ -102,6 +102,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack,cargo-minimal-versions
