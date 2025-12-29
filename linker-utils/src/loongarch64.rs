@@ -425,6 +425,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
+        // It's a known limitation the ABI does not properly support TLS LD:
+        // https://github.com/loongson/la-abi-specs/issues/19
         object::elf::R_LARCH_TLS_LD_PC_HI20 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
@@ -433,7 +435,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_LARCH_TLS_LD_HI20 => (
-            RelocationKind::TlsLdGot,
+            RelocationKind::TlsGdGot,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             None,
             AllowedRange::no_check(),
