@@ -140,7 +140,7 @@ impl crate::arch::Relaxation for Relaxation {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
-            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
+            object::elf::R_LARCH_B26 if !interposable => {
                 return if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
                     Some(Relaxation {
