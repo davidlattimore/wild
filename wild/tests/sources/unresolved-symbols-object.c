@@ -2,6 +2,10 @@
 //#Object:runtime.c
 //#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie
 //#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.dynamic-non-pie
+//#Arch: x86_64,aarch64,riscv64
+
+/* BFD rejects the code on loongarch: relocation truncated to fit: R_LARCH_B26
+   against symbol `foo'. */
 
 //#Config:ignore-all-dynamic:default
 //#Mode:dynamic
