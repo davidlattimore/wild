@@ -2084,18 +2084,6 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::Relative2KBiased => resolution
-            .value_with_addend(
-                addend,
-                symbol_index,
-                object_layout,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?
-            .wrapping_add(bias)
-            .wrapping_add(SIZE_2KB)
-            .bitand(mask.symbol_plus_addend)
-            .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::RelativeLoongArchHigh => {
             // TODO: explain
             loong_arch_highest_with_biased(
@@ -2213,13 +2201,6 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(addend as u64)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::GotRelative2KBiased => resolution
-            .got_address()?
-            .wrapping_add(addend as u64)
-            .wrapping_add(bias)
-            .wrapping_add(SIZE_2KB)
-            .bitand(mask.got_entry)
-            .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelativeLoongArch64 => loong_arch_highest_with_biased(
             resolution.got_address()?.wrapping_add(addend as u64),
             place,
@@ -2334,12 +2315,6 @@ fn apply_relocation<'data, A: Arch>(
             .value()
             .wrapping_add(addend as u64)
             .wrapping_add(bias)
-            .wrapping_sub(A::tp_offset_start(layout)),
-        RelocationKind::TpOff2KBiased => resolution
-            .value()
-            .wrapping_add(addend as u64)
-            .wrapping_add(bias)
-            .wrapping_add(SIZE_2KB)
             .wrapping_sub(A::tp_offset_start(layout)),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?

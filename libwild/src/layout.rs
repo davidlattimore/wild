@@ -3423,7 +3423,6 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         RelocationKind::Got
         | RelocationKind::GotRelGotBase
         | RelocationKind::GotRelative
-        | RelocationKind::GotRelative2KBiased
         | RelocationKind::GotRelativeLoongArch64 => ValueFlags::GOT,
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffLoongArch64
@@ -3448,11 +3447,9 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
         | RelocationKind::RelativeRiscVLow12
-        | RelocationKind::Relative2KBiased
         | RelocationKind::RelativeLoongArchHigh
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
-        | RelocationKind::TpOff2KBiased
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {

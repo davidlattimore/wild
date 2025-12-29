@@ -2267,7 +2267,6 @@ impl<'data> RelaxationTester<'data> {
         let mut relative_to = match relocation_info.kind {
             RelocationKind::Relative
             | RelocationKind::RelativeRiscVLow12
-            | RelocationKind::Relative2KBiased
             | RelocationKind::RelativeLoongArchHigh
             | RelocationKind::PltRelative
             | RelocationKind::TlsGd
@@ -2276,7 +2275,6 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::GotTpOff
             | RelocationKind::GotTpOffLoongArch64
             | RelocationKind::GotRelative
-            | RelocationKind::GotRelative2KBiased
             | RelocationKind::GotRelativeLoongArch64 => self.section_address + offset,
             RelocationKind::SymRelGotBase
             | RelocationKind::GotRelGotBase
@@ -2304,7 +2302,6 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
-            | RelocationKind::TpOff2KBiased
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtractionULEB128(..)
             | RelocationKind::None
@@ -2495,7 +2492,6 @@ fn value_kind_for_relocation<A: Arch>(
         }
         RelocationKind::Relative
         | RelocationKind::RelativeRiscVLow12
-        | RelocationKind::Relative2KBiased
         | RelocationKind::RelativeLoongArchHigh
         | RelocationKind::SymRelGotBase => {
             return None;
@@ -2504,12 +2500,9 @@ fn value_kind_for_relocation<A: Arch>(
         RelocationKind::Got
         | RelocationKind::GotRelGotBase
         | RelocationKind::GotRelative
-        | RelocationKind::GotRelative2KBiased
         | RelocationKind::GotRelativeLoongArch64 => ValueKind::Got(BasicValueKind::Pointer),
         RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
-        RelocationKind::TpOff | RelocationKind::TpOff2KBiased => {
-            ValueKind::Unwrapped(A::get_basic_value_for_tp_offset())
-        }
+        RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
@@ -3425,7 +3418,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
                 | RelocationKind::RelativeRiscVLow12
-                | RelocationKind::Relative2KBiased
                 | RelocationKind::RelativeLoongArchHigh
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase
@@ -3433,7 +3425,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PltRelGotBase
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
-                | RelocationKind::GotRelative2KBiased
                 | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
                 | RelocationKind::PairSubtractionULEB128(..)
@@ -3446,7 +3437,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsLdGotBase
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
-                | RelocationKind::TpOff2KBiased
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {

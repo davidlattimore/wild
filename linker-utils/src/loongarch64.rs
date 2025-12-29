@@ -215,12 +215,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         object::elf::R_LARCH_PCALA_HI20 => (
-            RelocationKind::Relative2KBiased,
+            RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
-            0,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_PCALA_LO12 => (
             RelocationKind::AbsoluteAArch64,
@@ -273,12 +273,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         object::elf::R_LARCH_PCADD_HI20 => (
-            RelocationKind::Relative2KBiased,
+            RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             None,
             AllowedRange::no_check(),
             1,
-            0,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_PCADD_LO12 => (
             RelocationKind::RelativeRiscVLow12,
@@ -290,12 +290,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         // GOT-relative relocations
         object::elf::R_LARCH_GOT_PC_HI20 => (
-            RelocationKind::GotRelative2KBiased,
+            RelocationKind::GotRelative,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
-            0,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_GOT_PC_LO12 => (
             RelocationKind::Got,
@@ -398,12 +398,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         object::elf::R_LARCH_TLS_LE_HI20_R => (
-            RelocationKind::TpOff2KBiased,
+            RelocationKind::TpOff,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             None,
             AllowedRange::no_check(),
             1,
-            0,
+            SIZE_2KB,
         ),
         object::elf::R_LARCH_TLS_LE_LO12_R => (
             RelocationKind::TpOff,
