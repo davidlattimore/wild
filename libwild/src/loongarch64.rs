@@ -76,7 +76,7 @@ impl crate::arch::Arch for LoongArch64 {
     }
 
     fn get_dtv_offset() -> u64 {
-        RISCV_TLS_DTV_OFFSET
+        0
     }
 
     fn local_symbols_in_debug_info() -> bool {
