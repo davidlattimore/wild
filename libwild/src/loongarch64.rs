@@ -11,9 +11,9 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SIZE_2KB;
 use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::loongarch64::RelaxationKind;
+use linker_utils::loongarch64::relocation_type_from_raw;
 use linker_utils::relaxation::RelocationModifier;
-use linker_utils::riscv64::RelaxationKind;
-use linker_utils::riscv64::relocation_type_from_raw;
 use linker_utils::utils::or_from_slice;
 
 pub(crate) struct LoongArch64;
@@ -152,7 +152,7 @@ impl crate::arch::Relaxation for Relaxation {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
+                        rel_info: rel_info_from_type!(object::elf::R_LARCH_NONE),
                         mandatory: output_kind.is_static_executable(),
                     })
                 };
