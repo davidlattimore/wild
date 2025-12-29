@@ -426,7 +426,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_LARCH_TLS_LD_PC_HI20 => (
-            RelocationKind::TlsLd,
+            RelocationKind::TlsGd,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
             Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
