@@ -1203,7 +1203,7 @@ fn allocate_resolution(
 ) {
     let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
-    if flags.needs_got() {
+    if flags.needs_got() && !flags.is_tls() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if flags.needs_plt() {
             mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
