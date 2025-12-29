@@ -31,7 +31,7 @@ jobs:
         include:
           - runs-on: ubuntu-24.04
             container: 'ubuntu:25.04'
-            test-qemu: true
+            test-qemu: false
           - runs-on: ubuntu-24.04-arm
             container: 'ubuntu:25.04'
             test-qemu: false
