@@ -2327,6 +2327,12 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::TlsDescLoongArch64 => loong_arch_highest_with_biased(
+            resolution
+                .tls_descriptor_got_address()?
+                .wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::TlsDescGot => resolution
             .tls_descriptor_got_address()?
             .wrapping_add(addend as u64)

@@ -2272,6 +2272,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsGd
             | RelocationKind::TlsLd
             | RelocationKind::TlsDesc
+            | RelocationKind::TlsDescLoongArch64
             | RelocationKind::GotTpOff
             | RelocationKind::GotTpOffLoongArch64
             | RelocationKind::GotRelative
@@ -2507,7 +2508,10 @@ fn value_kind_for_relocation<A: Arch>(
         | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
-        RelocationKind::TlsDesc | RelocationKind::TlsDescGot | RelocationKind::TlsDescGotBase => {
+        RelocationKind::TlsDesc
+        | RelocationKind::TlsDescLoongArch64
+        | RelocationKind::TlsDescGot
+        | RelocationKind::TlsDescGotBase => {
             // The TLSDESC structure is stored in the GOT. We should perhaps treat this as
             // Unwrapped(TlsDesc), however the code to read dynamic relocations like TLSDESC is
             // currently in the GOT-dereferencing code.
@@ -3438,6 +3442,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
                 | RelocationKind::TlsDesc
+                | RelocationKind::TlsDescLoongArch64
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {
                     bail!("Missing dynamic relocation for {relocation_kind:?}")

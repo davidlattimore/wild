@@ -1030,6 +1030,9 @@ pub enum RelocationKind {
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
 
+    // TODO
+    TlsDescLoongArch64,
+
     /// The address of a TLS descriptor structure.
     TlsDescGot,
 

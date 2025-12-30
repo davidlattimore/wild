@@ -364,7 +364,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
             0,
         ),
-        // TLS-related relocations.
+        // TLS-related relocations (traditional).
         object::elf::R_LARCH_TLS_LE_HI20 => (
             RelocationKind::TpOff,
             RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
@@ -513,7 +513,57 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
             0,
         ),
-
+        // TLS-related relocations (TLS descriptors).
+        object::elf::R_LARCH_TLS_DESC_PC_HI20 => (
+            RelocationKind::TlsDesc,
+            RelocationSize::bit_mask_loongarch64(12, 32, LoongArch64Instruction::Shift5),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
+            AllowedRange::no_check(),
+            1,
+            SIZE_2KB,
+        ),
+        object::elf::R_LARCH_TLS_DESC_PC_LO12 => (
+            RelocationKind::TlsDescGot,
+            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
+            None,
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_LARCH_TLS_DESC64_PC_HI12 => (
+            RelocationKind::TlsDescLoongArch64,
+            RelocationSize::bit_mask_loongarch64(52, 64, LoongArch64Instruction::Shift10),
+            // Mark is applied directly in the relocation!
+            None,
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_LARCH_TLS_DESC64_PC_LO20 => (
+            RelocationKind::TlsDescLoongArch64,
+            RelocationSize::bit_mask_loongarch64(32, 52, LoongArch64Instruction::Shift5),
+            // Mark is applied directly in the relocation!
+            None,
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_LARCH_TLS_DESC_LD => (
+            RelocationKind::None,
+            RelocationSize::ByteSize(0),
+            None,
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
+        object::elf::R_LARCH_TLS_DESC_CALL => (
+            RelocationKind::TlsDescCall,
+            RelocationSize::ByteSize(0),
+            None,
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
         // Misc relocations.
         object::elf::R_LARCH_RELAX | object::elf::R_LARCH_TLS_LE_ADD_R => (
             RelocationKind::None,

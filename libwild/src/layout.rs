@@ -3432,6 +3432,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
             ValueFlags::GOT_TLS_MODULE
         }
         RelocationKind::TlsDesc
+        | RelocationKind::TlsDescLoongArch64
         | RelocationKind::TlsDescGot
         | RelocationKind::TlsDescGotBase
         | RelocationKind::TlsDescCall => ValueFlags::GOT_TLS_DESCRIPTOR,
