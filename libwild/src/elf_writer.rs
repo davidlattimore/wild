@@ -2211,11 +2211,16 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
-        RelocationKind::Got => resolution
-            .got_address()?
-            .wrapping_add(addend as u64)
+        RelocationKind::Got => {
+            // TODO: add comment
+            if resolution.flags.needs_got_tls_module() {
+                resolution.tlsgd_got_address()?
+            } else {
+                resolution.got_address()?
+            }
             .wrapping_add(bias)
-            .bitand(mask.got_entry),
+            .bitand(mask.got_entry)
+        }
         RelocationKind::SymRelGotBase => resolution
             .value_with_addend(
                 addend,
