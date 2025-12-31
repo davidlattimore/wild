@@ -117,10 +117,12 @@ use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym;
 use object::read::elf::VerdefIterator;
+use orx_parallel::IntoParIter;
+use orx_parallel::ParIter;
+use orx_parallel::ParIterResult;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
-use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
@@ -465,16 +467,26 @@ fn finalise_copy_relocations<'data>(
 ) -> Result {
     timing_phase!("Finalise copy relocations");
 
-    group_states.par_iter_mut().try_for_each(|group| {
-        verbose_timing_phase!("Finalise copy relocations for group");
-        for file in &mut group.files {
-            if let FileLayoutState::Dynamic(dynamic) = file {
-                dynamic.finalise_copy_relocations(&mut group.common, symbol_db, symbol_flags)?;
+    group_states
+        .into_par()
+        .map(|group| -> Result {
+            verbose_timing_phase!("Finalise copy relocations for group");
+            for file in &mut group.files {
+                if let FileLayoutState::Dynamic(dynamic) = file {
+                    dynamic.finalise_copy_relocations(
+                        &mut group.common,
+                        symbol_db,
+                        symbol_flags,
+                    )?;
+                }
             }
-        }
 
-        Ok(())
-    })
+            Ok(())
+        })
+        .into_fallible_result()
+        .reduce(|_, _| ())?;
+
+    Ok(())
 }
 
 fn finalise_all_sizes<'data>(
@@ -485,10 +497,16 @@ fn finalise_all_sizes<'data>(
 ) -> Result {
     timing_phase!("Finalise per-object sizes");
 
-    group_states.par_iter_mut().try_for_each(|state| {
-        verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes(output_sections, per_symbol_flags, resources)
-    })
+    group_states
+        .into_par()
+        .map(|state| {
+            verbose_timing_phase!("Finalise sizes for group");
+            state.finalise_sizes(output_sections, per_symbol_flags, resources)
+        })
+        .into_fallible_result()
+        .reduce(|_, _| ())?;
+
+    Ok(())
 }
 
 fn merge_dynamic_symbol_definitions<'data>(

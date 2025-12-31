@@ -69,6 +69,7 @@ object = { version = "0.38.1", default-features = false, features = [
     "unaligned",
     "archive",
 ] }
+orx-parallel = "3.4.0"
 os_info = "3.0.0"
 paste = "1.0.15"
 perf-event = "0.4.8"
@@ -223,3 +224,6 @@ case_sensitive_file_extension_comparisons = "warn"
 cloned_instead_of_copied = "warn"
 cast_lossless = "warn"
 needless_pass_by_ref_mut = "warn"
+
+[patch.crates-io]
+orx-parallel = { git = "https://github.com/TechnoPorg/orx-parallel.git", branch = "relax-lifetimes" }

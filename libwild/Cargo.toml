@@ -30,7 +30,7 @@ hex = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
 jobserver = { workspace = true }
-leb128 = {workspace = true}
+leb128 = { workspace = true }
 libc = { workspace = true }
 linker-layout = { path = "../linker-layout", version = "0.7.0" }
 linker-trace = { path = "../linker-trace", version = "0.7.0" }
@@ -38,6 +38,7 @@ linker-utils = { path = "../linker-utils", version = "0.7.0" }
 memchr = { workspace = true }
 memmap2 = { workspace = true }
 object = { workspace = true }
+orx-parallel = { workspace = true }
 perfetto-recorder = { workspace = true }
 rayon = { workspace = true }
 sharded-offset-map = { workspace = true }

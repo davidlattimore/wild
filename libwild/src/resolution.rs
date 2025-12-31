@@ -55,10 +55,11 @@ use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::read::elf::Sym as _;
+use orx_parallel::IntoParIter;
+use orx_parallel::ParIter;
+use orx_parallel::ParIterUsing;
+use orx_parallel::using::ParIterResultUsing;
 use rayon::Scope;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::IntoParallelRefMutIterator;
-use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -177,7 +178,7 @@ fn resolve_symbols_and_select_archive_entries<'data>(
     };
 
     rayon::in_place_scope(|scope| {
-        initial_work.into_par_iter().for_each(|work_item| {
+        initial_work.into_par().for_each(|work_item| {
             process_object(work_item, &resources, scope);
         });
     });
@@ -316,9 +317,10 @@ fn resolve_sections<'data>(
     let loaded_metrics: LoadedMetrics = Default::default();
     let herd = symbol_db.herd;
 
-    groups.par_iter_mut().try_for_each_init(
-        || herd.get(),
-        |allocator, group| -> Result {
+    groups
+        .into_par()
+        .using(|_| herd.get())
+        .map(|allocator, group| -> Result {
             verbose_timing_phase!("Resolve group sections");
 
             for file in &mut group.files {
@@ -337,8 +339,9 @@ fn resolve_sections<'data>(
                 obj.relocations = obj.common.object.parse_relocations()?;
             }
             Ok(())
-        },
-    )?;
+        })
+        .into_fallible_result()
+        .reduce(|_, _, _| ())?;
 
     loaded_metrics.log();
 

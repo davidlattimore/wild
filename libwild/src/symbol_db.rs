@@ -54,9 +54,13 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
-use rayon::iter::IndexedParallelIterator as _;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::IntoParallelRefMutIterator as _;
+use orx_parallel::IntoParIter;
+use orx_parallel::ParIter;
+use orx_parallel::ParIterResult;
+use orx_parallel::ParallelizableCollection;
+use orx_parallel::ParallelizableCollectionMut;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::mem::take;
@@ -289,7 +293,7 @@ impl<'data> SymbolDb<'data> {
         verbose_timing_phase!("Upgrade locals for export");
         let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
-        rust_vscript.global.par_iter().for_each(|symbol| {
+        rust_vscript.global.par().for_each(|symbol| {
             let prehashed = UnversionedSymbolName::prehashed(symbol);
             if let Some(symbol_id) = self.get_unversioned(&prehashed) {
                 let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
@@ -300,15 +304,12 @@ impl<'data> SymbolDb<'data> {
         // Don't forget to add the non-interposable flag the local symbols.
         // We coudn't do this earlier as we didn't know which symbols would remain
         // local.
-        per_symbol_flags
-            .flags_mut()
-            .par_iter_mut()
-            .for_each(|flags| {
-                let flags_val = flags.get();
-                if flags_val.is_downgraded_to_local() {
-                    *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
-                }
-            });
+        per_symbol_flags.flags_mut().into_par().for_each(|flags| {
+            let flags_val = flags.get();
+            if flags_val.is_downgraded_to_local() {
+                *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+            }
+        });
     }
 
     pub(crate) fn new(
@@ -1022,7 +1023,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     let error_queue = SegQueue::new();
 
-    buckets.par_iter_mut().for_each(|bucket| {
+    buckets.par_mut().for_each(|bucket| {
         verbose_timing_phase!("Resolve alternative for bucket");
 
         process_alternatives(
@@ -1244,7 +1245,7 @@ fn read_symbols<'data>(
     let num_buckets = num_symbol_hash_buckets(args);
 
     shards
-        .par_iter_mut()
+        .into_par()
         .map(|shard| {
             read_symbols_for_group(
                 shard,
@@ -1255,7 +1256,8 @@ fn read_symbols<'data>(
                 output_kind,
             )
         })
-        .collect::<Result<Vec<SymbolLoadOutputs>>>()
+        .into_fallible_result()
+        .collect()
 }
 
 fn read_symbols_for_group<'data>(

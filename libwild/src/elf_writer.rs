@@ -110,9 +110,10 @@ use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::ParallelBridge;
-use rayon::iter::ParallelIterator;
+use orx_parallel::IntoParIter;
+use orx_parallel::IterIntoParIter;
+use orx_parallel::ParIter;
+use orx_parallel::ParIterResult;
 use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
 use std::io::Cursor;
@@ -208,8 +209,8 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
     groups_and_buffers
-        .into_par_iter()
-        .try_for_each(|(group, mut buffers)| -> Result {
+        .into_par()
+        .map(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
             let mut table_writer = TableWriter::from_layout(
@@ -234,7 +235,9 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 .validate_empty(&group.mem_sizes)
                 .with_context(|| format!("validate_empty failed for {group}"))?;
             Ok(())
-        })?;
+        })
+        .into_fallible_result()
+        .reduce(|_, _| ())?;
 
     for (output_section_id, _) in layout.output_sections.ids_with_info() {
         let relocations = layout
@@ -2690,7 +2693,7 @@ fn write_merged_strings(
                 .buckets
                 .iter()
                 .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
-                .par_bridge()
+                .iter_into_par()
                 .for_each(|(bucket, mut buffer)| {
                     for string in &bucket.strings {
                         let dest = buffer.split_off_mut(..string.len()).unwrap();
@@ -3216,8 +3219,8 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Lay
         .dynamic_symbol_definitions
         .chunks(chunk_size)
         .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
-        .par_bridge()
-        .try_for_each(|(defs, mut table_writer)| {
+        .iter_into_par()
+        .map(|(defs, mut table_writer)| {
             for sym_def in defs {
                 let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
                 let file_layout = &layout.file_layout(file_id);
@@ -3286,6 +3289,10 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Lay
 
             Ok(())
         })
+        .into_fallible_result()
+        .reduce(|_, _| ())?;
+
+    Ok(())
 }
 
 /// Writes a symbol that was produced by a linker script.
