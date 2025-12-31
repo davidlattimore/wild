@@ -559,6 +559,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
             0,
         ),
+        // Unused relocations (https://github.com/loongson/la-abi-specs/issues/12).
+        object::elf::R_LARCH_TLS_LD_PCREL20_S2
+        | object::elf::R_LARCH_TLS_GD_PCREL20_S2
+        | object::elf::R_LARCH_TLS_DESC_PCREL20_S2 => {
+            return None;
+        }
         // Misc relocations.
         object::elf::R_LARCH_RELAX | object::elf::R_LARCH_TLS_LE_ADD_R => (
             RelocationKind::None,
