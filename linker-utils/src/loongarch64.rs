@@ -561,7 +561,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         // Debug info specific relocations.
         object::elf::R_LARCH_TLS_DTPREL32 => (
-            RelocationKind::TlsGdGot,
+            RelocationKind::DtpOff,
             RelocationSize::ByteSize(4),
             None,
             AllowedRange::no_check(),
@@ -569,7 +569,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         object::elf::R_LARCH_TLS_DTPREL64 => (
-            RelocationKind::TlsGdGot,
+            RelocationKind::DtpOff,
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
