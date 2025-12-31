@@ -293,23 +293,31 @@ impl<'data> SymbolDb<'data> {
         verbose_timing_phase!("Upgrade locals for export");
         let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
-        rust_vscript.global.par().for_each(|symbol| {
-            let prehashed = UnversionedSymbolName::prehashed(symbol);
-            if let Some(symbol_id) = self.get_unversioned(&prehashed) {
-                let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
-                symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-            }
-        });
+        rust_vscript
+            .global
+            .par()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
+            .for_each(|symbol| {
+                let prehashed = UnversionedSymbolName::prehashed(symbol);
+                if let Some(symbol_id) = self.get_unversioned(&prehashed) {
+                    let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
+                    symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                }
+            });
 
         // Don't forget to add the non-interposable flag the local symbols.
         // We coudn't do this earlier as we didn't know which symbols would remain
         // local.
-        per_symbol_flags.flags_mut().into_par().for_each(|flags| {
-            let flags_val = flags.get();
-            if flags_val.is_downgraded_to_local() {
-                *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
-            }
-        });
+        per_symbol_flags
+            .flags_mut()
+            .into_par()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
+            .for_each(|flags| {
+                let flags_val = flags.get();
+                if flags_val.is_downgraded_to_local() {
+                    *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+                }
+            });
     }
 
     pub(crate) fn new(
@@ -430,7 +438,7 @@ impl<'data> SymbolDb<'data> {
             }
         }
 
-        rayon::join(
+        crate::RAYON_POOL.get().unwrap().join(
             || {
                 // This can take a while, so do it in parallel with other work.
                 verbose_timing_phase!("Drop per-group outputs");
@@ -1023,25 +1031,28 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     let error_queue = SegQueue::new();
 
-    buckets.par_mut().for_each(|bucket| {
-        verbose_timing_phase!("Resolve alternative for bucket");
+    buckets
+        .par_mut()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
+        .for_each(|bucket| {
+            verbose_timing_phase!("Resolve alternative for bucket");
 
-        process_alternatives(
-            &mut bucket.alternative_definitions,
-            &error_queue,
-            &atomic_symbol_db,
-            &atomic_per_symbol_flags,
-            resolved,
-        );
+            process_alternatives(
+                &mut bucket.alternative_definitions,
+                &error_queue,
+                &atomic_symbol_db,
+                &atomic_per_symbol_flags,
+                resolved,
+            );
 
-        process_alternatives(
-            &mut bucket.alternative_versioned_definitions,
-            &error_queue,
-            &atomic_symbol_db,
-            &atomic_per_symbol_flags,
-            resolved,
-        );
-    });
+            process_alternatives(
+                &mut bucket.alternative_versioned_definitions,
+                &error_queue,
+                &atomic_symbol_db,
+                &atomic_per_symbol_flags,
+                resolved,
+            );
+        });
 
     drop(atomic_symbol_db);
 
@@ -1246,6 +1257,7 @@ fn read_symbols<'data>(
 
     shards
         .into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .map(|shard| {
             read_symbols_for_group(
                 shard,
@@ -1313,32 +1325,33 @@ fn populate_symbol_db<'data>(
     buckets: &mut [SymbolBucket<'data>],
     per_group_outputs: &[SymbolLoadOutputs<'data>],
 ) {
-    timing_phase!("Populate symbol map");
+    crate::RAYON_POOL.get().unwrap().install(|| {
+        timing_phase!("Populate symbol map");
+        buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
+            verbose_timing_phase!("Process symbol bucket");
 
-    buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
-        verbose_timing_phase!("Process symbol bucket");
+            // The following approximation should be an upper bound on the number of global
+            // names we'll have. There will likely be at least a few global symbols with the
+            // same name, in which case the actual number will be slightly smaller.
+            let approx_num_symbols = per_group_outputs
+                .iter()
+                .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
+                .sum();
+            bucket.name_to_id.reserve(approx_num_symbols);
 
-        // The following approximation should be an upper bound on the number of global
-        // names we'll have. There will likely be at least a few global symbols with the
-        // same name, in which case the actual number will be slightly smaller.
-        let approx_num_symbols = per_group_outputs
-            .iter()
-            .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
-            .sum();
-        bucket.name_to_id.reserve(approx_num_symbols);
+            for outputs in per_group_outputs {
+                let pending = &outputs.pending_symbols_by_bucket[b];
 
-        for outputs in per_group_outputs {
-            let pending = &outputs.pending_symbols_by_bucket[b];
+                for symbol in &pending.symbols {
+                    bucket.add_symbol(symbol);
+                }
 
-            for symbol in &pending.symbols {
-                bucket.add_symbol(symbol);
+                for symbol in &pending.versioned_symbols {
+                    bucket.add_versioned_symbol(symbol);
+                }
             }
-
-            for symbol in &pending.versioned_symbols {
-                bucket.add_versioned_symbol(symbol);
-            }
-        }
-    });
+        });
+    })
 }
 
 fn load_linker_script_symbols<'data>(

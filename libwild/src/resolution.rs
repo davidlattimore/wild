@@ -177,10 +177,13 @@ fn resolve_symbols_and_select_archive_entries<'data>(
         outputs: &outputs,
     };
 
-    rayon::in_place_scope(|scope| {
-        initial_work.into_par().for_each(|work_item| {
-            process_object(work_item, &resources, scope);
-        });
+    crate::RAYON_POOL.get().unwrap().in_place_scope(|scope| {
+        initial_work
+            .into_par()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
+            .for_each(|work_item| {
+                process_object(work_item, &resources, scope);
+            });
     });
 
     {
@@ -319,6 +322,7 @@ fn resolve_sections<'data>(
 
     groups
         .into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .using(|_| herd.get())
         .map(|allocator, group| -> Result {
             verbose_timing_phase!("Resolve group sections");

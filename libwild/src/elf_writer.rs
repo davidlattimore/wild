@@ -210,6 +210,7 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
     groups_and_buffers
         .into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .map(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
@@ -1402,30 +1403,32 @@ fn write_symbols(
     symbol_writer: &mut SymbolTableWriter,
     layout: &Layout,
 ) -> Result {
-    for ((sym_index, sym), flags) in object
-        .object
-        .symbols
-        .enumerate()
-        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
-    {
-        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+    crate::RAYON_POOL.get().unwrap().install(|| {
+        for ((sym_index, sym), flags) in object
+            .object
+            .symbols
+            .enumerate()
+            .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+        {
+            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
 
-        if layout.symbol_db.args.got_plt_syms {
-            write_got_plt_syms(layout, symbol_writer, symbol_id)?;
-        }
-        if let Some(info) = SymbolCopyInfo::new(
-            object.object,
-            sym_index,
-            sym,
-            symbol_id,
-            &layout.symbol_db,
-            flags.get(),
-            &object.sections,
-        ) {
-            let e = LittleEndian;
+            if layout.symbol_db.args.got_plt_syms {
+                write_got_plt_syms(layout, symbol_writer, symbol_id)?;
+            }
+            if let Some(info) = SymbolCopyInfo::new(
+                object.object,
+                sym_index,
+                sym,
+                symbol_id,
+                &layout.symbol_db,
+                flags.get(),
+                &object.sections,
+            ) {
+                let e = LittleEndian;
 
-            let section_id =
-                if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+                let section_id = if let Some(section_index) =
+                    object.object.symbol_section(sym, sym_index)?
+                {
                     match &object.sections[section_index.0] {
                         SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
@@ -1452,24 +1455,27 @@ fn write_symbols(
                     bail!("Attempted to output a symtab entry with an unexpected section type")
                 };
 
-            let section_id = layout.output_sections.primary_output_section(section_id);
+                let section_id = layout.output_sections.primary_output_section(section_id);
 
-            let Some(res) = layout.local_symbol_resolution(symbol_id) else {
-                bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
-            };
+                let Some(res) = layout.local_symbol_resolution(symbol_id) else {
+                    bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
+                };
 
-            let mut symbol_value = res.value_for_symbol_table();
+                let mut symbol_value = res.value_for_symbol_table();
 
-            if sym.st_type() == object::elf::STT_TLS {
-                symbol_value -= layout.tls_start_address();
+                if sym.st_type() == object::elf::STT_TLS {
+                    symbol_value -= layout.tls_start_address();
+                }
+
+                symbol_writer
+                    .copy_symbol(sym, info.name, section_id, symbol_value)
+                    .with_context(|| {
+                        format!("Failed to copy {}", layout.symbol_debug(symbol_id))
+                    })?;
             }
-
-            symbol_writer
-                .copy_symbol(sym, info.name, section_id, symbol_value)
-                .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
@@ -2694,6 +2700,7 @@ fn write_merged_strings(
                 .iter()
                 .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
                 .iter_into_par()
+                .with_pool(crate::RAYON_POOL.get().unwrap())
                 .for_each(|(bucket, mut buffer)| {
                     for string in &bucket.strings {
                         let dest = buffer.split_off_mut(..string.len()).unwrap();
@@ -3212,14 +3219,18 @@ fn write_gnu_hash_tables(
 }
 
 fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Layout) -> Result {
-    let chunk_size =
-        10.max(layout.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
+    let chunk_size = 10.max(
+        layout.dynamic_symbol_definitions.len()
+            / 10
+            / crate::RAYON_POOL.get().unwrap().current_num_threads(),
+    );
 
     layout
         .dynamic_symbol_definitions
         .chunks(chunk_size)
         .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
         .iter_into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .map(|(defs, mut table_writer)| {
             for sym_def in defs {
                 let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);

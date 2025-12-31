@@ -230,23 +230,25 @@ impl<'data> File<'data> {
     /// Copies the data for the specified section into `out`, which must be the correct size.
     /// Decompresses the data if necessary.
     pub(crate) fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
-        let data = section.data(LittleEndian, self.data)?;
+        crate::RAYON_POOL.get().unwrap().install(|| {
+            let data = section.data(LittleEndian, self.data)?;
 
-        if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
-            decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
-        } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
-            out.fill(0);
-        } else if data.len() >= Self::SECTION_PAR_COPY_SIZE_THRESHOLD {
-            let threads = rayon::current_num_threads();
-            let chunk_size = (data.len() / threads).max(1);
+            if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
+                decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
+            } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
+                out.fill(0);
+            } else if data.len() >= Self::SECTION_PAR_COPY_SIZE_THRESHOLD {
+                let threads = crate::RAYON_POOL.get().unwrap().current_num_threads();
+                let chunk_size = (data.len() / threads).max(1);
 
-            data.par_chunks(chunk_size)
-                .zip(out.par_chunks_mut(chunk_size))
-                .for_each(|(src, dst)| dst.copy_from_slice(src));
-        } else {
-            out.copy_from_slice(data);
-        }
-        Ok(())
+                data.par_chunks(chunk_size)
+                    .zip(out.par_chunks_mut(chunk_size))
+                    .for_each(|(src, dst)| dst.copy_from_slice(src));
+            } else {
+                out.copy_from_slice(data);
+            }
+            Ok(())
+        })
     }
 
     /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.

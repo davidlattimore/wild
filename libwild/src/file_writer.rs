@@ -149,7 +149,7 @@ impl Output {
 
                 let output_config = self.config;
 
-                rayon::spawn(move || {
+                crate::RAYON_POOL.get().unwrap().spawn(move || {
                     verbose_timing_phase!("Create output file");
 
                     if output_config.file_write_mode == FileWriteMode::UnlinkAndReplace {

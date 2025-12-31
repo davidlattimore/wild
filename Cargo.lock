@@ -1294,7 +1294,7 @@ dependencies = [
 [[package]]
 name = "orx-parallel"
 version = "3.4.0"
-source = "git+https://github.com/TechnoPorg/orx-parallel.git?branch=relax-lifetimes#41079baffc2feb1eb002e52111fc9a1a042e4c00"
+source = "git+https://github.com/orxfun/orx-parallel.git#d884a6ea0524244766f54c62232849d6319fe332"
 dependencies = [
  "orx-concurrent-bag",
  "orx-concurrent-iter",
@@ -1307,6 +1307,7 @@ dependencies = [
  "orx-priority-queue",
  "orx-pseudo-default",
  "orx-split-vec",
+ "rayon-core",
 ]
 
 [[package]]

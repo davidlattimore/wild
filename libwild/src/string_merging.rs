@@ -222,7 +222,7 @@ pub(crate) fn merge_strings<'data>(
 
     let mut output_string_sections = output_sections.new_section_map::<MergedStringsSection>();
 
-    let num_threads = rayon::current_num_threads();
+    let num_threads = crate::RAYON_POOL.get().unwrap().current_num_threads();
     let split_parallelism = args.numeric_experiment(
         Experiment::MergeStringSplitParallelism,
         (num_threads as u64).min(MAX_SPLIT_PARALLELISM),
@@ -271,7 +271,7 @@ pub(crate) fn merge_strings<'data>(
 
     // Dropping our ReusePool can take a little while, do it in the background while we continue
     // with other work.
-    rayon::spawn(|| drop(reuse_pool));
+    crate::RAYON_POOL.get().unwrap().spawn(|| drop(reuse_pool));
 
     Ok(output_string_sections)
 }
@@ -432,7 +432,7 @@ impl<'data> MergedStringsSection<'data> {
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
 
-        rayon::in_place_scope(|s| {
+        crate::RAYON_POOL.get().unwrap().in_place_scope(|s| {
             // Spawn some number of tasks to process input section groups. As these tasks complete,
             // they'll spawn bucket processing tasks to take those inputs. As the bucket processing
             // tasks complete, they will, as capacity permits, spawn additional input processing

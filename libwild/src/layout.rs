@@ -164,7 +164,7 @@ pub fn compute<'data, A: Arch>(
     let string_merge_inputs =
         crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
 
-    let (merged_strings, gc_outputs) = rayon::join(
+    let (merged_strings, gc_outputs) = crate::RAYON_POOL.get().unwrap().join(
         || {
             crate::string_merging::merge_strings(
                 &string_merge_inputs,
@@ -469,6 +469,7 @@ fn finalise_copy_relocations<'data>(
 
     group_states
         .into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .map(|group| -> Result {
             verbose_timing_phase!("Finalise copy relocations for group");
             for file in &mut group.files {
@@ -499,6 +500,7 @@ fn finalise_all_sizes<'data>(
 
     group_states
         .into_par()
+        .with_pool(crate::RAYON_POOL.get().unwrap())
         .map(|state| {
             verbose_timing_phase!("Finalise sizes for group");
             state.finalise_sizes(output_sections, per_symbol_flags, resources)
@@ -544,8 +546,10 @@ fn merge_dynamic_symbol_definitions<'data>(
             symbol_base: 0,
         };
 
-        dynamic_symbol_definitions
-            .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+        crate::RAYON_POOL.get().unwrap().install(|| {
+            dynamic_symbol_definitions
+                .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+        });
 
         opt_gnu_hash_layout = Some(gnu_hash_layout);
     }
@@ -2127,39 +2131,42 @@ fn compute_symbols_and_layouts<'data>(
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
     resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<GroupLayout<'data>>> {
-    timing_phase!("Assign symbol addresses");
+    crate::RAYON_POOL.get().unwrap().install(|| {
+        timing_phase!("Assign symbol addresses");
 
-    group_states
-        .into_par_iter()
-        .zip(starting_mem_offsets_by_group)
-        .zip(per_group_res_writers)
-        .map(|((state, mut memory_offsets), symbols_out)| {
-            verbose_timing_phase!("Assign addresses for group");
+        group_states
+            .into_par_iter()
+            .zip(starting_mem_offsets_by_group)
+            .zip(per_group_res_writers)
+            .map(|((state, mut memory_offsets), symbols_out)| {
+                verbose_timing_phase!("Assign addresses for group");
 
-            if cfg!(debug_assertions) {
-                let offset_verifier = crate::verification::OffsetVerifier::new(
-                    &memory_offsets,
-                    &state.common.mem_sizes,
-                );
+                if cfg!(debug_assertions) {
+                    let offset_verifier = crate::verification::OffsetVerifier::new(
+                        &memory_offsets,
+                        &state.common.mem_sizes,
+                    );
 
-                // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
-                // them to an arbitrary value. If they are used, we'll quickly notice.
-                crate::verification::clear_ignored(&mut memory_offsets);
+                    // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
+                    // them to an arbitrary value. If they are used, we'll quickly notice.
+                    crate::verification::clear_ignored(&mut memory_offsets);
 
-                let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
+                    let layout =
+                        state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
 
-                offset_verifier.verify(
-                    &memory_offsets,
-                    resources.output_sections,
-                    resources.output_order,
-                    &layout.files,
-                )?;
-                Ok(layout)
-            } else {
-                state.finalise_layout(&mut memory_offsets, symbols_out, resources)
-            }
-        })
-        .collect()
+                    offset_verifier.verify(
+                        &memory_offsets,
+                        resources.output_sections,
+                        resources.output_order,
+                        &layout.files,
+                    )?;
+                    Ok(layout)
+                } else {
+                    state.finalise_layout(&mut memory_offsets, symbols_out, resources)
+                }
+            })
+            .collect()
+    })
 }
 
 fn compute_segment_layout(
@@ -2589,7 +2596,7 @@ fn find_required_sections<'data, A: Arch>(
     };
     let resources_ref = &resources;
 
-    rayon::in_place_scope(|scope| {
+    crate::RAYON_POOL.get().unwrap().in_place_scope(|scope| {
         queue_initial_group_processing::<A>(groups_in, symbol_db, resources_ref, scope);
     });
 

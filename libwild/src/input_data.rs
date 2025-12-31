@@ -254,10 +254,13 @@ impl<'data> FileLoader<'data> {
         };
 
         // Open files, mmap them and identify their type from separate threads.
-        rayon::scope(|scope| {
-            initial_work.into_par().for_each(|request| {
-                temporary_state.process_and_record_open_file_request(request, scope);
-            });
+        crate::RAYON_POOL.get().unwrap().scope(|scope| {
+            initial_work
+                .into_par()
+                .with_pool(crate::RAYON_POOL.get().unwrap())
+                .for_each(|request| {
+                    temporary_state.process_and_record_open_file_request(request, scope);
+                });
         });
 
         verbose_timing_phase!("Finalise open input files");
@@ -287,6 +290,7 @@ impl<'data> FileLoader<'data> {
 
         self.loaded_files
             .par()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
             .map(|file| {
                 let Some(file_data) = &file.data else {
                     return Ok(());

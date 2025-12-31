@@ -65,6 +65,8 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
+use std::sync::OnceLock;
+
 use crate::args::ActivatedArgs;
 use crate::error::Result;
 use crate::identity::linker_identity;
@@ -80,6 +82,7 @@ use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
+use rayon::ThreadPool;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -117,6 +120,8 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
             .map_err(|_| AlreadyInitialised)
     }
 }
+
+pub(crate) static RAYON_POOL: OnceLock<ThreadPool> = OnceLock::new();
 
 /// This is effectively a data store for use while linking. It takes ownership of all the input data
 /// that we read, which allows the linking stages to borrow that data. Dropping this struct might be
