@@ -5,7 +5,10 @@ use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::SIZE_2GB;
 use crate::elf::SIZE_2KB;
+use crate::elf::SIZE_4GB;
+use crate::elf::SIZE_4KB;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 
@@ -627,4 +630,19 @@ impl LoongArch64Instruction {
     pub fn read_value(self, _bytes: &[u8]) -> (u64, bool) {
         todo!()
     }
+}
+
+// Documentation definition:
+// (*(uint32_t *) PC) [24 ... 5] = (((S+A+0x8000'0000 + (((S+A) & 0x800) ?
+// (0x1000-0x1'0000'0000) : 0)) & ~0xfff) - (PC-8 & ~0xfff)) [51 ... 32]
+#[must_use]
+pub fn highest_relocation_with_bias(symbol_with_addend: u64, pc: u64) -> u64 {
+    ((symbol_with_addend.wrapping_add(SIZE_2GB).wrapping_add(
+        if symbol_with_addend & SIZE_2KB != 0 {
+            SIZE_4KB.wrapping_sub(SIZE_4GB)
+        } else {
+            0
+        },
+    )) & !PAGE_MASK_4KB)
+        .wrapping_sub((pc.wrapping_sub(8)) & !PAGE_MASK_4KB)
 }

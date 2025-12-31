@@ -81,16 +81,11 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
-use linker_utils::elf::SIZE_2GB;
-use linker_utils::elf::SIZE_2KB;
-use linker_utils::elf::SIZE_4GB;
-use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
@@ -106,6 +101,7 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::stt;
+use linker_utils::loongarch64::highest_relocation_with_bias;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SymbolIndex;
@@ -2025,20 +2021,6 @@ fn apply_relocation<'data, A: Arch>(
     // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
     let place = section_address + offset_in_section;
 
-    let loong_arch_highest_with_biased = |symbol_with_addend: u64, pc: u64| -> u64 {
-        // Documentation definition:
-        // (*(uint32_t *) PC) [24 ... 5] = (((S+A+0x8000'0000 + (((S+A) & 0x800) ?
-        // (0x1000-0x1'0000'0000) : 0)) & ~0xfff) - (PC-8 & ~0xfff)) [51 ... 32]
-        ((symbol_with_addend.wrapping_add(SIZE_2GB).wrapping_add(
-            if symbol_with_addend & SIZE_2KB != 0 {
-                SIZE_4KB.wrapping_sub(SIZE_4GB)
-            } else {
-                0
-            },
-        )) & !PAGE_MASK_4KB)
-            .wrapping_sub((pc.wrapping_sub(8)) & !PAGE_MASK_4KB)
-    };
-
     let mask = get_page_mask(rel_info.mask);
     let bias = rel_info.bias;
     let mut value = match rel_info.kind {
@@ -2084,19 +2066,16 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::RelativeLoongArchHigh => {
-            // TODO: explain
-            loong_arch_highest_with_biased(
-                resolution.value_with_addend(
-                    addend,
-                    symbol_index,
-                    object_layout,
-                    &layout.merged_strings,
-                    &layout.merged_string_start_addresses,
-                )?,
-                place,
-            )
-        }
+        RelocationKind::RelativeLoongArchHigh => highest_relocation_with_bias(
+            resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?,
+            place,
+        ),
         RelocationKind::RelativeRiscVLow12 => {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of
             // relocations where the later one actually points to a label of the HI20
@@ -2201,7 +2180,7 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(addend as u64)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::GotRelativeLoongArch64 => loong_arch_highest_with_biased(
+        RelocationKind::GotRelativeLoongArch64 => highest_relocation_with_bias(
             resolution.got_address()?.wrapping_add(addend as u64),
             place,
         ),
@@ -2301,7 +2280,7 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::GotTpOffLoongArch64 => loong_arch_highest_with_biased(
+        RelocationKind::GotTpOffLoongArch64 => highest_relocation_with_bias(
             resolution.got_address()?.wrapping_add(addend as u64),
             place,
         ),
@@ -2327,7 +2306,7 @@ fn apply_relocation<'data, A: Arch>(
             .wrapping_add(bias)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::TlsDescLoongArch64 => loong_arch_highest_with_biased(
+        RelocationKind::TlsDescLoongArch64 => highest_relocation_with_bias(
             resolution
                 .tls_descriptor_got_address()?
                 .wrapping_add(addend as u64),
