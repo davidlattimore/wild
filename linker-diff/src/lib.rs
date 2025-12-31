@@ -663,7 +663,7 @@ impl Report {
                 self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
             }
             ArchKind::LoongArch64 => {
-                // TODO
+                // TODO: add support for asm diff
             }
         }
     }

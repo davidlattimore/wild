@@ -2191,7 +2191,11 @@ fn apply_relocation<'data, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::Got => {
-            // TODO: add comment
+            // The LoongArch64 psABI does not provide a separate GOT Low part relocation for the
+            // TLSGD relocation. So we need to distinguish between a classical GOT
+            // slot and one corresponding to TLSGD.
+            //
+            // Note: TLSLD is unsupported by the target (https://github.com/loongson/la-abi-specs/issues/19).
             if resolution.flags.needs_got_tls_module() {
                 resolution.tlsgd_got_address()?
             } else {
