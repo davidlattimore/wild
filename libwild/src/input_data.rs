@@ -21,10 +21,11 @@ use colosseum::sync::Arena;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use memmap2::Mmap;
+use orx_parallel::IntoParIter;
+use orx_parallel::ParIter;
+use orx_parallel::ParIterResult;
+use orx_parallel::ParallelizableCollection;
 use rayon::Scope;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
@@ -254,7 +255,7 @@ impl<'data> FileLoader<'data> {
 
         // Open files, mmap them and identify their type from separate threads.
         rayon::scope(|scope| {
-            initial_work.into_par_iter().for_each(|request| {
+            initial_work.into_par().for_each(|request| {
                 temporary_state.process_and_record_open_file_request(request, scope);
             });
         });
@@ -284,31 +285,37 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn verify_inputs_unchanged(&self) -> Result {
         timing_phase!("Verify inputs unchanged");
 
-        self.loaded_files.par_iter().try_for_each(|file| {
-            let Some(file_data) = &file.data else {
-                return Ok(());
-            };
+        self.loaded_files
+            .par()
+            .map(|file| {
+                let Some(file_data) = &file.data else {
+                    return Ok(());
+                };
 
-            let metadata = std::fs::metadata(&file.filename).with_context(|| {
-                format!("Failed to read metadata for `{}`", file.filename.display())
-            })?;
+                let metadata = std::fs::metadata(&file.filename).with_context(|| {
+                    format!("Failed to read metadata for `{}`", file.filename.display())
+                })?;
 
-            let new_modified = metadata.modified().with_context(|| {
-                format!(
-                    "Failed to get modification time for `{}`",
-                    file.filename.display()
-                )
-            })?;
+                let new_modified = metadata.modified().with_context(|| {
+                    format!(
+                        "Failed to get modification time for `{}`",
+                        file.filename.display()
+                    )
+                })?;
 
-            if file_data.modification_time != new_modified {
-                bail!(
-                    "The file `{}` was changed while we were running",
-                    file.filename.display()
-                );
-            }
+                if file_data.modification_time != new_modified {
+                    bail!(
+                        "The file `{}` was changed while we were running",
+                        file.filename.display()
+                    );
+                }
 
-            Ok(())
-        })
+                Ok(())
+            })
+            .into_fallible_result()
+            .reduce(|_, _| ())?;
+
+        Ok(())
     }
 
     /// Extract all files and linker scripts from `files`. Extraction order is the same as the order

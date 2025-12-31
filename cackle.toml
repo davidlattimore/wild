@@ -77,6 +77,9 @@ allow_unsafe = true
 [pkg.rayon-core]
 allow_unsafe = true
 
+[pkg.orx-parallel]
+allow_unsafe = true
+
 [pkg.object]
 allow_unsafe = true
 
