@@ -3453,7 +3453,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {
+        RelocationKind::None | RelocationKind::AbsoluteLowPart | RelocationKind::Alignment => {
             ValueFlags::empty()
         }
     }

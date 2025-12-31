@@ -2298,7 +2298,7 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::Got
             | RelocationKind::TlsGdGot
             | RelocationKind::GotTpOffGot
-            | RelocationKind::AbsoluteAArch64
+            | RelocationKind::AbsoluteLowPart
             | RelocationKind::TlsDescGot
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
@@ -2478,7 +2478,7 @@ fn value_kind_for_relocation<A: Arch>(
 ) -> Option<ValueKind> {
     let kind = match relocation_kind {
         RelocationKind::Absolute
-        | RelocationKind::AbsoluteAArch64
+        | RelocationKind::AbsoluteLowPart
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
@@ -3413,7 +3413,7 @@ impl<'data> GotIndex<'data> {
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
-                | RelocationKind::AbsoluteAArch64
+                | RelocationKind::AbsoluteLowPart
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition

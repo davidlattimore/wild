@@ -226,7 +226,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             SIZE_2KB,
         ),
         object::elf::R_LARCH_PCALA_LO12 => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
             None,
             AllowedRange::no_check(),
@@ -282,14 +282,6 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
             SIZE_2KB,
-        ),
-        object::elf::R_LARCH_PCADD_LO12 => (
-            RelocationKind::RelativeRiscVLow12,
-            RelocationSize::bit_mask_loongarch64(0, 12, LoongArch64Instruction::Shift10),
-            None,
-            AllowedRange::no_check(),
-            1,
-            0,
         ),
         // GOT-relative relocations
         object::elf::R_LARCH_GOT_PC_HI20 => (

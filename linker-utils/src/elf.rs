@@ -939,9 +939,9 @@ pub enum RelocationKind {
     AbsoluteSubtractionWord6,
 
     /// The absolute address of a symbol or section. We are going to extract only the offset
-    /// within a page, so dynamic relocation creation must be skipped.
-    /// TODO: rename
-    AbsoluteAArch64,
+    /// within a page, so dynamic relocation creation must be skipped. Used by both AArch64
+    /// and LoongArch64 targets.
+    AbsoluteLowPart,
 
     /// Subtract addresses of two symbols and encode the value using ULEB128.
     ///
@@ -954,13 +954,13 @@ pub enum RelocationKind {
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
 
-    /// TODO
+    /// The address of the symbol, relative to the place of the relocation
+    /// (using LoongArch64 high part encoding).
     RelativeLoongArchHigh,
 
     /// The address of the symbol, relative to the place of the relocation. The address of the
     /// relocation points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used
     /// and that is the place we make this relocation relative to.
-    /// TODO: rename
     RelativeRiscVLow12,
 
     /// The address of the symbol, relative to the base address of the GOT.

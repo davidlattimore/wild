@@ -2046,7 +2046,7 @@ fn apply_relocation<'data, A: Arch>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?,
-        RelocationKind::AbsoluteAArch64 => resolution
+        RelocationKind::AbsoluteLowPart => resolution
             .value_with_addend(
                 addend,
                 symbol_index,
