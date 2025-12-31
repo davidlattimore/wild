@@ -980,7 +980,9 @@ pub enum RelocationKind {
 
     /// The address of the symbol's GOT entry, relative to the place of the relocation.
     GotRelative,
-    // TODO
+
+    /// The address of the symbol's GOT entry, relative to the place of the relocation
+    /// (using LoongArch64 high part encoding).
     GotRelativeLoongArch64,
 
     /// The address of a TLSGD structure, relative to the place of the relocation. A TLSGD
@@ -1013,7 +1015,9 @@ pub enum RelocationKind {
     /// TLS storage, relative to the place of the relocation.
     GotTpOff,
 
-    // TODO
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage, relative to the place of the relocation.
+    /// (using LoongArch64 high part encoding).
     GotTpOffLoongArch64,
 
     /// The address of a GOT entry containing the offset of a TLS variable within the executable's
@@ -1030,7 +1034,8 @@ pub enum RelocationKind {
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
 
-    // TODO
+    /// The address of a TLS descriptor structure, relative to the place of the relocation.
+    /// (using LoongArch64 high part encoding).
     TlsDescLoongArch64,
 
     /// The address of a TLS descriptor structure.
