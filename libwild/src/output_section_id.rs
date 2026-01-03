@@ -76,6 +76,7 @@ pub(crate) struct InitFiniSectionDetail {
     pub(crate) index: u32,
     pub(crate) primary: OutputSectionId,
     pub(crate) priority: u16,
+    pub(crate) alignment: Alignment
 }
 
 // Single-part sections that we generate ourselves rather than copying directly from input objects.
@@ -211,12 +212,12 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
         self.events.push(OrderEvent::Section(section_id));
 
-        let secondaries: Vec<OutputSectionId> = self.secondary.get(section_id).clone();
+        let secondaries: &Vec<OutputSectionId> = self.secondary.get(section_id);
         // stable ordering: tie-break by original index
         let mut keyed: Vec<(u16, usize, OutputSectionId)> = secondaries
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(idx, sid)| {
+            .map(|(idx, &sid)| {
                 // default: put non-initfini after all initfini, and keep their relative order
                 let key_pri = match self.output_sections.secondary_order(sid) {
                     Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
@@ -227,7 +228,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
                 (key_pri, idx, sid)
             })
             .collect();
-        keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        keyed.sort_by_key(|a| (a.0, a.1));
 
         for (_pri, _idx, sid) in keyed {
             self.events.push(OrderEvent::Section(sid));

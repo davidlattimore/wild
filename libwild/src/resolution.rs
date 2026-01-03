@@ -626,8 +626,12 @@ fn init_fini_priority(name: &[u8]) -> Option<u16> {
         return Some(u16::MAX);
     }
 
-    if name.starts_with(b".init_array.") || name.starts_with(b".fini_array.") {
-        return parse_priority_suffix(name);
+    if let Some(rest) = name.strip_prefix(b".init_array.") {
+        return parse_priority_suffix(rest);
+    }
+
+    if let Some(rest) = name.strip_prefix(b".fini_array.") {
+        return parse_priority_suffix(rest);
     }
 
     None
@@ -911,10 +915,9 @@ fn apply_init_fini_secondaries<'data>(
             _ => continue,
         };
 
-        let alignment = unloaded.part_id.alignment();
         let sid =
-            output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, alignment);
-        unloaded.part_id = sid.part_id_with_alignment(alignment);
+            output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
+        unloaded.part_id = sid.part_id_with_alignment(d.alignment);
     }
 }
 
@@ -1015,6 +1018,7 @@ fn resolve_section<'data>(
                     index: input_section_index.0 as u32,
                     primary: output_info.section_id,
                     priority,
+                    alignment: alignment,
                 });
             }
 
