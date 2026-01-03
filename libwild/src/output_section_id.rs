@@ -76,7 +76,7 @@ pub(crate) struct InitFiniSectionDetail {
     pub(crate) index: u32,
     pub(crate) primary: OutputSectionId,
     pub(crate) priority: u16,
-    pub(crate) alignment: Alignment
+    pub(crate) alignment: Alignment,
 }
 
 // Single-part sections that we generate ourselves rather than copying directly from input objects.

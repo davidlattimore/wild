@@ -611,12 +611,11 @@ fn assign_section_ids<'data>(
     }
 }
 
-fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
-    let idx = name.iter().rposition(|&b| b == b'.')?;
-    let suffix = name.get(idx + 1..)?;
+fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
     if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
         return None;
     }
+
     let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
     Some(u16::try_from(value).unwrap_or(u16::MAX))
 }
@@ -1018,7 +1017,7 @@ fn resolve_section<'data>(
                     index: input_section_index.0 as u32,
                     primary: output_info.section_id,
                     priority,
-                    alignment: alignment,
+                    alignment,
                 });
             }
 

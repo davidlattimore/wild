@@ -1,9 +1,11 @@
 //#Object:runtime.c
+//#Object:init.c
 //#Object:init-order-2.c
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
 
 #include "runtime.h"
+#include "init.h"
 
 static int ctors_init_val = 0;
 
@@ -29,6 +31,7 @@ __attribute__((destructor(65535))) void fini_65535a() {}
 
 void _start(void) {
   runtime_init();
+  call_init_functions();
   // This test currently just relies on linker-diff to verify the init_array and
   // fini_array orderings.
   exit_syscall(42);
