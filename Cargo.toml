@@ -60,7 +60,7 @@ libc = "0.2.171"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { git = "https://github.com/gimli-rs/object.git", rev = "345c78b1c74bda8307855e0dba8a5e0791ac10f3", default-features = false, features = [
+object = { version = "0.38.1", default-features = false, features = [
     "elf",
     "read_core",
     "std",
