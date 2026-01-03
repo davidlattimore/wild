@@ -5,15 +5,15 @@ use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
 use crate::asm_diff::BasicValueKind;
 use crate::utils::decode_insn_with_objdump;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE_BITS;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationInstruction;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use std::fmt::Display;
@@ -190,10 +190,10 @@ impl Arch for AArch64 {
     fn get_relocation_base_mask(relocation_info: &RelocationKindInfo) -> u64 {
         match relocation_info.mask {
             Some(
-                PageMask::SymbolPlusAddendAndPosition
-                | PageMask::GotEntryAndPosition
-                | PageMask::GotBase,
-            ) => linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+                PageMask::SymbolPlusAddendAndPosition(mask)
+                | PageMask::GotEntryAndPosition(mask)
+                | PageMask::GotBase(mask),
+            ) => !mask,
             _ => u64::MAX,
         }
     }
@@ -307,8 +307,8 @@ const CHAINS: &[&[RType]] = &[
 
 const REL_ADR_PAGE: BitMask = BitMask::new(
     RelocationInstruction::AArch64(AArch64Instruction::Adr),
-    DEFAULT_AARCH64_PAGE_SIZE_BITS as u32,
-    DEFAULT_AARCH64_PAGE_SIZE_BITS as u32 + 21,
+    SIZE_4KB.trailing_zeros(),
+    SIZE_4KB.trailing_zeros() + 21,
 );
 
 const REL_LDR_OFFSET: BitMask = BitMask::new(
@@ -341,7 +341,7 @@ fn decode_plt_entry_template_1(
         &[(0, REL_ADR_PAGE), (4, REL_LDR_OFFSET)],
     )?;
 
-    let entry_page_base = (plt_base + plt_offset) & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+    let entry_page_base = (plt_base + plt_offset) & !PAGE_MASK_4KB;
 
     let got_address = entry_page_base.wrapping_add(values[0]) | values[1];
 
@@ -366,7 +366,7 @@ fn decode_plt_entry_template_2(
         &[(0, REL_ADR_PAGE), (4, REL_LDR_OFFSET), (8, REL_ADD_LITERAL)],
     )?;
 
-    let entry_page_base = (plt_base + plt_offset) & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+    let entry_page_base = (plt_base + plt_offset) & !PAGE_MASK_4KB;
 
     // Note, we ignore the value of the third relocation - the one associated with the add
     // instruction. It's only needed for lazy PLT entries, but some linkers have the add instruction

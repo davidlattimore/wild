@@ -1204,7 +1204,7 @@ fn allocate_resolution(
 ) {
     let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
-    if flags.needs_got() {
+    if flags.needs_got() && !flags.is_tls() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if flags.needs_plt() {
             mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
@@ -3420,16 +3420,19 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
             ValueFlags::PLT | ValueFlags::GOT
         }
-        RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
-            ValueFlags::GOT
-        }
+        RelocationKind::Got
+        | RelocationKind::GotRelGotBase
+        | RelocationKind::GotRelative
+        | RelocationKind::GotRelativeLoongArch64 => ValueFlags::GOT,
         RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueFlags::GOT_TLS_OFFSET,
         RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
             ValueFlags::GOT_TLS_MODULE
         }
         RelocationKind::TlsDesc
+        | RelocationKind::TlsDescLoongArch64
         | RelocationKind::TlsDescGot
         | RelocationKind::TlsDescGotBase
         | RelocationKind::TlsDescCall => ValueFlags::GOT_TLS_DESCRIPTOR,
@@ -3440,15 +3443,17 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
         | RelocationKind::RelativeRiscVLow12
+        | RelocationKind::RelativeLoongArchHigh
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
-        | RelocationKind::PairSubtraction => ValueFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {
+        | RelocationKind::PairSubtractionULEB128(..) => ValueFlags::DIRECT,
+        RelocationKind::None | RelocationKind::AbsoluteLowPart | RelocationKind::Alignment => {
             ValueFlags::empty()
         }
     }
@@ -5674,9 +5679,7 @@ fn create_resolution(
             resolution.raw_value = plt_address.get();
         }
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if flags.needs_got() {
-        resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else {
+    } else if flags.is_tls() {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
         if flags.needs_got_tls_offset() {
@@ -5688,9 +5691,10 @@ fn create_resolution(
         if flags.needs_got_tls_descriptor() {
             num_got_slots += 2;
         }
-        if num_got_slots > 0 {
-            resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
-        }
+        debug_assert!(num_got_slots > 0);
+        resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
+    } else if flags.needs_got() {
+        resolution.got_address = Some(allocate_got(1, memory_offsets));
     }
     resolution
 }

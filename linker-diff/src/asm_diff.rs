@@ -2267,12 +2267,16 @@ impl<'data> RelaxationTester<'data> {
         let mut relative_to = match relocation_info.kind {
             RelocationKind::Relative
             | RelocationKind::RelativeRiscVLow12
+            | RelocationKind::RelativeLoongArchHigh
             | RelocationKind::PltRelative
             | RelocationKind::TlsGd
             | RelocationKind::TlsLd
             | RelocationKind::TlsDesc
+            | RelocationKind::TlsDescLoongArch64
             | RelocationKind::GotTpOff
-            | RelocationKind::GotRelative => self.section_address + offset,
+            | RelocationKind::GotTpOffLoongArch64
+            | RelocationKind::GotRelative
+            | RelocationKind::GotRelativeLoongArch64 => self.section_address + offset,
             RelocationKind::SymRelGotBase
             | RelocationKind::GotRelGotBase
             | RelocationKind::TlsGdGotBase
@@ -2288,18 +2292,19 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
             | RelocationKind::Got
             | RelocationKind::TlsGdGot
             | RelocationKind::GotTpOffGot
-            | RelocationKind::AbsoluteAArch64
+            | RelocationKind::AbsoluteLowPart
             | RelocationKind::TlsDescGot
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
             | RelocationKind::TlsDescCall
-            | RelocationKind::PairSubtraction
+            | RelocationKind::PairSubtractionULEB128(..)
             | RelocationKind::None
             | RelocationKind::Alignment => 0,
         };
@@ -2473,10 +2478,11 @@ fn value_kind_for_relocation<A: Arch>(
 ) -> Option<ValueKind> {
     let kind = match relocation_kind {
         RelocationKind::Absolute
-        | RelocationKind::AbsoluteAArch64
+        | RelocationKind::AbsoluteLowPart
         | RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => {
             if address_index.is_relocatable() {
@@ -2487,19 +2493,25 @@ fn value_kind_for_relocation<A: Arch>(
         }
         RelocationKind::Relative
         | RelocationKind::RelativeRiscVLow12
+        | RelocationKind::RelativeLoongArchHigh
         | RelocationKind::SymRelGotBase => {
             return None;
         }
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::OptionalPlt,
-        RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
-            ValueKind::Got(BasicValueKind::Pointer)
-        }
+        RelocationKind::Got
+        | RelocationKind::GotRelGotBase
+        | RelocationKind::GotRelative
+        | RelocationKind::GotRelativeLoongArch64 => ValueKind::Got(BasicValueKind::Pointer),
         RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
         RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
         RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffLoongArch64
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
-        RelocationKind::TlsDesc | RelocationKind::TlsDescGot | RelocationKind::TlsDescGotBase => {
+        RelocationKind::TlsDesc
+        | RelocationKind::TlsDescLoongArch64
+        | RelocationKind::TlsDescGot
+        | RelocationKind::TlsDescGotBase => {
             // The TLSDESC structure is stored in the GOT. We should perhaps treat this as
             // Unwrapped(TlsDesc), however the code to read dynamic relocations like TLSDESC is
             // currently in the GOT-dereferencing code.
@@ -2515,7 +2527,7 @@ fn value_kind_for_relocation<A: Arch>(
         }
         RelocationKind::TlsDescCall
         | RelocationKind::None
-        | RelocationKind::PairSubtraction
+        | RelocationKind::PairSubtractionULEB128(..)
         | RelocationKind::Alignment => {
             return None;
         }
@@ -3394,28 +3406,32 @@ impl<'data> GotIndex<'data> {
 
             match relocation_kind {
                 RelocationKind::GotTpOff
+                | RelocationKind::GotTpOffLoongArch64
                 | RelocationKind::GotTpOffGot
                 | RelocationKind::GotTpOffGotBase => {
                     Ok(Referent::UnmatchedTlsOffset(raw_value as i64))
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
-                | RelocationKind::AbsoluteAArch64
+                | RelocationKind::AbsoluteLowPart
                 | RelocationKind::AbsoluteSet
                 | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition
+                | RelocationKind::AbsoluteAdditionWord6
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
                 | RelocationKind::RelativeRiscVLow12
+                | RelocationKind::RelativeLoongArchHigh
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase
                 | RelocationKind::Got
                 | RelocationKind::PltRelGotBase
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
+                | RelocationKind::GotRelativeLoongArch64
                 | RelocationKind::None
-                | RelocationKind::PairSubtraction
+                | RelocationKind::PairSubtractionULEB128(..)
                 | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
@@ -3426,6 +3442,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
                 | RelocationKind::TlsDesc
+                | RelocationKind::TlsDescLoongArch64
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {
                     bail!("Missing dynamic relocation for {relocation_kind:?}")

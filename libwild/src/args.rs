@@ -523,6 +523,10 @@ const fn default_target_arch() -> Architecture {
     {
         Architecture::RISCV64
     }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        Architecture::LoongArch64
+    }
 }
 
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
@@ -583,6 +587,7 @@ impl Args {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
             Architecture::RISCV64 => Alignment { exponent: 12 },
+            Architecture::LoongArch64 => Alignment { exponent: 16 },
         }
     }
 
@@ -1339,6 +1344,14 @@ fn setup_argument_parser() -> ArgumentParser {
             args.arch = Architecture::RISCV64;
             Ok(())
         })
+        .sub_option(
+            "elf64loongarch",
+            "LoongArch 64-bit ELF target",
+            |args, _| {
+                args.arch = Architecture::LoongArch64;
+                Ok(())
+            },
+        )
         .execute(|_args, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
@@ -1595,8 +1608,8 @@ fn setup_argument_parser() -> ArgumentParser {
             println!("{}", parser.generate_help());
 
             // The following listing is something autoconf detection relies on.
-            println!("wild: supported targets: elf64-x86-64 elf64-littleaarch64 elf64-littleriscv");
-            println!("wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv");
+            println!("wild: supported targets:elf64 -x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch");
+            println!("wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch");
 
             std::process::exit(0);
         });

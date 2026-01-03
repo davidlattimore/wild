@@ -18,17 +18,17 @@
 //#Shared:tls-variant-1.c:-mtls-dialect=gnu2,tls-variant-2.c:-ftls-model=global-dynamic,tls-variant-3.c:-ftls-model=initial-exec
 //#Arch: x86_64
 
-//#Config:gcc-aarch64:default
+//#Config:gcc-tls-trad:default
 //#CompArgs:-fpic
 //#Object:tls-variant-1.c
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad
 //#Object:tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
-//#Config:gcc-shared-aarch64:default
+//#Config:gcc-shared-tls-trad:default
 //#CompArgs:-fpic
 //#Shared:tls-variant-1.c,tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad,tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 // Similarly to Mold, Wild also sets STATIC_TLS flag.
 //#DiffIgnore:.dynamic.DT_FLAGS.STATIC_TLS
 

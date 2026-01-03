@@ -1230,7 +1230,7 @@ pub(crate) enum SymbolStrength {
 /// Returns whether the supplied symbol name is for a [mapping
 /// symbol](https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst#mapping-symbols).
 pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
-    name.starts_with(b"$x") || name.starts_with(b"$d")
+    name.starts_with(b"$x") || name.starts_with(b"$d") || name == b"L0\x01"
 }
 
 fn read_symbols<'data>(

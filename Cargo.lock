@@ -784,7 +784,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.38.0",
+ "object 0.38.1",
  "perf-event",
  "perfetto-recorder",
  "rayon",
@@ -829,7 +829,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.38.0",
+ "object 0.38.1",
  "symbolic-demangle",
  "tabled",
  "tempfile",
@@ -864,7 +864,7 @@ dependencies = [
  "anyhow",
  "derive_more",
  "leb128",
- "object 0.38.0",
+ "object 0.38.1",
  "paste",
 ]
 
@@ -1145,9 +1145,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.38.0"
+version = "0.38.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8b28f24bd43920cd8e0bc4f9c6553e8b93221c512cb9a1014987fc89d36f830"
+checksum = "271638cd5fa9cca89c4c304675ca658efc4e64a66c716b7cfe1afb4b9611dbbc"
 dependencies = [
  "memchr",
 ]
@@ -2066,7 +2066,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object 0.38.0",
+ "object 0.38.1",
  "os_info",
  "rstest",
  "serde",

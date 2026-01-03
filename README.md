@@ -114,7 +114,8 @@ The following platforms / architectures are currently supported:
 
 * x86-64 on Linux
 * ARM64 on Linux
-* RISC-V (riscv64gc) on Linux (initial support: [#678](https://github.com/davidlattimore/wild/issues/678))
+* RISC-V (riscv64gc) on Linux
+* LoongArch64 on Linux (initial support)
 
 The following is working with the caveat that there may be bugs:
 

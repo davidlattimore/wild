@@ -8,8 +8,6 @@ use crate::relaxation::RelocationModifier;
 use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
-use leb128;
-use std::io::Cursor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
@@ -328,8 +326,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_RISCV_SUB_ULEB128 => (
-            RelocationKind::PairSubtraction,
-            RelocationSize::bit_mask_riscv(0, 64, RiscVInstruction::Uleb128),
+            RelocationKind::PairSubtractionULEB128(object::elf::R_RISCV_SET_ULEB128),
+            RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
             1,
@@ -348,6 +346,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         mask,
         range,
         alignment,
+        bias: 0,
     })
 }
 
@@ -433,13 +432,6 @@ impl RiscVInstruction {
                 // The compressed instruction only takes 2 bytes.
                 and_from_slice(dest, CJTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
-            }
-            RiscVInstruction::Uleb128 => {
-                // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
-                let mut writer = Cursor::new(vec![0u8; 10]);
-                let n = leb128::write::unsigned(&mut writer, extracted_value)
-                    .expect("Must fit into the buffer");
-                dest[..n].copy_from_slice(&writer.into_inner()[..n]);
             }
         };
     }
@@ -529,13 +521,6 @@ impl RiscVInstruction {
                     | (imm1_3 << 1);
                 let sign_extended = (i32::from(imm) << 20) >> 20;
                 (sign_extended as u64, sign_extended < 0)
-            }
-            RiscVInstruction::Uleb128 => {
-                let mut reader = Cursor::new(bytes);
-                match leb128::read::unsigned(&mut reader) {
-                    Ok(value) => (value, false),
-                    Err(_) => panic!("Failed to read ULEB128 value"),
-                }
             }
         }
     }

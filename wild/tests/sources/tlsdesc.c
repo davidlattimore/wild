@@ -12,17 +12,17 @@
 //#Object:tlsdesc-obj.c
 //#Arch: x86_64
 
-//#Config:gcc-tls-desc-aarch64:gcc-tls-desc
+//#Config:gcc-tls-desc-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=desc -fPIC
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
 //#Config:gcc-tls-desc-pie:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIE
 //#Arch: x86_64
 
-//#Config:gcc-tls-desc-pie-aarch64:gcc-tls-desc-pie
+//#Config:gcc-tls-desc-pie-desc:gcc-tls-desc-pie
 //#CompArgs:-mtls-dialect=desc
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
 //#Config:gcc-tls-desc-static:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC -static
@@ -35,7 +35,7 @@
 //#Shared:tlsdesc-obj.c
 //#Arch: x86_64
 
-//#Config:gcc-tls-desc-shared-aarch64:gcc-tls-desc-shared
+//#Config:gcc-tls-desc-shared-desc:gcc-tls-desc-shared
 //#CompArgs:-mtls-dialect=desc
 //#Arch: aarch64
 
@@ -45,18 +45,18 @@
 //#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#Arch: x86_64
 
-//#Config:clang-tls-desc-aarch64:clang-tls-desc
+//#Config:clang-tls-desc-desc:clang-tls-desc
 //#CompArgs:-mtls-dialect=desc -fPIC
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
 //#Config:clang-tls-desc-shared:clang-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#Shared:tlsdesc-obj.c
 //#Arch: x86_64
 
-//#Config:clang-tls-desc-shared-aarch64:clang-tls-desc-shared
+//#Config:clang-tls-desc-shared-desc:clang-tls-desc-shared
 //#CompArgs:-mtls-dialect=desc -fPIC
-//#Arch: aarch64
+//#Arch: aarch64,loongarch64
 
 int get_value();
 

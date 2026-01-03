@@ -1,6 +1,7 @@
 use crate::bit_misc::BitExtraction;
 use crate::elf::AArch64Instruction;
 use crate::elf::AllowedRange;
+use crate::elf::PAGE_MASK_4KB;
 use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
@@ -8,11 +9,6 @@ use crate::elf::RelocationSize;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
-
-pub const DEFAULT_AARCH64_PAGE_SIZE_BITS: u64 = 12;
-pub const DEFAULT_AARCH64_PAGE_SIZE: u64 = 1 << DEFAULT_AARCH64_PAGE_SIZE_BITS;
-pub const DEFAULT_AARCH64_PAGE_MASK: u64 = DEFAULT_AARCH64_PAGE_SIZE - 1;
-pub const DEFAULT_AARCH64_PAGE_IGNORED_MASK: u64 = !DEFAULT_AARCH64_PAGE_MASK;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
@@ -258,54 +254,54 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_ADR_PREL_PG_HI21 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::SymbolPlusAddendAndPosition),
+            Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
         object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::SymbolPlusAddendAndPosition),
+            Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_AARCH64_ADD_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::Add),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_AARCH64_LDST8_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::LdSt),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_AARCH64_LDST16_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(1, 12, AArch64Instruction::LdSt),
             None,
             AllowedRange::no_check(),
             2,
         ),
         object::elf::R_AARCH64_LDST32_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(2, 12, AArch64Instruction::LdSt),
             None,
             AllowedRange::no_check(),
             4,
         ),
         object::elf::R_AARCH64_LDST64_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(3, 12, AArch64Instruction::LdSt),
             None,
             AllowedRange::no_check(),
             8,
         ),
         object::elf::R_AARCH64_LDST128_ABS_LO12_NC => (
-            RelocationKind::AbsoluteAArch64,
+            RelocationKind::AbsoluteLowPart,
             RelocationSize::bit_mask_aarch64(4, 12, AArch64Instruction::LdSt),
             None,
             AllowedRange::no_check(),
@@ -478,7 +474,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_ADR_GOT_PAGE => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
@@ -492,7 +488,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_LD64_GOTPAGE_LO15 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask_aarch64(3, 15, AArch64Instruction::LdSt),
-            Some(PageMask::GotBase),
+            Some(PageMask::GotBase(PAGE_MASK_4KB)),
             AllowedRange::new(0, 2i64.pow(15)),
             8,
         ),
@@ -508,7 +504,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_TLSGD_ADR_PAGE21 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
@@ -545,7 +541,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_TLSLD_ADR_PAGE21 => (
             RelocationKind::TlsLd,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
@@ -723,7 +719,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
@@ -891,7 +887,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 => (
             RelocationKind::TlsDesc,
             RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-            Some(PageMask::GotEntryAndPosition),
+            Some(PageMask::GotEntryAndPosition(PAGE_MASK_4KB)),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
             1,
         ),
@@ -943,6 +939,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         mask,
         range,
         alignment,
+        bias: 0,
     })
 }
 

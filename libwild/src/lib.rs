@@ -22,6 +22,7 @@ pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 pub(crate) mod linker_script;
+pub(crate) mod loongarch64;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -36,7 +37,10 @@ pub(crate) mod part_id;
 pub(crate) mod perf;
 #[cfg(any(
     not(target_os = "linux"),
-    all(target_os = "linux", target_arch = "riscv64")
+    all(
+        target_os = "linux",
+        any(target_arch = "riscv64", target_arch = "loongarch64")
+    )
 ))]
 #[path = "perf_unsupported.rs"]
 pub(crate) mod perf;
@@ -177,6 +181,7 @@ impl Linker {
             arch::Architecture::X86_64 => self.link_for_arch::<x86_64::X86_64>(args),
             arch::Architecture::AArch64 => self.link_for_arch::<aarch64::AArch64>(args),
             arch::Architecture::RISCV64 => self.link_for_arch::<riscv64::RiscV64>(args),
+            arch::Architecture::LoongArch64 => self.link_for_arch::<loongarch64::LoongArch64>(args),
         }
     }
 

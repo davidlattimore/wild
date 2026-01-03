@@ -3,7 +3,7 @@
 # docker build --progress=plain -t wild-dev-ubuntu . -f docker/ubuntu.Dockerfile
 # docker run -it wild-dev-ubuntu
 
-FROM ubuntu:25.04 AS chef
+FROM ubuntu:25.10 AS chef
 RUN apt-get update && \
     apt-get install -y \
         clang \
@@ -21,6 +21,9 @@ RUN apt-get update && \
         gcc-riscv64-linux-gnu \
         g++-riscv64-linux-gnu \
         binutils-riscv64-linux-gnu \
+        gcc-loongarch64-linux-gnu \
+        g++-loongarch64-linux-gnu \
+        binutils-loongarch64-linux-gnu \
         build-essential \
         elfutils \
         rustup \
@@ -34,6 +37,8 @@ RUN rustup toolchain install nightly && \
         aarch64-unknown-linux-musl \
         riscv64gc-unknown-linux-gnu \
         riscv64gc-unknown-linux-musl \
+        loongarch64-unknown-linux-gnu \
+        loongarch64-unknown-linux-musl \
         && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 RUN cargo install --locked cargo-chef

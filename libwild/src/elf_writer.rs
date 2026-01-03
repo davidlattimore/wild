@@ -101,6 +101,7 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::stt;
+use linker_utils::loongarch64::highest_relocation_with_bias;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SymbolIndex;
@@ -1882,6 +1883,11 @@ fn adjust_relocation_based_on_value(
             Ok(value | (current_value & !LOW6_MASK))
         }
         RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+        RelocationKind::AbsoluteAdditionWord6 => {
+            // Preserve the 2 most significant bits of u8.
+            let value = (current_value & LOW6_MASK).wrapping_add(value & LOW6_MASK) & LOW6_MASK;
+            Ok(value | (current_value & !LOW6_MASK))
+        }
         RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
         RelocationKind::AbsoluteSubtractionWord6 => {
             // Preserve the 2 most significant bits of u8.
@@ -1901,17 +1907,20 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     symbol_index: SymbolIndex,
     addend: i64,
     mut relocations_to_search: impl Iterator<Item = &'a Crel>,
+    expected_r_type: u32,
 ) -> Result<u64> {
     let set_rel = relocations_to_search
         .next()
         .with_context(|| "Missing previous relocation".to_string())?;
     ensure!(
         set_rel.r_offset == rel.r_offset,
-        "R_RISCV_SET_ULEB128 relocation must have equal offset"
+        "PairSubtractionULEB128 relocation must have equal offset"
     );
     ensure!(
-        set_rel.r_type == object::elf::R_RISCV_SET_ULEB128,
-        "R_RISCV_SET_ULEB128 must be the previous relocation"
+        set_rel.r_type == expected_r_type,
+        "unexpected previous relocation: expected: {}, was: {}",
+        A::rel_type_to_string(expected_r_type),
+        A::rel_type_to_string(set_rel.r_type)
     );
     let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
@@ -2013,23 +2022,22 @@ fn apply_relocation<'data, A: Arch>(
     let place = section_address + offset_in_section;
 
     let mask = get_page_mask(rel_info.mask);
+    let bias = rel_info.bias;
     let mut value = match rel_info.kind {
-        RelocationKind::Absolute => {
-            assert!(rel_info.mask.is_none());
-            write_absolute_relocation::<A>(
-                table_writer,
-                resolution,
-                place,
-                addend,
-                section_info,
-                symbol_index,
-                object_layout,
-                layout,
-            )?
-        }
+        RelocationKind::Absolute => write_absolute_relocation::<A>(
+            table_writer,
+            resolution,
+            place,
+            addend,
+            section_info,
+            symbol_index,
+            object_layout,
+            layout,
+        )?,
         RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteAdditionWord6
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => resolution.value_with_addend(
             addend,
@@ -2038,7 +2046,7 @@ fn apply_relocation<'data, A: Arch>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?,
-        RelocationKind::AbsoluteAArch64 => resolution
+        RelocationKind::AbsoluteLowPart => resolution
             .value_with_addend(
                 addend,
                 symbol_index,
@@ -2055,8 +2063,19 @@ fn apply_relocation<'data, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::RelativeLoongArchHigh => highest_relocation_with_bias(
+            resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?,
+            place,
+        ),
         RelocationKind::RelativeRiscVLow12 => {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of
             // relocations where the later one actually points to a label of the HI20
@@ -2111,14 +2130,17 @@ fn apply_relocation<'data, A: Arch>(
                         &layout.merged_strings,
                         &layout.merged_string_start_addresses,
                     )?
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::GotRelative => resolution
                     .got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::TlsGd => resolution
                     .tlsgd_got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::TlsLd => layout
                     .prelude()
@@ -2126,10 +2148,12 @@ fn apply_relocation<'data, A: Arch>(
                     .unwrap()
                     .get()
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::GotTpOff => resolution
                     .got_address()?
                     .wrapping_add(addend as u64)
+                    .wrapping_add(bias)
                     .wrapping_sub(place),
                 _ => bail!(
                     "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
@@ -2137,30 +2161,49 @@ fn apply_relocation<'data, A: Arch>(
                 ),
             }
         }
-        RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
-            object_layout,
-            rel,
-            layout,
-            resolution,
-            symbol_index,
-            addend,
-            // It must be the previous relocation
-            iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
-        )?,
+        RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+            get_pair_subtraction_relocation_value::<A>(
+                object_layout,
+                rel,
+                layout,
+                resolution,
+                symbol_index,
+                addend,
+                // It must be the previous relocation
+                iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
+                expected_r_type,
+            )?
+        }
         RelocationKind::GotRelative => resolution
             .got_address()?
-            .bitand(mask.got_entry)
+            .wrapping_add(bias)
             .wrapping_add(addend as u64)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::GotRelativeLoongArch64 => highest_relocation_with_bias(
+            resolution.got_address()?.wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
             .bitand(mask.got_entry)
-            .wrapping_sub(layout.got_base().bitand(mask.got))
-            .wrapping_add(addend as u64),
-        RelocationKind::Got => resolution
-            .got_address()?
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
+        RelocationKind::Got => {
+            // The LoongArch64 psABI does not provide a separate GOT Low part relocation for the
+            // TLSGD relocation. So we need to distinguish between a classical GOT
+            // slot and one corresponding to TLSGD.
+            //
+            // Note: TLSLD is unsupported by the target (https://github.com/loongson/la-abi-specs/issues/19).
+            if resolution.flags.needs_got_tls_module() {
+                resolution.tlsgd_got_address()?
+            } else {
+                resolution.got_address()?
+            }
+            .wrapping_add(bias)
             .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+        }
         RelocationKind::SymRelGotBase => resolution
             .value_with_addend(
                 addend,
@@ -2169,92 +2212,120 @@ fn apply_relocation<'data, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelGotBase => resolution
             .plt_address()?
+            .wrapping_add(bias)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelative => resolution
             .plt_address()?
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
             .wrapping_sub(place.bitand(mask.place)),
         // TLS-related relocations
         RelocationKind::TlsGd => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsGdGot => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsGdGotBase => resolution
             .tlsgd_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TlsLd => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsLdGot => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsLdGotBase => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
             .value()
-            .sub(layout.tls_start_address())
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .sub(layout.tls_start_address()),
         RelocationKind::DtpOff => resolution
             .value()
-            .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .wrapping_sub(layout.tls_end_address()),
         RelocationKind::GotTpOff => resolution
             .got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::GotTpOffLoongArch64 => highest_relocation_with_bias(
+            resolution.got_address()?.wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::GotTpOffGot => resolution
             .got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::GotTpOffGotBase => resolution
             .got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
-            .wrapping_sub(A::tp_offset_start(layout))
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .wrapping_sub(A::tp_offset_start(layout)),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::TlsDescLoongArch64 => highest_relocation_with_bias(
+            resolution
+                .tls_descriptor_got_address()?
+                .wrapping_add(addend as u64),
+            place,
+        ),
         RelocationKind::TlsDescGot => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
-            .wrapping_add(addend as u64),
+            .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry),
         RelocationKind::TlsDescGotBase => resolution
             .tls_descriptor_got_address()?
-            .bitand(mask.got_entry)
             .wrapping_add(addend as u64)
+            .wrapping_add(bias)
+            .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
         RelocationKind::Alignment => unreachable!(),
@@ -2266,6 +2337,7 @@ fn apply_relocation<'data, A: Arch>(
     if matches!(
         rel_info.kind,
         RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteSubtractionWord6
@@ -2351,6 +2423,7 @@ fn apply_debug_relocation<'data, A: Arch>(
             | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteAdditionWord6
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6 => {
                 let mut value = resolution.value_with_addend(
@@ -2381,16 +2454,19 @@ fn apply_debug_relocation<'data, A: Arch>(
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
-            RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
-                object_layout,
-                rel,
-                layout,
-                resolution,
-                symbol_index,
-                addend,
-                // Must be the previous relocation.
-                iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
-            )?,
+            RelocationKind::PairSubtractionULEB128(expected_r_type) => {
+                get_pair_subtraction_relocation_value::<A>(
+                    object_layout,
+                    rel,
+                    layout,
+                    resolution,
+                    symbol_index,
+                    addend,
+                    // Must be the previous relocation.
+                    iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
+                    expected_r_type,
+                )?
+            }
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
             kind => bail!("Unsupported debug relocation kind {kind:?}"),

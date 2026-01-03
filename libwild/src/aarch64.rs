@@ -5,15 +5,14 @@ use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::layout::PropertyClass;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
-use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
@@ -71,18 +70,18 @@ impl crate::arch::Arch for AArch64 {
         debug_assert!(plt_address < got_address);
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        let plt_page_address = plt_address & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+        let plt_page_address = plt_address & !PAGE_MASK_4KB;
         let offset = got_address.wrapping_sub(plt_page_address);
         ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
         AArch64Instruction::Adr.write_to_value(
             // The immediate value represents a distance in pages.
-            offset / DEFAULT_AARCH64_PAGE_SIZE,
+            offset / SIZE_4KB,
             false,
             &mut plt_entry[0..4],
         );
         AArch64Instruction::LdrRegister.write_to_value(
             // The immediate offset is scaled by 8 as we are loading 8 bytes.
-            (offset & DEFAULT_AARCH64_PAGE_MASK) / 8,
+            (offset & PAGE_MASK_4KB) / 8,
             false,
             &mut plt_entry[4..8],
         );
