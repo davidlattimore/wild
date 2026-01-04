@@ -1,6 +1,6 @@
 //#AbstractConfig:default
 // TODO: #795
-//#SkipArch: riscv64
+//#SkipArch: riscv64,loongarch64
 
 //#Config:strip-all:default
 //#Object:runtime.c
