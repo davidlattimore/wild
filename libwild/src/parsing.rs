@@ -91,8 +91,78 @@ pub(crate) enum SymbolPlacement<'data> {
     DefsymAbsolute(u64),
 
     /// A symbol defined via --defsym that references another symbol.
-    /// Stores the name of the target symbol.
-    DefsymSymbol(&'data str),
+    /// Stores the name of the target symbol and an optional offset to add to its value.
+    DefsymSymbol(&'data str, i64),
+}
+
+/// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParsedSymbolExpression<'a> {
+    /// An absolute numeric value.
+    Absolute(u64),
+    /// A symbol reference with an optional offset.
+    SymbolWithOffset(&'a str, i64),
+}
+
+impl<'a> ParsedSymbolExpression<'a> {
+    pub(crate) fn to_placement(self) -> SymbolPlacement<'a> {
+        match self {
+            ParsedSymbolExpression::Absolute(value) => SymbolPlacement::DefsymAbsolute(value),
+            ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
+                SymbolPlacement::DefsymSymbol(sym, offset)
+            }
+        }
+    }
+}
+
+pub fn parse_symbol_expression(s: &str) -> ParsedSymbolExpression<'_> {
+    let mut symbol = None;
+    let mut offset: i64 = 0;
+    let mut token_start = 0;
+    let mut current_sign: i64 = 1;
+
+    // Handle leading sign
+    if s.starts_with('-') {
+        current_sign = -1;
+        token_start = 1;
+    } else if s.starts_with('+') {
+        token_start = 1;
+    }
+
+    for (i, ch) in s.bytes().enumerate().skip(token_start) {
+        if ch == b'+' || ch == b'-' {
+            let token = &s[token_start..i];
+            if let Ok(val) = parse_number(token) {
+                offset = offset.wrapping_add(current_sign * val as i64);
+            } else if symbol.is_none() && !token.is_empty() {
+                symbol = Some(token);
+            }
+            current_sign = if ch == b'+' { 1 } else { -1 };
+            token_start = i + 1;
+        }
+    }
+
+    // Process the last token
+    let token = &s[token_start..];
+    if let Ok(val) = parse_number(token) {
+        offset = offset.wrapping_add(current_sign * val as i64);
+    } else if symbol.is_none() && !token.is_empty() {
+        symbol = Some(token);
+    }
+
+    match symbol {
+        Some(sym) => ParsedSymbolExpression::SymbolWithOffset(sym, offset),
+        None => ParsedSymbolExpression::Absolute(offset as u64),
+    }
+}
+
+/// Parse a number. Interprets 0x prefix as hex, otherwise as decimal.
+pub(crate) fn parse_number(s: &str) -> Result<u64, ()> {
+    if let Some(hex) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex, 16).map_err(|_| ())
+    } else {
+        s.parse::<u64>().map_err(|_| ())
+    }
 }
 
 impl<'data> InternalSymDefInfo<'data> {
@@ -204,7 +274,9 @@ impl<'data> Prelude<'data> {
         symbol_definitions.extend(args.defsym.iter().map(|(name, value)| {
             let placement = match value {
                 DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
-                DefsymValue::Symbol(target) => SymbolPlacement::DefsymSymbol(target.as_str()),
+                DefsymValue::SymbolWithOffset(target, offset) => {
+                    SymbolPlacement::DefsymSymbol(target.as_str(), *offset)
+                }
             };
             InternalSymDefInfo::notype(placement, name.as_bytes())
         }));

@@ -3240,7 +3240,7 @@ fn write_linker_script_dynsym(
 
     if matches!(
         info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_)
+        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ) {
         return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
@@ -3359,7 +3359,7 @@ fn write_defsym_dynsym(
 ) -> Result {
     debug_assert!(matches!(
         def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_)
+        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ));
 
@@ -3371,7 +3371,9 @@ fn write_defsym_dynsym(
 
     // For DefsymSymbol, try to get the attributes (section, type) from the target symbol
     let (shndx, st_type) =
-        if let crate::parsing::SymbolPlacement::DefsymSymbol(target_name) = def_info.placement {
+        if let crate::parsing::SymbolPlacement::DefsymSymbol(target_name, _offset) =
+            def_info.placement
+        {
             let target_symbol_id =
                 layout
                     .symbol_db
@@ -3501,6 +3503,7 @@ fn write_internal_symbols(
         // For DefsymSymbol, get attributes from the target symbol
         let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(
             target_name,
+            _offset,
         ) = def_info.placement
         {
             let target_symbol_id =

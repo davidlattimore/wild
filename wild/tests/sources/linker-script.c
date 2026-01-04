@@ -10,6 +10,8 @@
 //#ExpectSym:end_bar section="bar",offset-in-section=12
 //#ExpectSym:defsym_start_aaa section="bar"
 //#ExpectSym:defsym_addr address=0x1234
+//#ExpectSym:defsym_decimal address=0x123e
+//#ExpectSym:defsym_hex address=0x1244
 //#DiffIgnore:section.riscv.attributes
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 
