@@ -85,8 +85,8 @@
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
-// Fails under QEMU for some reason.
-//#SkipArch: loongarch64
+// Fails under QEMU for some reason for both RISC-V and LoongArch64.
+//#SkipArch: loongarch64, riscv64
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
