@@ -504,15 +504,14 @@ impl<'data> SymbolDb<'data> {
         let allocator = self.herd.get();
 
         for name in &self.args.wrap {
-            let wrap_name = format!("__wrap_{name}");
-            let Some(wrap_id) =
-                self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
-            else {
-                continue;
-            };
-
             let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
-            let orig_id = self.override_name(UnversionedSymbolName::prehashed(name_bytes), wrap_id);
+            let orig_id = self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes));
+            let wrap_name = format!("__wrap_{name}");
+            if let Some(wrap_id) =
+                self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
+            {
+                self.override_name(UnversionedSymbolName::prehashed(name_bytes), wrap_id);
+            }
 
             if let Some(orig_id) = orig_id {
                 let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());

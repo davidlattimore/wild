@@ -3245,7 +3245,8 @@ fn integration_test(
         "tls-common.c",
         "section-start.c",
         "max-page-size.c",
-        "call-via-defsym.c"
+        "call-via-defsym.c",
+        "wrap-real-only.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

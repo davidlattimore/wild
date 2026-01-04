@@ -75,7 +75,6 @@ tests = [
   "undefined-glob.sh",
   "warn-common.sh",
   "warn-once.sh",
-  "wrap.sh",
   "zero-to-bss.sh",
 ]
 
