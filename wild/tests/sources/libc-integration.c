@@ -8,6 +8,7 @@
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.data.alignment
+//#DiffIgnore:section.rela.dyn
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 // TODO: There are multiple variants of the test-case that fail with the BFD

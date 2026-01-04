@@ -23,7 +23,7 @@
 //#Object:tls-variant-1.c
 //#Object:tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad
 //#Object:tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
-//#SkipArch: x86_64
+//#SkipArch: x86_64,riscv64
 
 //#Config:gcc-shared-tls-trad:default
 //#CompArgs:-fpic

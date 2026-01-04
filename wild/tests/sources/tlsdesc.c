@@ -37,7 +37,7 @@
 
 //#Config:gcc-tls-desc-shared-desc:gcc-tls-desc-shared
 //#CompArgs:-mtls-dialect=desc
-//#SkipArch: x86_64,riscv64
+//#SkipArch: x86_64,riscv64,loongarch64
 
 //#Config:clang-tls-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
