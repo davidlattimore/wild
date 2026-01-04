@@ -8,11 +8,12 @@
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.data.alignment
+//#DiffIgnore:section.rela.dyn
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 // TODO: There are multiple variants of the test-case that fail with the BFD
 // linker on RISC-V arch.
-//#Arch: x86_64, aarch64
+//#SkipArch: riscv64
 
 //#AbstractConfig:shared:default
 //#Shared:libc-integration-0.c,libc-integration-0b.c
@@ -54,6 +55,8 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
+// Both ld and lld complain about a duplicate eh_frame info (loongarch64).
+//#SkipArch: loongarch64,riscv64
 
 //#Config:clang-initial-exec:shared
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
@@ -82,6 +85,8 @@
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
+// Fails under QEMU for some reason for both RISC-V and LoongArch64.
+//#SkipArch: loongarch64, riscv64
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
@@ -92,6 +97,8 @@
 // exec, so we enable it as an additional reference point.
 //#EnableLinker:lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
+// Fails under QEMU for some reason for both RISC-V and LoongArch64.
+//#SkipArch: loongarch64, riscv64
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large

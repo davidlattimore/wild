@@ -20,7 +20,7 @@
 //#DiffEnabled:false
 //#SkipLinker:ld
 // TODO: #874
-//#Arch: x86_64,aarch64
+//#SkipArch: riscv64
 
 //#Config:clang-static:default
 //#Compiler:clang
@@ -34,6 +34,8 @@
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
 //#SkipLinker:ld
+// For some reason, both linkers cannot find: `rcrt1.o`
+//#SkipArch: riscv64
 
 //#Config:clang:default
 //#Compiler: clang
