@@ -2042,6 +2042,11 @@ fn layout_sections(
         let mut mem_end = 0;
         let mut alignment = info.min_alignment;
 
+        if section_id == crate::output_section_id::INIT_ARRAY {
+            let u: u64 = 8;
+            alignment = Alignment::new(u).unwrap();
+        }
+
         for part in layouts {
             file_offset = file_offset.min(part.file_offset);
             mem_offset = mem_offset.min(part.mem_offset);
@@ -4019,8 +4024,29 @@ fn create_start_end_symbol_resolution(
         }
 
         SymbolPlacement::SectionEnd(section_id) => {
-            let sec = resources.section_layouts.get(section_id);
-            sec.mem_offset + sec.mem_size
+            let mut end = {
+                let sec = resources.section_layouts.get(section_id);
+                sec.mem_offset + sec.mem_size
+            };
+
+            if section_id == output_section_id::INIT_ARRAY
+                || section_id == output_section_id::FINI_ARRAY
+                || section_id == output_section_id::PREINIT_ARRAY
+            {
+                for (id, info) in resources.output_sections.ids_with_info() {
+                    if let SectionKind::Secondary(primary_id) = info.kind
+                        && primary_id == section_id
+                    {
+                        let sec = resources.section_layouts.get(id);
+                        let candidate_end = sec.mem_offset + sec.mem_size;
+                        if candidate_end > end {
+                            end = candidate_end;
+                        }
+                    }
+                }
+            }
+
+            end
         }
 
         SymbolPlacement::DefsymAbsolute(value) => value,
@@ -5884,10 +5910,17 @@ fn layout_section_parts(
                     .enumerate()
                     .for_each(|(offset, (part_layout, &part_size))| {
                         let part_id = part_id_range.start.offset(offset);
-                        let alignment = part_id.alignment().min(max_alignment);
+                        let mut alignment = part_id.alignment().min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
+                        if (section_id == crate::output_section_id::INIT_ARRAY
+                            || section_id == crate::output_section_id::FINI_ARRAY)
+                            && offset == 0
+                        {
+                            let a8 = Alignment::new(8).unwrap();
+                            alignment = alignment.max(a8);
+                        }
 
                         // Note, we align up even if our size is zero, otherwise our section will
                         // start at an unaligned address.
