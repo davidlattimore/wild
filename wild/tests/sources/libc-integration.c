@@ -55,6 +55,8 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
+// Both ld and lld complain about a duplicate eh_frame info.
+//#SkipArch: loongarch64
 
 //#Config:clang-initial-exec:shared
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
