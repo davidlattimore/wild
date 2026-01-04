@@ -405,7 +405,7 @@ fn update_defsym_symbol_resolution(
     symbol_db: &SymbolDb,
     resolutions: &mut [Option<Resolution>],
 ) -> Result {
-    let SymbolPlacement::DefsymSymbol(target_name) = def_info.placement else {
+    let SymbolPlacement::DefsymSymbol(target_name, offset) = def_info.placement else {
         return Ok(());
     };
 
@@ -425,7 +425,8 @@ fn update_defsym_symbol_resolution(
         .map(|r| r.raw_value)
         && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
     {
-        resolution.raw_value = target_value;
+        // Apply the offset from the defsym expression.
+        resolution.raw_value = (target_value as i64).wrapping_add(offset) as u64;
     }
 
     Ok(())
@@ -549,7 +550,7 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
             .iter()
             .enumerate()
         {
-            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
+            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_, _)) {
                 continue;
             }
 
@@ -3547,7 +3548,7 @@ impl<'data> PreludeLayoutState<'data> {
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
                 }
-                SymbolPlacement::DefsymSymbol(target_name) => {
+                SymbolPlacement::DefsymSymbol(target_name, _offset) => {
                     resources
                         .per_symbol_flags
                         .get_atomic(symbol_id)
@@ -4030,7 +4031,7 @@ fn create_start_end_symbol_resolution(
 
         SymbolPlacement::DefsymAbsolute(value) => value,
 
-        SymbolPlacement::DefsymSymbol(_) => {
+        SymbolPlacement::DefsymSymbol(_, _) => {
             // For defsym symbols that reference another symbol, we defer resolution
             // until later when all symbols have been resolved. This is handled by
             // update_defsym_symbol_resolutions() which is called after layout is complete.
