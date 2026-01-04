@@ -2672,10 +2672,14 @@ fn verify_symbol_assertions(
         .collect::<HashMap<_, _>>();
 
     for sym in symbols {
-        if let Ok(name) = sym.name()
-            && let Some(exp) = missing.remove(name)
-            && let object::SymbolSection::Section(index) = sym.section()
-        {
+        let Ok(name) = sym.name() else {
+            continue;
+        };
+        let Some(exp) = missing.remove(name) else {
+            continue;
+        };
+
+        if let object::SymbolSection::Section(index) = sym.section() {
             let section = obj.section_by_index(index)?;
             let section_name = section.name()?;
 
@@ -2698,15 +2702,16 @@ fn verify_symbol_assertions(
                     }
                 }
             }
+        }
 
-            if let Some(expected_address) = exp.assertions.absolute_address {
-                let actual_address = sym.address();
-                if expected_address != actual_address {
-                    bail!(
-                        "Expected symbol `{name}` to have address {expected_address:#x}, \
-                                    but it actually had address {actual_address:#x}"
-                    );
-                }
+        // Check assertions not related to sections.
+        if let Some(expected_address) = exp.assertions.absolute_address {
+            let actual_address = sym.address();
+            if expected_address != actual_address {
+                bail!(
+                    "Expected symbol `{name}` to have address {expected_address:#x}, \
+                                but it actually had address {actual_address:#x}"
+                );
             }
         }
     }
