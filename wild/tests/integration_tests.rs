@@ -1167,6 +1167,18 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .map(|arch| Architecture::from_str(arch.trim()))
                         .collect::<Result<Vec<_>, _>>()?;
                 }
+                "SkipArch" => {
+                    let skipped = arg
+                        .trim()
+                        .split(",")
+                        .map(|arch| Architecture::from_str(arch.trim()))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    config.support_architectures = ALL_ARCHITECTURES
+                        .to_owned()
+                        .into_iter()
+                        .filter(|arch| !skipped.contains(arch))
+                        .collect();
+                }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresGlibcVersion" => {
                     config.requires_glibc = true;

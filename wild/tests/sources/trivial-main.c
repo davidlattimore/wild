@@ -20,7 +20,7 @@
 //#DiffEnabled:false
 //#SkipLinker:ld
 // TODO: #874
-//#Arch: x86_64,aarch64
+//#SkipArch: riscv64
 
 //#Config:clang-static:default
 //#Compiler:clang

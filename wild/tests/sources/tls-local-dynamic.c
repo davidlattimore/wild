@@ -13,7 +13,7 @@
 //#DiffEnabled:false
 // TODO: For some reason, the test fails under QEMU for LoongArch64,
 // even though it runs correctly on a native Alpine Linux system.
-//#Arch:x86_64,riscv64
+//#SkipArch:loongarch64
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad
