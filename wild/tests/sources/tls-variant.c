@@ -29,6 +29,7 @@
 //#CompArgs:-fpic
 //#Shared:tls-variant-1.c,tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad,tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
 //#SkipArch: x86_64
+//#RequiresCompilerFlags:-mtls-dialect=trad
 // Similarly to Mold, Wild also sets STATIC_TLS flag.
 //#DiffIgnore:.dynamic.DT_FLAGS.STATIC_TLS
 
