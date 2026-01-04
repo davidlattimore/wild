@@ -173,16 +173,18 @@ jobs:
 
   loongarch64-build:
     name: LoongArch64 build
-    runs-on: ubuntu-24.10
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
+    container:
+      image: ubuntu:25.10
     steps:
     - uses: actions/checkout@v6
       with:
-        persist-credentials: false
+        persist-credentials: false    
+    - run: apt-get update && apt-get install -y gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: loongarch64-unknown-linux-gnu
-    - run: sudo apt-get update && sudo apt-get install gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu
     - run: cp .cargo/config.toml.cross-loongarch64 .cargo/config.toml
     - run: cargo build --target loongarch64-unknown-linux-gnu
 
