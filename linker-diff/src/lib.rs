@@ -189,9 +189,6 @@ impl Config {
                 // DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
                 ".dynamic.DT_FLAGS.BIND_NOW",
-                // TODO: Implement proper ordering of .init .ctors etc
-                "init_array",
-                "fini_array",
                 // When GNU ld encounters a GOT-forming reference to an ifunc, it generates a
                 // canonical PLT entry and points the GOT at that. This means that it ends up with
                 // GOT->PLT->GOT. We don't as yet support doing this.

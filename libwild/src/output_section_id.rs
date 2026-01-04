@@ -71,6 +71,14 @@ pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) alignment: Alignment,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InitFiniSectionDetail {
+    pub(crate) index: u32,
+    pub(crate) primary: OutputSectionId,
+    pub(crate) priority: u16,
+    pub(crate) alignment: Alignment,
+}
+
 // Single-part sections that we generate ourselves rather than copying directly from input objects.
 pub(crate) const FILE_HEADER: OutputSectionId = part_id::FILE_HEADER.output_section_id();
 pub(crate) const PROGRAM_HEADERS: OutputSectionId = part_id::PROGRAM_HEADERS.output_section_id();
@@ -136,6 +144,8 @@ pub(crate) struct OutputSections<'data> {
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
+
+    init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
@@ -179,11 +189,9 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
 
     fn add_section(&mut self, section_id: OutputSectionId) {
         let (stop, start) = self.start_stop_segments_for_section(section_id);
-
         for segment_id in stop {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
-
         let section_info = self.output_sections.output_info(section_id);
         debug_assert!(
             matches!(section_info.kind, SectionKind::Primary(_)),
@@ -199,15 +207,31 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         {
             self.events.push(OrderEvent::SetLocation(location));
         }
-
         for segment_id in start {
             self.events.push(OrderEvent::SegmentStart(segment_id));
         }
-
         self.events.push(OrderEvent::Section(section_id));
 
-        for secondary_id in self.secondary.get(section_id) {
-            self.events.push(OrderEvent::Section(*secondary_id));
+        let secondaries: &Vec<OutputSectionId> = self.secondary.get(section_id);
+        // stable ordering: tie-break by original index
+        let mut keyed: Vec<(u16, usize, OutputSectionId)> = secondaries
+            .iter()
+            .enumerate()
+            .map(|(idx, &sid)| {
+                // default: put non-initfini after all initfini, and keep their relative order
+                let key_pri = match self.output_sections.secondary_order(sid) {
+                    Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
+                        priority
+                    }
+                    None => u16::MAX,
+                };
+                (key_pri, idx, sid)
+            })
+            .collect();
+        keyed.sort_by_key(|a| (a.0, a.1));
+
+        for (_pri, _idx, sid) in keyed {
+            self.events.push(OrderEvent::Section(sid));
         }
     }
 
@@ -391,6 +415,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) min_alignment: Alignment,
     pub(crate) entsize: u64,
     pub(crate) location: Option<linker_script::Location>,
+    pub(crate) secondary_order: Option<SecondaryOrder>,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -884,6 +909,11 @@ impl Debug for SectionName<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SecondaryOrder {
+    InitFini { priority: u16 },
+}
+
 impl CustomSectionIds {
     fn build_output_order_and_program_segments(
         &self,
@@ -948,6 +978,9 @@ impl CustomSectionIds {
 }
 
 impl<'data> OutputSections<'data> {
+    pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
+        self.section_infos.get(id).secondary_order
+    }
     pub(crate) fn add_sections(
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
@@ -985,6 +1018,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment,
                 entsize: 0,
                 location,
+                secondary_order: None,
             })
         })
     }
@@ -993,14 +1027,19 @@ impl<'data> OutputSections<'data> {
         &mut self,
         primary_id: OutputSectionId,
         min_alignment: Alignment,
+        secondary_order: Option<SecondaryOrder>,
     ) -> OutputSectionId {
+        let primary_entsize = self.section_infos.get(primary_id).entsize;
+        let section_flag = self.section_infos.get(primary_id).section_flags;
+        let ty = self.section_infos.get(primary_id).ty;
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
-            section_flags: SectionFlags::empty(),
-            ty: SectionType::from_u32(0),
+            section_flags: section_flag,
+            ty,
             min_alignment,
-            entsize: 0,
+            entsize: primary_entsize,
             location: None,
+            secondary_order,
         })
     }
 
@@ -1014,6 +1053,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment: d.min_alignment,
                 entsize: d.element_size,
                 location: None,
+                secondary_order: None,
             })
             .collect();
 
@@ -1022,7 +1062,35 @@ impl<'data> OutputSections<'data> {
             base_address,
             custom_by_name: HashMap::new(),
             output_section_indexes: Default::default(),
+            init_fini_by_priority: HashMap::new(),
         }
+    }
+
+    pub(crate) fn bump_min_alignment(&mut self, sid: OutputSectionId, a: Alignment) {
+        let info = self.section_infos.get_mut(sid);
+        info.min_alignment = core::cmp::max(info.min_alignment, a);
+    }
+
+    pub(crate) fn get_or_create_init_fini_secondary(
+        &mut self,
+        primary: OutputSectionId,
+        priority: u16,
+        min_alignment: Alignment,
+    ) -> OutputSectionId {
+        let key = (primary, priority);
+        if let Some(&sid) = self.init_fini_by_priority.get(&key) {
+            self.bump_min_alignment(sid, min_alignment);
+            return sid;
+        }
+
+        let sid = self.add_secondary_section(
+            primary,
+            min_alignment,
+            Some(SecondaryOrder::InitFini { priority }),
+        );
+
+        self.init_fini_by_priority.insert(key, sid);
+        sid
     }
 
     pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments) {
