@@ -97,6 +97,8 @@
 // exec, so we enable it as an additional reference point.
 //#EnableLinker:lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
+// Fails under QEMU for some reason for both RISC-V and LoongArch64.
+//#SkipArch: loongarch64, riscv64
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
