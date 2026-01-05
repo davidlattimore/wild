@@ -10,5 +10,5 @@ SECTIONS {
 defsym_start_aaa = start_aaa;
 defsym_addr = 0x1234;
 
-defsym_decimal = defsym_addr+10;
-defsym_hex = defsym_addr+0x10;
+defsym_decimal = defsym_addr + 10;
+defsym_hex = defsym_addr + 0x10;

@@ -131,7 +131,7 @@ pub fn parse_symbol_expression(s: &str) -> ParsedSymbolExpression<'_> {
 
     for (i, ch) in s.bytes().enumerate().skip(token_start) {
         if ch == b'+' || ch == b'-' {
-            let token = &s[token_start..i];
+            let token = s[token_start..i].trim();
             if let Ok(val) = parse_number(token) {
                 offset = offset.wrapping_add(current_sign * val as i64);
             } else if symbol.is_none() && !token.is_empty() {
@@ -143,7 +143,7 @@ pub fn parse_symbol_expression(s: &str) -> ParsedSymbolExpression<'_> {
     }
 
     // Process the last token
-    let token = &s[token_start..];
+    let token = s[token_start..].trim();
     if let Ok(val) = parse_number(token) {
         offset = offset.wrapping_add(current_sign * val as i64);
     } else if symbol.is_none() && !token.is_empty() {

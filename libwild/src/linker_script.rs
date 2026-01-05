@@ -197,8 +197,8 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
                 // Symbol definition
                 '='.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
-                let value = parse_token(input)?;
-                skip_comments_and_whitespace(input)?;
+                let value = take_while(1.., |b| b != b';').parse_next(input)?;
+                let value = value.trim_ascii_end();
                 opt(';').parse_next(input)?;
                 Command::SymbolDefinition { name: other, value }
             } else {
