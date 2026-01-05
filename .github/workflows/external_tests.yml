@@ -22,7 +22,11 @@ jobs:
     container:
       image: 'ubuntu:25.04'
     steps:
-      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu gdb git zstd
+      - run: |
+          apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap git zstd qemu-user \
+              binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu binutils-loongarch64-linux-gnu \
+              gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu \
+              g++-aarch64-linux-gnu g++-riscv64-linux-gnu g++-loongarch64-linux-gnu
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -40,7 +44,7 @@ jobs:
             target/
           key: ${{ runner.os }}-externaltests-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - name: Check regressions
-        run: WILD_TEST_CROSS=aarch64,riscv64 cargo test --features mold_tests external_tests::mold_tests::check_mold_tests_regression
+        run: WILD_TEST_CROSS=aarch64,riscv64,loongarch64 cargo test --features mold_tests external_tests::mold_tests::check_mold_tests_regression
       - name: Check tests that should fail still fail
         continue-on-error: true
-        run: WILD_TEST_CROSS=aarch64,riscv64 cargo test --features mold_tests external_tests::mold_tests::verify_skipped_mold_tests_still_fail
+        run: WILD_TEST_CROSS=aarch64,riscv64,loongarch64 cargo test --features mold_tests external_tests::mold_tests::verify_skipped_mold_tests_still_fail

@@ -165,6 +165,15 @@ tests = [
   "arch-riscv64-symbol-size.sh",
 ]
 
+[skipped_groups.arch_loongarch64]
+reason = "LoongArch64 specific tests"
+tests = [
+  "arch-loongarch64-relax-call36.sh",
+  "arch-loongarch64-relax-got-load.sh",
+  "arch-loongarch64-relax-pcala-addi.sh",
+  "arch-loongarch64-relax-tlsdesc.sh",
+]
+
 [skipped_groups.tls]
 reason = "Related to TLS"
 tests  = ["tls-common.sh", "tls-le-error.sh"]
