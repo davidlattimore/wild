@@ -1198,6 +1198,23 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
+    pub fn from_loongarch64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_LARCH_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_LARCH_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_LARCH_TLS_DTPMOD64 => DynamicRelocationKind::DtpMod,
+            object::elf::R_LARCH_TLS_DTPREL64 => DynamicRelocationKind::DtpOff,
+            object::elf::R_LARCH_TLS_TPREL64 => DynamicRelocationKind::TpOff,
+            object::elf::R_LARCH_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_LARCH_64 => DynamicRelocationKind::Absolute,
+            object::elf::R_LARCH_TLS_DESC64 => DynamicRelocationKind::TlsDesc,
+            object::elf::R_LARCH_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
+            _ => return None,
+        };
+        Some(kind)
+    }
+
+    #[must_use]
     pub fn loongarch64_r_type(&self) -> u32 {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_LARCH_COPY,

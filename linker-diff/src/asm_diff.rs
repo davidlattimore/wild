@@ -578,15 +578,22 @@ fn diff_literal_bytes<'data, A: Arch>(
             })
             .collect_vec();
 
-        report.add_diff(resolution_diff_exec(
-            end,
-            vec![],
+        let key = diff_key_for_res_mismatch(
             &resolutions,
-            testers,
-            section_versions.input_section_id,
-            layout,
-            TraceOutput::default(),
-        )?);
+            &vec![],
+            testers[1].bin.address_index.bin_attributes,
+        );
+        if !report.should_ignore(&key) {
+            report.add_diff(resolution_diff_exec(
+                end,
+                vec![],
+                &resolutions,
+                testers,
+                section_versions.input_section_id,
+                layout,
+                TraceOutput::default(),
+            )?);
+        }
     }
 
     Ok(())
