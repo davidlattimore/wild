@@ -127,6 +127,17 @@ impl crate::arch::Arch for RiscV64 {
 
         Ok(or_eflags)
     }
+
+    fn high_part_relocations() -> &'static [u32] {
+        &[
+            object::elf::R_RISCV_HI20,
+            object::elf::R_RISCV_PCREL_HI20,
+            object::elf::R_RISCV_GOT_HI20,
+            object::elf::R_RISCV_TLS_GOT_HI20,
+            object::elf::R_RISCV_TLS_GD_HI20,
+            object::elf::R_RISCV_TPREL_HI20,
+        ]
+    }
 }
 
 #[derive(Debug, Clone)]

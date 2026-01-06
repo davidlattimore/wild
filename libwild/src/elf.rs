@@ -94,21 +94,11 @@ pub(crate) enum DynamicRelocationSequence<'data> {
 }
 
 pub(crate) trait RelocationSequence<'data> {
-    fn num_relocations(&self) -> usize;
-    fn get_crel(&self, index: usize) -> Crel;
     fn crel_iter(&self) -> impl Iterator<Item = Crel>;
     fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data>;
 }
 
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
-    fn num_relocations(&self) -> usize {
-        self.len()
-    }
-
-    fn get_crel(&self, index: usize) -> Crel {
-        Crel::from_rela(&self[index], LittleEndian, false)
-    }
-
     fn crel_iter(&self) -> impl Iterator<Item = Crel> {
         self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
     }
@@ -119,14 +109,6 @@ impl<'data> RelocationSequence<'data> for &'data [Rela] {
 }
 
 impl RelocationSequence<'static> for Vec<Crel> {
-    fn num_relocations(&self) -> usize {
-        self.len()
-    }
-
-    fn get_crel(&self, index: usize) -> Crel {
-        self[index]
-    }
-
     fn crel_iter(&self) -> impl Iterator<Item = Crel> {
         self.clone().into_iter()
     }

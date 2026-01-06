@@ -106,6 +106,10 @@ impl crate::arch::Arch for AArch64 {
     fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
         Ok(0)
     }
+
+    fn high_part_relocations() -> &'static [u32] {
+        &[]
+    }
 }
 
 #[derive(Debug, Clone)]
