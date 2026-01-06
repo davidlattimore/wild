@@ -47,11 +47,6 @@ jobs:
           - runs-on: ubuntu-24.04-arm
             container: 'ubuntu:26.04'
             test-qemu: false
-          # Ubuntu 22.04 contains an old lld linker which cannot do a relaxation on AArch64 (required by linker-diff)
-          - runs-on: ubuntu-24.04
-            container: 'ubuntu:22.04'
-            # clang-format in Ubuntu 22.04 is too old and tries to format differently.
-            ignore-format: true
         exclude: # TODO: https://github.com/actions/runner/issues/1637
           - runs-on: ubuntu-24.04-arm
             container: 'rust:1.90-alpine'
@@ -75,8 +70,6 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: apk add build-base lld clang clang-extra-tools bash curl
         if: ${{ contains(matrix.container, 'alpine') }}
-      - run: echo "WILD_TEST_IGNORE_FORMAT=1" >> $GITHUB_ENV
-        if: ${{ matrix.ignore-format }}
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
