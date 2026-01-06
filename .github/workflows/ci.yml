@@ -60,7 +60,7 @@ jobs:
 
     steps:
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
-      - run: echo "WILD_TEST_CROSS=aarch64,riscv64,loongarch64" >> $GITHUB_ENV
+      - run: echo "WILD_TEST_CROSS=all" >> $GITHUB_ENV
         if: ${{ matrix.test-qemu }}
       - run: apt-get update && apt-get -y install gcc g++ clang clang-format lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}

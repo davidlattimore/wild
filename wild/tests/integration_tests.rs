@@ -3350,13 +3350,23 @@ fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
     std::env::var("WILD_TEST_CROSS")
         .ok()
         .map(|cross_arch| {
-            cross_arch
-                .split(',')
-                .filter(|s| !s.is_empty())
-                .map(|s| {
-                    Architecture::from_str(s).with_context(|| format!("Unknown cross arch `{s}`"))
-                })
-                .collect()
+            if cross_arch == "all" {
+                let host_arch = get_host_architecture();
+                Ok(ALL_ARCHITECTURES
+                    .iter()
+                    .copied()
+                    .filter(|&arch| arch != host_arch)
+                    .collect())
+            } else {
+                cross_arch
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| {
+                        Architecture::from_str(s)
+                            .with_context(|| format!("Unknown cross arch `{s}`"))
+                    })
+                    .collect()
+            }
         })
         .transpose()
 }

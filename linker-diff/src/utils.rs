@@ -58,7 +58,8 @@ fn test_align_up() {
     // so we only check that we can disassemble if we're running on aarch64 or if test
     // cross-compilation is enabled.
     if cfg!(target_arch = "aarch64")
-        || std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v.split(',').any(|a| a == "aarch64"))
+        || std::env::var("WILD_TEST_CROSS")
+            .is_ok_and(|v| v == "all" || v.split(',').any(|a| a == "aarch64"))
     {
         assert_eq!(
             decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000, ArchKind::Aarch64).unwrap(),
@@ -67,7 +68,8 @@ fn test_align_up() {
     }
 
     if cfg!(target_arch = "riscv64")
-        || std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v.split(',').any(|a| a == "riscv64"))
+        || std::env::var("WILD_TEST_CROSS")
+            .is_ok_and(|v| v == "all" || v.split(',').any(|a| a == "riscv64"))
     {
         assert_eq!(
             decode_insn_with_objdump(&[0x00, 0x20, 0xb0, 0x23], 0x1000, ArchKind::RISCV64).unwrap(),
