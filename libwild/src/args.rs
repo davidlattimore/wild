@@ -48,8 +48,8 @@ use std::sync::atomic::AtomicI64;
 pub(crate) enum DefsymValue {
     /// A numeric value (address)
     Value(u64),
-    /// Reference to another symbol
-    Symbol(String),
+    /// Reference to another symbol with an optional offset
+    SymbolWithOffset(String, i64),
 }
 
 #[derive(Debug)]
@@ -651,10 +651,18 @@ impl Args {
 }
 
 fn parse_number(s: &str) -> Result<u64> {
-    if let Some(s) = s.strip_prefix("0x") {
-        Ok(u64::from_str_radix(s, 16)?)
-    } else {
-        Ok(s.parse::<u64>()?)
+    crate::parsing::parse_number(s).map_err(|_| crate::error!("Invalid number: {}", s))
+}
+
+fn parse_defsym_expression(s: &str) -> DefsymValue {
+    use crate::parsing::ParsedSymbolExpression;
+    use crate::parsing::parse_symbol_expression;
+
+    match parse_symbol_expression(s) {
+        ParsedSymbolExpression::Absolute(value) => DefsymValue::Value(value),
+        ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
+            DefsymValue::SymbolWithOffset(sym.to_owned(), offset)
+        }
     }
 }
 
@@ -2121,15 +2129,10 @@ fn setup_argument_parser() -> ArgumentParser {
             if parts.len() != 2 {
                 bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
             }
-            // TODO: Also parse expressions like `--defsym=symbol=other_symbol+offset`
             let symbol_name = parts[0].to_owned();
             let value_str = parts[1];
 
-            let defsym_value = if let Ok(num) = parse_number(value_str) {
-                DefsymValue::Value(num)
-            } else {
-                DefsymValue::Symbol(value_str.to_owned())
-            };
+            let defsym_value = parse_defsym_expression(value_str);
 
             args.defsym.push((symbol_name, defsym_value));
             Ok(())
