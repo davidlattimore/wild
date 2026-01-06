@@ -189,9 +189,11 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
 
     fn add_section(&mut self, section_id: OutputSectionId) {
         let (stop, start) = self.start_stop_segments_for_section(section_id);
+
         for segment_id in stop {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
+
         let section_info = self.output_sections.output_info(section_id);
         debug_assert!(
             matches!(section_info.kind, SectionKind::Primary(_)),
@@ -207,17 +209,18 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         {
             self.events.push(OrderEvent::SetLocation(location));
         }
+
         for segment_id in start {
             self.events.push(OrderEvent::SegmentStart(segment_id));
         }
+
         self.events.push(OrderEvent::Section(section_id));
 
         let secondaries: &Vec<OutputSectionId> = self.secondary.get(section_id);
         // stable ordering: tie-break by original index
-        let mut keyed: Vec<(u16, usize, OutputSectionId)> = secondaries
+        let mut keyed: Vec<(u16, OutputSectionId)> = secondaries
             .iter()
-            .enumerate()
-            .map(|(idx, &sid)| {
+            .map(|(&sid)| {
                 // default: put non-initfini after all initfini, and keep their relative order
                 let key_pri = match self.output_sections.secondary_order(sid) {
                     Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
@@ -225,12 +228,12 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
                     }
                     None => u16::MAX,
                 };
-                (key_pri, idx, sid)
+                (key_pri, sid)
             })
             .collect();
-        keyed.sort_by_key(|a| (a.0, a.1));
+        keyed.sort_by_key(|(pri, _sid)| *pri);
 
-        for (_pri, _idx, sid) in keyed {
+        for (_pri, sid) in keyed {
             self.events.push(OrderEvent::Section(sid));
         }
     }
