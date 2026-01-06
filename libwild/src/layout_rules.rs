@@ -289,11 +289,10 @@ impl<'data> SectionRule<'data> {
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
-        SectionRule {
+        Self::prefix(
             name,
-            is_prefix: true,
-            outcome: SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
-        }
+            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
+        )
     }
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {

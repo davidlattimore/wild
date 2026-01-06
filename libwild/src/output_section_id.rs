@@ -220,7 +220,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         // stable ordering: tie-break by original index
         let mut keyed: Vec<(u16, OutputSectionId)> = secondaries
             .iter()
-            .map(|(&sid)| {
+            .map(|&sid| {
                 // default: put non-initfini after all initfini, and keep their relative order
                 let key_pri = match self.output_sections.secondary_order(sid) {
                     Some(crate::output_section_id::SecondaryOrder::InitFini { priority }) => {
