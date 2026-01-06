@@ -651,14 +651,14 @@ impl LoongArch64Instruction {
                 let value = u32_from_slice(bytes);
                 let imm = (value >> 5) & 0xfffff;
 
-                (imm as u64, false)
+                (u64::from(imm), false)
             }
             LoongArch64Instruction::Shift10 => {
                 // Value is in bits [21:10] (12 bits)
                 let value = u32_from_slice(bytes);
                 let imm = (value >> 10) & 0xfff;
 
-                (imm as u64, false)
+                (u64::from(imm), false)
             }
             LoongArch64Instruction::Branch21or26 => {
                 // For B21: low 16 bits in [25:10], high bits in [4:0]
@@ -684,7 +684,7 @@ impl LoongArch64Instruction {
                 let low_part = (insn2 >> 10) & 0x1ff;
                 let imm = high_part | low_part;
 
-                (imm as u64, false)
+                (u64::from(imm), false)
             }
             LoongArch64Instruction::Call36 => {
                 // Two instructions: pcaddu18i + jirl
@@ -693,8 +693,8 @@ impl LoongArch64Instruction {
                 let value = u64_from_slice(bytes);
                 let insn1 = value as u32;
                 let insn2 = (value >> 32) as u32;
-                let high_part = ((insn1 >> 5) & 0xfffff) as u64;
-                let low_part = ((insn2 >> 10) & 0xffff) as u64;
+                let high_part = u64::from((insn1 >> 5) & 0xfffff);
+                let low_part = u64::from((insn2 >> 10) & 0xffff);
                 // Reverse the adjustment done in write: high_part was ((value + 0x8000) >> 16)
                 // So we need: value = (high_part << 16) + low_part - adjustment
                 // But since we're reading, we just combine them

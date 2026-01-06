@@ -581,7 +581,7 @@ fn diff_literal_bytes<'data, A: Arch>(
 
         let key = diff_key_for_res_mismatch(
             &resolutions,
-            &vec![],
+            &[],
             testers[1].bin.address_index.bin_attributes,
         );
         if !report.should_ignore(&key) {

@@ -312,7 +312,7 @@ fn decode_plt_entry_pcaddu12i(
 
     let plt_entry_address = plt_base + plt_offset;
     // pcaddu12i computes PC + SignExtend(imm << 12) (no page alignment)
-    let base_address = plt_entry_address.wrapping_add(((hi_imm as i64) << 12) as u64);
+    let base_address = plt_entry_address.wrapping_add((i64::from(hi_imm) << 12) as u64);
     let got_plt_entry = base_address.wrapping_add(lo_imm as u64);
 
     Some(crate::arch::PltEntry::DerefJmp(got_plt_entry))
@@ -376,7 +376,7 @@ fn decode_plt_entry_pcalau12i(
 
     let plt_entry_address = plt_base + plt_offset;
     // pcalau12i computes (PC + SignExtend(imm << 12)) & ~0xFFF (page aligned)
-    let page_address = (plt_entry_address.wrapping_add(((hi_imm as i64) << 12) as u64)) & !0xfff;
+    let page_address = (plt_entry_address.wrapping_add((i64::from(hi_imm) << 12) as u64)) & !0xfff;
     let got_plt_entry = page_address.wrapping_add(lo_imm as u64);
 
     Some(crate::arch::PltEntry::DerefJmp(got_plt_entry))
