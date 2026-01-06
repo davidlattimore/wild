@@ -17,13 +17,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: x86_64-unknown-linux-gnu, runs-on: ubuntu-22.04 }
-          - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-22.04-arm }
-          - { target: riscv64gc-unknown-linux-gnu, runs-on: ubuntu-22.04-arm, build: zigbuild }
+          - { target: x86_64-unknown-linux-gnu, runs-on: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-24.04-arm }
+          - { target: riscv64gc-unknown-linux-gnu, runs-on: ubuntu-24.04-arm, build: zigbuild }
 
-          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, musl: true, args: --features=mimalloc }
-          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, musl: true, args: --features=mimalloc }
-          - { target: riscv64gc-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
+          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-24.04, musl: true, args: --features=mimalloc }
+          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-24.04-arm, musl: true, args: --features=mimalloc }
+          - { target: riscv64gc-unknown-linux-musl, runs-on: ubuntu-24.04-arm, build: zigbuild, args: --features=mimalloc }
  
     steps:
     - name: Install dependencies

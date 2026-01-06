@@ -47,6 +47,8 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
+// Seems lld linked binary crashes under QEMU.
+//#SkipArch: loongarch64,riscv64
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
