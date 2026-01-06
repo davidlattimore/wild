@@ -2042,11 +2042,6 @@ fn layout_sections(
         let mut mem_end = 0;
         let mut alignment = info.min_alignment;
 
-        if section_id == crate::output_section_id::INIT_ARRAY {
-            let u: u64 = 8;
-            alignment = Alignment::new(u).unwrap();
-        }
-
         for part in layouts {
             file_offset = file_offset.min(part.file_offset);
             mem_offset = mem_offset.min(part.mem_offset);
