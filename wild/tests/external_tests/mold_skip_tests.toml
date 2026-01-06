@@ -232,7 +232,6 @@ tests = [
   "ifunc-address-equality-exported.sh",
   "ifunc-address-equality.sh",
   "ifunc-alias.sh",
-  "init-array-priorities.sh",
   "initfirst.sh",
   "large-alignment-dso.sh",
   "large-alignment.sh",
