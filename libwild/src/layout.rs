@@ -4024,28 +4024,27 @@ fn create_start_end_symbol_resolution(
         }
 
         SymbolPlacement::SectionEnd(section_id) => {
+            let sec = resources.section_layouts.get(section_id);
+            sec.mem_offset + sec.mem_size
+        }
+
+        SymbolPlacement::SectionGroupEnd(section_id) => {
             let mut end = {
                 let sec = resources.section_layouts.get(section_id);
                 sec.mem_offset + sec.mem_size
             };
 
-            if section_id == output_section_id::INIT_ARRAY
-                || section_id == output_section_id::FINI_ARRAY
-                || section_id == output_section_id::PREINIT_ARRAY
-            {
-                for (id, info) in resources.output_sections.ids_with_info() {
-                    if let SectionKind::Secondary(primary_id) = info.kind
-                        && primary_id == section_id
-                    {
-                        let sec = resources.section_layouts.get(id);
-                        let candidate_end = sec.mem_offset + sec.mem_size;
-                        if candidate_end > end {
-                            end = candidate_end;
-                        }
+            for (id, info) in resources.output_sections.ids_with_info() {
+                if let SectionKind::Secondary(primary_id) = info.kind
+                    && primary_id == section_id
+                {
+                    let sec = resources.section_layouts.get(id);
+                    let candidate_end = sec.mem_offset + sec.mem_size;
+                    if candidate_end > end {
+                        end = candidate_end;
                     }
                 }
             }
-
             end
         }
 

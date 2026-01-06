@@ -84,6 +84,8 @@ pub(crate) enum SymbolPlacement<'data> {
     /// last byte of the section.
     SectionEnd(OutputSectionId),
 
+    SectionGroupEnd(OutputSectionId),
+
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
     ForceUndefined,
 
@@ -178,6 +180,13 @@ impl<'data> Prelude<'data> {
             if let Some(name) = def.end_symbol_name {
                 symbol_definitions.push(InternalSymDefInfo::notype(
                     SymbolPlacement::SectionEnd(section_id),
+                    name.as_bytes(),
+                ));
+            }
+
+            if let Some(name) = def.group_end_symbol_name {
+                symbol_definitions.push(InternalSymDefInfo::notype(
+                    SymbolPlacement::SectionGroupEnd(section_id),
                     name.as_bytes(),
                 ));
             }
