@@ -1,6 +1,6 @@
 # Setting to nightly enables a few more tests, e.g. cranelift backend
 rustc_channel = "default" # `"stable"`, `"beta"`, `"nightly"` or "default"
-qemu_arch = [] # `["X86_64"]`, `["AArch64"]`, `["RISCV64"]`
+qemu_arch = [] # `["X86_64"]`, `["AArch64"]`, `["RISCV64"]`, `["LoongArch64"]`
 allow_rust_musl_target = false # `true` or `false`
 diff_ignore = [] # ["rule1, "rule2"]
 run_all_diffs = true # Enables diffing binaries against other linkers. Disabled by default.
