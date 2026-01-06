@@ -3044,6 +3044,15 @@ impl<'data> AddressIndex<'data> {
                 .copied();
 
             let version: Option<&[u8]> = match version_index {
+                Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
+                    if !sym.is_definition() =>
+                {
+                    // Unversioned, undefined symbols are sometimes emitted as VER_NDX_GLOBAL (LLD
+                    // and pre-2025 GNU ld) and sometimes as VER_NDX_LOCAL (GNU ld from late 2025).
+                    // The spec doesn't say which they should be, so for undefined symbols, we don't
+                    // differentiate between local and global.
+                    Some(b"*unversioned*")
+                }
                 Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
                 Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
                 Some(version_index) if version_index > object::elf::VER_NDX_GLOBAL => self
