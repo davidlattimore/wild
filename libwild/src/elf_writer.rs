@@ -2126,7 +2126,7 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
                         if let Ok(r) = r
                             && r.r_offset == hi_offset_in_section
                         // RELAX relocations have the same offset as the HIGH part relocation!
-                        && r.r_type != object::elf::R_RISCV_RELAX
+                        && A::high_part_relocations().contains(&r.r_type)
                         {
                             return Some(r);
                         }
