@@ -55,6 +55,9 @@ Wild supports testing on non-native architectures using QEMU.
 
   # For riscv64
   rustup target add --toolchain nightly riscv64gc-unknown-linux-gnu riscv64gc-unknown-linux-musl
+  
+  # For loongarch64
+  rustup target add --toolchain nightly loongarch64-unknown-linux-gnu loongarch64-unknown-linux-musl
   ```
 
 2. Install required packages (for apt-based systems):
@@ -65,6 +68,9 @@ Wild supports testing on non-native architectures using QEMU.
 
   # For riscv64
   sudo apt install qemu-user gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu
+
+  # For loongarch64
+  sudo apt install qemu-user gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu binutils-loongarch64-linux-gnu
   ```
 
 ### Running tests
@@ -78,8 +84,11 @@ WILD_TEST_CROSS=aarch64 cargo test
 # For riscv64
 WILD_TEST_CROSS=riscv64 cargo test
 
+# For loongarch64
+WILD_TEST_CROSS=loongarch64 cargo test
+
 # All
-WILD_TEST_CROSS=aarch64,riscv64 cargo test
+WILD_TEST_CROSS=all cargo test
 ```
 
 This runs both native tests and architecture-specific tests. QEMU is used for executing binaries for non-native, while linking and diffing are performed natively. Note that cross-compilation only works with GCC and rustc tests; clang-based tests currently disable cross-compilation.
