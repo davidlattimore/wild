@@ -73,6 +73,7 @@ pub(crate) enum SectionRuleOutcome {
     NoteGnuProperty,
     Debug,
     RiscVAttribute,
+    SortedSection(SectionOutputInfo),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,14 +160,24 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         };
 
                                         for pattern in &matcher.input_section_name_patterns {
-                                            self.add_section_rule(SectionRule::new(
-                                                pattern,
+                                            let info = SectionOutputInfo {
+                                                section_id,
+                                                must_keep: matcher.must_keep,
+                                            };
+
+                                            let outcome = if section_id
+                                                == output_section_id::INIT_ARRAY
+                                                || section_id == output_section_id::FINI_ARRAY
+                                            {
+                                                crate::layout_rules::SectionRuleOutcome::SortedSection(info)
+                                            } else {
                                                 crate::layout_rules::SectionRuleOutcome::Section(
-                                                    SectionOutputInfo {
-                                                        section_id,
-                                                        must_keep: matcher.must_keep,
-                                                    },
-                                                ),
+                                                    info,
+                                                )
+                                            };
+
+                                            self.add_section_rule(SectionRule::new(
+                                                pattern, outcome,
                                             )?);
                                         }
 
@@ -295,6 +306,16 @@ impl<'data> SectionRule<'data> {
         )
     }
 
+    const fn prefix_section_sort(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+    ) -> SectionRule<'data> {
+        Self::prefix(
+            name,
+            SectionRuleOutcome::SortedSection(SectionOutputInfo::keep(section_id)),
+        )
+    }
+
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
         SectionRule {
             name,
@@ -336,12 +357,12 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
     SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_sort(
         secnames::INIT_ARRAY_SECTION_NAME,
         output_section_id::INIT_ARRAY,
     ),
     SectionRule::prefix_section_keep(b".ctors", output_section_id::INIT_ARRAY),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_sort(
         secnames::FINI_ARRAY_SECTION_NAME,
         output_section_id::FINI_ARRAY,
     ),

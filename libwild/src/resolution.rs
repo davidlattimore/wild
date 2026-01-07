@@ -1012,6 +1012,17 @@ fn resolve_section<'data>(
             } else {
                 output_info.section_id.base_part_id()
             };
+
+            must_load |= output_info.must_keep;
+
+            unloaded_section = UnloadedSection::new(part_id);
+        }
+        SectionRuleOutcome::SortedSection(output_info) => {
+            let part_id = if output_info.section_id.is_regular() {
+                output_info.section_id.part_id_with_alignment(alignment)
+            } else {
+                output_info.section_id.base_part_id()
+            };
             if let Some(priority) = init_fini_priority(section_name) {
                 obj.init_fini_sections.push(InitFiniSectionDetail {
                     index: input_section_index.0 as u32,
