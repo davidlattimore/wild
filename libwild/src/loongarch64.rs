@@ -97,6 +97,10 @@ impl crate::arch::Arch for LoongArch64 {
             .copied()
             .map_err(|_e| error!("non-unique e_flags"))
     }
+
+    fn high_part_relocations() -> &'static [u32] {
+        &[]
+    }
 }
 
 #[derive(Debug, Clone)]
