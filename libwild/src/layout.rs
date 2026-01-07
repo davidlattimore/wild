@@ -5912,8 +5912,7 @@ fn layout_section_parts(
                             || section_id == crate::output_section_id::FINI_ARRAY)
                             && offset == 0
                         {
-                            let a8 = Alignment::new(8).unwrap();
-                            alignment = alignment.max(a8);
+                            alignment = alignment.max(crate::alignment::USIZE);
                         }
 
                         // Note, we align up even if our size is zero, otherwise our section will
