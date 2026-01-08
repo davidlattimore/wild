@@ -5904,16 +5904,10 @@ fn layout_section_parts(
                     .enumerate()
                     .for_each(|(offset, (part_layout, &part_size))| {
                         let part_id = part_id_range.start.offset(offset);
-                        let mut alignment = part_id.alignment().min(max_alignment);
+                        let alignment = part_id.alignment().min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
-                        if (section_id == crate::output_section_id::INIT_ARRAY
-                            || section_id == crate::output_section_id::FINI_ARRAY)
-                            && offset == 0
-                        {
-                            alignment = alignment.max(crate::alignment::USIZE);
-                        }
 
                         // Note, we align up even if our size is zero, otherwise our section will
                         // start at an unaligned address.

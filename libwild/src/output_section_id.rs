@@ -684,8 +684,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
-        // end_symbol_name: Some("__init_array_end"),
         group_end_symbol_name: Some("__init_array_end"),
+        min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
     },
@@ -695,8 +695,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
-        // end_symbol_name: Some("__fini_array_end"),
         group_end_symbol_name: Some("__fini_array_end"),
+        min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
     },
