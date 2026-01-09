@@ -217,7 +217,11 @@ pub(crate) enum Experiment {
     MergeStringSplitParallelism = 0,
 
     /// Number of bytes of string-merge sections before we'll break to a new group.
-    MergeStringMinGroupBytes = 2,
+    MergeStringMinGroupBytes = 1,
+
+    GroupsPerThread = 2,
+
+    MinGroups = 3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
