@@ -19,10 +19,11 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::DynamicRelocationSequence;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
+use crate::elf::Rela;
+use crate::elf::Relocation;
 use crate::elf::RelocationList;
 use crate::elf::RelocationSequence;
 use crate::elf::Versym;
@@ -1604,13 +1605,18 @@ struct ObjectLayoutState<'data> {
     riscv_attributes: Vec<RiscVAttribute>,
 
     /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame<'data>>,
+    exception_frames: ExceptionFrames<'data>,
+}
+
+enum ExceptionFrames<'data> {
+    Rela(Vec<ExceptionFrame<'data, Rela>>),
+    Crel(Vec<ExceptionFrame<'data, Crel>>),
 }
 
 #[derive(Default)]
-struct ExceptionFrame<'data> {
+struct ExceptionFrame<'data, R: Relocation<'data>> {
     /// The relocations that need to be processed if we load this frame.
-    relocations: DynamicRelocationSequence<'data>,
+    relocations: R::Sequence,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -4760,13 +4766,35 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if section.size > 0 {
-            self.process_section_exception_frames::<A>(
-                unloaded.last_frame_index,
-                common,
-                resources,
-                queue,
-                scope,
-            )?;
+            let sizes = match &self.exception_frames {
+                ExceptionFrames::Rela(exception_frames) => self
+                    .process_section_exception_frames::<A, Rela>(
+                        unloaded.last_frame_index,
+                        common,
+                        resources,
+                        queue,
+                        scope,
+                        exception_frames,
+                    )?,
+                ExceptionFrames::Crel(exception_frames) => self
+                    .process_section_exception_frames::<A, Crel>(
+                        unloaded.last_frame_index,
+                        common,
+                        resources,
+                        queue,
+                        scope,
+                        exception_frames,
+                    )?,
+            };
+
+            self.eh_frame_size += sizes.eh_frame_size;
+
+            if resources.symbol_db.args.should_write_eh_frame_hdr {
+                common.allocate(
+                    part_id::EH_FRAME_HDR,
+                    size_of::<EhFrameHdrEntry>() as u64 * sizes.num_frames,
+                );
+            }
         }
 
         self.sections[section_index.0] = SectionSlot::Loaded(section);
@@ -4811,70 +4839,49 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<'scope, A: Arch>(
-        &mut self,
+    fn process_section_exception_frames<'scope, A: Arch, R: Relocation<'data>>(
+        &self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
-    ) -> Result {
+        exception_frames: &[ExceptionFrame<'data, R>],
+    ) -> Result<EhFrameSizes> {
         let mut num_frames = 0;
+        let mut eh_frame_size = 0;
         let mut next_frame_index = frame_index;
         while let Some(frame_index) = next_frame_index {
-            let frame_data = &self.exception_frames[frame_index.as_usize()];
+            let frame_data = &exception_frames[frame_index.as_usize()];
             next_frame_index = frame_data.previous_frame_for_section;
 
-            self.eh_frame_size += u64::from(frame_data.frame_size);
+            eh_frame_size += u64::from(frame_data.frame_size);
 
             num_frames += 1;
 
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                match &frame_data.relocations {
-                    DynamicRelocationSequence::Rela(frame_data_relocations) => {
-                        for rel in *frame_data_relocations {
-                            process_relocation::<A>(
-                                self,
-                                common,
-                                &Crel::from_rela(rel, LittleEndian, false),
-                                eh_frame_section,
-                                resources,
-                                queue,
-                                false,
-                                scope,
-                            )?;
-                        }
-                        common.exception_frame_relocations += frame_data_relocations.len();
-                    }
-                    DynamicRelocationSequence::Crel(frame_data_relocations) => {
-                        for rel in frame_data_relocations.crel_iter() {
-                            process_relocation::<A>(
-                                self,
-                                common,
-                                &rel,
-                                eh_frame_section,
-                                resources,
-                                queue,
-                                false,
-                                scope,
-                            )?;
-                        }
-                        common.exception_frame_relocations += frame_data_relocations.len();
-                    }
+                for rel in frame_data.relocations.crel_iter() {
+                    process_relocation::<A>(
+                        self,
+                        common,
+                        &rel,
+                        eh_frame_section,
+                        resources,
+                        queue,
+                        false,
+                        scope,
+                    )?;
                 }
+                common.exception_frame_relocations += frame_data.relocations.num_relocations();
             }
         }
 
-        if resources.symbol_db.args.should_write_eh_frame_hdr {
-            common.allocate(
-                part_id::EH_FRAME_HDR,
-                size_of::<EhFrameHdrEntry>() as u64 * num_frames,
-            );
-        }
-
-        Ok(())
+        Ok(EhFrameSizes {
+            num_frames,
+            eh_frame_size,
+        })
     }
 
     fn load_debug_section<'scope, A: Arch>(
@@ -5386,33 +5393,41 @@ fn process_eh_frame_data<'data, 'scope, A: Arch>(
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
-    match object.relocations(eh_frame_section_index)? {
-        RelocationList::Rela(relocations) => process_eh_frame_relocations::<A>(
-            object,
-            common,
-            file_symbol_id_range,
-            resources,
-            queue,
-            eh_frame_section,
-            data,
-            &relocations,
-            scope,
-        ),
-        RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A>(
-            object,
-            common,
-            file_symbol_id_range,
-            resources,
-            queue,
-            eh_frame_section,
-            data,
-            &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
-            scope,
-        ),
-    }
+    let exception_frames = match object.relocations(eh_frame_section_index)? {
+        RelocationList::Rela(relocations) => {
+            ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
+                object,
+                common,
+                file_symbol_id_range,
+                resources,
+                queue,
+                eh_frame_section,
+                data,
+                &relocations,
+                scope,
+            )?)
+        }
+        RelocationList::Crel(crel_iterator) => {
+            ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
+                object,
+                common,
+                file_symbol_id_range,
+                resources,
+                queue,
+                eh_frame_section,
+                data,
+                &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+                scope,
+            )?)
+        }
+    };
+
+    object.exception_frames = exception_frames;
+
+    Ok(())
 }
 
-fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
+fn process_eh_frame_relocations<'data, 'scope, A: Arch, R: Relocation<'data>>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5420,13 +5435,14 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
     queue: &mut LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
-    relocations: &impl RelocationSequence<'rel>,
+    relocations: &R::Sequence,
     scope: &Scope<'scope>,
-) -> Result {
+) -> Result<Vec<ExceptionFrame<'data, R>>> {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
 
     let mut rel_iter = relocations.crel_iter().enumerate().peekable();
     let mut offset = 0;
+    let mut exception_frames = Vec::new();
 
     while offset + PREFIX_LEN <= data.len() {
         // Although the section data will be aligned within the object file, there's
@@ -5512,13 +5528,13 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
             if let Some(section_index) = section_index
                 && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
             {
-                let frame_index = FrameIndex::from_usize(object.exception_frames.len());
+                let frame_index = FrameIndex::from_usize(exception_frames.len());
 
                 // Update our unloaded section to point to our new frame. Our frame will then in
                 // turn point to whatever the section pointed to before.
                 let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
-                object.exception_frames.push(ExceptionFrame {
+                exception_frames.push(ExceptionFrame {
                     relocations: relocations.subsequence(rel_start_index..rel_end_index),
                     frame_size: size as u32,
                     previous_frame_for_section,
@@ -5533,7 +5549,8 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
     object.eh_frame_size += (data.len() - offset) as u64;
-    Ok(())
+
+    Ok(exception_frames)
 }
 
 fn process_gnu_property_note(
@@ -6877,6 +6894,26 @@ impl OutputRecordLayout {
         self.file_size += other.file_size;
         if other.mem_size > 0 {
             self.alignment = self.alignment.max(other.alignment);
+        }
+    }
+}
+
+struct EhFrameSizes {
+    num_frames: u64,
+    eh_frame_size: u64,
+}
+
+impl<'data> Default for ExceptionFrames<'data> {
+    fn default() -> Self {
+        ExceptionFrames::Rela(Vec::new())
+    }
+}
+
+impl<'data> ExceptionFrames<'data> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            ExceptionFrames::Rela(f) => f.len(),
+            ExceptionFrames::Crel(f) => f.len(),
         }
     }
 }
