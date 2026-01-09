@@ -160,24 +160,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         };
 
                                         for pattern in &matcher.input_section_name_patterns {
-                                            let info = SectionOutputInfo {
-                                                section_id,
-                                                must_keep: matcher.must_keep,
-                                            };
-
-                                            let outcome = if section_id
-                                                == output_section_id::INIT_ARRAY
-                                                || section_id == output_section_id::FINI_ARRAY
-                                            {
-                                                crate::layout_rules::SectionRuleOutcome::SortedSection(info)
-                                            } else {
-                                                crate::layout_rules::SectionRuleOutcome::Section(
-                                                    info,
-                                                )
-                                            };
-
                                             self.add_section_rule(SectionRule::new(
-                                                pattern, outcome,
+                                                pattern,
+                                                crate::layout_rules::SectionRuleOutcome::Section(
+                                                    SectionOutputInfo {
+                                                        section_id,
+                                                        must_keep: matcher.must_keep,
+                                                    },
+                                                ),
                                             )?);
                                         }
 
