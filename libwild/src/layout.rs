@@ -4029,6 +4029,26 @@ fn create_start_end_symbol_resolution(
             sec.mem_offset + sec.mem_size
         }
 
+        SymbolPlacement::SectionGroupEnd(section_id) => {
+            let mut end = {
+                let sec = resources.section_layouts.get(section_id);
+                sec.mem_offset + sec.mem_size
+            };
+
+            for (id, info) in resources.output_sections.ids_with_info() {
+                if let SectionKind::Secondary(primary_id) = info.kind
+                    && primary_id == section_id
+                {
+                    let sec = resources.section_layouts.get(id);
+                    let candidate_end = sec.mem_offset + sec.mem_size;
+                    if candidate_end > end {
+                        end = candidate_end;
+                    }
+                }
+            }
+            end
+        }
+
         SymbolPlacement::DefsymAbsolute(value) => value,
 
         SymbolPlacement::DefsymSymbol(_, _) => {

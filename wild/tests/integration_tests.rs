@@ -3184,6 +3184,7 @@ fn integration_test(
         "weak-fns-archive.c",
         "init_test.c",
         "ifunc.c",
+        "init-order.c",
         "internal-syms.c",
         "tls.c",
         "tlsdesc.c",
