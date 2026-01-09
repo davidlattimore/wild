@@ -19,13 +19,12 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::DynamicRelocationSequence;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::RelocationList;
-use crate::elf::RelocationSequence;
 use crate::elf::Versym;
+use crate::elf::rela_to_crel_iter;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -1594,10 +1593,22 @@ struct ObjectLayoutState<'data> {
     exception_frames: Vec<ExceptionFrame<'data>>,
 }
 
-#[derive(Default)]
+pub trait CloneableIterator<T>: Iterator<Item = T> {
+    fn clone_box(&self) -> Box<dyn CloneableIterator<T> + '_>;
+}
+
+impl<T, I> CloneableIterator<T> for I
+where
+    I: Iterator<Item = T> + Clone,
+{
+    fn clone_box(&self) -> Box<dyn CloneableIterator<T> + '_> {
+        Box::new(self.clone())
+    }
+}
+
 struct ExceptionFrame<'data> {
     /// The relocations that need to be processed if we load this frame.
-    relocations: DynamicRelocationSequence<'data>,
+    relocations: Box<dyn CloneableIterator<object::Result<Crel>> + Send + 'data>,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -4666,7 +4677,7 @@ impl<'data> ObjectLayoutState<'data> {
                     queue,
                     resources,
                     section,
-                    relocations.crel_iter(),
+                    rela_to_crel_iter(relocations),
                     scope,
                 )?;
             }
@@ -4676,7 +4687,7 @@ impl<'data> ObjectLayoutState<'data> {
                     queue,
                     resources,
                     section,
-                    relocations.flat_map(|r| r.ok()),
+                    relocations,
                     scope,
                 )?;
             }
@@ -4718,7 +4729,7 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         resources: &'scope GraphResources<'data, '_>,
         section: Section,
-        relocations: impl Iterator<Item = Crel>,
+        relocations: impl Iterator<Item = object::Result<Crel>>,
         scope: &Scope<'scope>,
     ) -> Result {
         let mut modifier = RelocationModifier::Normal;
@@ -4730,7 +4741,7 @@ impl<'data> ObjectLayoutState<'data> {
             modifier = process_relocation::<A>(
                 self,
                 common,
-                &rel,
+                &rel?,
                 self.object.section(section.index)?,
                 resources,
                 queue,
@@ -4770,35 +4781,17 @@ impl<'data> ObjectLayoutState<'data> {
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                match &frame_data.relocations {
-                    DynamicRelocationSequence::Rela(frame_data_relocations) => {
-                        for rel in *frame_data_relocations {
-                            process_relocation::<A>(
-                                self,
-                                common,
-                                &Crel::from_rela(rel, LittleEndian, false),
-                                eh_frame_section,
-                                resources,
-                                queue,
-                                false,
-                                scope,
-                            )?;
-                        }
-                    }
-                    DynamicRelocationSequence::Crel(frame_data_relocations) => {
-                        for rel in frame_data_relocations.crel_iter() {
-                            process_relocation::<A>(
-                                self,
-                                common,
-                                &rel,
-                                eh_frame_section,
-                                resources,
-                                queue,
-                                false,
-                                scope,
-                            )?;
-                        }
-                    }
+                for rel in frame_data.relocations.clone_box() {
+                    process_relocation::<A>(
+                        self,
+                        common,
+                        &rel?,
+                        eh_frame_section,
+                        resources,
+                        queue,
+                        false,
+                        scope,
+                    )?;
                 }
             }
         }
@@ -4832,7 +4825,7 @@ impl<'data> ObjectLayoutState<'data> {
                     queue,
                     resources,
                     section,
-                    relocations.crel_iter(),
+                    rela_to_crel_iter(relocations),
                     scope,
                 )?,
                 RelocationList::Crel(relocations) => self.load_debug_relocations::<A>(
@@ -4840,7 +4833,7 @@ impl<'data> ObjectLayoutState<'data> {
                     queue,
                     resources,
                     section,
-                    relocations.flat_map(|r| r.ok()),
+                    relocations,
                     scope,
                 )?,
             }
@@ -4859,14 +4852,14 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         resources: &'scope GraphResources<'data, '_>,
         section: Section,
-        relocations: impl Iterator<Item = Crel>,
+        relocations: impl Iterator<Item = object::Result<Crel>>,
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         for rel in relocations {
             let modifier = process_relocation::<A>(
                 self,
                 common,
-                &rel,
+                &rel?,
                 self.object.section(section.index)?,
                 resources,
                 queue,
@@ -5323,7 +5316,7 @@ fn process_eh_frame_data<'data, 'scope, A: Arch>(
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
     match object.relocations(eh_frame_section_index)? {
-        RelocationList::Rela(relocations) => process_eh_frame_relocations::<A>(
+        RelocationList::Rela(relocations) => process_eh_frame_relocations::<A, _>(
             object,
             common,
             file_symbol_id_range,
@@ -5331,10 +5324,10 @@ fn process_eh_frame_data<'data, 'scope, A: Arch>(
             queue,
             eh_frame_section,
             data,
-            &relocations,
+            rela_to_crel_iter(relocations),
             scope,
         ),
-        RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A>(
+        RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A, _>(
             object,
             common,
             file_symbol_id_range,
@@ -5342,13 +5335,18 @@ fn process_eh_frame_data<'data, 'scope, A: Arch>(
             queue,
             eh_frame_section,
             data,
-            &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+            crel_iterator,
             scope,
         ),
     }
 }
 
-fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
+fn process_eh_frame_relocations<
+    'data,
+    'scope,
+    A: Arch,
+    I: Iterator<Item = object::Result<Crel>> + Clone + Send + 'data,
+>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5356,12 +5354,12 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
     queue: &mut LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
-    relocations: &impl RelocationSequence<'rel>,
+    relocations: I,
     scope: &Scope<'scope>,
 ) -> Result {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
 
-    let mut rel_iter = relocations.crel_iter().enumerate().peekable();
+    let mut rel_iter = relocations;
     let mut offset = 0;
 
     while offset + PREFIX_LEN <= data.len() {
@@ -5385,7 +5383,8 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
             // symbols it references. If however, it references something other than a symbol, then,
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
-            while let Some((_, rel)) = rel_iter.peek() {
+            while let Some(rel) = rel_iter.clone().next() {
+                let rel = rel?;
                 let rel_offset = rel.r_offset;
                 if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
@@ -5397,7 +5396,7 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
                 process_relocation::<A>(
                     object,
                     common,
-                    rel,
+                    &rel,
                     eh_frame_section,
                     resources,
                     queue,
@@ -5426,10 +5425,11 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
         } else {
             // This is an FDE
             let mut section_index = None;
-            let rel_start_index = rel_iter.peek().map_or(0, |(i, _)| *i);
-            let mut rel_end_index = 0;
+            let rel_start = rel_iter.clone();
+            let mut rel_elements = 0;
 
-            while let Some((rel_index, rel)) = rel_iter.peek() {
+            while let Some(rel) = rel_iter.clone().next() {
+                let rel = rel?;
                 let rel_offset = rel.r_offset;
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
@@ -5438,7 +5438,7 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
                         let elf_symbol = object.object.symbol(index)?;
                         section_index = object.object.symbol_section(elf_symbol, index)?;
                     }
-                    rel_end_index = rel_index + 1;
+                    rel_elements += 1;
                     rel_iter.next();
                 } else {
                     break;
@@ -5455,7 +5455,7 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
                 let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
                 object.exception_frames.push(ExceptionFrame {
-                    relocations: relocations.subsequence(rel_start_index..rel_end_index),
+                    relocations: Box::new(rel_start.take(rel_elements)),
                     frame_size: size as u32,
                     previous_frame_for_section,
                 });

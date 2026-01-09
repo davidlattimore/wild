@@ -3,7 +3,7 @@
 
 use crate::arch::Arch;
 use crate::elf::File;
-use crate::elf::RelocationSequence;
+use crate::elf::rela_to_crel_iter;
 use crate::error::Result;
 use anyhow::Context;
 use object::LittleEndian;
@@ -113,13 +113,13 @@ fn section_data_with_relocations<A: Arch>(
                     object,
                     section_of_interest,
                     &mut section_data,
-                    relocations.crel_iter(),
+                    rela_to_crel_iter(relocations),
                 )?,
                 crate::elf::RelocationList::Crel(relocations) => apply_section_relocations::<A>(
                     object,
                     section_of_interest,
                     &mut section_data,
-                    relocations.flat_map(|r| r.ok()),
+                    relocations,
                 )?,
             }
 
@@ -135,9 +135,10 @@ fn apply_section_relocations<A: Arch>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
-    relocations: impl Iterator<Item = Crel>,
+    relocations: impl Iterator<Item = object::Result<Crel>>,
 ) -> Result {
     for rel in relocations {
+        let rel = rel?;
         let sym_index = rel.r_sym;
         let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
 
