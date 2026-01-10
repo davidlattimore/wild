@@ -131,6 +131,7 @@ pub struct Args {
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
     pub(crate) max_page_size: Option<Alignment>,
+    pub(crate) should_print_stats: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -326,7 +327,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
-    "stats",
 ];
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "(",
@@ -407,6 +407,7 @@ impl Default for Args {
             soname: None,
             execstack: false,
             should_fork: true,
+            should_print_stats: false,
             mmap_output_file: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
@@ -1604,6 +1605,15 @@ fn setup_argument_parser() -> ArgumentParser {
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
             args.should_output_executable = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("stats")
+        .help("Print linker statistics")
+        .execute(|args, _modifier_stack| {
+            args.should_print_stats = true;
             Ok(())
         });
 

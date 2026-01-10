@@ -50,6 +50,7 @@ pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
+pub(crate) mod stats;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
 pub(crate) mod subprocess;
@@ -261,6 +262,11 @@ impl Linker {
         )?;
 
         output.write(&layout, elf_writer::write::<A>)?;
+
+        if args.should_print_stats {
+            stats::print_stats(&layout);
+        }
+
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
