@@ -1,3 +1,156 @@
+## 0.8.0
+
+### 🚀 Features
+
+- Support `--hash-style={sysv, both}` (#1281)
+- Support negation ('^') in version script globs (#1284)
+- Support `PT_GNU_PROPERTY` (#1297)
+- Support `--defsym=symbol=expression` (#1300)
+- Support symbol definitions in linker script (#1307)
+- Support merging non-string sections (#1306)
+- Handle `-z x86-64-*` ISA needed (#1320)
+- Ignore `--discard-all/-x` option (#1377)
+- Support SFrame (#1287)
+- Support `--section-start=.section=address` (#1385)
+- Add --no-update-in-place flag (#1395)
+- Support `-z max-page-size` (#1400)
+- LoongArch64 support (#1409)
+- Support expressions in `--defsym` and linker script symbol assignment (#1418)
+- Sort .init_array and .fini_array by priority (#1408)
+- Support `--no-eh-frame-hdr` (#1440)
+- Support `-z stack-size=SIZE` (#1448)
+- Include metrics connected to '.eh_frame' (#1443)
+- Add `--pic-executable` as an alias for `--pie` (#1453)
+- Support `variant_pcs` (#1272)
+- Support `.variant_cc` (#1280)
+
+### ⚡ Performance
+
+- Make --update-in-place default and fallback to unlinking on ETXTBSY (#1238)
+- Parallelize copying data sections (#1277)
+- Avoid heap allocating each task during string merging (#1286)
+- Minor improvement to cache efficiency of resolution (#1294)
+- Merge some of the GC phases into a single phase (#1330)
+- Process merge-string sections in mostly equal chunks (#1345)
+- Run string merging and GC in parallel (#1339)
+- Preallocate a Vec to avoid resizes (#1349)
+- Optimize version script from rustc (#1355)
+- Tweak how we determine the target number of groups (#1432)
+
+### 🪲 Bug Fixes
+
+- Ensure we write every byte of file even when updating in-place (#1276)
+- Align output kind with LD in more cases (#1279)
+- Don't try to emit copy relocations for non-canonical symbol aliases (#1308)
+- Put common TLS symbols into correct section (#1310)
+- Handle non-absolute paths with `--no-allow-shlib-undefined` (#1321)
+- Do not add duplicated rpath entries (#1338)
+- `save_dir::make_relative_path()` now works as expected (#1337)
+- Reorder some sections so that objcopy doesn't complain (#1358)
+- *(save-dir)* Handle @filename when processing save-dir (#1362)
+- Use DT_SONAME to help determine if SO deps are met (#1390)
+- *(save-dir)* Don't make paths in linker scripts relative if in sysroot (#1393)
+- Relax debug info comparison against bfd (#1397)
+- Don't exclude all libs when not yet supported --exclude-libs <lib> is passed (#1394)
+- Properly resolve and retain defsym target symbols (#1402)
+- *(save-dir)* Normalize source paths before checking if it's in sysroot (#1406)
+- Resolve `__real_foo` in `--wrap` even without `__wrap_foo` (#1419)
+- *(CREL)* Reduce allocation for non-EH relocations (#1426)
+- Don't try to copy CREL sections to output file (#1438)
+- Ifunc address equality for data section references (#1441)
+- Ifunc address equality for GOT-relative relocations (#1446)
+
+### 📚 Documentation
+
+- Improve building and benching docs for rustc (#1283)
+- Add some info about our monthly dev team meetings (#1291)
+- Update rustc building instructions & format all the rustflags consistently (#1324)
+- Add alternative Clang invocation (#1334)
+- Add instructions for using wild with clang and gcc (#1354)
+- Add `PACKAGING.md` instructions (#1342)
+- Improve instructions on checking if wild was actually used (#1316)
+
+### 🎨 Styling
+
+- Wrap comments at 100 characters (#1268)
+
+### 📦 Packaging
+
+- Update for inclusion in Nixpkgs (#1318)
+
+### 🛠️ Dev tooling
+
+- Make absolute address checking work correctly (#1417)
+- Add support for writing perfetto traces (#1323)
+- Add a tool to aid with running benchmarks (#1454)
+- Add Dockerfile for Gentoo (#1373)
+
+### ⚖️ Linker Diff
+
+- Ignore VER_NDX_LOCAL vs GLOBAL for undefined symbols (#1424)
+- LoongArch64 support (#1428)
+
+### 🧪 Testing
+
+- Make a test failure message less confusing (#1275)
+- Set `timeout-minutes` for CI jobs (#1301)
+- Add a test for backtraces (#1353)
+- Use a separate subdirectory for each tests build (#1404)
+- Drop ubuntu 25.04 (#1433)
+- Improve robustness of integration-test usage of run-with (#1437)
+- Add cache for a couple of build jobs (#1434)
+- Use separate archive sources for a couple of tests (#1401)
+- Move contents of `exit.c` to `runtime.c` (#1447)
+- Add a test for `-Bsymbolic-non-weak` (#1427)
+- Use rust-cache actions (#1444)
+- Introduce `WILD_TEST_CROSS=all` (#1425)
+- Introduce `SkipArch` integration test directive (#1415)
+- Include next upcoming LTS Ubuntu release (#1416)
+- Run loongarch64 external tests (#1421)
+
+### 🔨 Refactor
+
+- A few simplifications to sysvs .hash computations (#1282)
+- Change resolution to use a work queue (#1290)
+- Make timing annotations use tracing indirectly (#1295)
+- Make secondary output sections more flexible (#1312)
+- Decouple OutputKind from Args (#1293)
+- Preparations to run string merging in parallel with GC (#1329)
+- Change GC to use a channel for work control (#1331)
+- Change GC phase to use rayon scopes (#1344)
+- Rewrite input opening work control (#1348)
+- Change symbol resolution to use rayon scopes (#1363)
+- Have linker script emit symbol defs directly (#1364)
+- Work towards being able to load additional batches of files (#1365)
+- Separate Epilogue into two separate entities (#1367)
+- Move dynamic symbol definitions onto layout (#1368)
+- Move gnu property notes to the layout (#1369)
+- Move riscv attributes to the layout (#1370)
+- Move eflags out of the prelude (#1371)
+- Get rid of SymbolDb::num_symbols_per_group (#1372)
+- Allow SymbolDb to be built in stages (#1374)
+- Allow symbol resolution to be done in stages (#1375)
+- Parse files as we open them (#1380)
+- Make InputRef implement Copy (#1382)
+- Get rid of InputFile::kind (#1383)
+- Split ResolvedObject into dynamic and non-dynamic variants (#1389)
+- Drop fd-lock dev dependency (#1319)
+- Port linked-diff table to tabled crate (#1361)
+
+### 👥 Contributors
+
+- davidlattimore
+- lapla-cogito
+- marxin
+- mati865
+- karolzwolak
+- RossSmyth
+- YamasouA
+- csfore
+- zyxhere
+- tshepang
+- TechnoPorg
+
 ## 0.7.0
 
 ### 🚀 Features

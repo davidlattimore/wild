@@ -1,0 +1,66 @@
+<svg width="1000" height="600" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="1000" height="600" fill="#000000"/>
+<text x="500" y="10" dy="0.8em" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#FFFFFF">
+ryzen-9955hx - c-hello-world - time</text>
+<text x="5" y="300" dy="0.76em" text-anchor="middle" font-family="sans-serif" 
+font-size="16" fill="#FFFFFF" transform="rotate(270, 5, 288)">ms</text>
+<line x1="100" y1="460" x2="950" y2="460" stroke="#FFFFFF" />
+<text x="90" y="460" dy="0.5ex" text-anchor="end" fill="#FFFFFF">0</text>
+<line x1="100" y1="422" x2="950" y2="422" stroke="#FFFFFF" />
+<text x="90" y="422" dy="0.5ex" text-anchor="end" fill="#FFFFFF">2</text>
+<line x1="100" y1="384" x2="950" y2="384" stroke="#FFFFFF" />
+<text x="90" y="384" dy="0.5ex" text-anchor="end" fill="#FFFFFF">4</text>
+<line x1="100" y1="346" x2="950" y2="346" stroke="#FFFFFF" />
+<text x="90" y="346" dy="0.5ex" text-anchor="end" fill="#FFFFFF">6</text>
+<line x1="100" y1="308" x2="950" y2="308" stroke="#FFFFFF" />
+<text x="90" y="308" dy="0.5ex" text-anchor="end" fill="#FFFFFF">8</text>
+<line x1="100" y1="270" x2="950" y2="270" stroke="#FFFFFF" />
+<text x="90" y="270" dy="0.5ex" text-anchor="end" fill="#FFFFFF">10</text>
+<line x1="100" y1="232" x2="950" y2="232" stroke="#FFFFFF" />
+<text x="90" y="232" dy="0.5ex" text-anchor="end" fill="#FFFFFF">12</text>
+<line x1="100" y1="194" x2="950" y2="194" stroke="#FFFFFF" />
+<text x="90" y="194" dy="0.5ex" text-anchor="end" fill="#FFFFFF">14</text>
+<line x1="100" y1="156" x2="950" y2="156" stroke="#FFFFFF" />
+<text x="90" y="156" dy="0.5ex" text-anchor="end" fill="#FFFFFF">16</text>
+<line x1="100" y1="118" x2="950" y2="118" stroke="#FFFFFF" />
+<text x="90" y="118" dy="0.5ex" text-anchor="end" fill="#FFFFFF">18</text>
+<line x1="100" y1="80" x2="950" y2="80" stroke="#FFFFFF" />
+<text x="90" y="80" dy="0.5ex" text-anchor="end" fill="#FFFFFF">20</text>
+<rect fill="#009999" opacity="0.8" x="112" y="138" width="97" height="322" />
+<line stroke="#FFFFFF" x1="160" y1="136" x2="160" y2="140" />
+<text x="160" y="484" fill="#FFFFFF" text-anchor="middle">GNU ld</text>
+<text x="160" y="502" fill="#FFFFFF" text-anchor="middle">2.45</text>
+<text x="160" y="520" fill="#FFFFFF" text-anchor="middle">Ubuntu</text>
+<text x="160" y="580" fill="#FFFFFF" text-anchor="middle">+85%</text>
+<rect fill="#0000FF" opacity="0.8" x="233" y="111" width="97" height="349" />
+<line stroke="#FFFFFF" x1="281" y1="108" x2="281" y2="115" />
+<text x="281" y="484" fill="#FFFFFF" text-anchor="middle">LLD</text>
+<text x="281" y="502" fill="#FFFFFF" text-anchor="middle">20.1.8</text>
+<text x="281" y="520" fill="#FFFFFF" text-anchor="middle">Ubuntu</text>
+<text x="281" y="580" fill="#FFFFFF" text-anchor="middle">+100%</text>
+<rect fill="#FF00FF" opacity="0.8" x="354" y="190" width="97" height="270" />
+<line stroke="#FFFFFF" x1="402" y1="189" x2="402" y2="192" />
+<text x="402" y="484" fill="#FFFFFF" text-anchor="middle">Mold</text>
+<text x="402" y="502" fill="#FFFFFF" text-anchor="middle">2.40.4</text>
+<text x="402" y="580" fill="#FFFFFF" text-anchor="middle">+55%</text>
+<rect fill="#00FF00" opacity="0.8" x="475" y="206" width="97" height="254" />
+<line stroke="#FFFFFF" x1="523" y1="204" x2="523" y2="208" />
+<text x="523" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="523" y="502" fill="#FFFFFF" text-anchor="middle">0.5.0</text>
+<text x="523" y="580" fill="#FFFFFF" text-anchor="middle">+46%</text>
+<rect fill="#00FF00" opacity="0.8" x="596" y="191" width="97" height="269" />
+<line stroke="#FFFFFF" x1="644" y1="190" x2="644" y2="193" />
+<text x="644" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="644" y="502" fill="#FFFFFF" text-anchor="middle">0.6.0</text>
+<text x="644" y="580" fill="#FFFFFF" text-anchor="middle">+54%</text>
+<rect fill="#00FF00" opacity="0.8" x="717" y="204" width="97" height="256" />
+<line stroke="#FFFFFF" x1="765" y1="203" x2="765" y2="205" />
+<text x="765" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="765" y="502" fill="#FFFFFF" text-anchor="middle">0.7.0</text>
+<text x="765" y="580" fill="#FFFFFF" text-anchor="middle">+47%</text>
+<rect fill="#00FF00" opacity="0.8" x="838" y="286" width="97" height="174" />
+<line stroke="#FFFFFF" x1="886" y1="285" x2="886" y2="287" />
+<text x="886" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="886" y="502" fill="#FFFFFF" text-anchor="middle">0.8.0</text>
+<text x="886" y="580" fill="#FFFFFF" text-anchor="middle">+0%</text>
+</svg>
