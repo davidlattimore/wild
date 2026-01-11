@@ -179,13 +179,18 @@ fn determine_symbols_per_group(num_symbols: usize, args: &Args) -> usize {
         return usize::MAX;
     }
 
-    // This value is roughly picked based on some very basic benchmarks, so might not be optimal.
-    // Setting it lower reduces the number of groups and thus reduces the per-group overhead,
-    // however larger groups means a higher likelihood that one group will finish significantly
-    // after the others.
-    const GROUPS_PER_THREAD: usize = 30;
+    // If we have lots of threads, then we might benefit from a few more groups in order to properly
+    // take advantage of the available parallelism.
+    let groups_per_thread =
+        args.numeric_experiment(crate::args::Experiment::GroupsPerThread, 5) as usize;
 
-    1.max(num_symbols / num_threads / GROUPS_PER_THREAD)
+    // If we don't have lots of threads, then we still want a reasonable number of groups. The need
+    // for this was based on experimentation.
+    let min_groups = args.numeric_experiment(crate::args::Experiment::MinGroups, 150) as usize;
+
+    let target_num_groups = (num_threads * groups_per_thread).max(min_groups);
+
+    1.max(num_symbols / target_num_groups)
 }
 
 /// Decides the maximum number of files that we'll put into one group.
