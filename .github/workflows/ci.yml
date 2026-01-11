@@ -73,16 +73,9 @@ jobs:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl,loongarch64-unknown-linux-gnu,loongarch64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: davidlattimore/wild-action@latest
-      - uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-        if: ${{ !contains(matrix.container, 'alpine') }}
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
@@ -99,15 +92,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack,cargo-minimal-versions
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+      - uses: Swatinem/rust-cache@v2
       - run: cargo minimal-versions --direct test --profile ci
 
   clippy:
@@ -125,15 +110,7 @@ jobs:
       with:
         components: clippy
     - uses: davidlattimore/wild-action@latest
-    - uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-clippy-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+    - uses: Swatinem/rust-cache@v2
     - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
 
   rustfmt:
@@ -161,15 +138,7 @@ jobs:
       id: rust-toolchain
       with:
         targets: riscv64gc-unknown-linux-gnu
-    - uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-riscv-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+    - uses: Swatinem/rust-cache@v2
     - run: sudo apt-get update && sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
     - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
     - run: cargo build --target riscv64gc-unknown-linux-gnu
@@ -189,15 +158,7 @@ jobs:
       id: rust-toolchain
       with:
         targets: loongarch64-unknown-linux-gnu
-    - uses: actions/cache@v5
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-loongarch64-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+    - uses: Swatinem/rust-cache@v2
     - run: cp .cargo/config.toml.cross-loongarch64 .cargo/config.toml
     - run: cargo build --target loongarch64-unknown-linux-gnu
 
