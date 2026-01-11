@@ -32,7 +32,6 @@ tests = [
   "linker-script-relocatable.sh",      # `--relocatable`
   "many-input-sections2.sh",           # `--relocatable`
   "nmagic.sh",
-  "no-eh-frame-header.sh",
   "no-quick-exit.sh",
   "oformat-binary.sh",
   "omagic.sh",

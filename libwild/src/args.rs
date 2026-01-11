@@ -1823,6 +1823,15 @@ fn setup_argument_parser() -> ArgumentParser {
 
     parser
         .declare()
+        .long("no-eh-frame-hdr")
+        .help("Don't create .eh_frame_hdr section")
+        .execute(|args, _modifier_stack| {
+            args.should_write_eh_frame_hdr = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("export-dynamic")
         .short("E")
         .help("Export all dynamic symbols")
