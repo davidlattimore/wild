@@ -17,7 +17,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
         ArchKind::Aarch64 => ("aarch64", ["aarch64-linux-gnu-objdump", "objdump"]),
         ArchKind::RISCV64 => ("riscv:rv64", ["riscv64-linux-gnu-objdump", "objdump"]),
         ArchKind::X86_64 => todo!(), // x86_64 objdump is not used in linker-diff currently
-        ArchKind::LoongArch64 => todo!(),
+        ArchKind::LoongArch64 => ("Loongarch64", ["loongarch64-linux-gnu-objdump", "objdump"]),
     };
 
     let objdump = objdump_bin_candidates

@@ -254,6 +254,7 @@ fn compare_sections<A: Arch>(
 
                 if !report.should_ignore(&diff_key) {
                     let diff = resolution_diff_exec(
+                        &diff_key,
                         start_offset,
                         original_annotations,
                         &resolutions,
@@ -578,15 +579,23 @@ fn diff_literal_bytes<'data, A: Arch>(
             })
             .collect_vec();
 
-        report.add_diff(resolution_diff_exec(
-            end,
-            vec![],
+        let key = diff_key_for_res_mismatch(
             &resolutions,
-            testers,
-            section_versions.input_section_id,
-            layout,
-            TraceOutput::default(),
-        )?);
+            &[],
+            testers[1].bin.address_index.bin_attributes,
+        );
+        if !report.should_ignore(&key) {
+            report.add_diff(resolution_diff_exec(
+                &key,
+                end,
+                vec![],
+                &resolutions,
+                testers,
+                section_versions.input_section_id,
+                layout,
+                TraceOutput::default(),
+            )?);
+        }
     }
 
     Ok(())
@@ -708,6 +717,7 @@ impl<A: Arch> ExecDiff<'_, A> {
 /// Produces a diff showing the different resolutions found for a relocation in some executable
 /// code.
 fn resolution_diff_exec<A: Arch>(
+    key: &str,
     offset: u64,
     original_annotations: Vec<OriginalAnnotation<A>>,
     resolutions: &[ResolvedGroup<A>],
@@ -716,10 +726,6 @@ fn resolution_diff_exec<A: Arch>(
     layout: &IndexedLayout,
     trace: TraceOutput,
 ) -> Result<Diff> {
-    let bin_attributes = testers[1].bin.address_index.bin_attributes;
-
-    let key = diff_key_for_res_mismatch(resolutions, &original_annotations, bin_attributes);
-
     let diff = ExecDiff {
         offset,
         original_annotations,
@@ -733,7 +739,7 @@ fn resolution_diff_exec<A: Arch>(
     diff.write_to(&mut out, layout)?;
 
     Ok(Diff {
-        key,
+        key: key.to_string(),
         values: DiffValues::PreFormatted(out),
     })
 }

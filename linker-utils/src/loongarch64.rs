@@ -11,6 +11,8 @@ use crate::elf::SIZE_4GB;
 use crate::elf::SIZE_4KB;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
+use crate::utils::u32_from_slice;
+use crate::utils::u64_from_slice;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
@@ -642,8 +644,65 @@ impl LoongArch64Instruction {
     }
 
     #[must_use]
-    pub fn read_value(self, _bytes: &[u8]) -> (u64, bool) {
-        todo!()
+    pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
+        match self {
+            LoongArch64Instruction::Shift5 => {
+                // Value is in bits [24:5] (20 bits)
+                let value = u32_from_slice(bytes);
+                let imm = (value >> 5) & 0xfffff;
+
+                (u64::from(imm), false)
+            }
+            LoongArch64Instruction::Shift10 => {
+                // Value is in bits [21:10] (12 bits)
+                let value = u32_from_slice(bytes);
+                let imm = (value >> 10) & 0xfff;
+
+                (u64::from(imm), false)
+            }
+            LoongArch64Instruction::Branch21or26 => {
+                // For B21: low 16 bits in [25:10], high bits in [4:0]
+                // For B26: low 16 bits in [25:10], high 10 bits in [9:0]
+                // We decode assuming B26 format (more general)
+                let value = u32_from_slice(bytes);
+                let low_part = (value >> 10) & 0xffff;
+                let high_part = value & 0x3ff;
+                let imm = (high_part << 16) | low_part;
+                // Sign extend from bit 25
+                let sign_extended = ((imm as i32) << 6) >> 6;
+
+                (sign_extended as u64, sign_extended < 0)
+            }
+            LoongArch64Instruction::Call30 => {
+                // Two instructions: pcaddu18i + jirl
+                // pcaddu18i: imm in bits [24:5] (20 bits, but only high 11 bits used)
+                // jirl: imm in bits [25:10] (16 bits, but only low 9 bits used)
+                let value = u64_from_slice(bytes);
+                let insn1 = (value >> 32) as u32;
+                let insn2 = value as u32;
+                let high_part = ((insn1 >> 5) & 0x7ffff) << 9; // 19 bits shifted
+                let low_part = (insn2 >> 10) & 0x1ff;
+                let imm = high_part | low_part;
+
+                (u64::from(imm), false)
+            }
+            LoongArch64Instruction::Call36 => {
+                // Two instructions: pcaddu18i + jirl
+                // pcaddu18i: imm in bits [24:5] (20 bits)
+                // jirl: imm in bits [25:10] (16 bits)
+                let value = u64_from_slice(bytes);
+                let insn1 = value as u32;
+                let insn2 = (value >> 32) as u32;
+                let high_part = u64::from((insn1 >> 5) & 0xfffff);
+                let low_part = u64::from((insn2 >> 10) & 0xffff);
+                // Reverse the adjustment done in write: high_part was ((value + 0x8000) >> 16)
+                // So we need: value = (high_part << 16) + low_part - adjustment
+                // But since we're reading, we just combine them
+                let imm = ((high_part << 16).wrapping_sub(0x8000) & 0xffffffff) | low_part;
+
+                (imm, false)
+            }
+        }
     }
 }
 
