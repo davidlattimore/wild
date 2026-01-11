@@ -3299,9 +3299,15 @@ fn process_relocation<'data, 'scope, A: Arch>(
                     }
                 }
             }
+        } else if flags.is_ifunc()
+            && rel_info.kind == RelocationKind::Absolute
+            && section_is_writable
+            && symbol_db.output_kind.needs_dynamic()
+        {
+            common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if symbol_db.output_kind.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && (flags.is_address() | flags.is_ifunc())
+            && flags.is_address()
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);

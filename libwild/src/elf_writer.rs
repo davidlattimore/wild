@@ -921,6 +921,21 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
+    fn write_ifunc_relocation_for_data<A: Arch>(
+        &mut self,
+        place: u64,
+        resolver_address: i64,
+    ) -> Result {
+        // IRELATIVE relocations go in .rela.dyn general section, not the relative section,
+        // because the dynamic linker expects only R_X86_64_RELATIVE in the relative section.
+        self.write_rela_dyn_general(
+            place,
+            0, // No dynamic symbol for IRELATIVE
+            A::get_dynamic_relocation_type(DynamicRelocationKind::Irelative),
+            resolver_address,
+        )
+    }
+
     fn write_dynamic_symbol_relocation<A: Arch>(
         &mut self,
         place: u64,
@@ -2551,6 +2566,13 @@ fn write_absolute_relocation<A: Arch>(
             DynamicRelocationKind::Absolute,
         )?;
 
+        Ok(0)
+    } else if resolution.flags.is_ifunc()
+        && section_info.is_writable
+        && table_writer.output_kind.needs_dynamic()
+    {
+        table_writer
+            .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
         let address = resolution.value_with_addend(
