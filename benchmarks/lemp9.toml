@@ -1,0 +1,14 @@
+name = "lemp9"
+
+[bench.chrome]
+min_wild_version = "0.6.0"
+
+[bench.librustc-driver]
+
+[bench.bevy-dylib]
+
+[bench.ripgrep]
+
+[bench.rust-analyzer]
+
+[bench.wild]

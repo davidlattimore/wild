@@ -1,0 +1,67 @@
+name = "ryzen-9955hx"
+
+[bench.bevy-dylib]
+skip_linkers = ["bfd"]
+
+[bench.c-hello-world]
+
+[bench.chrome]
+min_wild_version = "0.6.0"
+skip_linkers = ["bfd"]
+
+[bench.chrome-crel]
+min_wild_version = "0.8.0"
+skip_linkers = ["bfd"]
+
+[bench.clang-debug]
+skip_linkers = ["bfd"]
+
+[bench.clang-release]
+skip_linkers = ["bfd"]
+
+[bench.mold-crel]
+min_wild_version = "0.8.0"
+skip_linkers = ["bfd"]
+
+[bench.ripgrep]
+
+[bench.rust-analyzer]
+skip_linkers = ["bfd"]
+
+[bench.rust-analyzer-riscv]
+skip_linkers = ["bfd"]
+min_wild_version = "0.6.0"
+
+[bench.rust-hello-world]
+
+[bench.rustc]
+# Too short to be interesting and we have other short benchmarks.
+skip = true
+skip_linkers = ["bfd"]
+
+[bench.librustc-driver]
+skip_linkers = ["bfd"]
+
+[bench.trivial]
+# Too short to be interesting
+skip = true
+
+[bench.wild]
+skip_linkers = ["bfd"]
+
+[bench.wild-lto]
+min_wild_version = "0.9.0"
+
+[bench.wild-riscv]
+min_wild_version = "0.6.0"
+skip_linkers = ["bfd"]
+
+[bench.zed]
+skip_linkers = ["bfd"]
+
+[bench.zed-release]
+skip_linkers = ["bfd"]
+
+[bench.clang-debug-strip]
+skip_linkers = ["bfd"]
+

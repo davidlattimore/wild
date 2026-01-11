@@ -375,3 +375,15 @@ You can then upload `dhat-heap.json` to the [online dhat
 viewer](https://nnethercote.github.io/dh_view/dh_view.html).
 
 For more details, see the [dhat docs](https://docs.rs/dhat/latest/dhat/).
+
+### Generating report-style benchmarks
+
+Benchmarks such as [benchmarks/ryzen-9955hx.md](benchmarks/ryzen-9955hx.md) are generated using the
+tool in `benchmarks/runner`. You'll need a directory containing one or more "save-dirs" where the
+names of the directories are the names of the benchmarks.
+
+```sh
+cargo run --bin benchmark-runner -- \
+    bench --config benchmarks/ryzen-9955hx.toml --save ~/save linker1 linker2 linker3
+cargo run --bin benchmark-runner -- report
+```

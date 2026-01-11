@@ -1,0 +1,7 @@
+name = "raspberrypi"
+
+[bench.rust-analyzer-no-debug]
+
+[bench.wild-no-debug]
+
+[bench.wild-debug]
