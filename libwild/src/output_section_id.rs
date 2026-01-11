@@ -1194,7 +1194,7 @@ impl<'data> OutputSections<'data> {
                 format!("`{}`", String::from_utf8_lossy(section_name.0))
             }
             SectionKind::Secondary(primary_id) => {
-                format!("`{}` (secondary)", self.display_name(primary_id))
+                format!("{} (secondary)", self.display_name(primary_id))
             }
         }
     }
