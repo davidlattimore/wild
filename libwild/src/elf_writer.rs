@@ -3481,7 +3481,9 @@ fn write_regular_object_dynamic_symbol_definition(
                 "Internal error: Defined symbols should always be for a loaded or merge-strings section"
             ),
         };
-        let output_section_id = layout.output_sections.primary_output_section(output_section_id);
+        let output_section_id = layout
+            .output_sections
+            .primary_output_section(output_section_id);
         let symbol_id = sym_def.symbol_id;
         let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
