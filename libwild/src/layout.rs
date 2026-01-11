@@ -1485,6 +1485,9 @@ struct CommonGroupState<'data> {
     /// is stored is non-deterministic and is whichever object first requested export of that
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+
+    exception_frame_relocations: usize,
+    exception_frame_count: usize,
 }
 
 impl CommonGroupState<'_> {
@@ -1493,6 +1496,8 @@ impl CommonGroupState<'_> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
+            exception_frame_count: 0,
+            exception_frame_relocations: 0,
         }
     }
 
@@ -2569,6 +2574,18 @@ fn find_required_sections<'data, A: Arch>(
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+
+    let total: usize = group_states
+        .iter()
+        .map(|g| g.common.exception_frame_count)
+        .sum();
+    tracing::debug!(target: "metrics", total, "exception frames");
+
+    let relocations: usize = group_states
+        .iter()
+        .map(|g| g.common.exception_frame_relocations)
+        .sum();
+    tracing::debug!(target: "metrics", section = "`.eh_frame`", relocations, "resolved relocations");
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -4804,6 +4821,7 @@ impl<'data> ObjectLayoutState<'data> {
                                 scope,
                             )?;
                         }
+                        common.exception_frame_relocations += frame_data_relocations.len();
                     }
                     DynamicRelocationSequence::Crel(frame_data_relocations) => {
                         for rel in frame_data_relocations.crel_iter() {
@@ -4818,6 +4836,7 @@ impl<'data> ObjectLayoutState<'data> {
                                 scope,
                             )?;
                         }
+                        common.exception_frame_relocations += frame_data_relocations.len();
                     }
                 }
             }
@@ -5483,6 +5502,8 @@ fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
         }
         offset = next_offset;
     }
+
+    common.exception_frame_count += object.exception_frames.len();
 
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
