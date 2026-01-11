@@ -263,7 +263,10 @@ impl SizedOutput {
         // assuming it eventually calls exec, this at least means that it inherits the file
         // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less
         // bad.
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
+        }
 
         match output_config.file_write_mode {
             FileWriteMode::UnlinkAndReplace => {
@@ -316,7 +319,10 @@ impl SizedOutput {
 
         // Making the file executable is best-effort only. For example if we're writing to a pipe or
         // something, it isn't going to work and that's OK.
-        let _ = crate::fs::make_executable(&self.file);
+        #[cfg(unix)]
+        {
+            let _ = crate::fs::make_executable(&self.file);
+        }
 
         Ok(())
     }

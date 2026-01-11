@@ -11,11 +11,24 @@ use object::SymbolIndex;
 use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use std::borrow::Cow;
-use std::ffi::OsStr;
 use std::fmt::Display;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::path::PathBuf;
+
+fn pathbuf_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Path;
+
+        return Path::new(OsStr::from_bytes(bytes)).to_path_buf();
+    }
+
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
 
 pub(crate) struct SourceInfo(Option<SourceInfoDetails>);
 
@@ -64,7 +77,7 @@ pub(crate) fn get_source_info<A: Arch>(
         let comp_dir = unit
             .comp_dir
             .as_ref()
-            .map(|dir| Path::new(OsStr::from_bytes(dir)).to_owned())
+            .map(|dir| pathbuf_from_bytes(dir))
             .unwrap_or_default();
 
         let mut rows = program.rows();
@@ -82,7 +95,7 @@ pub(crate) fn get_source_info<A: Arch>(
             if let Some(file) = row.file(header) {
                 path = comp_dir.clone();
 
-                path.push(OsStr::from_bytes(
+                path.push(pathbuf_from_bytes(
                     &dwarf.attr_string(&unit, file.path_name())?,
                 ));
             }

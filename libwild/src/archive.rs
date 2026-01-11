@@ -5,10 +5,8 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use std::ffi::OsStr;
 use std::ops::Range;
-use std::os::unix::ffi::OsStrExt as _;
-use std::path::Path;
+use std::path::PathBuf;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
@@ -18,6 +16,20 @@ pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
     Thin(ThinEntry<'data>),
+}
+
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+        std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
+    }
+    #[cfg(not(unix))]
+    {
+        let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
+        PathBuf::from(path)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -324,8 +336,8 @@ impl<'data> Identifier<'data> {
         }
     }
 
-    pub(crate) fn as_path(&self) -> &'data std::path::Path {
-        Path::new(OsStr::from_bytes(self.as_slice()))
+    pub(crate) fn as_path(&self) -> PathBuf {
+        path_from_bytes(self.as_slice())
     }
 }
 

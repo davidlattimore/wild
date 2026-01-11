@@ -1,3 +1,4 @@
+#![cfg(not(windows))]
 //! Tests that build and run various test programs then link them and run them. Each test is linked
 //! with both the system linker (ld) and with wild.
 //!

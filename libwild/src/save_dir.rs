@@ -161,7 +161,10 @@ impl SaveDirState {
         }
 
         drop(out);
-        crate::fs::make_executable(&file)?;
+        #[cfg(unix)]
+        {
+            crate::fs::make_executable(&file)?;
+        }
         Ok(())
     }
 
@@ -252,31 +255,44 @@ impl SaveDirState {
             std::fs::create_dir(&dest_path)
                 .with_context(|| format!("Failed to create directory `{}`", dest_path.display()))?;
         } else if meta.is_symlink() {
-            let directory = source_path.parent().context("Invalid path")?;
-            let mut target = std::fs::read_link(source_path)
-                .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
+            #[cfg(unix)]
+            {
+                let directory = source_path.parent().context("Invalid path")?;
+                let mut target = std::fs::read_link(source_path).with_context(|| {
+                    format!("Failed to read symlink `{}`", source_path.display())
+                })?;
 
-            if target.is_absolute() {
-                self.copy_file(&target, parsed_args)?;
-                target = make_relative_path(&target, directory).with_context(|| {
+                if target.is_absolute() {
+                    self.copy_file(&target, parsed_args)?;
+                    target = make_relative_path(&target, directory).with_context(|| {
+                        format!(
+                            "Failed to make path `{}` relative to `{}` while copying symlink",
+                            target.display(),
+                            directory.display()
+                        )
+                    })?;
+                } else {
+                    let absolute_target = directory.join(&target);
+                    self.copy_file(&absolute_target, parsed_args)?;
+                }
+
+                std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
                     format!(
-                        "Failed to make path `{}` relative to `{}` while copying symlink",
-                        target.display(),
-                        directory.display()
+                        "Failed to symlink {} to {}",
+                        dest_path.display(),
+                        target.display()
                     )
                 })?;
-            } else {
-                let absolute_target = directory.join(&target);
-                self.copy_file(&absolute_target, parsed_args)?;
             }
-
-            std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
-                format!(
-                    "Failed to symlink {} to {}",
-                    dest_path.display(),
-                    target.display()
-                )
-            })?;
+            #[cfg(not(unix))]
+            {
+                std::fs::copy(source_path, &dest_path).with_context(|| {
+                    format!(
+                        "Failed to copy symlink target for `{}`",
+                        source_path.display()
+                    )
+                })?;
+            }
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
@@ -460,6 +476,19 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn abs_test_path(path: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let path = path.trim_start_matches('/');
+            let path = path.replace('/', "\\");
+            PathBuf::from(format!(r"C:\{path}"))
+        }
+        #[cfg(not(windows))]
+        {
+            PathBuf::from(path)
+        }
+    }
+
     fn test_make_relative_path(target: &Path, directory: &Path) {
         let relative = make_relative_path(target, directory).unwrap();
 
@@ -498,8 +527,8 @@ mod tests {
         ];
 
         for (a, b) in cases {
-            let a = PathBuf::from(a);
-            let b = PathBuf::from(b);
+            let a = abs_test_path(a);
+            let b = abs_test_path(b);
             test_make_relative_path(&a, &b);
             test_make_relative_path(&b, &a);
         }
