@@ -100,7 +100,6 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
-use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::sht::NOTE;
@@ -134,7 +133,6 @@ use std::mem::swap;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
@@ -392,7 +390,7 @@ fn update_defsym_symbol_resolutions(
                     }
                 }
             }
-            Group::Objects(_) | Group::SyntheticSymbols(_) => {}
+            Group::Objects(_) | Group::SyntheticSymbols(_) | Group::LtoInputs(_) => {}
         }
     }
 
@@ -1989,6 +1987,7 @@ impl<'data> Layout<'data> {
                                 })
                             })
                             .collect(),
+                        temporary: obj.input.file.modifiers.temporary,
                     }),
                     _ => None,
                 })
@@ -3340,18 +3339,7 @@ fn process_relocation<'data, 'scope, A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                let lto_file = is_undefined_lto(resources, symbol_id);
-
-                if let Some(file) = lto_file {
-                    resources.report_error(error!(
-                        "undefined reference to `{symbol_name}` found in LTO section of {}",
-                        file.canonicalize()
-                            .unwrap_or(PathBuf::new())
-                            .file_name()
-                            .expect("Canonicalized path can't have /.. at end")
-                            .display()
-                    ));
-                } else if args.error_unresolved_symbols {
+                if args.error_unresolved_symbols {
                     resources.report_error(error!(
                         "Undefined symbol {symbol_name}, referenced by {}\n    {}",
                         source_info, object.input,
@@ -3370,43 +3358,6 @@ fn process_relocation<'data, 'scope, A: Arch>(
         }
     }
     Ok(next_modifier)
-}
-
-fn is_undefined_lto(resources: &GraphResources, symbol_id: SymbolId) -> Option<PathBuf> {
-    let raw_symbol_name = resources
-        .symbol_db
-        .symbol_name(symbol_id)
-        .unwrap_or_else(|_| panic!("Found symbol display so symbol with id {symbol_id} exists"));
-    resources
-        .symbol_db
-        .groups
-        .iter()
-        .find_map(|group| match group {
-            Group::Objects(data) => data.iter().find_map(|input| {
-                let section_table = input.parsed.object.sections;
-                let file = &input.parsed.object;
-                section_table
-                    .iter()
-                    .filter(|section_header| {
-                        section_table
-                            .section_name(LittleEndian, section_header)
-                            .unwrap_or(&[])
-                            .starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes())
-                    })
-                    .find_map(|section_header| {
-                        let lto_contains_undef = file
-                            .section_data_cow(section_header)
-                            .unwrap_or_default()
-                            .split(|datum| *datum == 0)
-                            .any(|symbol| symbol == raw_symbol_name.bytes());
-                        if lto_contains_undef {
-                            return Some(input.parsed.input.file.filename.clone());
-                        }
-                        None
-                    })
-            }),
-            _ => None,
-        })
 }
 
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
@@ -3598,6 +3549,8 @@ impl<'data> PreludeLayoutState<'data> {
             // We'll emit a warning when writing the file if it's an executable.
             return;
         };
+
+        let symbol_id = resources.symbol_db.definition(symbol_id);
 
         self.entry_symbol_id = Some(symbol_id);
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
@@ -5747,6 +5700,9 @@ impl<'data> resolution::ResolvedFile<'data> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
+            resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
+                symbol_id_range: s.symbol_id_range,
+            }),
         }
     }
 }
