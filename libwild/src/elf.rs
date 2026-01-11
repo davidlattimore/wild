@@ -24,7 +24,6 @@ use std::borrow::Cow;
 use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
-use std::ops::Range;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -87,35 +86,11 @@ pub(crate) enum RelocationList<'data> {
     Crel(CrelIterator<'data>),
 }
 
-/// A sequence of relocations that supports random access.
-pub(crate) enum DynamicRelocationSequence<'data> {
-    Rela(&'data [Rela]),
-    Crel(Vec<Crel>),
-}
-
-pub(crate) trait RelocationSequence<'data> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data>;
-}
-
-impl<'data> RelocationSequence<'data> for &'data [Rela] {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
-    }
-
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data> {
-        DynamicRelocationSequence::Rela(&self[range])
-    }
-}
-
-impl RelocationSequence<'static> for Vec<Crel> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        self.clone().into_iter()
-    }
-
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'static> {
-        DynamicRelocationSequence::Crel(self[range].to_vec())
-    }
+pub(crate) fn rela_to_crel_iter(
+    rela: &[Rela],
+) -> impl Iterator<Item = object::Result<Crel>> + Clone {
+    rela.iter()
+        .map(|r| Ok(Crel::from_rela(r, LittleEndian, false)))
 }
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
@@ -569,10 +544,4 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
     symbol.st_visibility() == object::elf::STV_HIDDEN
-}
-
-impl Default for DynamicRelocationSequence<'_> {
-    fn default() -> Self {
-        Self::Rela(&[])
-    }
 }

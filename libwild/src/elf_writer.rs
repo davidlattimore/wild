@@ -19,7 +19,6 @@ use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
-use crate::elf::RelocationSequence;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
 use crate::elf::Verdaux;
@@ -27,6 +26,7 @@ use crate::elf::Verdef;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
+use crate::elf::rela_to_crel_iter;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::write_relocation_to_buffer;
 use crate::ensure;
@@ -1276,8 +1276,7 @@ fn write_object_section<A: Arch>(
             object,
             out,
             section,
-            rela.iter()
-                .map(|rela| Ok(Crel::from_rela(rela, LittleEndian, false))),
+            rela_to_crel_iter(rela),
             layout,
             table_writer,
             trace,
@@ -1573,7 +1572,7 @@ fn write_eh_frame_data<A: Arch>(
             table_writer,
             trace,
             eh_frame_section,
-            relocations.crel_iter(),
+            rela_to_crel_iter(relocations),
         ),
         elf::RelocationList::Crel(relocations) => write_eh_frame_relocations::<A>(
             object,
@@ -1581,7 +1580,7 @@ fn write_eh_frame_data<A: Arch>(
             table_writer,
             trace,
             eh_frame_section,
-            relocations.flat_map(|r| r.ok()),
+            relocations,
         ),
     }
 }
@@ -1592,7 +1591,7 @@ fn write_eh_frame_relocations<A: Arch>(
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
     eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
-    relocations: impl Iterator<Item = Crel>,
+    relocations: impl Iterator<Item = object::Result<Crel>>,
 ) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
@@ -1626,6 +1625,7 @@ fn write_eh_frame_relocations<A: Arch>(
         } else {
             // This is an FDE
             if let Some(rel) = relocations.peek() {
+                let rel = (*rel)?;
                 let rel_offset = rel.r_offset;
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
@@ -1691,6 +1691,7 @@ fn write_eh_frame_relocations<A: Arch>(
                 entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
             }
             while let Some(rel) = relocations.peek() {
+                let rel = (*rel)?;
                 let rel_offset = rel.r_offset;
                 if rel_offset >= next_input_pos as u64 {
                     // This relocation belongs to the next entry.
@@ -1699,7 +1700,7 @@ fn write_eh_frame_relocations<A: Arch>(
                 apply_relocation::<A, _>(
                     object,
                     rel_offset - input_pos as u64,
-                    rel,
+                    &rel,
                     SectionInfo {
                         section_address: output_pos as u64 + table_writer.eh_frame_start_address,
                         is_writable: false,
@@ -1715,7 +1716,7 @@ fn write_eh_frame_relocations<A: Arch>(
                 .with_context(|| {
                     format!(
                         "Failed to apply eh_frame {}",
-                        display_relocation::<A>(object, rel, layout)
+                        display_relocation::<A>(object, &rel, layout)
                     )
                 })?;
                 relocations.next();
@@ -1724,6 +1725,7 @@ fn write_eh_frame_relocations<A: Arch>(
         } else {
             // We're ignoring this entry, skip any relocations for it.
             while let Some(rel) = relocations.peek() {
+                let rel = (*rel)?;
                 if rel.r_offset < next_input_pos as u64 {
                     relocations.next();
                 } else {
