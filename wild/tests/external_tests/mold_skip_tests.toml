@@ -239,7 +239,6 @@ tests = [
   "hidden-undef.sh",
   "ifunc-address-equality-exported.sh",
   "ifunc-address-equality.sh",
-  "ifunc-alias.sh",
   "initfirst.sh",
   "large-alignment-dso.sh",
   "large-alignment.sh",
