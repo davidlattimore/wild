@@ -646,6 +646,19 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(plt_address) = res.plt_address {
             self.write_plt_entry::<A>(got_address, plt_address.get())?;
         }
+
+        // For ifunc symbols with GOT-relative references, write the PLT stub
+        // address to the separate GOT entry. This ensures that all references to the IFUNC
+        // return the same address (the PLT stub), regardless of whether they go through the
+        // PLT or directly through GOT.
+        if let Some(ifunc_got_address) = res.ifunc_got_for_address {
+            let got_entry = self.take_next_got_entry()?;
+            *got_entry = res.plt_address()?;
+            if self.output_kind.is_relocatable() {
+                self.write_address_relocation::<A>(ifunc_got_address.get(), *got_entry as i64)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -2171,7 +2184,7 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
                     .wrapping_add(bias)
                     .wrapping_sub(place),
                 RelocationKind::GotRelative => resolution
-                    .got_address()?
+                    .got_address_for_relocation()?
                     .wrapping_add(addend as u64)
                     .wrapping_add(bias)
                     .wrapping_sub(place),
@@ -2215,17 +2228,19 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
             )?
         }
         RelocationKind::GotRelative => resolution
-            .got_address()?
+            .got_address_for_relocation()?
             .wrapping_add(bias)
             .wrapping_add(addend as u64)
             .bitand(mask.got_entry)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelativeLoongArch64 => highest_relocation_with_bias(
-            resolution.got_address()?.wrapping_add(addend as u64),
+            resolution
+                .got_address_for_relocation()?
+                .wrapping_add(addend as u64),
             place,
         ),
         RelocationKind::GotRelGotBase => resolution
-            .got_address()?
+            .got_address_for_relocation()?
             .wrapping_add(addend as u64)
             .wrapping_add(bias)
             .bitand(mask.got_entry)
@@ -2239,7 +2254,7 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
             if resolution.flags.needs_got_tls_module() {
                 resolution.tlsgd_got_address()?
             } else {
-                resolution.got_address()?
+                resolution.got_address_for_relocation()?
             }
             .wrapping_add(bias)
             .bitand(mask.got_entry)
@@ -2569,7 +2584,7 @@ fn write_absolute_relocation<A: Arch>(
         Ok(0)
     } else if resolution.flags.is_ifunc()
         && section_info.is_writable
-        && table_writer.output_kind.needs_dynamic()
+        && table_writer.output_kind.is_relocatable()
     {
         table_writer
             .write_ifunc_relocation_for_data::<A>(place, resolution.raw_value as i64 + addend)?;
@@ -2710,6 +2725,7 @@ fn write_plt_got_entries<A: Arch>(
                     dynamic_symbol_index: None,
                     got_address: Some(got_address),
                     plt_address: None,
+                    ifunc_got_for_address: None,
                     flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
                 },
             )?;
@@ -2729,6 +2745,7 @@ fn write_plt_got_entries<A: Arch>(
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
+                ifunc_got_for_address: None,
                 flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
             },
         )?;

@@ -237,7 +237,6 @@ tests = [
   "glibc-2.22-bug.sh",
   "hidden-undef.sh",
   "ifunc-address-equality-exported.sh",
-  "ifunc-address-equality.sh",
   "initfirst.sh",
   "large-alignment-dso.sh",
   "large-alignment.sh",

@@ -92,6 +92,12 @@ bitflags! {
         /// symbol requires a copy relocation, not necessarily that a copy relocation will be
         /// emitted with the exact name of this symbol.
         const COPY_RELOCATION = 1 << 13;
+
+        /// A GOT entry is needed for address equality of an IFUNC symbol. When code takes the
+        /// address of an IFUNC via a GOT-relative relocation, we need a separate GOT entry that
+        /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
+        /// entry which will be resolved to the actual function address at runtime.
+        const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
     }
 }
 
@@ -120,7 +126,8 @@ impl ValueFlags {
                 | ValueFlags::GOT_TLS_OFFSET
                 | ValueFlags::GOT_TLS_DESCRIPTOR
                 | ValueFlags::EXPORT_DYNAMIC
-                | ValueFlags::COPY_RELOCATION,
+                | ValueFlags::COPY_RELOCATION
+                | ValueFlags::IFUNC_GOT_FOR_ADDRESS,
         )
     }
 
@@ -206,6 +213,11 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn needs_got_tls_descriptor(self) -> bool {
         self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_ifunc_got_for_address(self) -> bool {
+        self.contains(ValueFlags::IFUNC_GOT_FOR_ADDRESS)
     }
 
     #[must_use]

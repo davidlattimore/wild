@@ -900,6 +900,7 @@ pub(crate) struct Resolution {
     /// offset within module).
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+    pub(crate) ifunc_got_for_address: Option<NonZeroU64>,
     pub(crate) flags: ValueFlags,
 }
 
@@ -933,6 +934,7 @@ impl SectionResolution {
             dynamic_symbol_index: None,
             got_address: None,
             plt_address: None,
+            ifunc_got_for_address: None,
             flags: ValueFlags::empty(),
         })
     }
@@ -1216,6 +1218,13 @@ fn allocate_resolution(
         } else if flags.is_interposable() && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if flags.is_address() && output_kind.is_relocatable() {
+            mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+        }
+    }
+
+    if flags.needs_ifunc_got_for_address() {
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+        if output_kind.is_relocatable() {
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
@@ -3304,7 +3313,7 @@ fn process_relocation<'data, 'scope, A: Arch>(
         } else if flags.is_ifunc()
             && rel_info.kind == RelocationKind::Absolute
             && section_is_writable
-            && symbol_db.output_kind.needs_dynamic()
+            && symbol_db.output_kind.is_relocatable()
         {
             common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if symbol_db.output_kind.is_relocatable()
@@ -3320,6 +3329,18 @@ fn process_relocation<'data, 'scope, A: Arch>(
                     A::rel_type_to_string(r_type),
                 );
             }
+        }
+
+        // For ifunc symbols with GOT-relative references (like R_X86_64_GOTPCRELX), we need a
+        // separate GOT entry for address equality. The main GOT entry will be used by the PLT stub
+        // with an IRELATIVE relocation, while this extra entry will contain the PLT stub address so
+        // that all references to the ifunc return the same address.
+        if flags.is_ifunc()
+            && flags_to_add.needs_got()
+            && !flags_to_add.needs_plt()
+            && !symbol_db.output_kind.is_relocatable()
+        {
+            flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
@@ -5699,6 +5720,7 @@ fn create_resolution(
         dynamic_symbol_index,
         got_address: None,
         plt_address: None,
+        ifunc_got_for_address: None,
         flags,
     };
     if flags.needs_plt() {
@@ -5724,6 +5746,10 @@ fn create_resolution(
         resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
     } else if flags.needs_got() {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
+    }
+
+    if flags.needs_ifunc_got_for_address() {
+        resolution.ifunc_got_for_address = Some(allocate_got(1, memory_offsets));
     }
     resolution
 }
@@ -5762,6 +5788,14 @@ impl<'data> resolution::ResolvedFile<'data> {
 impl Resolution {
     pub(crate) fn got_address(&self) -> Result<u64> {
         Ok(self.got_address.context("Missing GOT address")?.get())
+    }
+
+    pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
+        if let Some(ifunc_got) = self.ifunc_got_for_address {
+            Ok(ifunc_got.get())
+        } else {
+            self.got_address()
+        }
     }
 
     pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
