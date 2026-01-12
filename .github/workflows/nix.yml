@@ -30,7 +30,7 @@ jobs:
           nix build -L --show-trace
 
       - name: Cache Nix store
-        uses: nix-community/cache-nix-action/save@v6
+        uses: nix-community/cache-nix-action/save@v7
         id: cache
         with:
           primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock' ) }}

@@ -222,7 +222,7 @@ jobs:
         uses: nixbuild/nix-quick-install-action@v34
 
       - name: Restore Nix store
-        uses: nix-community/cache-nix-action/restore@v6
+        uses: nix-community/cache-nix-action/restore@v7
         id: cache
         with:
           primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock') }}
