@@ -37,6 +37,7 @@ use std::fmt::Display;
 use std::mem::take;
 use std::num::NonZero;
 use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -130,6 +131,7 @@ pub struct Args {
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
+    pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) max_page_size: Option<Alignment>,
 
     pub(crate) relocation_model: RelocationModel,
@@ -442,6 +444,7 @@ impl Default for Args {
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
             z_interpose: false,
+            z_stack_size: None,
             z_isa: None,
             max_page_size: None,
             numeric_experiments: Vec::new(),
@@ -1450,6 +1453,16 @@ fn setup_argument_parser() -> ArgumentParser {
             "Mark object to interpose all DSOs but executable",
             |args, _| {
                 args.z_interpose = true;
+                Ok(())
+            },
+        )
+        .sub_option_with_value(
+            "stack-size=",
+            "Set size of stack segment",
+            |args, _, value| {
+                let size: u64 = parse_number(value)?;
+                args.z_stack_size = NonZero::new(size);
+
                 Ok(())
             },
         )

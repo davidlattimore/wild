@@ -3315,7 +3315,8 @@ fn integration_test(
         "max-page-size.c",
         "call-via-defsym.c",
         "wrap-real-only.c",
-        "ifunc-alias.c"
+        "ifunc-alias.c",
+        "stack-size.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

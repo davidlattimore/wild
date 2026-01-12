@@ -270,6 +270,7 @@ pub fn compute<'data, A: Arch>(
         &output_order,
         &program_segments,
         header_info,
+        symbol_db.args,
     )?;
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
@@ -2137,6 +2138,7 @@ fn compute_segment_layout(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments,
     header_info: &HeaderInfo,
+    args: &Args,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -2164,7 +2166,7 @@ fn compute_segment_layout(
                         file_start: 0,
                         file_end: 0,
                         mem_start: 0,
-                        mem_end: 0,
+                        mem_end: args.z_stack_size.map_or(0, |size| size.get()),
                         alignment: alignment::MIN,
                     });
                 } else {
@@ -6689,6 +6691,7 @@ fn test_no_disallowed_overlaps() {
         &output_order,
         &program_segments,
         &header_info,
+        &args,
     )
     .unwrap();
 
