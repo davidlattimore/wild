@@ -3333,11 +3333,14 @@ fn process_relocation<'data, 'scope, A: Arch>(
         // separate GOT entry for address equality. The main GOT entry will be used by the PLT stub
         // with an IRELATIVE relocation, while this extra entry will contain the PLT stub address so
         // that all references to the ifunc return the same address.
-        if flags.is_ifunc()
-            && flags_to_add.needs_got()
-            && !flags_to_add.needs_plt()
-            && !symbol_db.output_kind.is_relocatable()
-        {
+
+        let relocation_needs_got = flags_to_add.needs_got();
+
+        if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
+            flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
+        }
+
+        if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
             flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
         }
 
@@ -3345,7 +3348,7 @@ fn process_relocation<'data, 'scope, A: Arch>(
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
 
         if !previous_flags.has_resolution() {
-            if previous_flags.is_ifunc() {
+            if flags.is_ifunc() && symbol_db.output_kind.is_static_executable() {
                 atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
             }
 
