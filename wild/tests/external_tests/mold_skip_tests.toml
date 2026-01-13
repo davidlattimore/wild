@@ -109,7 +109,6 @@ tests = [
   "z-pack-relative-relocs.sh",
   "z-rodynamic.sh",
   "z-sectionheader.sh",
-  "z-stack-size.sh",
   "z-start-stop-visibility.sh",
 ]
 
