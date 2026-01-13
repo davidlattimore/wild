@@ -3530,8 +3530,11 @@ fn write_regular_object_dynamic_symbol_definition(
             )
         })?;
 
+        // For non-PIE executables, export IFUNC symbols as STT_FUNC pointing to PLT stub.
+        // For PIE executables, keep IFUNC as-is.
         if resolution.flags.is_ifunc()
             && layout.symbol_db.output_kind.is_executable()
+            && !layout.symbol_db.output_kind.is_relocatable()
             && let Some(plt_address) = resolution.plt_address
         {
             let plt_output_section_id = layout
