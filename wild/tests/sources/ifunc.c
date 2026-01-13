@@ -8,6 +8,7 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie -ffunction-sections
+//#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
 // This can be in any test that's x86_64 only.
 //#ExpectSym:_GLOBAL_OFFSET_TABLE_
 
