@@ -3529,15 +3529,45 @@ fn write_regular_object_dynamic_symbol_definition(
                 layout.symbol_debug(symbol_id)
             )
         })?;
-        let mut symbol_value = resolution.raw_value;
-        if sym.st_type() == object::elf::STT_TLS {
-            symbol_value -= layout.tls_start_address();
+
+        if resolution.flags.is_ifunc()
+            && layout.symbol_db.output_kind.is_executable()
+            && let Some(plt_address) = resolution.plt_address
+        {
+            let plt_output_section_id = layout
+                .output_sections
+                .primary_output_section(output_section_id::PLT_GOT);
+            let shndx = dynamic_symbol_writer
+                .output_sections
+                .output_index_of_section(plt_output_section_id)
+                .with_context(|| {
+                    format!(
+                        "PLT section not found for ifunc symbol `{}`",
+                        String::from_utf8_lossy(name),
+                    )
+                })?;
+            let e = LittleEndian;
+            let size = sym.st_size(e);
+            let entry = dynamic_symbol_writer.define_symbol(
+                false,
+                shndx,
+                plt_address.into(),
+                size,
+                name,
+            )?;
+            entry.set_st_info(sym.st_bind(), object::elf::STT_FUNC);
+            entry.st_other = sym.st_other();
+        } else {
+            let mut symbol_value = resolution.raw_value;
+            if sym.st_type() == object::elf::STT_TLS {
+                symbol_value -= layout.tls_start_address();
+            }
+            dynamic_symbol_writer
+                .copy_symbol(sym, name, output_section_id, symbol_value)
+                .with_context(|| {
+                    format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
+                })?;
         }
-        dynamic_symbol_writer
-            .copy_symbol(sym, name, output_section_id, symbol_value)
-            .with_context(|| {
-                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
-            })?;
     } else {
         dynamic_symbol_writer
             .copy_symbol_shndx(sym, name, 0, 0)
