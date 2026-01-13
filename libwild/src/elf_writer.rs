@@ -651,11 +651,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         // address to the separate GOT entry. This ensures that all references to the IFUNC
         // return the same address (the PLT stub), regardless of whether they go through the
         // PLT or directly through GOT.
-        if let Some(ifunc_got_address) = res.ifunc_got_for_address {
+        if res.flags.needs_ifunc_got_for_address() {
+            let ifunc_got_address = got_address + elf::GOT_ENTRY_SIZE;
             let got_entry = self.take_next_got_entry()?;
             *got_entry = res.plt_address()?;
             if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address.get(), *got_entry as i64)?;
+                self.write_address_relocation::<A>(ifunc_got_address, *got_entry as i64)?;
             }
         }
 
@@ -2725,7 +2726,6 @@ fn write_plt_got_entries<A: Arch>(
                     dynamic_symbol_index: None,
                     got_address: Some(got_address),
                     plt_address: None,
-                    ifunc_got_for_address: None,
                     flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
                 },
             )?;
@@ -2745,7 +2745,6 @@ fn write_plt_got_entries<A: Arch>(
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
-                ifunc_got_for_address: None,
                 flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
             },
         )?;

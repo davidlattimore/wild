@@ -900,7 +900,6 @@ pub(crate) struct Resolution {
     /// offset within module).
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
-    pub(crate) ifunc_got_for_address: Option<NonZeroU64>,
     pub(crate) flags: ValueFlags,
 }
 
@@ -934,7 +933,6 @@ impl SectionResolution {
             dynamic_symbol_index: None,
             got_address: None,
             plt_address: None,
-            ifunc_got_for_address: None,
             flags: ValueFlags::empty(),
         })
     }
@@ -5720,7 +5718,6 @@ fn create_resolution(
         dynamic_symbol_index,
         got_address: None,
         plt_address: None,
-        ifunc_got_for_address: None,
         flags,
     };
     if flags.needs_plt() {
@@ -5729,7 +5726,15 @@ fn create_resolution(
         if flags.is_dynamic() {
             resolution.raw_value = plt_address.get();
         }
-        resolution.got_address = Some(allocate_got(1, memory_offsets));
+        // For ifunc with address equality needs, allocate 2 GOT entries
+        // - First entry: Used by PLT
+        // - Second entry: Used by GOT-relative references
+        let num_got_entries = if flags.needs_ifunc_got_for_address() {
+            2
+        } else {
+            1
+        };
+        resolution.got_address = Some(allocate_got(num_got_entries, memory_offsets));
     } else if flags.is_tls() {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
@@ -5746,10 +5751,6 @@ fn create_resolution(
         resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
     } else if flags.needs_got() {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    }
-
-    if flags.needs_ifunc_got_for_address() {
-        resolution.ifunc_got_for_address = Some(allocate_got(1, memory_offsets));
     }
     resolution
 }
@@ -5791,11 +5792,11 @@ impl Resolution {
     }
 
     pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
-        if let Some(ifunc_got) = self.ifunc_got_for_address {
-            Ok(ifunc_got.get())
-        } else {
-            self.got_address()
+        let mut got_address = self.got_address()?;
+        if self.flags.needs_ifunc_got_for_address() {
+            got_address += elf::GOT_ENTRY_SIZE;
         }
+        Ok(got_address)
     }
 
     pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
