@@ -2575,17 +2575,15 @@ fn find_required_sections<'data, A: Arch>(
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
 
-    let total: usize = group_states
+    tracing::debug!(target: "metrics", total = group_states
         .iter()
         .map(|g| g.common.exception_frame_count)
-        .sum();
-    tracing::debug!(target: "metrics", total, "exception frames");
+        .sum::<usize>(), "exception frames");
 
-    let relocations: usize = group_states
+    tracing::debug!(target: "metrics", section = "`.eh_frame`", relocations = group_states
         .iter()
         .map(|g| g.common.exception_frame_relocations)
-        .sum();
-    tracing::debug!(target: "metrics", section = "`.eh_frame`", relocations, "resolved relocations");
+        .sum::<usize>(), "resolved relocations");
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
