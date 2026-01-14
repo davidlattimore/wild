@@ -486,7 +486,7 @@ fn process_thin_archive<'data>(
             ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
             ArchiveEntry::Thin(entry) => {
                 let path = entry.identifier(extended_filenames).as_path();
-                let entry_path = parent_path.join(path);
+                let entry_path = parent_path.join(&path);
 
                 let file_data =
                     FileData::new(&entry_path, args.prepopulate_maps).with_context(|| {

@@ -740,7 +740,16 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
             }
         } else {
             if ch == '\\' {
-                ch = chars.next().context("Invalid escape")?;
+                let next = chars.next().context("Invalid escape")?;
+                // Keep backslashes unless escaping \, ", or ' so Windows paths like C:\foo survive.
+                if matches!(next, '\\' | '"' | '\'') {
+                    ch = next;
+                } else {
+                    let heap = heap.get_or_insert(String::new());
+                    heap.push('\\');
+                    heap.push(next);
+                    continue;
+                }
             }
             heap.get_or_insert(String::new()).push(ch);
         }
