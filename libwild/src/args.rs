@@ -1607,6 +1607,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("pie")
+        .long("pic-executable")
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
