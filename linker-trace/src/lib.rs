@@ -28,7 +28,6 @@ pub struct Section {
 
 impl TraceData {
     pub fn write(&self, writer: &mut impl Write) -> Result<()> {
-        //postcard::to_io(self, writer)?;
         let r = postcard::to_io(self, writer);
         let r: Result<()> = r.map(|_| ()).map_err(|e| e.into());
         r?;

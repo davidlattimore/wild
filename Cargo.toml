@@ -6,6 +6,7 @@ members = [
     "linker-utils",
     "wild",
     "libwild",
+    "benchmarks/runner",
 ]
 resolver = "2"
 
@@ -31,7 +32,7 @@ bitflags = "2.4.0"
 blake3 = { version = "1.0.0", features = ["rayon"] }
 bumpalo-herd = "0.1.2"
 bytesize = "2.0.0"
-clap = { version = "4.0.0", features = ["derive"] }
+clap = { version = "4.1.0", features = ["derive"] }
 colored = "3.0.0"
 colosseum = "0.2.2"
 crossbeam-queue = "0.3.10"
@@ -53,6 +54,7 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "gas",
 ] }
 indexmap = "2.9.0"
+indicatif = "0.18.3"
 itertools = "0.14.0"
 jobserver = "0.1.30"
 leb128 = "0.2.5"
@@ -94,6 +96,7 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
 ] }
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
+wait4 = "0.1.3"
 which = "8.0.0"
 winnow = { version = "0.7.10", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
