@@ -12,6 +12,7 @@ tests = [
   "depaudit2.sh",
   "dependency-file-response-file.sh",  # `-dependency-file={file}`
   "dependency-file.sh",
+  "dependency-file-lto.sh",
   "dynamic-list-data.sh",
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",
@@ -30,6 +31,7 @@ tests = [
   "init.sh",
   "library.sh",
   "linker-script-relocatable.sh",      # `--relocatable`
+  "lto-comdat.sh",                     # We don't support comdat
   "many-input-sections2.sh",           # `--relocatable`
   "nmagic.sh",
   "no-quick-exit.sh",
@@ -171,6 +173,14 @@ tests = [
 reason = "Related to TLS"
 tests  = ["tls-common.sh", "tls-le-error.sh"]
 
+[skipped_groups.lto]
+reason = "Unsupported LTO features"
+tests  = [
+  "lto-no-plugin.sh",               # We currently require a plugin for LTO
+  "lto-gcc.sh",                     # We currently require a plugin for LTO
+  "lto-llvm2.sh",                   # -m llvm is not yet supported
+]
+
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
 tests = [
@@ -191,6 +201,7 @@ tests = [
   "demangle.sh",                    # Different message formats
   "duplicate-error-archive.sh",     # Different message formats
   "duplicate-error-gc-sections.sh", # Different message formats
+  "duplicate-error-lto.sh",         # Wild deduplicates input paths
   "duplicate-error.sh",             # Different message formats
   "empty-input.sh",                 # Different message formats
   "gc-sections.sh",                 # Passes when `--no-gc-sections` is passed.

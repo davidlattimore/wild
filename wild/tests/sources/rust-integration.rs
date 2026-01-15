@@ -5,6 +5,10 @@
 // TODO: RISC-V BFD linker keeps multiple .dynsym symbols
 //#DiffIgnore:dynsym.*
 
+//#Config:linker-plugin-lto:default
+//#CompArgs:-Clinker-plugin-lto -Clinker=clang -Clink-arg=-flto
+//#RequiresLinkerPlugin:true
+
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
 //#RequiresRustMusl: true
@@ -61,6 +65,12 @@ fn main() {
     if current_dir.components().count() <= 1 {
         std::process::exit(103);
     }
+
+    // Use some function provided by libm. This results in a dependency being added on libm, but in
+    // the case of LTO, that dependency is only added once the linker plugin does its work.
+    if (100_f64.log(10.0) - 2_f64).abs() > 0.0001 {
+        std::process::exit(104);
+    } 
 
     std::process::exit(42);
 }

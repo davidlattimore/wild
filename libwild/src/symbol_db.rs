@@ -21,8 +21,11 @@ use crate::hash::hash_bytes;
 use crate::input_data::AuxiliaryFiles;
 use crate::input_data::FileId;
 use crate::input_data::LoadedInputs;
+use crate::input_data::MAX_FILES_PER_GROUP;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::linker_plugins;
+use crate::linker_plugins::LtoInputInfo;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::parsing;
@@ -72,8 +75,7 @@ pub struct SymbolDb<'data> {
 
     buckets: Vec<SymbolBucket<'data>>,
 
-    /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
-    /// section start/stop symbols.
+    /// Which file each symbol ID belongs to.
     symbol_file_ids: Vec<FileId>,
 
     /// Mapping from symbol IDs to the canonical definition of that symbol. For global symbols that
@@ -234,6 +236,10 @@ impl SymbolIdRange {
     pub(crate) fn empty() -> SymbolIdRange {
         Self::input(SymbolId::from_usize(0), 0)
     }
+
+    pub(crate) fn contains(&self, id: SymbolId) -> bool {
+        self.start() <= id && id < self.start().add_usize(self.len())
+    }
 }
 
 impl IntoIterator for SymbolIdRange {
@@ -281,7 +287,7 @@ impl<'data> SymbolDb<'data> {
     /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
     /// This promotes symbols marked for global visibility in a Rust version script back to global.
     /// Also adds the non-interposable flag to all local symbols.
-    fn handle_rust_version_script(
+    pub(crate) fn handle_rust_version_script(
         &self,
         rust_vscript: &RustVersionScript<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
@@ -292,6 +298,7 @@ impl<'data> SymbolDb<'data> {
         rust_vscript.global.par_iter().for_each(|symbol| {
             let prehashed = UnversionedSymbolName::prehashed(symbol);
             if let Some(symbol_id) = self.get_unversioned(&prehashed) {
+                let symbol_id = self.definition(symbol_id);
                 let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
                 symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
             }
@@ -392,6 +399,8 @@ impl<'data> SymbolDb<'data> {
 
         grouping::create_groups(self, parsed_objects, processed_linker_scripts);
 
+        self.create_lto_input_groups(loaded.lto_objects)?;
+
         let new_groups = &self.groups[pre_existing_groups..];
 
         let num_symbols = new_groups.iter().map(|group| group.num_symbols()).sum();
@@ -436,12 +445,6 @@ impl<'data> SymbolDb<'data> {
                 drop(per_group_outputs);
             },
             || {
-                // If it's a rust version script, apply the global symbol visibility now.
-                // We previously downgraded all symbols to local visibility.
-                if let VersionScript::Rust(rust_vscript) = &self.version_script {
-                    self.handle_rust_version_script(rust_vscript, per_symbol_flags);
-                }
-
                 verbose_timing_phase!("Apply linker scripts");
 
                 for script in &loaded.linker_scripts {
@@ -449,6 +452,46 @@ impl<'data> SymbolDb<'data> {
                 }
             },
         );
+
+        Ok(())
+    }
+
+    fn create_lto_input_groups(
+        &mut self,
+        lto_objects: Vec<Result<Box<LtoInputInfo<'data>>>>,
+    ) -> Result {
+        if lto_objects.is_empty() {
+            return Ok(());
+        }
+
+        verbose_timing_phase!("Create LTO input groups");
+
+        let lto_objects = lto_objects.into_iter().collect::<Result<Vec<_>>>()?;
+
+        for group_objects in lto_objects
+            .into_iter()
+            .chunks(MAX_FILES_PER_GROUP as usize)
+            .into_iter()
+        {
+            let mut next_symbol_id = self.next_symbol_id();
+            let group_index = self.next_group_index();
+
+            self.groups.push(Group::LtoInputs(
+                group_objects
+                    .into_iter()
+                    .enumerate()
+                    .map(|(file_index, o)| {
+                        let symbol_id_range = SymbolIdRange::input(next_symbol_id, o.num_symbols());
+                        let input_obj = o.into_input_object(
+                            FileId::new(group_index, file_index as u32),
+                            symbol_id_range,
+                        );
+                        next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
+                        input_obj
+                    })
+                    .collect(),
+            ));
+        }
 
         Ok(())
     }
@@ -535,6 +578,7 @@ impl<'data> SymbolDb<'data> {
     /// Reads the symbol visibility from the original object.
     pub(crate) fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
         let file_id = self.file_id_for_symbol(symbol_id);
+        debug_assert!(self.file(file_id).symbol_id_range().contains(symbol_id));
         match &self.groups[file_id.group()] {
             Group::Prelude(_) => Visibility::Default,
             Group::Objects(parsed_input_objects) => {
@@ -545,14 +589,13 @@ impl<'data> SymbolDb<'data> {
                     return Visibility::Default;
                 };
 
-                match obj_symbol.st_visibility() {
-                    object::elf::STV_PROTECTED => Visibility::Protected,
-                    object::elf::STV_HIDDEN => Visibility::Hidden,
-                    _ => Visibility::Default,
-                }
+                Visibility::from_elf_st_visibility(obj_symbol.st_visibility())
             }
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
+            Group::LtoInputs(lto_objects) => {
+                lto_objects[file_id.file()].symbol_visibility(symbol_id)
+            }
         }
     }
 
@@ -587,6 +630,7 @@ impl<'data> SymbolDb<'data> {
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
+            Group::LtoInputs(lto_objects) => Ok(lto_objects[file_id.file()].symbol_name(symbol_id)),
         }
     }
 
@@ -615,14 +659,22 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions.len()
     }
 
-    pub(crate) fn num_objects(&self) -> usize {
+    pub(crate) fn num_regular_objects(&self) -> usize {
         self.groups
             .iter()
             .map(|group| match group {
-                Group::Prelude(_) => 0,
-                Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
-                Group::LinkerScripts(_) => 0,
-                Group::SyntheticSymbols(_) => 0,
+                Group::Objects(objects) => objects.len(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    pub(crate) fn num_lto_objects(&self) -> usize {
+        self.groups
+            .iter()
+            .map(|group| match group {
+                Group::LtoInputs(objects) => objects.len(),
+                _ => 0,
             })
             .sum()
     }
@@ -706,6 +758,7 @@ impl<'data> SymbolDb<'data> {
             }
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
+            Group::LtoInputs(lto_objects) => SequencedInput::LtoInput(&lto_objects[file_id.file()]),
         }
     }
 
@@ -770,24 +823,28 @@ impl<'data> SymbolDb<'data> {
         resolved: &[ResolvedGroup],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        if let Some(common) = resolved[file_id.group()].files[file_id.file()].common() {
-            let local_index = symbol_id.to_input(common.symbol_id_range);
-            let Ok(obj_symbol) = common.object.symbol(local_index) else {
-                // Errors from this function should have been reported elsewhere.
-                return SymbolStrength::Undefined;
-            };
-            let e = LittleEndian;
-            if obj_symbol.is_weak() {
-                SymbolStrength::Weak
-            } else if obj_symbol.is_common(e) {
-                SymbolStrength::Common(obj_symbol.st_size(e))
-            } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
-                SymbolStrength::GnuUnique
-            } else {
-                SymbolStrength::Strong
+        match &resolved[file_id.group()].files[file_id.file()] {
+            ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
+            ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
+            ResolvedFile::LtoInput(obj) => {
+                let SequencedInput::LtoInput(obj) = self.file(obj.file_id) else {
+                    unreachable!();
+                };
+                if !obj.enabled {
+                    return SymbolStrength::Undefined;
+                }
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+                let obj_symbol = &obj.symbols[local_index.0];
+                match obj_symbol.kind {
+                    Some(linker_plugins::SymbolKind::Def) => SymbolStrength::Strong,
+                    Some(linker_plugins::SymbolKind::WeakDef) => SymbolStrength::Weak,
+                    Some(linker_plugins::SymbolKind::Common) => {
+                        SymbolStrength::Common(obj_symbol.size)
+                    }
+                    _ => SymbolStrength::Undefined,
+                }
             }
-        } else {
-            SymbolStrength::Undefined
+            _ => SymbolStrength::Undefined,
         }
     }
 
@@ -910,6 +967,16 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn add_group(&mut self, group: Group<'data>) {
         self.groups.push(group);
+    }
+
+    pub(crate) fn disable_lto_inputs(&mut self) {
+        for group in &mut self.groups {
+            if let Group::LtoInputs(objects) = group {
+                for obj in objects {
+                    obj.enabled = false;
+                }
+            }
+        }
     }
 }
 
@@ -1067,6 +1134,15 @@ pub(crate) enum Visibility {
     Default,
     Protected,
     Hidden,
+}
+impl Visibility {
+    pub(crate) fn from_elf_st_visibility(st_visibility: u8) -> Visibility {
+        match st_visibility {
+            object::elf::STV_PROTECTED => Visibility::Protected,
+            object::elf::STV_HIDDEN => Visibility::Hidden,
+            _ => Visibility::Default,
+        }
+    }
 }
 
 fn process_alternatives(
@@ -1302,9 +1378,37 @@ fn read_symbols_for_group<'data>(
         Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
+        Group::LtoInputs(lto_objects) => {
+            for obj in lto_objects {
+                load_lto_symbols(shard, &mut outputs, obj);
+            }
+        }
     }
 
     Ok(outputs)
+}
+
+fn load_lto_symbols<'data>(
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data>,
+    outputs: &mut SymbolLoadOutputs<'data>,
+    obj: &crate::linker_plugins::LtoInput<'data>,
+) {
+    for (symbol_id, sym) in obj.symbols_iter() {
+        if sym.is_definition() {
+            if let Some(version) = sym.version {
+                outputs.add_versioned(PendingVersionedSymbol::from_prehashed(
+                    symbol_id,
+                    UnversionedSymbolName::prehashed(sym.name.bytes()),
+                    version,
+                ));
+            } else {
+                outputs.add_non_versioned(PendingSymbol::new(symbol_id, sym.name.bytes()));
+            }
+            symbols_out.set_next(ValueFlags::empty(), symbol_id, obj.file_id);
+        } else {
+            symbols_out.set_next(ValueFlags::empty(), SymbolId::undefined(), obj.file_id);
+        }
+    }
 }
 
 fn populate_symbol_db<'data>(
@@ -1728,15 +1832,28 @@ pub(crate) struct SymbolDebug<'a> {
 impl std::fmt::Display for SymbolDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
+        let definition = self.db.definition(symbol_id);
+        let file_id = self.db.file_id_for_symbol(symbol_id);
+        let file = self.db.file(file_id);
+        let symbol_id_range = file.symbol_id_range();
+
+        if !symbol_id_range.contains(symbol_id) {
+            write!(
+                f,
+                "SymbolId {symbol_id} is owned by {file_id}, but that file has range {}..{}",
+                symbol_id_range.start(),
+                symbol_id_range.start().add_usize(symbol_id_range.len())
+            )?;
+            // If ID ranges or file mappings are wrong, then the code later in this method, e.g.
+            // `id_to_offset` or `symbol_name` will panic.
+            return Ok(());
+        }
+
+        let local_index = symbol_id.to_offset(symbol_id_range);
         let symbol_name = self
             .db
             .symbol_name(symbol_id)
             .unwrap_or_else(|_| UnversionedSymbolName::new(b"??"));
-
-        let definition = self.db.definition(symbol_id);
-        let file_id = self.db.file_id_for_symbol(symbol_id);
-        let file = self.db.file(file_id);
-        let local_index = symbol_id.to_offset(file.symbol_id_range());
 
         if definition.is_undefined() {
             write!(f, "undefined ")?;
@@ -1746,7 +1863,7 @@ impl std::fmt::Display for SymbolDebug<'_> {
             match file {
                 SequencedInput::Prelude(_) => write!(f, "<unnamed internal symbol>")?,
                 SequencedInput::Object(o) => {
-                    let symbol_index = symbol_id.to_input(file.symbol_id_range());
+                    let symbol_index = symbol_id.to_input(symbol_id_range);
                     if let Some(section_name) = o
                         .parsed
                         .object
@@ -1772,6 +1889,7 @@ impl std::fmt::Display for SymbolDebug<'_> {
                 SequencedInput::SyntheticSymbols(_) => {
                     write!(f, "<unnamed custom-section symbol>")?;
                 }
+                SequencedInput::LtoInput(_) => write!(f, "<unnamed symbol from LTO object>")?,
             }
         } else {
             write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;

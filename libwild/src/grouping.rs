@@ -2,6 +2,7 @@ use crate::args::Args;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
+use crate::linker_plugins::LtoInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
@@ -22,6 +23,7 @@ pub(crate) enum Group<'data> {
     Objects(&'data [SequencedInputObject<'data>]),
     LinkerScripts(Vec<SequencedLinkerScript<'data>>),
     SyntheticSymbols(SyntheticSymbols),
+    LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
 }
 
 #[derive(Debug)]
@@ -44,6 +46,7 @@ pub(crate) enum SequencedInput<'data> {
     Object(&'data SequencedInputObject<'data>),
     LinkerScript(&'data SequencedLinkerScript<'data>),
     SyntheticSymbols(&'data SyntheticSymbols),
+    LtoInput(&'data LtoInput<'data>),
 }
 
 impl Group<'_> {
@@ -55,6 +58,7 @@ impl Group<'_> {
             Group::Objects(objects) => objects[0].file_id.group(),
             Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
             Group::SyntheticSymbols(s) => s.file_id.group(),
+            Group::LtoInputs(s) => s[0].file_id.group(),
         }
     }
 
@@ -80,6 +84,10 @@ impl Group<'_> {
                 }
             }
             Group::SyntheticSymbols(o) => o.symbol_id_range,
+            Group::LtoInputs(objects) => SymbolIdRange::covering(
+                objects[0].symbol_id_range,
+                objects[objects.len() - 1].symbol_id_range,
+            ),
         }
     }
 
@@ -291,6 +299,7 @@ impl SequencedInput<'_> {
             SequencedInput::Object(o) => o.symbol_id_range,
             SequencedInput::LinkerScript(o) => o.symbol_id_range,
             SequencedInput::SyntheticSymbols(o) => o.symbol_id_range,
+            SequencedInput::LtoInput(o) => o.symbol_id_range,
         }
     }
 
@@ -336,6 +345,7 @@ impl Display for Group<'_> {
             }
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::SyntheticSymbols(_) => write!(f, "<epilogue>"),
+            Group::LtoInputs(lto_inputs) => write!(f, "<{} lto inputs>", lto_inputs.len()),
         }
     }
 }
@@ -347,6 +357,7 @@ impl std::fmt::Display for SequencedInput<'_> {
             SequencedInput::Object(o) => std::fmt::Display::fmt(o, f),
             SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
             SequencedInput::SyntheticSymbols(_) => std::fmt::Display::fmt("<epilogue>", f),
+            SequencedInput::LtoInput(o) => std::fmt::Display::fmt(o, f),
         }
     }
 }

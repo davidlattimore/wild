@@ -258,6 +258,8 @@ impl Config {
                 // TODO: Figure out why this is happening.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                // LLD generates this section. GNU ld and Wild don't.
+                "section.relro_padding",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
