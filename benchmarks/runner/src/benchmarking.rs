@@ -59,7 +59,8 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
 }
 
 fn check_tmpfs(args: &BenchArgs) -> Result {
-    let tmpdir = &args.tmp;
+    let tmpfile = std::path::absolute(&args.tmp)?;
+    let tmpdir = tmpfile.parent().unwrap();
 
     let output = Command::new("stat")
         .arg("-f")
@@ -73,9 +74,10 @@ fn check_tmpfs(args: &BenchArgs) -> Result {
 
     if !stdout.contains("tmpfs") {
         bail!(
-            "{} uses filesystem {stdout}, but we need tmpfs for reliable benchmarking. \
+            "{} uses filesystem {}, but we need tmpfs for reliable benchmarking. \
             Set --tmp to something else or pass --allow-non-tmpfs to ignore",
-            tmpdir.display()
+            tmpdir.display(),
+            stdout.trim(),
         );
     }
     Ok(())
