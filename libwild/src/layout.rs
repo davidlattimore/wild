@@ -2147,8 +2147,9 @@ fn compute_symbols_and_layouts<'data>(
                         &state.common.mem_sizes,
                     );
 
-                    // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
-                    // them to an arbitrary value. If they are used, we'll quickly notice.
+                    // Make sure that ignored offsets really aren't used by `finalise_layout` by
+                    // setting them to an arbitrary value. If they are used,
+                    // we'll quickly notice.
                     crate::verification::clear_ignored(&mut memory_offsets);
 
                     let layout =
