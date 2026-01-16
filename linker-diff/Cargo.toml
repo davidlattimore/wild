@@ -8,9 +8,9 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-linker-layout = { path = "../linker-layout", version = "0.7.0" }
-linker-trace = { path = "../linker-trace", version = "0.7.0" }
-linker-utils = { path = "../linker-utils", version = "0.7.0" }
+linker-layout = { path = "../linker-layout", version = "0.8.0" }
+linker-trace = { path = "../linker-trace", version = "0.8.0" }
+linker-utils = { path = "../linker-utils", version = "0.8.0" }
 object = { workspace = true }
 iced-x86 = { workspace = true }
 symbolic-demangle = { workspace = true }

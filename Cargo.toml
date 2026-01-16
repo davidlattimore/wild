@@ -13,7 +13,7 @@ resolver = "2"
 [workspace.package]
 repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
-version = "0.7.0"
+version = "0.8.0"
 readme = "README.md"
 rust-version = "1.90"
 edition = "2024"

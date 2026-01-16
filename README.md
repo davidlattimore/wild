@@ -175,53 +175,42 @@ The goal of Wild is to eventually be very fast via incremental linking. However,
 as fast as we can be for non-incremental linking and for the initial link when incremental linking
 is enabled.
 
-See [BENCHMARKING.md](BENCHMARKING.md) for more details on running benchmarks.
+All benchmarks are run with output to a tmpfs. See [BENCHMARKING.md](BENCHMARKING.md) for details on
+running benchmarks.
 
-All benchmarks are run with output to a tmpfs.
+We run benchmarks on a few different systems:
 
-Wild currently doesn't perform great beyond 8 threads. This is something we've been investigating
-and hope to improve soon.
+* [Ryzen 9 9955HX (16 core, 32 thread)](benchmarks/ryzen-9955hx.md)
+* [2020 era Intel-based laptop with 4 cores and 8 threads](benchmarks/lemp9.md)
+* [Raspberry Pi 5](benchmarks/raspberrypi.md)
 
-### X86_64
+Here's a few highlights.
 
-X86_64 benchmarks were run on David Lattimore's laptop (2020 model System76 Lemur pro), which has 4 cores
-(8 threads) and 42 GB of RAM.
+### Ryzen 9955HX (16 core, 32 thread)
 
-Binaries used are official release builds from each project.
+First, we link the Chrome web browser (or technically, Chromium).
 
-First a benchmark is linking a smallish binary, the wild linker itself.
+![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-time.svg)
 
-![Benchmark of lld, mold and wild linking wild](images/benchmarks/wild.svg)
+Memory consumption when linking Chromium:
 
-Next, we link librustc-driver, which is a shared object and is where most of the code in the rust
-compiler ends up.
+![Benchmark of linking chrome-crel](benchmarks/images/ryzen-9955hx/chrome-crel-memory.svg)
 
-![Benchmark of lld, mold and wild linking librustc-driver](images/benchmarks/librustc-driver.svg)
+librustc-driver is the shared object where most of the code in the Rust compiler lives. This
+benchmark shows the time to link it.
 
-Finally, for an especially large binary, we link the chromium web browser with debug info.
+![Benchmark of linking librustc-driver](benchmarks/images/ryzen-9955hx/librustc-driver-time.svg)
 
-![Benchmark of lld, mold and wild linking chromium](images/benchmarks/chromium.svg)
+For something much smaller, this is the time to link Wild itself. This also shows a few different
+Wild versions, so you can see how the link time has been tracking over releases.
 
-### Aarch64
+![Benchmark of linking wild](benchmarks/images/ryzen-9955hx/wild-time.svg)
 
-Aarch64 benchmarks were run on RaspberryPi5 with 8 GiB of RAM. Binaries used are official release
-binaries from each project.
+### Raspberry Pi 5
 
-![Benchmark of lld, mold and wild linking wild without debug info on a RaspberryPi5](images/benchmarks/rpi-wild-no-debug.svg)
+Here's linking rust-analyzer on a Raspberry Pi 5.
 
-![Benchmark of lld, mold and wild linking wild with debug info on a RaspberryPi5](images/benchmarks/rpi-wild-debug.svg)
-
-### RISC-V 64
-
-RISC-V benchmarks were run on a VisionFive2 with 8 GiB of RAM running Ubuntu 24.04.
-
-Neither wild nor lld have official release binaries for RISC-V. For wild, the binary was just a
-locally built release binary. For lld, the version that comes with Ubuntu was used. Mold does have
-an official release binary for RISC-V, so that was used.
-
-![Benchmark of lld, mold and wild linking wild with debug info on a VF2](images/benchmarks/risc-v-64-wild-debug.svg)
-
-![Benchmark of lld, mold and wild linking wild with --strip-debug info on a VF2](images/benchmarks/risc-v-64-wild-non-debug.svg)
+![Time to link rust-analyzer-no-debug](benchmarks/images/raspberrypi/rust-analyzer-no-debug-time.svg)
 
 ## Linking Rust code
 

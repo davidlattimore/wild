@@ -1,0 +1,60 @@
+<svg width="1000" height="600" viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+<rect x="0" y="0" width="1000" height="600" fill="#000000"/>
+<text x="500" y="10" dy="0.8em" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#FFFFFF">
+lemp9 - ripgrep - time</text>
+<text x="5" y="300" dy="0.76em" text-anchor="middle" font-family="sans-serif" 
+font-size="16" fill="#FFFFFF" transform="rotate(270, 5, 288)">ms</text>
+<line x1="100" y1="460" x2="950" y2="460" stroke="#FFFFFF" />
+<text x="90" y="460" dy="0.5ex" text-anchor="end" fill="#FFFFFF">0</text>
+<line x1="100" y1="422" x2="950" y2="422" stroke="#FFFFFF" />
+<text x="90" y="422" dy="0.5ex" text-anchor="end" fill="#FFFFFF">10</text>
+<line x1="100" y1="384" x2="950" y2="384" stroke="#FFFFFF" />
+<text x="90" y="384" dy="0.5ex" text-anchor="end" fill="#FFFFFF">20</text>
+<line x1="100" y1="346" x2="950" y2="346" stroke="#FFFFFF" />
+<text x="90" y="346" dy="0.5ex" text-anchor="end" fill="#FFFFFF">30</text>
+<line x1="100" y1="308" x2="950" y2="308" stroke="#FFFFFF" />
+<text x="90" y="308" dy="0.5ex" text-anchor="end" fill="#FFFFFF">40</text>
+<line x1="100" y1="270" x2="950" y2="270" stroke="#FFFFFF" />
+<text x="90" y="270" dy="0.5ex" text-anchor="end" fill="#FFFFFF">50</text>
+<line x1="100" y1="232" x2="950" y2="232" stroke="#FFFFFF" />
+<text x="90" y="232" dy="0.5ex" text-anchor="end" fill="#FFFFFF">60</text>
+<line x1="100" y1="194" x2="950" y2="194" stroke="#FFFFFF" />
+<text x="90" y="194" dy="0.5ex" text-anchor="end" fill="#FFFFFF">70</text>
+<line x1="100" y1="156" x2="950" y2="156" stroke="#FFFFFF" />
+<text x="90" y="156" dy="0.5ex" text-anchor="end" fill="#FFFFFF">80</text>
+<line x1="100" y1="118" x2="950" y2="118" stroke="#FFFFFF" />
+<text x="90" y="118" dy="0.5ex" text-anchor="end" fill="#FFFFFF">90</text>
+<line x1="100" y1="80" x2="950" y2="80" stroke="#FFFFFF" />
+<text x="90" y="80" dy="0.5ex" text-anchor="end" fill="#FFFFFF">100</text>
+<rect fill="#0000FF" opacity="0.8" x="114" y="127" width="113" height="333" />
+<line stroke="#FFFFFF" x1="170" y1="112" x2="170" y2="142" />
+<text x="170" y="484" fill="#FFFFFF" text-anchor="middle">LLD</text>
+<text x="170" y="502" fill="#FFFFFF" text-anchor="middle">20.1.2</text>
+<text x="170" y="520" fill="#FFFFFF" text-anchor="middle">Ubuntu</text>
+<text x="170" y="580" fill="#FFFFFF" text-anchor="middle">+160%</text>
+<rect fill="#FF00FF" opacity="0.8" x="255" y="234" width="113" height="226" />
+<line stroke="#FFFFFF" x1="311" y1="228" x2="311" y2="240" />
+<text x="311" y="484" fill="#FFFFFF" text-anchor="middle">Mold</text>
+<text x="311" y="502" fill="#FFFFFF" text-anchor="middle">2.40.4</text>
+<text x="311" y="580" fill="#FFFFFF" text-anchor="middle">+77%</text>
+<rect fill="#00FF00" opacity="0.8" x="396" y="314" width="113" height="146" />
+<line stroke="#FFFFFF" x1="452" y1="312" x2="452" y2="316" />
+<text x="452" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="452" y="502" fill="#FFFFFF" text-anchor="middle">0.5.0</text>
+<text x="452" y="580" fill="#FFFFFF" text-anchor="middle">+14%</text>
+<rect fill="#00FF00" opacity="0.8" x="537" y="305" width="113" height="155" />
+<line stroke="#FFFFFF" x1="593" y1="298" x2="593" y2="312" />
+<text x="593" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="593" y="502" fill="#FFFFFF" text-anchor="middle">0.6.0</text>
+<text x="593" y="580" fill="#FFFFFF" text-anchor="middle">+21%</text>
+<rect fill="#00FF00" opacity="0.8" x="678" y="321" width="113" height="139" />
+<line stroke="#FFFFFF" x1="734" y1="318" x2="734" y2="324" />
+<text x="734" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="734" y="502" fill="#FFFFFF" text-anchor="middle">0.7.0</text>
+<text x="734" y="580" fill="#FFFFFF" text-anchor="middle">+9%</text>
+<rect fill="#00FF00" opacity="0.8" x="819" y="332" width="113" height="128" />
+<line stroke="#FFFFFF" x1="875" y1="328" x2="875" y2="337" />
+<text x="875" y="484" fill="#FFFFFF" text-anchor="middle">Wild</text>
+<text x="875" y="502" fill="#FFFFFF" text-anchor="middle">0.8.0</text>
+<text x="875" y="580" fill="#FFFFFF" text-anchor="middle">+0%</text>
+</svg>
