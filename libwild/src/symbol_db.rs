@@ -59,9 +59,6 @@ use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
 use orx_parallel::ParallelizableCollection;
 use orx_parallel::ParallelizableCollectionMut;
-use rayon::iter::IndexedParallelIterator;
-use rayon::iter::IntoParallelRefMutIterator;
-use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::mem::take;
 use std::sync::atomic::AtomicU32;
@@ -1327,30 +1324,34 @@ fn populate_symbol_db<'data>(
 ) {
     crate::RAYON_POOL.get().unwrap().install(|| {
         timing_phase!("Populate symbol map");
-        buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
-            verbose_timing_phase!("Process symbol bucket");
+        buckets
+            .into_par()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
+            .enumerate()
+            .for_each(|(b, bucket)| {
+                verbose_timing_phase!("Process symbol bucket");
 
-            // The following approximation should be an upper bound on the number of global
-            // names we'll have. There will likely be at least a few global symbols with the
-            // same name, in which case the actual number will be slightly smaller.
-            let approx_num_symbols = per_group_outputs
-                .iter()
-                .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
-                .sum();
-            bucket.name_to_id.reserve(approx_num_symbols);
+                // The following approximation should be an upper bound on the number of global
+                // names we'll have. There will likely be at least a few global symbols with the
+                // same name, in which case the actual number will be slightly smaller.
+                let approx_num_symbols = per_group_outputs
+                    .iter()
+                    .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
+                    .sum();
+                bucket.name_to_id.reserve(approx_num_symbols);
 
-            for outputs in per_group_outputs {
-                let pending = &outputs.pending_symbols_by_bucket[b];
+                for outputs in per_group_outputs {
+                    let pending = &outputs.pending_symbols_by_bucket[b];
 
-                for symbol in &pending.symbols {
-                    bucket.add_symbol(symbol);
+                    for symbol in &pending.symbols {
+                        bucket.add_symbol(symbol);
+                    }
+
+                    for symbol in &pending.versioned_symbols {
+                        bucket.add_versioned_symbol(symbol);
+                    }
                 }
-
-                for symbol in &pending.versioned_symbols {
-                    bucket.add_versioned_symbol(symbol);
-                }
-            }
-        });
+            });
     })
 }
 

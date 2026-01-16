@@ -226,4 +226,4 @@ cast_lossless = "warn"
 needless_pass_by_ref_mut = "warn"
 
 [patch.crates-io]
-orx-parallel = { git = "https://github.com/orxfun/orx-parallel.git" }
+orx-parallel = { git = "https://github.com/TechnoPorg/orx-parallel.git", branch = "push-lmpnoynmpxpy" }
