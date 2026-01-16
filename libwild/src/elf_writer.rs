@@ -211,6 +211,7 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     groups_and_buffers
         .into_par()
         .with_pool(crate::RAYON_POOL.get().unwrap())
+        .chunk_size(1)
         .map(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
