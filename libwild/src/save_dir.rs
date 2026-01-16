@@ -331,13 +331,11 @@ impl SaveDirState {
     fn handle_thin_archive(&self, path: &Path, parsed_args: &Args) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
-        let mut extended_filenames = None;
 
         for entry in ArchiveIterator::from_archive_bytes(&file_bytes)? {
             match entry? {
-                ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                 ArchiveEntry::Thin(entry) => {
-                    let entry_path = entry.identifier(extended_filenames).as_path();
+                    let entry_path = entry.ident.as_path();
                     if entry_path.is_absolute() {
                         bail!(
                             "Thin archive `{}` contained absolute path `{}`",
@@ -349,7 +347,7 @@ impl SaveDirState {
 
                     self.copy_file(&absolute_entry_path, parsed_args)?;
                 }
-                _ => {}
+                ArchiveEntry::Regular(_) => {}
             }
         }
 

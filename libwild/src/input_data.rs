@@ -415,23 +415,17 @@ fn process_archive<'data>(
     input_file: &'data InputFile,
     args: &Args,
 ) -> Result<LoadedFileState<'data>> {
-    let mut extended_filenames = None;
     let mut outputs = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         let entry = entry?;
         match entry {
-            ArchiveEntry::Ignored => {}
-            ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
             ArchiveEntry::Regular(archive_entry) => {
                 let archive_and_member_name = || {
                     format!(
                         "{} @ {}",
                         input_file.filename.to_string_lossy(),
-                        archive_entry
-                            .identifier(extended_filenames)
-                            .as_path()
-                            .to_string_lossy()
+                        archive_entry.ident.as_path().to_string_lossy()
                     )
                 };
                 let kind =
@@ -450,7 +444,7 @@ fn process_archive<'data>(
                     input: InputRef {
                         file: input_file,
                         entry: Some(EntryMeta {
-                            identifier: archive_entry.identifier(extended_filenames),
+                            identifier: archive_entry.ident,
                             start_offset: archive_entry.data_offset,
                             end_offset: archive_entry.data_offset + archive_entry.entry_data.len(),
                         }),
@@ -477,15 +471,13 @@ fn process_thin_archive<'data>(
 ) -> Result<LoadedFileState<'data>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
-    let mut extended_filenames = None;
     let mut files = Vec::new();
     let mut parsed_files = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         match entry? {
-            ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
             ArchiveEntry::Thin(entry) => {
-                let path = entry.identifier(extended_filenames).as_path();
+                let path = entry.ident.as_path();
                 let entry_path = parent_path.join(path);
 
                 let file_data =
@@ -514,7 +506,7 @@ fn process_thin_archive<'data>(
                 ));
                 files.push(input_file);
             }
-            _ => {}
+            ArchiveEntry::Regular(_) => {}
         }
     }
 
