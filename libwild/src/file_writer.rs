@@ -257,14 +257,6 @@ impl SizedOutput {
     fn new(path: Arc<Path>, output_config: OutputConfig, file_size: u64) -> Result<SizedOutput> {
         let mut open_options = std::fs::OpenOptions::new();
 
-        // If another thread spawns a subprocess while we have this file open, we don't want the
-        // subprocess to inherit our file descriptor. This unfortunately doesn't prevent that, since
-        // unless and until the subprocess calls exec, it will inherit the file descriptor. However,
-        // assuming it eventually calls exec, this at least means that it inherits the file
-        // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less
-        // bad.
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
-
         match output_config.file_write_mode {
             FileWriteMode::UnlinkAndReplace => {
                 open_options.truncate(true);
