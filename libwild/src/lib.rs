@@ -65,8 +65,6 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
-use std::sync::OnceLock;
-
 use crate::args::ActivatedArgs;
 use crate::error::Result;
 use crate::identity::linker_identity;
@@ -83,6 +81,7 @@ use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use rayon::ThreadPool;
+use std::sync::OnceLock;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;

@@ -54,6 +54,7 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
+use orx_parallel::ExactSizeParIter;
 use orx_parallel::IntoParIter;
 use orx_parallel::ParIter;
 use orx_parallel::ParIterResult;
@@ -1326,8 +1327,8 @@ fn populate_symbol_db<'data>(
         timing_phase!("Populate symbol map");
         buckets
             .into_par()
-            .with_pool(crate::RAYON_POOL.get().unwrap())
             .enumerate()
+            .with_pool(crate::RAYON_POOL.get().unwrap())
             .for_each(|(b, bucket)| {
                 verbose_timing_phase!("Process symbol bucket");
 
@@ -1352,7 +1353,7 @@ fn populate_symbol_db<'data>(
                     }
                 }
             });
-    })
+    });
 }
 
 fn load_linker_script_symbols<'data>(
