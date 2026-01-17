@@ -1,7 +1,12 @@
 name = "raspberrypi"
 
-[bench.rust-analyzer-no-debug]
-
 [bench.wild-no-debug]
 
 [bench.wild-debug]
+
+[bench.librustc-driver]
+
+[bench.rust-analyzer-no-debug]
+
+[bench.rustc]
+skip = true
