@@ -12,6 +12,7 @@
 //! Basically, we need to be able to parse arguments in the same way as the other linkers on the
 //! platform that we're targeting.
 
+use crate::RAYON_POOL;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
@@ -629,10 +630,11 @@ impl Args {
             }
         });
 
-        // The pool might be already initialized, suppress the error intentionally.
-        let _ = ThreadPoolBuilder::new()
+        let thread_pool = ThreadPoolBuilder::new()
             .num_threads(self.available_threads.get())
-            .build_global();
+            .build()
+            .unwrap();
+        let _ = RAYON_POOL.set(thread_pool);
 
         Ok(ActivatedArgs {
             args: self,

@@ -290,7 +290,7 @@ pub(crate) fn finalise_perfetto_trace() -> Result {
     trace.process_thread_data(&perfetto_recorder::ThreadTraceData::take_current_thread());
     let trace = Mutex::new(trace);
 
-    rayon::in_place_scope(|scope| {
+    crate::RAYON_POOL.get().unwrap().in_place_scope(|scope| {
         scope.spawn_broadcast(|_scope, _ctx| {
             trace
                 .lock()
