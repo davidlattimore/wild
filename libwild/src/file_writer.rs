@@ -277,7 +277,9 @@ impl SizedOutput {
                         FileWriteMode::UpdateInPlaceWithFallback
                     )
                 {
-                    open_options.truncate(true).open(&path)?
+                    // If the file is being executed, we can't modify it, but we can delete it.
+                    std::fs::remove_file(&path)?;
+                    open_options.create(true).open(&path)?
                 } else {
                     return Err(error)
                         .with_context(|| format!("Failed to open `{}`", path.display()));
