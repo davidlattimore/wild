@@ -791,6 +791,24 @@ enum OptionHandlerFn {
     OptionalParam(fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
 }
 
+impl OptionHandlerFn {
+    fn help_suffix_long(&self) -> &'static str {
+        match self {
+            OptionHandlerFn::NoParam(_) => "",
+            OptionHandlerFn::WithParam(_) => "=<VALUE>",
+            OptionHandlerFn::OptionalParam(_) => "[=<VALUE>]",
+        }
+    }
+
+    fn help_suffix_short(&self) -> &'static str {
+        match self {
+            OptionHandlerFn::NoParam(_) => "",
+            OptionHandlerFn::WithParam(_) => " <VALUE>",
+            OptionHandlerFn::OptionalParam(_) => " [<VALUE>]",
+        }
+    }
+}
+
 struct OptionDeclaration<'a, T> {
     parser: &'a mut ArgumentParser,
     long_names: Vec<&'static str>,
@@ -1039,11 +1057,13 @@ impl ArgumentParser {
         // Collect all long options and their associated short options
         for (long_name, handler) in &self.options {
             if !handler.help_text.is_empty() {
-                let mut option_names = vec![format!("--{long_name}")];
+                let long_suffix = handler.handler.help_suffix_long();
+                let mut option_names = vec![format!("--{long_name}{long_suffix}")];
 
                 // Add associated short options
+                let short_suffix = handler.handler.help_suffix_short();
                 for short_char in &handler.short_names {
-                    option_names.push(format!("-{short_char}"));
+                    option_names.push(format!("-{short_char}{short_suffix}"));
                 }
 
                 help_to_options
@@ -1088,10 +1108,11 @@ impl ArgumentParser {
         // Add short-only options
         for (short_char, handler) in &self.short_options {
             if !processed_short_options.contains(short_char) && !handler.help_text.is_empty() {
+                let short_suffix = handler.handler.help_suffix_short();
                 help_to_options
                     .entry(handler.help_text)
                     .or_default()
-                    .push(format!("-{short_char}"));
+                    .push(format!("-{short_char}{short_suffix}"));
             }
         }
 
