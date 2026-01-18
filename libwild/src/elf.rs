@@ -80,6 +80,18 @@ pub(crate) struct File<'data> {
     pub(crate) eflags: u32,
 }
 
+pub(crate) trait Relocation<'data> {
+    type Sequence: RelocationSequence<'data>;
+}
+
+impl<'data> Relocation<'data> for Rela {
+    type Sequence = &'data [Rela];
+}
+
+impl<'data> Relocation<'data> for Crel {
+    type Sequence = Vec<Crel>;
+}
+
 /// A list of relocations that supports iteration.
 #[derive(Clone)]
 pub(crate) enum RelocationList<'data> {
@@ -87,15 +99,10 @@ pub(crate) enum RelocationList<'data> {
     Crel(CrelIterator<'data>),
 }
 
-/// A sequence of relocations that supports random access.
-pub(crate) enum DynamicRelocationSequence<'data> {
-    Rela(&'data [Rela]),
-    Crel(Vec<Crel>),
-}
-
 pub(crate) trait RelocationSequence<'data> {
     fn crel_iter(&self) -> impl Iterator<Item = Crel>;
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data>;
+    fn subsequence(&self, range: Range<usize>) -> Self;
+    fn num_relocations(&self) -> usize;
 }
 
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
@@ -103,18 +110,26 @@ impl<'data> RelocationSequence<'data> for &'data [Rela] {
         self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
     }
 
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data> {
-        DynamicRelocationSequence::Rela(&self[range])
+    fn subsequence(&self, range: Range<usize>) -> Self {
+        &self[range]
+    }
+
+    fn num_relocations(&self) -> usize {
+        self.len()
     }
 }
 
-impl RelocationSequence<'static> for Vec<Crel> {
+impl<'data> RelocationSequence<'data> for Vec<Crel> {
     fn crel_iter(&self) -> impl Iterator<Item = Crel> {
         self.clone().into_iter()
     }
 
-    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'static> {
-        DynamicRelocationSequence::Crel(self[range].to_vec())
+    fn subsequence(&self, range: Range<usize>) -> Self {
+        self[range].to_vec()
+    }
+
+    fn num_relocations(&self) -> usize {
+        self.len()
     }
 }
 
@@ -569,10 +584,4 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
     symbol.st_visibility() == object::elf::STV_HIDDEN
-}
-
-impl Default for DynamicRelocationSequence<'_> {
-    fn default() -> Self {
-        Self::Rela(&[])
-    }
 }
