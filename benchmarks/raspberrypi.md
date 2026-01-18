@@ -13,6 +13,9 @@ These benchmarks are for linking on a Raspberry Pi 5 with 8 GB of RAM.
 ### wild-no-debug - time
 ![Time to link wild-no-debug](images/raspberrypi/wild-no-debug-time.svg)
 
+### librustc-driver - time
+![Time to link librustc-driver](images/raspberrypi/librustc-driver-time.svg)
+
 ## Memory
 
 ### rust-analyzer-no-debug - memory
@@ -23,4 +26,7 @@ These benchmarks are for linking on a Raspberry Pi 5 with 8 GB of RAM.
 
 ### wild-no-debug - memory
 ![Memory consumption while linking wild-no-debug](images/raspberrypi/wild-no-debug-memory.svg)
+
+### librustc-driver - memory
+![Memory consumption while linking librustc-driver](images/raspberrypi/librustc-driver-memory.svg)
 
