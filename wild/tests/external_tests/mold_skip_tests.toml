@@ -10,8 +10,6 @@ tests = [
   "default-symver.sh",
   "depaudit.sh",
   "depaudit2.sh",
-  "dependency-file-response-file.sh",  # `-dependency-file={file}`
-  "dependency-file.sh",
   "dynamic-list-data.sh",
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",

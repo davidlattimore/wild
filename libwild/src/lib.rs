@@ -66,6 +66,7 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
+use crate::error::Context;
 use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
@@ -80,6 +81,9 @@ use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::Path;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -197,6 +201,19 @@ impl Linker {
 
         file_loader.verify_inputs_unchanged()?;
 
+        // Write dependency file after successful linking
+        if result.is_ok()
+            && let Some(dep_file_path) = &args.dependency_file
+        {
+            write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
+                .with_context(|| {
+                    format!(
+                        "Failed to write dependency file `{}`",
+                        dep_file_path.display()
+                    )
+                })?;
+        }
+
         result
     }
 
@@ -292,6 +309,42 @@ impl Drop for LinkerOutput<'_> {
         timing_phase!("Drop layout");
         self.layout.take();
     }
+}
+
+/// Writes a dependency file in Makefile format.
+fn write_dependency_file(
+    dep_file_path: &Path,
+    output_path: &Path,
+    loaded_files: &[&InputFile],
+) -> std::io::Result<()> {
+    timing_phase!("Write dependency file");
+
+    let file = std::fs::File::create(dep_file_path)?;
+    let mut writer = BufWriter::new(file);
+
+    // Collect unique dependency paths
+    let mut seen = std::collections::HashSet::new();
+    let mut deps = Vec::new();
+    for input_file in loaded_files {
+        let path_str = input_file.filename.display().to_string();
+        if seen.insert(path_str.clone()) {
+            deps.push(path_str);
+        }
+    }
+
+    write!(writer, "{}:", output_path.display())?;
+
+    for dep in &deps {
+        write!(writer, " {dep}")?;
+    }
+
+    writeln!(writer)?;
+
+    for dep in &deps {
+        writeln!(writer, "\n{dep}:")?;
+    }
+
+    Ok(())
 }
 
 /// Possibly initialise timing if a timing-related environment variable is active and it was enabled
