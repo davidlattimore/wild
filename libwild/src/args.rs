@@ -117,6 +117,7 @@ pub struct Args {
     pub(crate) verbose_gc_stats: bool,
 
     pub(crate) save_dir: SaveDir,
+    pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
@@ -425,6 +426,7 @@ impl Default for Args {
             should_print_version: false,
             sysroot: None,
             save_dir: Default::default(),
+            dependency_file: None,
             demangle: true,
             undefined: Vec::new(),
             relro: true,
@@ -2293,8 +2295,8 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("dependency-file")
         .help("Write dependency rules")
-        .execute(|_args, _modifier_stack, value| {
-            warn_unsupported(&format!("--dependency-file={value}"))?;
+        .execute(|args, _modifier_stack, value| {
+            args.dependency_file = Some(PathBuf::from(value));
             Ok(())
         });
 
@@ -2632,6 +2634,7 @@ mod tests {
         "foo/",
         "-x",
         "--discard-all",
+        "--dependency-file=deps.d",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];
@@ -2683,6 +2686,10 @@ mod tests {
             InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
+        assert_eq!(
+            args.dependency_file,
+            Some(PathBuf::from_str("deps.d").unwrap())
+        );
     }
 
     fn inline_and_file_options_assertions(args: &Args) {
