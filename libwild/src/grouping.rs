@@ -240,24 +240,47 @@ impl<'data> SequencedInputObject<'data> {
         let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
         let symbol_version_index = versym & object::elf::VERSYM_VERSION;
 
-        let (verdefs, string_table_index) = self.parsed.object.verdef.clone()?;
-        let strings = object
-            .sections
-            .strings(endian, object.data, string_table_index)
-            .ok()?;
+        if let Some((verdefs, string_table_index)) = self.parsed.object.verdef.clone() {
+            let strings = object
+                .sections
+                .strings(endian, object.data, string_table_index)
+                .ok()?;
 
-        for r in verdefs.clone() {
-            let (verdef, mut aux_iterator) = r.ok()?;
-            // Every VERDEF entry should have at least one AUX entry. We currently only care
-            // about the first one.
-            let aux = aux_iterator.next().ok()??;
-            let version_index = verdef.vd_ndx.get(endian);
-            if version_index == symbol_version_index {
-                return Some(format!(
-                    "{}{}",
-                    if is_default { "@@" } else { "@" },
-                    String::from_utf8_lossy(aux.name(endian, strings).ok()?)
-                ));
+            for r in verdefs {
+                let (verdef, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = verdef.vd_ndx.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Some((verneeds, string_table_index)) = self.parsed.object.verneed.clone() {
+            let strings = object
+                .sections
+                .strings(endian, object.data, string_table_index)
+                .ok()?;
+
+            for r in verneeds {
+                let (_verneed, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = aux.vna_other.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
             }
         }
 

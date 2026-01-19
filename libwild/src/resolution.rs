@@ -9,6 +9,7 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf::File;
 use crate::elf::SectionHeader;
+use crate::elf::Versym;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -1108,6 +1109,8 @@ fn resolve_symbols<'data, 'scope>(
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
+    let verneed = VerneedTable::new(&obj.parsed.object)?;
+
     obj.parsed.object.symbols.symbols()[start_symbol_offset..]
         .iter()
         .enumerate()
@@ -1122,6 +1125,7 @@ fn resolve_symbols<'data, 'scope>(
                     obj,
                     undefined_symbols_out,
                     scope,
+                    &verneed,
                 )
             },
         )
@@ -1136,6 +1140,7 @@ fn resolve_symbol<'data, 'scope>(
     obj: &SequencedInputObject<'data>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     scope: &Scope<'scope>,
+    verneed: &VerneedTable<'data>,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol. Hidden symbols exported
@@ -1147,7 +1152,17 @@ fn resolve_symbol<'data, 'scope>(
         return Ok(());
     }
 
-    let name_info = RawSymbolName::parse(obj.parsed.object.symbol_name(local_symbol)?);
+    let name_bytes = obj.parsed.object.symbol_name(local_symbol)?;
+
+    let name_info = if let Some(version_name) = verneed.version_name(local_symbol_index) {
+        RawSymbolName {
+            name: name_bytes,
+            version_name: Some(version_name),
+            is_default: false,
+        }
+    } else {
+        RawSymbolName::parse(name_bytes)
+    };
 
     debug_assert_bail!(
         !local_symbol.is_local(),
@@ -1278,6 +1293,55 @@ impl<'data> ResolvedFile<'data> {
             _ => None,
         }
     }
+}
+
+struct VerneedTable<'data> {
+    versym: &'data [Versym],
+    version_names_by_index: Vec<Option<&'data [u8]>>,
+}
+
+impl<'data> VerneedTable<'data> {
+    fn new(file: &File<'data>) -> Result<Self> {
+        Ok(Self {
+            versym: file.versym,
+            version_names_by_index: verneed_names_by_index(file)?,
+        })
+    }
+
+    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+        let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
+        self.version_names_by_index
+            .get(usize::from(version_index))
+            .copied()
+            .flatten()
+    }
+}
+
+fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+    let mut version_names = Vec::new();
+    let endian = LittleEndian;
+
+    if let Some((verneeds, string_table_index)) = &file.verneed {
+        let strings = file
+            .sections
+            .strings(endian, file.data, *string_table_index)?;
+
+        for r in verneeds.clone() {
+            let (_verneed, aux_iterator) = r?;
+            for aux in aux_iterator {
+                let aux = aux?;
+                let version_index = usize::from(aux.vna_other.get(endian));
+                let name = aux.name(endian, strings)?;
+
+                if version_names.len() <= version_index {
+                    version_names.resize_with(version_index + 1, || None);
+                }
+                version_names[version_index] = Some(name);
+            }
+        }
+    }
+
+    Ok(version_names)
 }
 
 // We create quite a lot of `SectionSlot`s. We don't generally copy them, however we do need to

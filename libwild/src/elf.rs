@@ -52,6 +52,7 @@ pub(crate) type Verneed = object::elf::Verneed<LittleEndian>;
 pub(crate) type Vernaux = object::elf::Vernaux<LittleEndian>;
 pub(crate) type Versym = object::elf::Versym<LittleEndian>;
 pub(crate) type VerdefIterator<'data> = object::read::elf::VerdefIterator<'data, FileHeader>;
+pub(crate) type VerneedIterator<'data> = object::read::elf::VerneedIterator<'data, FileHeader>;
 pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
@@ -75,6 +76,9 @@ pub(crate) struct File<'data> {
 
     /// Number of verdef versions according to `sh_info` of `.gnu._version_d` section.
     pub(crate) verdefnum: u32,
+
+    /// An iterator over the version references and the corresponding linked string table index.
+    pub(crate) verneed: Option<(VerneedIterator<'data>, object::SectionIndex)>,
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
@@ -152,6 +156,7 @@ impl<'data> File<'data> {
         let mut versym: &[Versym] = &[];
         let mut verdef = None;
         let mut verdefnum = 0;
+        let mut verneed = None;
 
         // Find all the sections that we're interested in a single scan of the section table so
         // as to avoid multiple scans.
@@ -170,6 +175,9 @@ impl<'data> File<'data> {
                     verdef = section.gnu_verdef(endian, data)?;
                     verdefnum = section.sh_info(endian);
                 }
+                sht::GNU_VERNEED => {
+                    verneed = section.gnu_verneed(endian, data)?;
+                }
                 _ => {}
             }
         }
@@ -182,6 +190,7 @@ impl<'data> File<'data> {
             versym,
             verdef,
             verdefnum,
+            verneed,
             eflags,
         })
     }
