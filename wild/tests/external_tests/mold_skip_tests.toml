@@ -234,7 +234,6 @@ tests = [
   "dynamic-linker.sh",
   "glibc-2.22-bug.sh",
   "hidden-undef.sh",
-  "ifunc-address-equality-exported.sh",
   "initfirst.sh",
   "large-alignment-dso.sh",
   "large-alignment.sh",

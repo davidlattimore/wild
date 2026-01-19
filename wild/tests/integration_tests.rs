@@ -3317,6 +3317,7 @@ fn integration_test(
         "wrap-real-only.c",
         "ifunc-alias.c",
         "ifunc-address-equality.c",
+        "ifunc-export.c",
         "stack-size.c"
     )]
     program_name: &'static str,
