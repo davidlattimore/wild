@@ -84,6 +84,8 @@ pub(crate) enum SymbolPlacement<'data> {
     /// last byte of the section.
     SectionEnd(OutputSectionId),
 
+    /// Where secondary sections are merged into a primary section, this causes our symbol to point
+    /// to the non-inclusive end of the last section merged into the specified primary.
     SectionGroupEnd(OutputSectionId),
 
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
@@ -95,6 +97,9 @@ pub(crate) enum SymbolPlacement<'data> {
     /// A symbol defined via --defsym that references another symbol.
     /// Stores the name of the target symbol and an optional offset to add to its value.
     DefsymSymbol(&'data str, i64),
+
+    /// Symbol will point to the start of the first loadable segment.
+    LoadBaseAddress,
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".
@@ -289,6 +294,11 @@ impl<'data> Prelude<'data> {
             };
             InternalSymDefInfo::notype(placement, name.as_bytes())
         }));
+
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::LoadBaseAddress,
+            b"__executable_start",
+        ));
 
         Self { symbol_definitions }
     }

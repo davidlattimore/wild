@@ -23,6 +23,7 @@ use crate::input_data::FileId;
 use crate::input_data::LoadedInputs;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::parsing;
@@ -1870,23 +1871,15 @@ impl<'data> Prelude<'data> {
                 SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
                     ValueFlags::ABSOLUTE
                 }
-                SymbolPlacement::SectionStart(_) => {
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::NON_INTERPOSABLE
-                }
-                SymbolPlacement::SectionEnd(_) => {
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::NON_INTERPOSABLE
-                }
-                SymbolPlacement::SectionGroupEnd(_) => {
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::NON_INTERPOSABLE
-                }
                 SymbolPlacement::DefsymAbsolute(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
                 }
-                SymbolPlacement::DefsymSymbol(_, _) => {
+                SymbolPlacement::SectionStart(_)
+                | SymbolPlacement::SectionEnd(_)
+                | SymbolPlacement::SectionGroupEnd(_)
+                | SymbolPlacement::DefsymSymbol(_, _)
+                | SymbolPlacement::LoadBaseAddress => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
@@ -1912,6 +1905,10 @@ impl InternalSymDefInfo<'_> {
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),
+            // The other linkers attach to the closest section, but the address is nonetheless
+            // outside of the selected section. It's tricky for us to find the the closest section
+            // at this point in the code, so we pick an arbitrary section.
+            SymbolPlacement::LoadBaseAddress => Some(output_section_id::TEXT),
         }
     }
 }
