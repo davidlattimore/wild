@@ -1,5 +1,6 @@
-//#AbstractConfig:default
+//#Config:ifunc-export
 //#LinkerDriver:gcc
+//#CompArgs:-fno-pic -fno-pie
 //#LinkArgs:-no-pie -Wl,-z,now
 //#Shared:ifunc-export-1.c:-fPIC
 //#RequiresGlibc:true
@@ -8,11 +9,6 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.data
 //#DiffIgnore:dynsym.foo.section
-
-//#Config:ifunc-export-base:default
-
-//#Config:nopic:default
-//#CompArgs:-fno-pic -fno-pie
 
 typedef void (*Func)(void);
 static int foo_called = 0;
