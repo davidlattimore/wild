@@ -61,17 +61,13 @@ impl<'data> SymbolInfoPrinter<'data> {
             .find_mangled_name(self.name)
             .unwrap_or_else(|| self.name.to_owned());
 
-        let versioned_prefix = if name.contains("@") {
-            name.clone()
-        } else {
-            format!("{name}@")
-        };
+        let matcher = NameMatcher::new(&name);
 
         let symbol_id = self.symbol_db.get(
             &PreHashedSymbolName::from_raw(&RawSymbolName::parse(name.as_bytes())),
             true,
         );
-        println!("Global name `{name}` refers to: {symbol_id:?}",);
+        println!("Global name `{name}` refers to: {symbol_id:?}");
 
         println!("Definitions / references with name `{name}`:");
         for i in 0..self.symbol_db.num_symbols() {
@@ -87,8 +83,7 @@ impl<'data> SymbolInfoPrinter<'data> {
             };
 
             if let Ok(sym_name) = self.symbol_db.symbol_name(symbol_id)
-                && (sym_name.bytes() == name.as_bytes()
-                    || sym_name.bytes().starts_with(versioned_prefix.as_bytes()))
+                && matcher.matches(sym_name.bytes(), symbol_id, self.symbol_db)
             {
                 let file = self.symbol_db.file(file_id);
                 let local_index = symbol_id.to_input(file.symbol_id_range());
@@ -139,6 +134,75 @@ impl<'data> SymbolInfoPrinter<'data> {
                             #{local_index} in File #{file_id} {input} ({file_state})"
                 );
             }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct NameMatcher {
+    name: String,
+    version: VersionMatcher,
+}
+
+#[derive(Debug)]
+enum VersionMatcher {
+    None,
+    Exact(String),
+    Any,
+}
+
+impl NameMatcher {
+    fn new(pattern: &str) -> Self {
+        if let Some((n, v)) = pattern.split_once('@') {
+            Self {
+                name: n.to_owned(),
+                version: VersionMatcher::new(v),
+            }
+        } else {
+            Self {
+                name: pattern.to_owned(),
+                version: VersionMatcher::None,
+            }
+        }
+    }
+
+    fn matches(&self, name: &[u8], symbol_id: SymbolId, symbol_db: &SymbolDb) -> bool {
+        if let Some(i) = name.iter().position(|b| *b == b'@') {
+            let (name, version) = name.split_at(i);
+            return name == self.name.as_bytes() && self.version.matches_at_prefixed(version);
+        }
+
+        if name != self.name.as_bytes() {
+            return false;
+        }
+
+        self.version.matches_at_prefixed(
+            symbol_db
+                .symbol_version_debug(symbol_id)
+                .unwrap_or_default()
+                .as_bytes(),
+        )
+    }
+}
+
+impl VersionMatcher {
+    fn new(n: &str) -> Self {
+        if n == "*" {
+            VersionMatcher::Any
+        } else {
+            VersionMatcher::Exact(n.to_owned())
+        }
+    }
+
+    fn matches_at_prefixed(&self, mut version: &[u8]) -> bool {
+        let is_default = version.starts_with(b"@@");
+        while let Some(rest) = version.strip_prefix(b"@") {
+            version = rest;
+        }
+        match self {
+            VersionMatcher::Any => true,
+            VersionMatcher::Exact(v) => version == v.as_bytes(),
+            VersionMatcher::None => is_default || version.is_empty(),
         }
     }
 }

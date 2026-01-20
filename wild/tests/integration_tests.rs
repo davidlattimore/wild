@@ -3305,6 +3305,7 @@ fn integration_test(
         "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
+        "symver-shared.c",
         "output-kind.c",
         "entry-in-shared.c",
         "alignment.c",
