@@ -3320,7 +3320,8 @@ fn integration_test(
         "ifunc-alias.c",
         "ifunc-address-equality.c",
         "ifunc-export.c",
-        "stack-size.c"
+        "stack-size.c",
+        "undefined-weak-sym.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
