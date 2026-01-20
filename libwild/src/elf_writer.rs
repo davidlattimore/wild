@@ -2574,6 +2574,12 @@ fn write_absolute_relocation<A: Arch>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )
+    } else if resolution.flags.is_dynamic()
+        && resolution.flags.is_absolute()
+        && !section_info.is_writable
+    {
+        // Weak undefined symbol referenced from a read-only section. Fill in as zero.
+        Ok(0)
     } else if resolution.flags.is_interposable() && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
