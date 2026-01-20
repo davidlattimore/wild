@@ -305,6 +305,8 @@ pub fn compute<'data, A: Arch>(
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
         gnu_property_notes: &gnu_property_notes,
         riscv_attributes: &riscv_attributes,
+        segment_layouts: &segment_layouts,
+        program_segments: &program_segments,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -1823,6 +1825,8 @@ struct FinaliseLayoutResources<'scope, 'data> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
     gnu_property_notes: &'scope [GnuProperty],
     riscv_attributes: &'scope RiscVAttributes,
+    segment_layouts: &'scope SegmentLayouts,
+    program_segments: &'scope ProgramSegments,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -4105,6 +4109,13 @@ fn create_start_end_symbol_resolution(
             // update_defsym_symbol_resolutions() which is called after layout is complete.
             0
         }
+
+        SymbolPlacement::LoadBaseAddress => resources
+            .segment_layouts
+            .segments
+            .iter()
+            .find(|seg| resources.program_segments.segment_def(seg.id).segment_type == pt::LOAD)
+            .map(|seg| seg.sizes.mem_offset)?,
     };
 
     Some(create_resolution(
