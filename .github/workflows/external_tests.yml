@@ -23,10 +23,11 @@ jobs:
       image: 'ubuntu:25.04'
     steps:
       - run: |
-          apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap git zstd qemu-user \
+          apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap git zstd qemu-user gdb dwarfdump perl wget xz-utils \
               binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu binutils-loongarch64-linux-gnu \
               gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu \
-              g++-aarch64-linux-gnu g++-riscv64-linux-gnu g++-loongarch64-linux-gnu
+              g++-aarch64-linux-gnu g++-riscv64-linux-gnu g++-loongarch64-linux-gnu \
+              && mkdir /sde && wget -O- -q https://downloadmirror.intel.com/859732/sde-external-9.58.0-2025-06-16-lin.tar.xz | tar -C /sde --strip-components=1 --xz -xf - && ln -s /sde/sde64 /usr/bin
       - name: Checkout
         uses: actions/checkout@v6
         with:
