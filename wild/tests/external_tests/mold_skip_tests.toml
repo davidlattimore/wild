@@ -260,7 +260,6 @@ tests = [
   "versioned-undef.sh",
   "warn-symbol-type.sh",
   "weak-export-exe.sh",
-  "weak-undef.sh",
   "weak-undef2.sh",
   "weak-undef5.sh",
 ]
