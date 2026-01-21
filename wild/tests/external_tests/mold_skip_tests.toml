@@ -114,6 +114,10 @@ tests = [
 reason = "x86_64 specific tests"
 tests = [
   "arch-x86_64-address-equality.sh",
+  "arch-x86_64-apx-gotpcrelx.sh",
+  "arch-x86_64-apx-gottpoff.sh",
+  "arch-x86_64-apx-gottpoff2.sh",
+  "arch-x86_64-apx-tlsdesc.sh",
   "arch-x86_64-empty-mergeable-section.sh",
   "arch-x86_64-execstack-if-needed.sh",
   "arch-x86_64-gnu-linkonce.sh",
