@@ -18,5 +18,7 @@ result
 fakes-debug/out
 fakes-debug/-
 /wild/out/test
+fakes-debug/sde-cet-checker-out.txt
+##
 *.pftrace
 *.bench-results
