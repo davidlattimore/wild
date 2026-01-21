@@ -243,6 +243,7 @@ impl Config {
                 // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
                 // when GNU ld doesn't.
                 "dynsym.__tls_get_addr.*",
+                "version.__tls_get_addr",
                 // GNU ld emits two segments, whereas wild emits only a single segment.
                 "segment.LOAD.R.*",
                 // We haven't provided an implementation that is compatible with existing linkers.

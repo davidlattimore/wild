@@ -1650,7 +1650,10 @@ impl<'data> RawSymbolName<'data> {
             if name_bytes[at_offset..].starts_with(b"@@") {
                 version_name = Some(&name_bytes[at_offset + 2..]);
             } else {
+                // REVERT: Doesn't prevent the version script from versioning this symbol.
+                // if !name_bytes[at_offset + 1..].is_empty() {
                 version_name = Some(&name_bytes[at_offset + 1..]);
+                // }
                 is_default = false;
             }
 

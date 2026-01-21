@@ -473,7 +473,18 @@ impl<'data> RegularVersionScript<'data> {
     ) -> Result<Option<u16>> {
         let name_bytes = name.bytes();
         if let Some(version_name) = version_name {
-            if let Some(&number) = self.version_name_mapping.get(version_name) {
+            // REVERT: Creates a default (non-hidden) symbol.
+            // if version_name.is_empty() {
+            //     return Ok(None);
+            // }
+
+            // There is a quirk that I couldn't find docs for. When a symbol has an empty version
+            // (e.g. "foo@"), the versioning is disabled and the symbol has "hidden global version"
+            // (visible as `1h <whitespaces>` in `readelf -V`), even if that symbol appears in the
+            // version script.
+            if version_name.is_empty() {
+                return Ok(Some(object::elf::VER_NDX_GLOBAL));
+            } else if let Some(&number) = self.version_name_mapping.get(version_name) {
                 return Ok(Some(number as u16 + object::elf::VER_NDX_GLOBAL));
             }
             bail!(
@@ -495,7 +506,7 @@ impl<'data> RegularVersionScript<'data> {
 }
 
 #[derive(Debug, Default)]
-/// A generaic parsed version body before version script specialization optimizations.
+/// A generic parsed version body before version script specialization optimizations.
 struct RawVersionBody<'data> {
     pub globals: Vec<ParsedSymbolMatcher<'data>>,
     pub locals: Vec<ParsedSymbolMatcher<'data>>,

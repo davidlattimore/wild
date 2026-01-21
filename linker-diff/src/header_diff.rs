@@ -450,6 +450,12 @@ impl FieldValues {
             .or_default()
             .push(value);
     }
+
+    pub(crate) fn sort_values(&mut self) {
+        for values in self.values.values_mut() {
+            values.sort();
+        }
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]

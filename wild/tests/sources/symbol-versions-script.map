@@ -1,10 +1,12 @@
 VER_1.0 {
     global:
         bar_global;
+        remain_unversioned;
     local:
         bar_local;
 };
 
 VER_2.0 {
         bar_v2*;
+        remain_unversioned;
 } VER_1.0;
