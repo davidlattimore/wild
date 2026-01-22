@@ -192,16 +192,26 @@ pub(crate) struct AuxiliaryFiles<'data> {
 
 impl<'data> AuxiliaryFiles<'data> {
     pub(crate) fn new(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+        let resolve_script_path = |path: &Path| -> PathBuf {
+            if path.exists() {
+                path.to_owned()
+            } else if let Some(found) = search_for_file(&args.lib_search_path, None, path) {
+                found
+            } else {
+                path.to_owned()
+            }
+        };
+
         Ok(Self {
             version_script_data: args
                 .version_script_path
                 .as_ref()
-                .map(|path| read_script_data(path, inputs_arena))
+                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
                 .transpose()?,
             export_list_data: args
                 .export_list_path
                 .as_ref()
-                .map(|path| read_script_data(path, inputs_arena))
+                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
                 .transpose()?,
         })
     }
