@@ -634,6 +634,21 @@ fn init_fini_priority(name: &[u8]) -> Option<u16> {
         return parse_priority_suffix(rest);
     }
 
+    // .ctors and .dtors without suffix have the same priority as .init_array/.fini_array
+    if name == b".ctors" || name == b".dtors" {
+        return Some(u16::MAX);
+    }
+
+    // .ctors uses descending order (65535 = lowest priority, 0 = highest)
+    // while .init_array uses ascending order (0 = highest priority, 65535 = lowest)
+    if let Some(rest) = name.strip_prefix(b".ctors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
+    if let Some(rest) = name.strip_prefix(b".dtors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
     None
 }
 

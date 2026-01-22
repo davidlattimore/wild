@@ -282,16 +282,6 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    const fn prefix_section_keep(
-        name: &'data [u8],
-        section_id: OutputSectionId,
-    ) -> SectionRule<'data> {
-        Self::prefix(
-            name,
-            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
-        )
-    }
-
     const fn prefix_section_sort(
         name: &'data [u8],
         section_id: OutputSectionId,
@@ -347,12 +337,12 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
         secnames::INIT_ARRAY_SECTION_NAME,
         output_section_id::INIT_ARRAY,
     ),
-    SectionRule::prefix_section_keep(b".ctors", output_section_id::INIT_ARRAY),
+    SectionRule::prefix_section_sort(b".ctors", output_section_id::INIT_ARRAY),
     SectionRule::prefix_section_sort(
         secnames::FINI_ARRAY_SECTION_NAME,
         output_section_id::FINI_ARRAY,
     ),
-    SectionRule::prefix_section_keep(b".dtors", output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section_sort(b".dtors", output_section_id::FINI_ARRAY),
     SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
     SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
     SectionRule::prefix_section(
