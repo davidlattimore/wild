@@ -3681,15 +3681,11 @@ fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout) -> Result
     let header = table_writer.take_eh_frame_hdr();
     header.version = 1;
 
-    header.table_encoding = elf::ExceptionHeaderFormat::I32 as u8
-        | elf::ExceptionHeaderApplication::EhFrameHdrRelative as u8;
-
-    header.frame_pointer_encoding =
-        elf::ExceptionHeaderFormat::I32 as u8 | elf::ExceptionHeaderApplication::Relative as u8;
+    header.table_encoding = (gimli::DW_EH_PE_sdata4 | gimli::DW_EH_PE_datarel).0;
+    header.frame_pointer_encoding = (gimli::DW_EH_PE_sdata4 | gimli::DW_EH_PE_pcrel).0;
     header.frame_pointer = eh_frame_ptr(layout)?;
 
-    header.count_encoding =
-        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+    header.count_encoding = (gimli::DW_EH_PE_udata4 | gimli::DW_EH_PE_absptr).0;
     header.entry_count = eh_frame_hdr_entry_count(layout)?;
 
     Ok(())
