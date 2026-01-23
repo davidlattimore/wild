@@ -290,7 +290,7 @@ impl Config {
             ),
             ArchKind::RISCV64 => self.ignore.extend(
                 [
-                    // TODO: for some reason, main is put into .dynsym
+                    // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
                     // GOT entries may differ due to unimplemented relaxations
                     "section.got.*",
@@ -302,6 +302,8 @@ impl Config {
                     "section-diff-failed*",
                     // .relro_padding is showing up on risc-v.
                     "section.relro_padding",
+                    // TODO: sometimes there are huge differences in dynamic symbols count.
+                    "version.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
