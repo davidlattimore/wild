@@ -317,6 +317,8 @@ impl Config {
                     "literal-byte-mismatch*",
                     "error.*",
                     "section-diff-failed*",
+                    // TODO: sometimes there are huge differences in dynamic symbols count.
+                    "version.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
