@@ -263,6 +263,10 @@ impl Config {
                 // TODO: Figure out why this is happening.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                // On some systems Wild outputs these symbols while GNU ld does not.
+                // TODO: Figure out what is going on.
+                "version._ITM_deregisterTMCloneTable",
+                "version._ITM_registerTMCloneTable",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
