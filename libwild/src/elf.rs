@@ -419,31 +419,6 @@ pub(crate) struct EhFrameEntryPrefix {
     pub(crate) cie_id: u32,
 }
 
-#[allow(unused)]
-#[repr(u8)]
-pub(crate) enum ExceptionHeaderFormat {
-    Uleb128 = 1,
-    U16 = 2,
-    U32 = 3,
-    U64 = 4,
-    Sleb128 = 9,
-    I16 = 0xa,
-    I32 = 0xb,
-    I64 = 0xc,
-}
-
-#[allow(unused)]
-#[repr(u8)]
-pub(crate) enum ExceptionHeaderApplication {
-    Absolute = 0,
-
-    /// Value is relative to the location of the pointer.
-    Relative = 0x10,
-
-    /// Value is relative to the start of the .eh_frame_hdr section.
-    EhFrameHdrRelative = 0x30,
-}
-
 /// The offset of the pc_begin field in an FDE.
 pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 
