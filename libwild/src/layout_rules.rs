@@ -361,6 +361,7 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix(b".rela", SectionRuleOutcome::Discard),
     SectionRule::prefix(b".crel", SectionRuleOutcome::Discard),
+    SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
