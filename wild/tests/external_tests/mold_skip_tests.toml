@@ -225,7 +225,6 @@ tests = [
   "common-archive.sh",
   "common-ref.sh",
   "common-symbols.sh",
-  "ctors-in-init-array.sh",
   "defsym-missing-symbol.sh",
   "demangle-cpp.sh",
   "disable-new-dtags.sh",

@@ -1300,6 +1300,70 @@ fn write_object_section<A: Arch>(
     let out = write_section_raw(object, layout, section, buffers)?;
     let relocations = object.relocations(section.index)?;
 
+    // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
+    // reverse order while .init_array/.fini_array are executed in forward order.
+    if section.reverse_contents {
+        const WORD_SIZE: usize = core::mem::size_of::<u64>();
+
+        if !out.is_empty() {
+            ensure!(
+                out.len().is_multiple_of(WORD_SIZE),
+                "Section size is not a multiple of word size"
+            );
+
+            let pointers: &mut [u64] = <[u64]>::mut_from_bytes(out).unwrap();
+            pointers.reverse();
+        }
+
+        // For reversed sections, we need to adjust relocation offsets.
+        // The offset transformation is: new_offset = section_size - old_offset - word_size
+        let section_size = out.len() as u64;
+
+        let result = match relocations {
+            elf::RelocationList::Rela(rela) => apply_relocations::<A, _>(
+                object,
+                out,
+                section,
+                rela.iter().map(|r| {
+                    let mut crel = Crel::from_rela(r, LittleEndian, false);
+                    crel.r_offset = section_size.saturating_sub(crel.r_offset + WORD_SIZE as u64);
+                    Ok(crel)
+                }),
+                layout,
+                table_writer,
+                trace,
+            ),
+            elf::RelocationList::Crel(crel_iter) => apply_relocations::<A, _>(
+                object,
+                out,
+                section,
+                crel_iter.map(|r| {
+                    r.map(|mut crel| {
+                        crel.r_offset =
+                            section_size.saturating_sub(crel.r_offset + WORD_SIZE as u64);
+                        crel
+                    })
+                }),
+                layout,
+                table_writer,
+                trace,
+            ),
+        };
+
+        result.with_context(|| {
+            format!(
+                "Failed to apply relocations in section `{}` of {}",
+                object.object.section_display_name(section.index),
+                object.input
+            )
+        })?;
+
+        if section.flags.needs_got() || section.flags.needs_plt() {
+            bail!("Section has GOT or PLT");
+        };
+        return Ok(());
+    }
+
     let result = match relocations {
         elf::RelocationList::Rela(rela) => apply_relocations::<A, _>(
             object,
