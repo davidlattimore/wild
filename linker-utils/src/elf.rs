@@ -696,6 +696,10 @@ pub mod secnames {
     pub const RODATA_SECTION_NAME: &[u8] = RODATA_SECTION_NAME_STR.as_bytes();
     pub const TEXT_SECTION_NAME_STR: &str = ".text";
     pub const TEXT_SECTION_NAME: &[u8] = TEXT_SECTION_NAME_STR.as_bytes();
+    pub const CTORS_SECTION_NAME_STR: &str = ".ctors";
+    pub const CTORS_SECTION_NAME: &[u8] = CTORS_SECTION_NAME_STR.as_bytes();
+    pub const DTORS_SECTION_NAME_STR: &str = ".dtors";
+    pub const DTORS_SECTION_NAME: &[u8] = DTORS_SECTION_NAME_STR.as_bytes();
     pub const INIT_ARRAY_SECTION_NAME_STR: &str = ".init_array";
     pub const INIT_ARRAY_SECTION_NAME: &[u8] = INIT_ARRAY_SECTION_NAME_STR.as_bytes();
     pub const FINI_ARRAY_SECTION_NAME_STR: &str = ".fini_array";

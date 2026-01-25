@@ -635,7 +635,7 @@ fn init_fini_priority(name: &[u8]) -> Option<u16> {
     }
 
     // .ctors and .dtors without suffix have the same priority as .init_array/.fini_array
-    if name == b".ctors" || name == b".dtors" {
+    if name == secnames::CTORS_SECTION_NAME || name == secnames::DTORS_SECTION_NAME {
         return Some(u16::MAX);
     }
 

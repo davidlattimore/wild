@@ -8,6 +8,7 @@ use crate::get_r_type;
 use crate::header_diff::ResolvedValue;
 use anyhow::Context;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::secnames;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -19,13 +20,13 @@ use std::borrow::Cow;
 pub(crate) fn report_diffs<A: Arch>(report: &mut crate::Report, objects: &[crate::Binary]) {
     report.add_diffs(crate::header_diff::diff_array(
         objects,
-        |bin| get_pointer_list::<A>(bin, ".init_array"),
+        |bin| get_pointer_list::<A>(bin, secnames::INIT_ARRAY_SECTION_NAME_STR),
         "init_array",
     ));
 
     report.add_diffs(crate::header_diff::diff_array(
         objects,
-        |bin| get_pointer_list::<A>(bin, ".fini_array"),
+        |bin| get_pointer_list::<A>(bin, secnames::FINI_ARRAY_SECTION_NAME_STR),
         "fini_array",
     ));
 }
