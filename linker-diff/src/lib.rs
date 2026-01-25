@@ -210,6 +210,10 @@ impl Config {
                 // symbols, whereas other linkers don't. This is a valid optimisation that other
                 // linkers don't currently do.
                 "rel.extra-opt.R_X86_64_GOTPCRELX.CallIndirectToRelative.static-*",
+                // Wild applies MovIndirectToLea relaxation to _DYNAMIC symbol in static builds
+                // because it's marked as NON_INTERPOSABLE. GNU ld keeps the GOT-relative access.
+                // Both are correct, but Wild's approach is more optimized.
+                "rel.extra-opt.R_X86_64_REX_GOTPCRELX.MovIndirectToLea.static-*",
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
                 // GNU ld sometimes applies relaxations that we don't yet.
