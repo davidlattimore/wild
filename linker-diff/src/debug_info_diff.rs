@@ -4,7 +4,6 @@ use crate::DiffValues;
 use crate::Report;
 use crate::header_diff::DiffMode;
 use anyhow::Result;
-use fallible_iterator::FallibleIterator;
 use gimli::LittleEndian;
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -34,19 +33,19 @@ fn parse_unit_info(
     let mut comp_dir = None;
 
     let mut entries = unit.entries();
-    while let Some((delta_depth, entry)) = entries.next_dfs()? {
-        if delta_depth == 1 {
+    while let Some(entry) = entries.next_dfs()? {
+        if entry.depth() == 1 {
             break;
         }
-        let mut attrs = entry.attrs();
-        let attr_to_string = |attr: gimli::Attribute<_>| -> Result<String> {
+
+        let attr_to_string = |attr: &gimli::Attribute<_>| -> Result<String> {
             Ok(unit
                 .attr_string(attr.value())?
                 .to_string_lossy()
                 .to_string())
         };
 
-        while let Some(attr) = attrs.next()? {
+        for attr in entry.attrs() {
             match attr.name() {
                 gimli::DW_AT_name => {
                     name = Some(attr_to_string(attr)?);
@@ -80,10 +79,11 @@ fn read_file_debug_info(obj: &Binary) -> Result<HashMap<CompilationUnitIdentifie
     let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
     let dwarf = dwarf_sections.borrow(borrow_section);
 
-    let units: Vec<_> = dwarf.units().collect()?;
+    let units: Vec<_> = dwarf.units().collect_vec();
     let mut cu_sizes = HashMap::new();
 
     for unit in units {
+        let unit = unit?;
         let (cu_name, cu_size) =
             parse_unit_info(dwarf.unit(unit)?.unit_ref(&dwarf), unit.unit_length())?;
         *cu_sizes.entry(cu_name).or_default() += cu_size;
