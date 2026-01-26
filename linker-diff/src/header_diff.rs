@@ -640,7 +640,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_MOVETAB => (Cow::Borrowed("DT_MOVETAB"), Converter::None),
             DT_SYMINFO => (Cow::Borrowed("DT_SYMINFO"), Converter::None),
             DT_RELCOUNT => (Cow::Borrowed("DT_RELCOUNT"), Converter::None),
-            DT_AUXILIARY => (Cow::Borrowed("DT_AUXILIARY"), Converter::None),
+            DT_AUXILIARY => (Cow::Borrowed("DT_AUXILIARY"), Converter::DynStrOffset),
             other => (
                 Cow::Owned(format!("Unknown (0x{other:x})")),
                 Converter::None,

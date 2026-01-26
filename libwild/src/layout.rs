@@ -4329,6 +4329,10 @@ impl EpilogueLayoutState {
                 common.allocate(part_id::DYNSTR, soname.len() as u64 + 1);
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
+            for aux in &symbol_db.args.auxiliary {
+                common.allocate(part_id::DYNSTR, aux.len() as u64 + 1);
+                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
 
             if let Some(gnu_hash_layout) = resources.gnu_hash_layout {
                 self.allocate_gnu_hash(common, gnu_hash_layout, resources);

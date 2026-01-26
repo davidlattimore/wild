@@ -96,6 +96,7 @@ pub struct Args {
     pub(crate) export_all_dynamic_symbols: bool,
     pub(crate) export_list: Vec<String>,
     pub(crate) export_list_path: Option<PathBuf>,
+    pub(crate) auxiliary: Vec<String>,
 
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
@@ -449,6 +450,7 @@ impl Default for Args {
             z_stack_size: None,
             z_isa: None,
             max_page_size: None,
+            auxiliary: Vec::new(),
             numeric_experiments: Vec::new(),
             rpath_set: Default::default(),
         }
@@ -512,6 +514,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     if !args.unrecognized_options.is_empty() {
         let options_list = args.unrecognized_options.join(", ");
         bail!("unrecognized option(s): {}", options_list);
+    }
+
+    if !args.auxiliary.is_empty() && args.should_output_executable {
+        bail!("-f may not be used without -shared");
     }
 
     Ok(args)
@@ -2300,6 +2306,16 @@ fn setup_argument_parser() -> ArgumentParser {
                     *path = new_path;
                 }
             }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("auxiliary")
+        .short("f")
+        .help("Set DT_AUXILIARY to a given value")
+        .execute(|args, _modifier_stack, value| {
+            args.auxiliary.push(value.to_owned());
             Ok(())
         });
 
