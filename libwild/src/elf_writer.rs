@@ -2946,6 +2946,15 @@ fn write_epilogue_dynamic_entries(
             .write(object::elf::DT_SONAME, offset.into())?;
         epilogue_offsets.soname.replace(offset);
     }
+    for aux in &layout.args().auxiliary {
+        let offset = table_writer
+            .dynsym_writer
+            .strtab_writer
+            .write_str(aux.as_bytes());
+        table_writer
+            .dynamic
+            .write(object::elf::DT_AUXILIARY, offset.into())?;
+    }
 
     let inputs = DynamicEntryInputs {
         args: layout.args(),

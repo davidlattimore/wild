@@ -2,7 +2,6 @@
 reason = "These tests use unsupported options"
 tests = [
   "audit.sh",
-  "auxiliary.sh",                      # `-auxiliary` and `-f`
   "color-diagnostics.sh",
   "compress-debug-sections-zstd.sh",   # Compressed debug sections support #493
   "compress-debug-sections.sh",        # Compressed debug sections support #493
@@ -178,6 +177,7 @@ tests = [
   "arch-x86_64-note2.sh",           # The order of sections is different.
   "arch-x86_64-plt.sh",             # We use `.got.plt`, not `.plt.got`.
   "arch-x86_64-reloc-overflow.sh",  # Different message formats
+  "auxiliary.sh",                   # Different message format
   "build-id.sh",                    # Different build ID data size
   "cmdline.sh",                     # Different message formats for unknown options.
   "comment.sh",                     # We store a different string in the comment section than mold.
