@@ -1381,6 +1381,7 @@ fn load_symbols_from_file<'data>(
             args,
             version_script,
             archive_semantics: s.parsed.input.has_archive_semantics(),
+            lib_name: s.parsed.input.lib_name(),
             export_list,
             output_kind,
         }
@@ -1505,6 +1506,7 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
+    lib_name: &'data [u8],
     export_list: &'a Option<ExportList<'a>>,
     output_kind: OutputKind,
 }
@@ -1570,7 +1572,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
             // first place checked for a symbol by the dynamic loader.
             || (!is_undefined && (
                 self.output_kind.is_executable()
-                || (self.args.exclude_libs && self.archive_semantics)
+                || (self.archive_semantics && self.args.exclude_libs.should_exclude(self.lib_name))
                 || (
                     self.args.b_symbolic == args::BSymbolicKind::All
                     // `-Bsymbolic-functions`

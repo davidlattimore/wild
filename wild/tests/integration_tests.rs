@@ -39,6 +39,8 @@
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
 //! .dynsym.
 //!
+//! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
@@ -836,6 +838,7 @@ struct Assertions {
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
+    no_dynsym: HashSet<String>,
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
@@ -1070,6 +1073,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .push(arg.trim().to_owned()),
                 "NoSym" => {
                     config.assertions.no_sym.insert(arg.trim().to_owned());
+                }
+                "NoDynSym" => {
+                    config.assertions.no_dynsym.insert(arg.trim().to_owned());
                 }
                 "DoesNotContain" => config
                     .assertions
@@ -2613,8 +2619,9 @@ impl Assertions {
         self.verify_file_kind(&obj)?;
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
         verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
-        self.verify_symbols_absent(obj.symbols(), ".symtab")?;
-        self.verify_symbols_absent(obj.dynamic_symbols(), ".dynsym")?;
+        self.verify_symbols_absent(&self.no_sym, obj.symbols(), ".symtab")?;
+        self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
+        self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
         self.verify_load_alignment(&obj)?;
@@ -2694,16 +2701,17 @@ impl Assertions {
 
     fn verify_symbols_absent(
         &self,
+        absent_syms: &HashSet<String>,
         symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
         table_name: &str,
     ) -> Result {
-        if self.no_sym.is_empty() {
+        if absent_syms.is_empty() {
             return Ok(());
         }
 
         for sym in symbols {
             if let Ok(name) = sym.name()
-                && self.no_sym.contains(name)
+                && absent_syms.contains(name)
             {
                 bail!("Symbol `{name}` was supposed to be absent, but was found in {table_name}");
             }
@@ -3272,6 +3280,7 @@ fn integration_test(
         "relocation-in-non-alloc-section.s",
         "exclude-libs-all.c",
         "exclude-libs-single.c",
+        "exclude-libs-selective.c",
         "exclude-section.s",
         "common_section.c",
         "string_merging.c",

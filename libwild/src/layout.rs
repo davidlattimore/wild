@@ -4680,7 +4680,12 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
-            && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
+            && !(self.input.has_archive_semantics()
+                && resources
+                    .symbol_db
+                    .args
+                    .exclude_libs
+                    .should_exclude(self.input.lib_name()))
             || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.args.export_all_dynamic_symbols;
         if export_all_dynamic
