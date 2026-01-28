@@ -473,11 +473,6 @@ impl<'data> RegularVersionScript<'data> {
     ) -> Result<Option<u16>> {
         let name_bytes = name.bytes();
         if let Some(version_name) = version_name {
-            // REVERT: Creates a default (non-hidden) symbol.
-            // if version_name.is_empty() {
-            //     return Ok(None);
-            // }
-
             // There is a quirk that I couldn't find docs for. When a symbol has an empty version
             // (e.g. "foo@"), the versioning is disabled and the symbol has "hidden global version"
             // (visible as `1h <whitespaces>` in `readelf -V`), even if that symbol appears in the
