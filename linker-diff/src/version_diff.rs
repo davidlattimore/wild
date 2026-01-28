@@ -24,7 +24,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
         objects,
         read_gnu_version,
         "version",
-        DiffMode::Normal,
+        DiffMode::IgnoreMissingValues,
     ));
 }
 
@@ -112,29 +112,15 @@ fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
 
     // dynsym_iter skips the first symbol, make versym the same.
     for (versym, dynsym) in versyms.iter().skip(1).zip(dynsym_iter) {
-        let sym_name = dynsym.name_bytes()?;
-
-        // GNU ld sometimes creates symbols for sections, like .data or .init. Wild doesn't, so we
-        // skip them.
-        if dynsym.elf_symbol().st_type() == elf::STT_SECTION {
+        let Ok(sym_name) = dynsym.name_bytes() else {
             continue;
-        }
-
-        // TODO: this duplicates `symbol_diff.rs`
-        // On aarch64, GNU ld emits a dynamic symbol called "_stack", which it puts in some section
-        // or other that doesn't make sense. e.g. ".got.plt". It probably puts it in that section
-        // because it's closest to the value that it assigns to the symbol. It's not clear where
-        // this symbol comes from. It's neither in any input files, nor in GNU ld's built-in linker
-        // script.
-        if sym_name == b"_stack" {
-            continue;
-        }
+        };
 
         let version_index_raw = versym.0.get(e);
         let version_index = version_index_raw & VERSYM_VERSION;
         let hidden = version_index_raw & VERSYM_HIDDEN == VERSYM_HIDDEN;
 
-        // TODO: Currently Wild doesn't differentiate between local and global versions.
+        // TODO: Currently Wild doesn't differentiate between local and global symbols.
         let version_name = if version_index <= 1 {
             b"local or global"
         } else {

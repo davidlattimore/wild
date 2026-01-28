@@ -243,7 +243,6 @@ impl Config {
                 // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
                 // when GNU ld doesn't.
                 "dynsym.__tls_get_addr.*",
-                "version.__tls_get_addr",
                 // GNU ld emits two segments, whereas wild emits only a single segment.
                 "segment.LOAD.R.*",
                 // We haven't provided an implementation that is compatible with existing linkers.
@@ -264,9 +263,6 @@ impl Config {
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
                 // On some systems Wild outputs these symbols while GNU ld does not.
-                // TODO: Figure out what is going on.
-                "version._ITM_deregisterTMCloneTable",
-                "version._ITM_registerTMCloneTable",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -302,8 +298,6 @@ impl Config {
                     "section-diff-failed*",
                     // .relro_padding is showing up on risc-v.
                     "section.relro_padding",
-                    // TODO: sometimes there are huge differences in dynamic symbols count.
-                    "version.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -317,8 +311,6 @@ impl Config {
                     "literal-byte-mismatch*",
                     "error.*",
                     "section-diff-failed*",
-                    // TODO: sometimes there are huge differences in dynamic symbols count.
-                    "version.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
