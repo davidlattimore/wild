@@ -378,7 +378,10 @@ impl RiscVInstruction {
                 // we must prevent add 0x800 in order to not make HI20 a huge negative if the final
                 // value is a small negative value.
                 // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
-                let mask = (extracted_value.wrapping_add(0x800).extract_bits(12..32) as u32) << 12;
+                let mask = (extracted_value
+                    .wrapping_add(0x800)
+                    .extract_bit_range(12..32) as u32)
+                    << 12;
                 and_from_slice(dest, UTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes());
             }
@@ -388,33 +391,33 @@ impl RiscVInstruction {
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RiscVInstruction::SType => {
-                let mut mask = extracted_value.extract_bits(0..5) << 7;
-                mask |= extracted_value.extract_bits(5..12) << 25;
+                let mut mask = extracted_value.extract_bit_range(0..5) << 7;
+                mask |= extracted_value.extract_bit_range(5..12) << 25;
                 and_from_slice(dest, STYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RiscVInstruction::BType => {
                 let mut mask = extracted_value.extract_bit(11) << 7;
-                mask |= extracted_value.extract_bits(1..5) << 8;
-                mask |= extracted_value.extract_bits(5..11) << 25;
+                mask |= extracted_value.extract_bit_range(1..5) << 8;
+                mask |= extracted_value.extract_bit_range(5..11) << 25;
                 mask |= extracted_value.extract_bit(12) << 31;
                 and_from_slice(dest, BTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RiscVInstruction::JType => {
-                let mut mask = extracted_value.extract_bits(12..20) << 12;
+                let mut mask = extracted_value.extract_bit_range(12..20) << 12;
                 mask |= extracted_value.extract_bit(11) << 20;
-                mask |= extracted_value.extract_bits(1..11) << 21;
+                mask |= extracted_value.extract_bit_range(1..11) << 21;
                 mask |= extracted_value.extract_bit(20) << 31;
                 and_from_slice(dest, JTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RiscVInstruction::CbType => {
                 let mut mask = extracted_value.extract_bit(5) << 2;
-                mask |= extracted_value.extract_bits(1..3) << 3;
-                mask |= extracted_value.extract_bits(6..8) << 5;
+                mask |= extracted_value.extract_bit_range(1..3) << 3;
+                mask |= extracted_value.extract_bit_range(6..8) << 5;
                 // rs1' register takes 3 bits here
-                mask |= extracted_value.extract_bits(3..5) << 10;
+                mask |= extracted_value.extract_bit_range(3..5) << 10;
                 mask |= extracted_value.extract_bit(8) << 12;
                 // The compressed instruction only takes 2 bytes.
                 and_from_slice(dest, CBTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
@@ -422,11 +425,11 @@ impl RiscVInstruction {
             }
             RiscVInstruction::CjType => {
                 let mut mask = extracted_value.extract_bit(5) << 2;
-                mask |= extracted_value.extract_bits(1..4) << 3;
+                mask |= extracted_value.extract_bit_range(1..4) << 3;
                 mask |= extracted_value.extract_bit(7) << 6;
                 mask |= extracted_value.extract_bit(6) << 7;
                 mask |= extracted_value.extract_bit(10) << 8;
-                mask |= extracted_value.extract_bits(8..10) << 9;
+                mask |= extracted_value.extract_bit_range(8..10) << 9;
                 mask |= extracted_value.extract_bit(4) << 11;
                 mask |= extracted_value.extract_bit(11) << 12;
                 // The compressed instruction only takes 2 bytes.

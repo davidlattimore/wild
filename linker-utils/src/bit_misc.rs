@@ -14,7 +14,7 @@ pub trait BitExtraction {
 
     /// Extract range bits from the provided `value`.
     #[must_use]
-    fn extract_bits(self, range: Range<u32>) -> u64;
+    fn extract_bit_range(self, range: Range<u32>) -> u64;
 
     /// Extract the low `num_bits` bits from `self`.
     #[must_use]
@@ -33,10 +33,10 @@ impl BitExtraction for u64 {
     // TODO: seems like a clippy issue as `position..=position` would lead to InclusiveRange type.
     #[allow(clippy::range_plus_one)]
     fn extract_bit(self, position: u32) -> u64 {
-        self.extract_bits(position..position + 1)
+        self.extract_bit_range(position..position + 1)
     }
 
-    fn extract_bits(self, range: Range<u32>) -> u64 {
+    fn extract_bit_range(self, range: Range<u32>) -> u64 {
         if range.start == 0 && range.end == u64::BITS {
             return self;
         }
@@ -67,9 +67,12 @@ mod tests {
 
     #[test]
     fn test_bit_operations() {
-        assert_eq!(0b11000, 0b1100_0000u64.extract_bits(3..8));
-        assert_eq!(0b1010_1010_0000, 0b10101010_00001111u64.extract_bits(4..16));
-        assert_eq!(u32::MAX, u64::MAX.extract_bits(0..32) as u32);
+        assert_eq!(0b11000, 0b1100_0000u64.extract_bit_range(3..8));
+        assert_eq!(
+            0b1010_1010_0000,
+            0b10101010_00001111u64.extract_bit_range(4..16)
+        );
+        assert_eq!(u32::MAX, u64::MAX.extract_bit_range(0..32) as u32);
     }
 
     #[test]
@@ -77,14 +80,14 @@ mod tests {
     #[should_panic]
     #[allow(clippy::reversed_empty_ranges)]
     fn test_extract_bits_wrong_range() {
-        let _ = 0u64.extract_bits(2..1);
+        let _ = 0u64.extract_bit_range(2..1);
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic]
     fn test_extract_bits_too_large() {
-        let _ = 0u64.extract_bits(0..100);
+        let _ = 0u64.extract_bit_range(0..100);
     }
 
     #[test]
