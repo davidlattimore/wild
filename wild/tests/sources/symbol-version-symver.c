@@ -7,6 +7,8 @@
 
 __asm__(".symver foo_impl,foo@VER_1.0");
 __asm__(".symver bar_impl,bar@@VER_1.0");
+__asm__(".symver unversioned_impl,remain_unversioned@");
 
 void foo_impl(void) { __builtin_printf("foo\n"); }
 void bar_impl(void) { __builtin_printf("bar\n"); }
+void unversioned_impl(void) { __builtin_printf("unversioned\n"); }
