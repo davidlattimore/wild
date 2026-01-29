@@ -2292,9 +2292,32 @@ fn compute_segment_layout(
         .map(|&id| {
             let r = &complete[id.as_usize()];
 
+            let mut mem_size = r.mem_end - r.mem_start;
+
+            // For RELRO segment, the end (vaddr + memsz) must be page-aligned.
+            if program_segments.is_relro_segment(id) {
+                let mem_end = r.mem_start + mem_size;
+                let aligned_mem_end = args.loadable_segment_alignment().align_up(mem_end);
+                let rw_load_mem_end = complete
+                    .iter()
+                    .filter(|r| {
+                        let def = program_segments.segment_def(r.segment_id);
+                        def.segment_type == linker_utils::elf::pt::LOAD && def.is_writable()
+                    })
+                    .map(|r| r.mem_end)
+                    .max();
+
+                // Only expand if there's actually mapped memory up to the aligned boundary.
+                if let Some(rw_end) = rw_load_mem_end
+                    && aligned_mem_end <= rw_end
+                {
+                    mem_size = aligned_mem_end - r.mem_start;
+                }
+            }
+
             let sizes = OutputRecordLayout {
                 file_size: r.file_end - r.file_start,
-                mem_size: r.mem_end - r.mem_start,
+                mem_size,
                 alignment: r.alignment,
                 file_offset: r.file_start,
                 mem_offset: r.mem_start,
@@ -6000,7 +6023,15 @@ fn layout_section_parts(
                     }
                 }
             }
-            OrderEvent::SegmentEnd(_) => {}
+            OrderEvent::SegmentEnd(segment_id) => {
+                // When RELRO segment ends, align mem_offset to page boundary so that non-RELRO
+                // sections start on a new page.
+                if program_segments.is_relro_segment(segment_id) {
+                    let page_alignment = args.loadable_segment_alignment();
+                    mem_offset = page_alignment.align_up(mem_offset);
+                    file_offset = page_alignment.align_up_usize(file_offset);
+                }
+            }
             OrderEvent::Section(section_id) => {
                 debug_assert!(
                     pending_location.is_none(),

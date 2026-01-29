@@ -241,7 +241,6 @@ tests = [
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
-  "relro-alignment.sh",
   "rodata-name.sh",
   "section-attributes.sh",
   "strip.sh",
