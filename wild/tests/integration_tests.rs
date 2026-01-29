@@ -465,6 +465,9 @@ fn is_musl_used() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
+    /// The base build directory for the test (without config name).
+    base_build_dir: PathBuf,
+    /// The build directory for this config (base_build_dir + config name).
     build_dir: PathBuf,
     name: String,
     variant_num: Option<u32>,
@@ -921,6 +924,7 @@ impl ArgumentSet {
 impl Config {
     fn new(test_config: &TestConfig, build_dir: PathBuf) -> Self {
         Self {
+            base_build_dir: build_dir.clone(),
             build_dir,
             name: "default".to_owned(),
             variant_num: None,
@@ -1212,6 +1216,16 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
 
     if configs.is_empty() {
         bail!("Missing non-abstract Config");
+    }
+
+    for config in &mut configs {
+        config.build_dir = config.base_build_dir.join(&config.name);
+        std::fs::create_dir_all(&config.build_dir).with_context(|| {
+            format!(
+                "Failed to create config directory `{}`",
+                config.build_dir.display()
+            )
+        })?;
     }
 
     Ok(configs)
