@@ -78,7 +78,7 @@ pub struct Args {
     pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
-    pub(crate) exclude_libs: bool,
+    pub(crate) exclude_libs: ExcludeLibs,
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
     pub(crate) mmap_output_file: bool,
@@ -196,6 +196,28 @@ pub(crate) enum HashStyle {
     Gnu,
     Sysv,
     Both,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExcludeLibs {
+    None,
+    All,
+    Some(HashSet<Box<str>>),
+}
+
+impl ExcludeLibs {
+    pub(crate) fn should_exclude(&self, lib_path: &[u8]) -> bool {
+        match self {
+            ExcludeLibs::None => false,
+            ExcludeLibs::All => true,
+            ExcludeLibs::Some(libs) => {
+                let lib_path_str = String::from_utf8_lossy(lib_path);
+                let lib_name = lib_path_str.rsplit('/').next().unwrap_or(&lib_path_str);
+
+                libs.contains(lib_name)
+            }
+        }
+    }
 }
 
 impl HashStyle {
@@ -421,7 +443,7 @@ impl Default for Args {
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
-            exclude_libs: false,
+            exclude_libs: ExcludeLibs::None,
             no_undefined: false,
             allow_shlib_undefined: false,
             should_print_version: false,
@@ -2048,13 +2070,29 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("exclude-libs")
         .help("Exclude libraries")
         .execute(|args, _modifier_stack, value| {
-            if value != "ALL" {
-                // For now, just warn and ignore.
-                // FIXME: Support excluding specific libraries.
-                warn_unsupported("--exclude-libs other than ALL")?;
-                return Ok(());
+            for lib in value.split([',', ':']) {
+                if lib.is_empty() {
+                    continue;
+                }
+
+                if lib == "ALL" {
+                    args.exclude_libs = ExcludeLibs::All;
+                    return Ok(());
+                }
+
+                match &mut args.exclude_libs {
+                    ExcludeLibs::All => {}
+                    ExcludeLibs::None => {
+                        let mut set = HashSet::new();
+                        set.insert(Box::from(lib));
+                        args.exclude_libs = ExcludeLibs::Some(set);
+                    }
+                    ExcludeLibs::Some(set) => {
+                        set.insert(Box::from(lib));
+                    }
+                }
             }
-            args.exclude_libs = true;
+
             Ok(())
         });
 

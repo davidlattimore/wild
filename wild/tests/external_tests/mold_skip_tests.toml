@@ -14,7 +14,6 @@ tests = [
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
   "exception-multiple-ehframe.sh",     # `-r`
-  "exclude-libs.sh",
   "execute-only.sh",
   "fatal-warnings.sh",                 # `-warn-common` and `-fatal-warnings`
   "filler.sh",
