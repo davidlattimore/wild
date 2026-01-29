@@ -2904,7 +2904,9 @@ impl PltIndex<'_> {
         offset: u64,
         entry_size: u64,
     ) -> Option<PltEntry> {
-        let entry_bytes = &self.bytes[offset as usize..(offset + entry_size) as usize];
+        let entry_bytes = &self
+            .bytes
+            .get(offset as usize..(offset + entry_size) as usize)?;
         A::decode_plt_entry(entry_bytes, self.plt_base, offset)
     }
 }
