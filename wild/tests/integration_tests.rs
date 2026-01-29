@@ -1695,17 +1695,26 @@ fn build_linker_input(
         .context("At least one object is required")?
         .path;
 
+    let first_source_filename = dep
+        .files
+        .first()
+        .context("At least one file is required")?
+        .filename
+        .as_str();
+    let archive_basename = Path::new(first_source_filename)
+        .file_stem()
+        .context("Invalid source filename")?;
+    let archive_path = config.build_dir.join(archive_basename).with_extension("a");
+
     let mut linker_input = match dep.input_type {
         InputType::Archive | InputType::ThinArchive => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
-            let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin)?;
             }
             LinkerInput::new(archive_path)
         }
         InputType::BsdArchive => {
-            let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_bsd_archive(&archive_path, &objects)?;
             }
