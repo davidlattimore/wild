@@ -1224,16 +1224,6 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
         bail!("Missing non-abstract Config");
     }
 
-    for config in &mut configs {
-        config.build_dir = config.base_build_dir.join(&config.name);
-        std::fs::create_dir_all(&config.build_dir).with_context(|| {
-            format!(
-                "Failed to create config directory `{}`",
-                config.build_dir.display()
-            )
-        })?;
-    }
-
     Ok(configs)
 }
 
@@ -1937,14 +1927,9 @@ fn build_obj(
     command_as_str(&command).hash(&mut hasher);
     let command_hash = hasher.finish();
 
-    let arch_str = cross_name(cross_arch);
-
     let output_path = config
         .build_dir
-        .join(Path::new(&file.filename).with_extension(format!(
-            "{}-{arch_str}-{command_hash:x}{suffix}",
-            config.name
-        )));
+        .join(Path::new(&file.filename).with_extension(format!("{command_hash:x}{suffix}")));
 
     match compiler_kind {
         CompilerKind::C => {
@@ -2213,7 +2198,7 @@ impl Linker {
         config: &Config,
         cross_arch: Option<Architecture>,
     ) -> Result<LinkOutput> {
-        let output_path = self.output_path(basename, config, cross_arch);
+        let output_path = self.output_path(basename, config);
         let mut linker_args = config.linker_args.clone();
         if self.is_wild() {
             linker_args
@@ -2233,16 +2218,8 @@ impl Linker {
         })
     }
 
-    fn output_path(
-        &self,
-        basename: &str,
-        config: &Config,
-        cross_arch: Option<Architecture>,
-    ) -> PathBuf {
-        let cross = cross_name(cross_arch);
-        config
-            .build_dir
-            .join(format!("{basename}-{}-{cross}.{self}", config.name))
+    fn output_path(&self, basename: &str, config: &Config) -> PathBuf {
+        config.build_dir.join(format!("{basename}.{self}"))
     }
 }
 
@@ -3395,6 +3372,18 @@ fn integration_test(
 
             let mut config = config.clone();
             config.rustc_channel = test_config.rustc_channel;
+
+            let arch_name = cross_name(cross_arch);
+            config.build_dir = config
+                .base_build_dir
+                .join(format!("{}-{arch_name}", config.name));
+            std::fs::create_dir_all(&config.build_dir).with_context(|| {
+                format!(
+                    "Failed to create directory `{}`",
+                    config.build_dir.display()
+                )
+            })?;
+
             run_with_config(&program_inputs, &config, cross_arch, &linkers)?
         }
     }
