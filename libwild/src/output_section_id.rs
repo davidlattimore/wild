@@ -112,6 +112,7 @@ pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
     part_id::RELA_DYN_RELATIVE.output_section_id();
 pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.output_section_id();
 pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
+pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_section_id();
 
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
 pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
@@ -196,8 +197,8 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
 
         let (stop, start) = self.start_stop_segments_for_section(section_id);
 
-        for segment_id in &stop {
-            self.events.push(OrderEvent::SegmentEnd(*segment_id));
+        for segment_id in stop {
+            self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
         let section_info = self.output_sections.output_info(section_id);
@@ -712,6 +713,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         target_segment_type: Some(pt::RISCV_ATTRIBUTES),
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELRO_PADDING_SECTION_NAME)),
+        ty: sht::NOBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        is_relro: true,
+        keep_if_empty: true,
+        ..DEFAULT_DEFS
+    },
     // Start of regular sections
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
@@ -1009,6 +1018,7 @@ impl CustomSectionIds {
         builder.add_section(DATA_REL_RO);
         builder.add_section(DYNAMIC);
         builder.add_section(GOT);
+        builder.add_section(RELRO_PADDING);
         builder.add_section(DATA);
         builder.add_sections(&self.data);
         builder.add_section(BSS);
@@ -1434,6 +1444,7 @@ fn test_constant_ids() {
         (NOTE_GNU_PROPERTY, NOTE_GNU_PROPERTY_SECTION_NAME),
         (NOTE_GNU_BUILD_ID, NOTE_GNU_BUILD_ID_SECTION_NAME),
         (DATA_REL_RO, DATA_REL_RO_SECTION_NAME),
+        (RELRO_PADDING, RELRO_PADDING_SECTION_NAME),
     ];
     for (id, name) in check {
         match id.built_in_details().kind {

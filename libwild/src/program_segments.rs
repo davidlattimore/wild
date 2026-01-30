@@ -141,10 +141,6 @@ impl ProgramSegments {
         self.segment_def(segment_id).segment_type == pt::TLS
     }
 
-    pub(crate) fn is_relro_segment(&self, segment_id: ProgramSegmentId) -> bool {
-        self.segment_def(segment_id).segment_type == pt::GNU_RELRO
-    }
-
     /// Returns a tuple that can be used for sorting the order of segments in the program headers
     /// table.
     pub(crate) fn order_key(&self, segment_id: ProgramSegmentId, mem_start: u64) -> (usize, u64) {

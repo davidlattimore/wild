@@ -2292,39 +2292,9 @@ fn compute_segment_layout(
         .map(|&id| {
             let r = &complete[id.as_usize()];
 
-            let mut mem_size = r.mem_end - r.mem_start;
-
-            // For RELRO segment, the end (vaddr + memsz) must be page-aligned.
-            if program_segments.is_relro_segment(id) {
-                let mem_end = r.mem_start + mem_size;
-                let aligned_mem_end = args.loadable_segment_alignment().align_up(mem_end);
-                mem_size = aligned_mem_end - r.mem_start;
-            }
-
-            let relro_info: Option<(u64, u64)> = header_info
-                .active_segment_ids
-                .iter()
-                .filter(|&&id| program_segments.is_relro_segment(id))
-                .map(|&id| {
-                    let r = &complete[id.as_usize()];
-                    let aligned_mem_end = args.loadable_segment_alignment().align_up(r.mem_end);
-                    (r.mem_start, aligned_mem_end)
-                })
-                .next();
-
-            // For the LOAD segment that contains the RELRO region, extend p_memsz to cover the
-            // RELRO's aligned end.
-            if program_segments.is_load_segment(id)
-                && let Some((relro_start, relro_aligned_end)) = relro_info
-                && r.mem_start == relro_start
-                && relro_aligned_end > r.mem_start + mem_size
-            {
-                mem_size = relro_aligned_end - r.mem_start;
-            }
-
             let sizes = OutputRecordLayout {
                 file_size: r.file_end - r.file_start,
-                mem_size,
+                mem_size: r.mem_end - r.mem_start,
                 alignment: r.alignment,
                 file_offset: r.file_start,
                 mem_offset: r.mem_start,
@@ -3866,6 +3836,11 @@ impl<'data> PreludeLayoutState<'data> {
         // Keep any sections that we've said we want to keep regardless.
         for section_id in output_section_id::built_in_section_ids() {
             if section_id.built_in_details().keep_if_empty {
+                // Don't keep .relro_padding if relro is disabled.
+                if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
+                {
+                    continue;
+                }
                 *keep_sections.get_mut(section_id) = true;
             }
         }
@@ -6052,7 +6027,13 @@ fn layout_section_parts(
                         let alignment = part_id.alignment().min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
-                        let mem_size = part_size;
+                        let mem_size = if section_id == output_section_id::RELRO_PADDING {
+                            let page_alignment = args.loadable_segment_alignment();
+                            let aligned_offset = page_alignment.align_up(mem_offset);
+                            aligned_offset - mem_offset
+                        } else {
+                            part_size
+                        };
 
                         // Note, we align up even if our size is zero, otherwise our section will
                         // start at an unaligned address.
