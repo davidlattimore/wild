@@ -188,10 +188,16 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
     }
 
     fn add_section(&mut self, section_id: OutputSectionId) {
+        // When RELRO segment ends, also end the RW LOAD segment so that subsequent non-RELRO
+        // sections go into a new LOAD segment.
+        if self.relro_segment_will_end(section_id) {
+            self.end_rw_load_segment();
+        }
+
         let (stop, start) = self.start_stop_segments_for_section(section_id);
 
-        for segment_id in stop {
-            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        for segment_id in &stop {
+            self.events.push(OrderEvent::SegmentEnd(*segment_id));
         }
 
         let section_info = self.output_sections.output_info(section_id);
@@ -235,6 +241,41 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
 
         for (_pri, sid) in keyed {
             self.events.push(OrderEvent::Section(sid));
+        }
+    }
+
+    /// Returns true if processing the given section will cause the RELRO segment to end.
+    fn relro_segment_will_end(&self, section_id: OutputSectionId) -> bool {
+        let relro_def_index = PROGRAM_SEGMENT_DEFS
+            .iter()
+            .position(|def| def.segment_type == pt::GNU_RELRO);
+
+        let Some(def_index) = relro_def_index else {
+            return false;
+        };
+
+        if self.active_segment_kinds[def_index].is_none() {
+            return false;
+        }
+
+        let should_be_in_relro = self
+            .output_sections
+            .should_include_in_segment(section_id, PROGRAM_SEGMENT_DEFS[def_index]);
+
+        !should_be_in_relro
+    }
+
+    /// Ends the currently active RW LOAD segment, if any. This is used when the RELRO segment
+    /// ends to force .data and other non-RELRO sections into a new LOAD segment.
+    fn end_rw_load_segment(&mut self) {
+        let rw_load_def_index = PROGRAM_SEGMENT_DEFS.iter().position(|def| {
+            def.segment_type == pt::LOAD && def.is_writable() && !def.is_executable()
+        });
+
+        if let Some(def_index) = rw_load_def_index
+            && let Some(segment_id) = self.active_segment_kinds[def_index].take()
+        {
+            self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
     }
 

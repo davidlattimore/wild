@@ -2298,21 +2298,28 @@ fn compute_segment_layout(
             if program_segments.is_relro_segment(id) {
                 let mem_end = r.mem_start + mem_size;
                 let aligned_mem_end = args.loadable_segment_alignment().align_up(mem_end);
-                let rw_load_mem_end = complete
-                    .iter()
-                    .filter(|r| {
-                        let def = program_segments.segment_def(r.segment_id);
-                        def.segment_type == linker_utils::elf::pt::LOAD && def.is_writable()
-                    })
-                    .map(|r| r.mem_end)
-                    .max();
+                mem_size = aligned_mem_end - r.mem_start;
+            }
 
-                // Only expand if there's actually mapped memory up to the aligned boundary.
-                if let Some(rw_end) = rw_load_mem_end
-                    && aligned_mem_end <= rw_end
-                {
-                    mem_size = aligned_mem_end - r.mem_start;
-                }
+            let relro_info: Option<(u64, u64)> = header_info
+                .active_segment_ids
+                .iter()
+                .filter(|&&id| program_segments.is_relro_segment(id))
+                .map(|&id| {
+                    let r = &complete[id.as_usize()];
+                    let aligned_mem_end = args.loadable_segment_alignment().align_up(r.mem_end);
+                    (r.mem_start, aligned_mem_end)
+                })
+                .next();
+
+            // For the LOAD segment that contains the RELRO region, extend p_memsz to cover the
+            // RELRO's aligned end.
+            if program_segments.is_load_segment(id)
+                && let Some((relro_start, relro_aligned_end)) = relro_info
+                && r.mem_start == relro_start
+                && relro_aligned_end > r.mem_start + mem_size
+            {
+                mem_size = relro_aligned_end - r.mem_start;
             }
 
             let sizes = OutputRecordLayout {
@@ -6023,15 +6030,7 @@ fn layout_section_parts(
                     }
                 }
             }
-            OrderEvent::SegmentEnd(segment_id) => {
-                // When RELRO segment ends, align mem_offset to page boundary so that non-RELRO
-                // sections start on a new page.
-                if program_segments.is_relro_segment(segment_id) {
-                    let page_alignment = args.loadable_segment_alignment();
-                    mem_offset = page_alignment.align_up(mem_offset);
-                    file_offset = page_alignment.align_up_usize(file_offset);
-                }
-            }
+            OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
                 debug_assert!(
                     pending_location.is_none(),
