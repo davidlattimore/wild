@@ -247,23 +247,16 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
 
     /// Returns true if processing the given section will cause the RELRO segment to end.
     fn relro_segment_will_end(&self, section_id: OutputSectionId) -> bool {
-        let relro_def_index = PROGRAM_SEGMENT_DEFS
+        self.active_segment_kinds
             .iter()
-            .position(|def| def.segment_type == pt::GNU_RELRO);
-
-        let Some(def_index) = relro_def_index else {
-            return false;
-        };
-
-        if self.active_segment_kinds[def_index].is_none() {
-            return false;
-        }
-
-        let should_be_in_relro = self
-            .output_sections
-            .should_include_in_segment(section_id, PROGRAM_SEGMENT_DEFS[def_index]);
-
-        !should_be_in_relro
+            .zip(PROGRAM_SEGMENT_DEFS)
+            .any(|(id, def)| {
+                id.is_some()
+                    && def.segment_type == pt::GNU_RELRO
+                    && !self
+                        .output_sections
+                        .should_include_in_segment(section_id, *def)
+            })
     }
 
     /// Ends the currently active RW LOAD segment, if any. This is used when the RELRO segment
