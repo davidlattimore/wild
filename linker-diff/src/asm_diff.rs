@@ -1763,7 +1763,7 @@ impl<'data> RelaxationTester<'data> {
                 section_bytes = None;
             }
             _ => {
-                section_bytes = read_bytes(bin.elf_file, section_address, section_len)?;
+                section_bytes = read_bytes(bin.elf_file, section_address, section_len);
 
                 if section_bytes.is_none() {
                     bail!(
@@ -2251,8 +2251,6 @@ impl<'data> RelaxationTester<'data> {
         };
 
         let bytes = read_bytes_starting_at(self.bin.elf_file, string_address)
-            .ok()
-            .flatten()
             .with_context(|| format!("Failed to read bytes starting at 0x{string_address:x}"))?;
         let null_offset = memchr::memchr(0, bytes).with_context(|| {
             format!("Missing null-terminator for merged string starting at 0x{string_address:x}")
@@ -3386,7 +3384,7 @@ impl<'data> GotIndex<'data> {
                             // TLS variable within the current DSO. Read
                             // the next word of data to get the offset.
                             let tls_offset =
-                                read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)?
+                                read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)
                                     .context("Short read after DTPMOD")?
                                     as i64;
                             Ok(Referent::UnmatchedTlsOffset(tls_offset))
@@ -3502,9 +3500,9 @@ struct DynamicRelocation<'data, R: RType> {
 }
 
 /// Attempts to read some data starting at `address` up to the end of the segment.
-fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Result<Option<Data<'data>>> {
+fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
-    for (seg_index, raw_seg) in elf_file.elf_program_headers().iter().enumerate() {
+    for raw_seg in elf_file.elf_program_headers() {
         let e = LittleEndian;
         if raw_seg.p_type(e) != object::elf::PT_LOAD {
             continue;
@@ -3520,52 +3518,40 @@ fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Result<Opti
             let file_end = file_start + file_size;
             let file_bytes = elf_file.data();
             if file_bytes.is_empty() {
-                return Ok(Some(Data::Bss));
+                return Some(Data::Bss);
             }
-            let bytes = &file_bytes
-                .get(file_start + start..file_end)
-                .with_context(|| format!("Invalid ELF segment {seg_index}"))?;
-            return Ok(Some(Data::Bytes(bytes)));
+            // If the address is beyond the file-backed portion of the segment, it's in a NOBITS
+            // region.
+            if start >= file_size {
+                return Some(Data::Bss);
+            }
+            let bytes = &file_bytes[file_start + start..file_end];
+            return Some(Data::Bytes(bytes));
         }
     }
-    Ok(None)
+    None
 }
 
-fn read_word_at(elf_file: &ElfFile64, address: u64) -> Result<Option<u64>> {
-    let Some(bytes) = read_bytes(elf_file, address, size_of::<u64>() as u64)? else {
-        return Ok(None);
-    };
-    let Some(chunk) = bytes.first_chunk() else {
-        return Ok(None);
-    };
-    Ok(Some(u64::from_le_bytes(*chunk)))
+fn read_word_at(elf_file: &ElfFile64, address: u64) -> Option<u64> {
+    let bytes = read_bytes(elf_file, address, size_of::<u64>() as u64)?;
+    let chunk = bytes.first_chunk()?;
+    Some(u64::from_le_bytes(*chunk))
 }
 
-fn read_bytes<'data>(
-    elf_file: &ElfFile64<'data>,
-    address: u64,
-    len: u64,
-) -> Result<Option<&'data [u8]>> {
-    Ok(
-        read_segment(elf_file, address)?.and_then(|data| match data {
-            Data::Bytes(bytes) => bytes.get(..len as usize),
-            Data::Bss => None,
-        }),
-    )
+fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
+    read_segment(elf_file, address).and_then(|data| match data {
+        Data::Bytes(bytes) => bytes.get(..len as usize),
+        Data::Bss => None,
+    })
 }
 
 /// Returns bytes starting at `address` up to the end of the containing segment. This is useful when
 /// you don't know what length you need to read, e.g. when reading a null-terminated string.
-fn read_bytes_starting_at<'data>(
-    elf_file: &ElfFile64<'data>,
-    address: u64,
-) -> Result<Option<&'data [u8]>> {
-    Ok(
-        read_segment(elf_file, address)?.and_then(|data| match data {
-            Data::Bytes(bytes) => Some(bytes),
-            Data::Bss => None,
-        }),
-    )
+fn read_bytes_starting_at<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<&'data [u8]> {
+    read_segment(elf_file, address).and_then(|data| match data {
+        Data::Bytes(bytes) => Some(bytes),
+        Data::Bss => None,
+    })
 }
 
 impl Display for SymbolName<'_> {

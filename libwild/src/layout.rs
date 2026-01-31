@@ -3836,6 +3836,11 @@ impl<'data> PreludeLayoutState<'data> {
         // Keep any sections that we've said we want to keep regardless.
         for section_id in output_section_id::built_in_section_ids() {
             if section_id.built_in_details().keep_if_empty {
+                // Don't keep .relro_padding if relro is disabled.
+                if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
+                {
+                    continue;
+                }
                 *keep_sections.get_mut(section_id) = true;
             }
         }
@@ -6022,7 +6027,13 @@ fn layout_section_parts(
                         let alignment = part_id.alignment().min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
-                        let mem_size = part_size;
+                        let mem_size = if section_id == output_section_id::RELRO_PADDING {
+                            let page_alignment = args.loadable_segment_alignment();
+                            let aligned_offset = page_alignment.align_up(mem_offset);
+                            aligned_offset - mem_offset
+                        } else {
+                            part_size
+                        };
 
                         // Note, we align up even if our size is zero, otherwise our section will
                         // start at an unaligned address.
