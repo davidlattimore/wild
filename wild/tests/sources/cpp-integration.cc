@@ -7,6 +7,8 @@
 // On aarch64, GNU ld puts the copy relocation for this symbol in .data.rel.ro
 // rather than .bss.
 //#DiffIgnore:dynsym.__stack_chk_guard.section
+// Wild doesn't output this symbol.
+//#DiffIgnore:version._ZSt21ios_base_library_initv
 //#Object:cpp-integration-2.cc
 
 //#Config:pie:default
