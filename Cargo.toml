@@ -105,10 +105,12 @@ zstd = "0.13.0"
 inherits = "release"
 debug = true
 
+[profile.release]
+lto = "thin"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
 strip = true
 
 # In CI, we disable debug info. This gives us faster builds. It also reduces the size of the target
