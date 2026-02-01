@@ -528,6 +528,10 @@ struct TestConfig {
     /// Enable this to verify that wild produces output matching other linkers.
     #[serde(default)]
     run_all_diffs: bool,
+
+    /// A list of external tests to ignore. Expected values are filenames not full paths.
+    #[serde(default)]
+    ignore_external_tests: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
