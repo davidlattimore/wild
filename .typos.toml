@@ -3,6 +3,7 @@ flate = "flate"
 rela = "rela"
 ot = "ot"
 FRE = "FRE"
+Siz = "Siz"
 
 [files]
 extend-exclude = [
