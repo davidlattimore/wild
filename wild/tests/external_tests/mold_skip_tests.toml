@@ -233,8 +233,6 @@ tests = [
   "glibc-2.22-bug.sh",
   "hidden-undef.sh",
   "initfirst.sh",
-  "large-alignment-dso.sh",
-  "large-alignment.sh",
   "mergeable-strings.sh",
   "missing-error.sh",
   "no-allow-shlib-undefined-circular.sh",
