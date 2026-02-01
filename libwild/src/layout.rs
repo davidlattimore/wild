@@ -6003,6 +6003,12 @@ fn layout_section_parts(
                     } else {
                         mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
                     }
+
+                    // Ensure file_offset >= mem_offset to prevent FileSiz > MemSiz in the segment.
+                    if (file_offset as u64) < mem_offset {
+                        file_offset =
+                            segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
+                    }
                 }
             }
             OrderEvent::SegmentEnd(_) => {}
