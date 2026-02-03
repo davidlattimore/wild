@@ -73,6 +73,8 @@ jobs:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl,loongarch64-unknown-linux-gnu,loongarch64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: davidlattimore/wild-action@latest
+        with:
+          wild-version: "0.8.0"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
@@ -110,6 +112,8 @@ jobs:
       with:
         components: clippy
     - uses: davidlattimore/wild-action@latest
+      with:
+          wild-version: "0.8.0"
     - uses: Swatinem/rust-cache@v2
     - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
 
