@@ -56,7 +56,7 @@ fn run_mold_test(mold_test: &Path) -> Result<Output> {
 fn check_mold_tests_regression(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
 ) -> Result {
-    if should_skip_mold_test(&mold_test) {
+    if should_skip_mold_test(&mold_test) || should_skip_by_local_config(&mold_test) {
         return Ok(());
     }
 
@@ -78,7 +78,10 @@ fn check_mold_tests_regression(
 fn verify_skipped_mold_tests_still_fail(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
 ) -> Result {
-    if !should_skip_mold_test_by_toml(&mold_test) || should_skip_mold_test_by_arch(&mold_test) {
+    if !should_skip_mold_test_by_toml(&mold_test)
+        || should_skip_mold_test_by_arch(&mold_test)
+        || should_skip_by_local_config(&mold_test)
+    {
         return Ok(());
     }
 
@@ -138,6 +141,19 @@ fn should_skip_mold_test_by_toml(path: &Path) -> bool {
     }
 
     false
+}
+
+/// Returns whether the user's test-config.toml says to skip a particular test. If this returns
+/// true, then we skip both the positive and negative versions of the test.
+fn should_skip_by_local_config(path: &Path) -> bool {
+    if let Ok(config) = crate::read_test_config()
+        && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        && config.ignore_external_tests.iter().any(|n| n == name)
+    {
+        true
+    } else {
+        false
+    }
 }
 
 // Some mold tests have names starting with `arch-`, indicating the target architecture they run on.
