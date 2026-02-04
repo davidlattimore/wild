@@ -222,3 +222,7 @@ case_sensitive_file_extension_comparisons = "warn"
 cloned_instead_of_copied = "warn"
 cast_lossless = "warn"
 needless_pass_by_ref_mut = "warn"
+
+# We do a bit of hashing, especially in the integration tests. Optimising this speeds up tests.
+[profile.dev.package."foldhash"]
+opt-level = 2

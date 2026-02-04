@@ -168,7 +168,9 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::fmt::Write as _;
 use std::fs::read_dir;
+use std::hash::BuildHasher as _;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::BufRead;
@@ -267,17 +269,14 @@ impl Linker {
             cross_arch,
         )?;
 
-        if self.is_wild()
-            || !is_newer(so_path, objects.iter().map(|o| &o.path))
-            || !command.can_skip
-        {
+        if !command.can_skip() {
             // If we're expecting errors, those errors should only occur when we link the final
             // binary, not when we link any dependent shared objects.
             let mut config = config.clone();
             config.expect_errors = Vec::new();
 
             command.run(&config)?;
-            write_cmd_file(so_path, &command.to_string())?;
+            command.write_input_hashes()?;
         }
 
         Ok(LinkerInput::with_command(so_path.to_owned(), command))
@@ -318,10 +317,11 @@ struct LinkCommand {
     command: Command,
     input_commands: Vec<LinkCommand>,
     linker: Linker,
-    can_skip: bool,
     invocation_mode: LinkerInvocationMode,
     opt_save_dir: Option<PathBuf>,
     output_path: PathBuf,
+    inputs: Vec<LinkerInput>,
+    config: Config,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2084,12 +2084,6 @@ fn run_with_path(output_path: &Path) -> PathBuf {
     output_path.join("run-with")
 }
 
-fn write_cmd_file(output_path: &Path, command_str: &str) -> Result {
-    let path = cmd_path(output_path);
-    std::fs::write(&path, command_str)
-        .with_context(|| format!("Failed to write `{}`", path.display()))
-}
-
 fn command_as_str(command: &Command) -> String {
     format!(
         "{} {} {}",
@@ -2108,18 +2102,6 @@ fn command_as_str(command: &Command) -> String {
             .collect_vec()
             .join(" ")
     )
-}
-
-fn cmd_path(output_path: &Path) -> PathBuf {
-    let mut p = output_path.as_os_str().to_owned();
-    p.push(".cmd");
-    PathBuf::from(p)
-}
-
-/// Returns whether the command file for `output_path` exists and contains `command`.
-fn cmd_file_is_current(output_path: &Path, command: &str) -> bool {
-    std::fs::read_to_string(cmd_path(output_path))
-        .is_ok_and(|previous_command| previous_command == command)
 }
 
 fn src_path(filename: &str) -> PathBuf {
@@ -2211,9 +2193,9 @@ impl Linker {
         }
         let mut command =
             LinkCommand::new(self, inputs, &output_path, &linker_args, config, cross_arch)?;
-        if !command.can_skip {
+        if !command.can_skip() {
             command.run(config)?;
-            write_cmd_file(&output_path, &command.to_string())?;
+            command.write_input_hashes()?;
         }
         Ok(LinkOutput {
             binary: output_path,
@@ -2416,55 +2398,24 @@ impl LinkCommand {
 
         let mut link_command = LinkCommand {
             command,
+            inputs: inputs.to_vec(),
             input_commands: inputs
                 .iter()
                 .filter_map(|input| input.command.as_ref().cloned())
                 .collect(),
             linker: linker.clone(),
-            can_skip: false,
+            config: config.clone(),
             invocation_mode,
             opt_save_dir,
             output_path: output_path.to_owned(),
         };
 
-        let depfile_path = output_path.with_extension("d");
-        if !linker.is_wild() {
-            match invocation_mode {
-                LinkerInvocationMode::Direct | LinkerInvocationMode::Script => {
-                    link_command
-                        .command
-                        .arg(format!("--dependency-file={}", depfile_path.display()));
-                }
-                LinkerInvocationMode::Cc => {
-                    link_command
-                        .command
-                        .arg(format!("-Wl,--dependency-file={}", depfile_path.display()));
-                }
-            }
-        }
-
-        let base_ok =
-            !linker.is_wild() && cmd_file_is_current(output_path, &link_command.to_string());
-
-        // We allow skipping linking if all the object and otherwise tracked files
-        // are unchanged and are older than our output file, but not if we're linking
-        // with our linker, since we're always changing that. We also require that the
-        // command we're going to run hasn't changed.
-        let can_skip = if !linker.is_wild() && depfile_path.is_file() {
-            match parse_ld_dependency_file(&depfile_path) {
-                Ok(deps) if !deps.is_empty() => {
-                    base_ok
-                        && is_newer(output_path, deps.iter())
-                        && is_newer(output_path, config.tracked_files.iter())
-                }
-                _ => false,
-            }
-        } else {
-            base_ok
-                && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
-                && is_newer(output_path, config.tracked_files.iter())
-        };
-        link_command.can_skip = can_skip;
+        link_command
+            .command
+            .arg(invocation_mode.format_arg(&format!(
+                "--dependency-file={}",
+                link_command.depfile_path().display()
+            )));
 
         Ok(link_command)
     }
@@ -2555,6 +2506,89 @@ impl LinkCommand {
 
         Ok(())
     }
+
+    /// Returns whether we can skip invoking the linker.
+    fn can_skip(&self) -> bool {
+        // We never skip linking when the linker is wild.
+        if self.linker.is_wild() {
+            return false;
+        }
+
+        if !self.output_path.is_file() {
+            return false;
+        }
+
+        let Ok(previous_hashes) = std::fs::read_to_string(self.hashes_path()) else {
+            return false;
+        };
+
+        self.input_hashes() == previous_hashes
+    }
+
+    /// Returns a report containing the hashes of all the inputs. Also includes the linker
+    /// command-line, not hashed, because that's more useful.
+    fn input_hashes(&self) -> String {
+        let mut hashes = self.to_string();
+
+        hashes.push_str("\n\n");
+
+        let mut hash_file = |path: &Path| {
+            hashes.push_str(&path.to_string_lossy());
+            hashes.push_str(": ");
+            match std::fs::read(path) {
+                Ok(contents) => {
+                    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+                    hasher.write(&contents);
+                    write!(&mut hashes, "{:x}", hasher.finish()).unwrap();
+                }
+                Err(error) => hashes.push_str(&error.to_string()),
+            }
+            hashes.push('\n');
+        };
+
+        for dep in &self.config.tracked_files {
+            hash_file(dep);
+        }
+
+        if let Ok(deps) = parse_ld_dependency_file(&self.depfile_path()) {
+            for dep in deps {
+                hash_file(&dep);
+            }
+        } else {
+            for input in &self.inputs {
+                hash_file(&input.path);
+            }
+        }
+
+        hashes
+    }
+
+    fn write_input_hashes(&self) -> Result {
+        // We always run wild, so we don't need a hash file.
+        if self.linker.is_wild() {
+            return Ok(());
+        }
+
+        let path = self.hashes_path();
+        std::fs::write(&path, self.input_hashes())
+            .with_context(|| format!("Failed to write `{}`", path.display()))?;
+        Ok(())
+    }
+
+    fn depfile_path(&self) -> PathBuf {
+        add_to_path(&self.output_path, ".deps")
+    }
+
+    fn hashes_path(&self) -> PathBuf {
+        add_to_path(&self.output_path, ".hashes")
+    }
+}
+
+/// Returns `path` + `extra`.
+fn add_to_path(path: &Path, extra: &str) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
+    path.push(extra);
+    PathBuf::from(path)
 }
 
 fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut Command) {
@@ -2966,10 +3000,11 @@ impl Clone for LinkCommand {
             command: clone_command(&self.command),
             input_commands: self.input_commands.to_vec(),
             linker: self.linker.clone(),
-            can_skip: self.can_skip,
             invocation_mode: self.invocation_mode,
             opt_save_dir: self.opt_save_dir.clone(),
             output_path: self.output_path.clone(),
+            inputs: self.inputs.clone(),
+            config: self.config.clone(),
         }
     }
 }
@@ -3108,6 +3143,17 @@ fn should_print_timing() -> bool {
     *VALUE.get_or_init(|| std::env::var("WILD_TEST_PRINT_TIMING").is_ok())
 }
 
+impl LinkerInvocationMode {
+    fn format_arg(&self, arg: &str) -> String {
+        match self {
+            LinkerInvocationMode::Direct | LinkerInvocationMode::Script => arg.to_owned(),
+            LinkerInvocationMode::Cc => {
+                format!("-Wl,{arg}")
+            }
+        }
+    }
+}
+
 fn available_linkers() -> Result<Vec<Linker>> {
     let mut linkers = vec![
         Linker::ThirdParty(ThirdPartyLinker {
@@ -3174,7 +3220,7 @@ fn run_with_config(
                 });
             let is_cache_hit = result
                 .as_ref()
-                .is_ok_and(|p| p.link_output.command.can_skip);
+                .is_ok_and(|p| p.link_output.command.can_skip());
             if !is_cache_hit && should_print_timing() {
                 println!(
                     "{program_inputs}-{config} with {linker} took {} ms",
