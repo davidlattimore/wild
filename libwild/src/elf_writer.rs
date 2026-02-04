@@ -2932,9 +2932,12 @@ fn write_epilogue_dynamic_entries(
             .dynsym_writer
             .strtab_writer
             .write_str(rpath.as_bytes());
-        table_writer
-            .dynamic
-            .write(object::elf::DT_RUNPATH, offset.into())?;
+        let rpath_tag = if layout.args().enable_new_dtags {
+            object::elf::DT_RUNPATH
+        } else {
+            object::elf::DT_RPATH
+        };
+        table_writer.dynamic.write(rpath_tag, offset.into())?;
     }
     if let Some(soname) = layout.args().soname.as_ref() {
         let offset = table_writer
@@ -3956,13 +3959,37 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
-        |inputs| inputs.dt_flags() != 0,
+        |inputs| inputs.args.enable_new_dtags && inputs.dt_flags() != 0,
         |inputs| inputs.dt_flags(),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS_1,
         |inputs| inputs.dt_flags_1() != 0,
         |inputs| inputs.dt_flags_1(),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_BIND_NOW,
+        |inputs| {
+            !inputs.args.enable_new_dtags
+                && (inputs.dt_flags() & u64::from(object::elf::DF_BIND_NOW)) != 0
+        },
+        |_inputs| 0,
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_SYMBOLIC,
+        |inputs| {
+            !inputs.args.enable_new_dtags
+                && (inputs.dt_flags() & u64::from(object::elf::DF_SYMBOLIC)) != 0
+        },
+        |_inputs| 0,
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_TEXTREL,
+        |inputs| {
+            !inputs.args.enable_new_dtags
+                && (inputs.dt_flags() & u64::from(object::elf::DF_TEXTREL)) != 0
+        },
+        |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_AARCH64_VARIANT_PCS,

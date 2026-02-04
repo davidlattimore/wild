@@ -97,6 +97,7 @@ pub struct Args {
     pub(crate) export_list: Vec<String>,
     pub(crate) export_list_path: Option<PathBuf>,
     pub(crate) auxiliary: Vec<String>,
+    pub(crate) enable_new_dtags: bool,
 
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
@@ -369,7 +370,6 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
 
 const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
-    "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
@@ -382,7 +382,6 @@ const DEFAULT_FLAGS: &[&str] = &[
     "no-copy-dt-needed-entries",
     "no-add-needed",
     "discard-locals",
-    "enable-new-dtags",
     "no-fatal-warnings",
 ];
 const DEFAULT_SHORT_FLAGS: &[&str] = &[
@@ -435,6 +434,7 @@ impl Default for Args {
             verbose_gc_stats: false,
             rpath: None,
             soname: None,
+            enable_new_dtags: true,
             execstack: false,
             should_fork: true,
             mmap_output_file: true,
@@ -2265,6 +2265,24 @@ fn setup_argument_parser() -> ArgumentParser {
                 "both" => HashStyle::Both,
                 _ => bail!("Unknown hash-style `{value}`"),
             };
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("enable-new-dtags")
+        .help("Use DT_RUNPATH and DT_FLAGS/DT_FLAGS_1 (default)")
+        .execute(|args, _modifier_stack| {
+            args.enable_new_dtags = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("disable-new-dtags")
+        .help("Use DT_RPATH and individual dynamic entries instead of DT_FLAGS")
+        .execute(|args, _modifier_stack| {
+            args.enable_new_dtags = false;
             Ok(())
         });
 

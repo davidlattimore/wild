@@ -226,7 +226,6 @@ tests = [
   "common-symbols.sh",
   "defsym-missing-symbol.sh",
   "demangle-cpp.sh",
-  "disable-new-dtags.sh",
   "discard-section.sh",
   "discard.sh",
   "dynamic-linker.sh",
