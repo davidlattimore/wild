@@ -143,7 +143,7 @@ jobs:
       with:
         targets: riscv64gc-unknown-linux-gnu
     - uses: Swatinem/rust-cache@v2
-    - run: sudo apt-get update && sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+    - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
     - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
     - run: cargo build --target riscv64gc-unknown-linux-gnu
 
@@ -157,7 +157,7 @@ jobs:
     - uses: actions/checkout@v6
       with:
         persist-credentials: false    
-    - run: apt-get update && apt-get install -y gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
+    - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
     - uses: dtolnay/rust-toolchain@stable
       id: rust-toolchain
       with:
