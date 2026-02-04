@@ -41,6 +41,12 @@
 //!
 //! NoDynSym:symbol-name Checks that the specified symbol name is not defined in .dynsym.
 //!
+//! ExpectDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RUNPATH, DT_FLAGS) is
+//! present in the .dynamic section.
+//!
+//! NoDynamic:tag-name Checks that the specified dynamic entry (e.g. DT_RPATH, DT_BIND_NOW) is
+//! absent from the .dynamic section.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
@@ -847,6 +853,8 @@ struct Assertions {
     contains_strings: Vec<String>,
     expect_dynamic: bool,
     expected_load_alignment: Option<u64>,
+    expected_dynamic_entries: Vec<String>,
+    absent_dynamic_entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1088,6 +1096,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "Contains" => config
                     .assertions
                     .contains_strings
+                    .push(arg.trim().to_owned()),
+                "ExpectDynamic" => config
+                    .assertions
+                    .expected_dynamic_entries
+                    .push(arg.trim().to_owned()),
+                "NoDynamic" => config
+                    .assertions
+                    .absent_dynamic_entries
                     .push(arg.trim().to_owned()),
                 "ExpectLoadAlignment" => {
                     let alignment_str = arg.trim();
@@ -2606,6 +2622,7 @@ impl Assertions {
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
         self.verify_load_alignment(&obj)?;
+        self.verify_dynamic_entries(&obj)?;
         Ok(())
     }
 
@@ -2713,6 +2730,103 @@ impl Assertions {
 
         Ok(())
     }
+
+    fn verify_dynamic_entries(&self, obj: &ElfFile64) -> Result {
+        if self.expected_dynamic_entries.is_empty() && self.absent_dynamic_entries.is_empty() {
+            return Ok(());
+        }
+
+        let Some(dynamic_section) = obj.section_by_name(".dynamic") else {
+            if !self.expected_dynamic_entries.is_empty() {
+                bail!(
+                    "Expected dynamic entries {:?} but no .dynamic section found",
+                    self.expected_dynamic_entries
+                );
+            }
+            return Ok(());
+        };
+
+        let data = dynamic_section.data()?;
+        let entry_size = std::mem::size_of::<object::elf::Dyn64<LittleEndian>>();
+        let mut found_tags: HashSet<String> = HashSet::new();
+
+        for chunk in data.chunks_exact(entry_size) {
+            let tag = u64::from_le_bytes(chunk[0..8].try_into().unwrap()) as u32;
+            if let Some(name) = dynamic_tag_name(tag) {
+                found_tags.insert(name.to_string());
+            }
+
+            if tag == object::elf::DT_NULL {
+                break;
+            }
+        }
+
+        for expected in &self.expected_dynamic_entries {
+            if !found_tags.contains(expected.as_str()) {
+                bail!(
+                    "Expected dynamic entry `{expected}` not found. Found: {:?}",
+                    found_tags
+                );
+            }
+        }
+
+        for absent in &self.absent_dynamic_entries {
+            if found_tags.contains(absent.as_str()) {
+                bail!("Dynamic entry `{absent}` should be absent but was found");
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn dynamic_tag_name(tag: u32) -> Option<&'static str> {
+    use object::elf::*;
+    Some(match tag {
+        DT_NULL => "DT_NULL",
+        DT_NEEDED => "DT_NEEDED",
+        DT_PLTRELSZ => "DT_PLTRELSZ",
+        DT_PLTGOT => "DT_PLTGOT",
+        DT_HASH => "DT_HASH",
+        DT_STRTAB => "DT_STRTAB",
+        DT_SYMTAB => "DT_SYMTAB",
+        DT_RELA => "DT_RELA",
+        DT_RELASZ => "DT_RELASZ",
+        DT_RELAENT => "DT_RELAENT",
+        DT_STRSZ => "DT_STRSZ",
+        DT_SYMENT => "DT_SYMENT",
+        DT_INIT => "DT_INIT",
+        DT_FINI => "DT_FINI",
+        DT_SONAME => "DT_SONAME",
+        DT_RPATH => "DT_RPATH",
+        DT_SYMBOLIC => "DT_SYMBOLIC",
+        DT_REL => "DT_REL",
+        DT_RELSZ => "DT_RELSZ",
+        DT_RELENT => "DT_RELENT",
+        DT_PLTREL => "DT_PLTREL",
+        DT_DEBUG => "DT_DEBUG",
+        DT_TEXTREL => "DT_TEXTREL",
+        DT_JMPREL => "DT_JMPREL",
+        DT_BIND_NOW => "DT_BIND_NOW",
+        DT_INIT_ARRAY => "DT_INIT_ARRAY",
+        DT_FINI_ARRAY => "DT_FINI_ARRAY",
+        DT_INIT_ARRAYSZ => "DT_INIT_ARRAYSZ",
+        DT_FINI_ARRAYSZ => "DT_FINI_ARRAYSZ",
+        DT_RUNPATH => "DT_RUNPATH",
+        DT_FLAGS => "DT_FLAGS",
+        DT_PREINIT_ARRAY => "DT_PREINIT_ARRAY",
+        DT_PREINIT_ARRAYSZ => "DT_PREINIT_ARRAYSZ",
+        DT_FLAGS_1 => "DT_FLAGS_1",
+        DT_GNU_HASH => "DT_GNU_HASH",
+        DT_RELACOUNT => "DT_RELACOUNT",
+        DT_RELCOUNT => "DT_RELCOUNT",
+        DT_VERSYM => "DT_VERSYM",
+        DT_VERDEF => "DT_VERDEF",
+        DT_VERDEFNUM => "DT_VERDEFNUM",
+        DT_VERNEED => "DT_VERNEED",
+        DT_VERNEEDNUM => "DT_VERNEEDNUM",
+        _ => return None,
+    })
 }
 
 fn verify_symbol_assertions(
@@ -3335,7 +3449,8 @@ fn integration_test(
         "ifunc-export.c",
         "stack-size.c",
         "undefined-weak-sym.c",
-        "auxiliary.c"
+        "auxiliary.c",
+        "new-dtags.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
