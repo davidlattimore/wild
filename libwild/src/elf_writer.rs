@@ -2770,13 +2770,15 @@ fn write_merged_strings(
         }
     });
 
-    // Write linker identity into .comment section.
-    let comment_buffer =
-        buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
-    comment_buffer
-        .split_off_mut(..prelude.identity.len())
-        .unwrap()
-        .copy_from_slice(prelude.identity.as_bytes());
+    if layout.args().should_write_linker_identity {
+        // Write linker identity into .comment section.
+        let comment_buffer =
+            buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
+        comment_buffer
+            .split_off_mut(..prelude.identity.len())
+            .unwrap()
+            .copy_from_slice(prelude.identity.as_bytes());
+    }
 }
 
 fn write_plt_got_entries<A: Arch>(

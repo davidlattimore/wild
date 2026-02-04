@@ -128,6 +128,7 @@ pub struct Args {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) should_write_linker_identity: bool,
     pub(crate) hash_style: HashStyle,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
@@ -440,6 +441,7 @@ impl Default for Args {
             mmap_output_file: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
+            should_write_linker_identity: true,
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
@@ -2160,6 +2162,15 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Ignore files in GC stats")
         .execute(|args, _modifier_stack, value| {
             args.gc_stats_ignore.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-identity-comment")
+        .help("Don't write the linker name and version in .comment")
+        .execute(|args, _modifier_stack| {
+            args.should_write_linker_identity = false;
             Ok(())
         });
 

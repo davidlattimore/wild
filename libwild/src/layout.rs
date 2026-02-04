@@ -3548,11 +3548,13 @@ impl<'data> PreludeLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        // Allocate space to store the identity of the linker in the .comment section.
-        common.allocate(
-            output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
-            self.identity.len() as u64,
-        );
+        if resources.symbol_db.args.should_write_linker_identity {
+            // Allocate space to store the identity of the linker in the .comment section.
+            common.allocate(
+                output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+                self.identity.len() as u64,
+            );
+        }
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
@@ -3993,10 +3995,13 @@ impl<'data> PreludeLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        memory_offsets.increment(
-            output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
-            self.identity.len() as u64,
-        );
+        if resources.symbol_db.args.should_write_linker_identity {
+            memory_offsets.increment(
+                output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+                self.identity.len() as u64,
+            );
+        }
+
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 memory_offsets.increment(
