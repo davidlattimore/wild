@@ -62,12 +62,16 @@ impl<'data> SymbolInfoPrinter<'data> {
             .unwrap_or_else(|| self.name.to_owned());
 
         let matcher = NameMatcher::new(&name);
+        let mut target_ids = Vec::new();
+        target_ids.extend(name.parse().ok().map(SymbolId::from_usize));
 
         let symbol_id = self.symbol_db.get(
             &PreHashedSymbolName::from_raw(&RawSymbolName::parse(name.as_bytes())),
             true,
         );
         println!("Global name `{name}` refers to: {symbol_id:?}");
+
+        target_ids.extend(symbol_id);
 
         println!("Definitions / references with name `{name}`:");
         for i in 0..self.symbol_db.num_symbols() {
@@ -82,9 +86,23 @@ impl<'data> SymbolInfoPrinter<'data> {
                 "NOT LOADED"
             };
 
-            if let Ok(sym_name) = self.symbol_db.symbol_name(symbol_id)
-                && matcher.matches(sym_name.bytes(), symbol_id, self.symbol_db)
-            {
+            let Ok(sym_name) = self.symbol_db.symbol_name(symbol_id) else {
+                continue;
+            };
+
+            let is_name_match = matcher.matches(sym_name.bytes(), symbol_id, self.symbol_db);
+
+            let is_id_match = target_ids.contains(&symbol_id);
+
+            if is_name_match || is_id_match {
+                if symbol_id != canonical {
+                    // Show info about the canonical symbol too. Generally the canonical symbol will
+                    // have the same name, so this won't do anything. Note, this only works if the
+                    // related symbol is later. Fixing that would require restructuring this
+                    // function.
+                    target_ids.push(canonical);
+                }
+
                 let file = self.symbol_db.file(file_id);
                 let local_index = symbol_id.to_input(file.symbol_id_range());
 
@@ -128,8 +146,14 @@ impl<'data> SymbolInfoPrinter<'data> {
                     .symbol_version_debug(symbol_id)
                     .map_or_else(String::new, |v| format!(" version `{v}`"));
 
+                let canon = if symbol_id == canonical {
+                    "".to_owned()
+                } else {
+                    format!(" -> {canonical}")
+                };
+
                 println!(
-                    "  {sym_debug}: symbol_id={symbol_id} -> {canonical} {flags} \
+                    "  {symbol_id}{canon}: {sym_debug}: {flags} \
                             \n    {sym_name}{version_str}\n    \
                             #{local_index} in File #{file_id} {input} ({file_state})"
                 );

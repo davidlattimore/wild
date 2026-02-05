@@ -2425,7 +2425,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .long("sym-info")
-        .help("Show symbol information")
+        .help("Show symbol information. Accepts symbol name or ID.")
         .execute(|args, _modifier_stack, value| {
             args.sym_info = Some(value.to_owned());
             Ok(())
