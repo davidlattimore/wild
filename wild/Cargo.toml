@@ -28,6 +28,7 @@ foldhash = { workspace = true }
 linker-diff = { path = "../linker-diff" }
 object = { workspace = true }
 os_info = { workspace = true }
+regex = { workspace = true }
 rstest = { workspace = true }
 serde = { workspace = true }
 serde-keyvalue = { workspace =  true }
