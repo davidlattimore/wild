@@ -2149,6 +2149,7 @@ dependencies = [
  "mimalloc",
  "object 0.38.1",
  "os_info",
+ "regex",
  "rstest",
  "serde",
  "serde-keyvalue",

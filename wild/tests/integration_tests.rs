@@ -75,8 +75,8 @@
 //!
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
-//! ExpectError:{error string} Verifies that the link fails and that the error message includes the
-//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
+//! ExpectError:{error regex} Verifies that the link fails and that the error message matches the
+//! specified regex. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
 //! times - all must match.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
@@ -496,7 +496,7 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_errors: Vec<String>,
+    expect_errors: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -569,6 +569,11 @@ enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DirectConfig {
     mode: Mode,
+}
+
+#[derive(Debug, Clone)]
+struct ErrorMatcher {
+    regex: regex::bytes::Regex,
 }
 
 fn get_glibc_version() -> Option<Vec<u32>> {
@@ -1141,7 +1146,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
-                    config.expect_errors.push(arg.trim().to_owned());
+                    config.expect_errors.push(ErrorMatcher::new(arg.trim())?);
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
@@ -2450,11 +2455,7 @@ impl LinkCommand {
             }
 
             for expected_error in &config.expect_errors {
-                if !output
-                    .stderr
-                    .windows(expected_error.len())
-                    .any(|s| s == expected_error.as_bytes())
-                {
+                if !expected_error.matches(&output.stderr) {
                     eprintln!(
                         "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
                         String::from_utf8_lossy(&output.stdout),
@@ -3267,6 +3268,31 @@ impl LinkerInvocationMode {
         }
     }
 }
+
+impl ErrorMatcher {
+    fn new(pattern: &str) -> Result<Self> {
+        let regex = regex::bytes::Regex::new(pattern)?;
+        Ok(Self { regex })
+    }
+
+    fn matches(&self, stderr: &[u8]) -> bool {
+        self.regex.is_match(stderr)
+    }
+}
+
+impl Display for ErrorMatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.regex.as_str())
+    }
+}
+
+impl PartialEq for ErrorMatcher {
+    fn eq(&self, other: &Self) -> bool {
+        self.regex.as_str() == other.regex.as_str()
+    }
+}
+
+impl Eq for ErrorMatcher {}
 
 fn available_linkers() -> Result<Vec<Linker>> {
     let mut linkers = vec![
