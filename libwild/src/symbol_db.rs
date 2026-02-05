@@ -297,8 +297,20 @@ impl<'data> SymbolDb<'data> {
         rust_vscript.global.par_iter().for_each(|symbol| {
             let prehashed = UnversionedSymbolName::prehashed(symbol);
             if let Some(symbol_id) = self.get_unversioned(&prehashed) {
-                let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
-                symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                atomic_per_symbol_flags
+                    .get_atomic(symbol_id)
+                    .remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+
+                // There might be alternative definitions of the symbol. We haven't yet selected
+                // which definition will be used, so we need to update all of them.
+                let bucket = &self.buckets[prehashed.hash() as usize % self.buckets.len()];
+                if let Some(alternatives) = bucket.alternative_definitions.get(&symbol_id) {
+                    for alt in alternatives {
+                        atomic_per_symbol_flags
+                            .get_atomic(*alt)
+                            .remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                    }
+                }
             }
         });
 
