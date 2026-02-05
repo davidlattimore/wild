@@ -16,7 +16,6 @@ tests = [
   "exception-multiple-ehframe.sh",     # `-r`
   "execute-only.sh",
   "fatal-warnings.sh",                 # `-warn-common` and `-fatal-warnings`
-  "filler.sh",
   "filter.sh",
   "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
   "icf-gcc-except-table.sh",           # `--icf`
@@ -28,12 +27,9 @@ tests = [
   "linker-script-relocatable.sh",      # `--relocatable`
   "many-input-sections2.sh",           # `--relocatable`
   "nmagic.sh",
-  "no-quick-exit.sh",
   "oformat-binary.sh",
   "omagic.sh",
   "package-metadata.sh",
-  "physical-image-base.sh",
-  "print-dependencies.sh",
   "relocatable-archive.sh",
   "relocatable-c++.sh",
   "relocatable-debug-info.sh",
@@ -46,20 +42,13 @@ tests = [
   "require-defined.sh",
   "response-file-quoting.sh",
   "retain-symbols-file.sh",
-  "reverse-sections.sh",
   "rosegment.sh",
   "run.sh",
-  "section-align.sh",                  # `--section-align`
-  "section-order.sh",
-  "separate-debug-file-sort.sh",
-  "separate-debug-file.sh",
-  "shuffle-sections-seed.sh",
-  "shuffle-sections.sh",
+  "section-align.sh",                  # `--section-alignment`
   "sort-debug-info-compressed.sh",     # `-Map`
   "sort-debug-info-merged.sh",         # `-r`
   "sort-debug-info.sh",                # `-Map`
   "spare-program-headers.sh",
-  "start-stop.sh",
   "static-archive.sh",                 # `--trace`
   "synthetic-symbols.sh",              # `--image-base`
   "thin-archive.sh",                   # `--trace`
@@ -70,7 +59,6 @@ tests = [
   "undefined-glob.sh",
   "warn-common.sh",
   "warn-once.sh",
-  "zero-to-bss.sh",
 ]
 
 [skipped_groups.gdb_index]
@@ -213,6 +201,23 @@ tests = [
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
+]
+
+[skipped_groups.uncommon]
+reason = "These tests use uncommon features and are therefore likely not supported by Wild, at least for the time being."
+tests = [
+  "filler.sh",
+  "no-quick-exit.sh",
+  "physical-image-base.sh",
+  "print-dependencies.sh",
+  "reverse-sections.sh",
+  "section-order.sh",
+  "separate-debug-file-sort.sh",
+  "separate-debug-file.sh",
+  "shuffle-sections-seed.sh",
+  "shuffle-sections.sh",
+  "start-stop.sh",
+  "zero-to-bss.sh",
 ]
 
 [skipped_groups.misc]
