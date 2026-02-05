@@ -104,13 +104,23 @@ impl Arch for AArch64 {
                     RelaxationKind::AdrpToAdr,
                     object::elf::R_AARCH64_ADR_PREL_LO21,
                 );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_ADR_PREL_PG_HI21 => {
                 relax(
                     RelaxationKind::AdrpToAdr,
                     object::elf::R_AARCH64_ADR_PREL_LO21,
                 );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
+            object::elf::R_AARCH64_LD64_GOT_LO12_NC => relax(
+                RelaxationKind::LdrToAdr,
+                object::elf::R_AARCH64_ADR_PREL_LO21,
+            ),
+            object::elf::R_AARCH64_ADD_ABS_LO12_NC => relax(
+                RelaxationKind::AddToAdr,
+                object::elf::R_AARCH64_ADR_PREL_LO21,
+            ),
             _ => {}
         }
 
