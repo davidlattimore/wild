@@ -745,6 +745,13 @@ enum GlobPatternType {
 }
 
 fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
+    // Fast path for when none of the characters are present.
+    if memchr::memchr3(b'*', b'?', b'\\', pattern).is_none()
+        && memchr::memchr2(b'[', b']', pattern).is_none()
+    {
+        return GlobPatternType::Exact;
+    }
+
     let mut pattern_type = GlobPatternType::Exact;
     let mut it = pattern.iter();
 
