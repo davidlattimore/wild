@@ -262,6 +262,7 @@ impl Config {
                 // TODO: Figure out why this is happening.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                // On some systems Wild outputs these symbols while GNU ld does not.
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -285,7 +286,7 @@ impl Config {
             ),
             ArchKind::RISCV64 => self.ignore.extend(
                 [
-                    // TODO: for some reason, main is put into .dynsym
+                    // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
                     // GOT entries may differ due to unimplemented relaxations
                     "section.got.*",
