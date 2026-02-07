@@ -2,9 +2,22 @@
 on:
   push:
     tags:
-      - '[0-9]+.*'
+      - '[0-9]*.[0-9]*.[0-9]*'
+
+  # Do a test run on PRs that change this file. Doesn't do the actual release.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+    
+  # Allow manually triggering workflow for testing purposes. As with pull requests, the actual
+  # release won't get created.
+  workflow_dispatch:
 
 name: Release
+
+env:
+  IS_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') }}
+  VERSION_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('test-{0}', github.run_number) }}
 
 jobs:
   release:
@@ -51,9 +64,10 @@ jobs:
         use-cache: false
 
     - name: Extract release notes
+      if: env.IS_RELEASE == 'true'
       shell: bash
       run: |
-        awk "/## ${GITHUB_REF_NAME}/{flag=1; next} /^## / && flag{exit} flag" CHANGELOG.md >REL.md
+        awk "/## ${VERSION_TAG}/{flag=1; next} /^## / && flag{exit} flag" CHANGELOG.md >REL.md
 
     - name: Build stage1
       run: cargo build --release
@@ -72,7 +86,7 @@ jobs:
 
     - name: Create tarballs
       run: |
-        n="wild-linker-${GITHUB_REF_NAME}-${{ matrix.target }}"
+        n="wild-linker-${VERSION_TAG}-${{ matrix.target }}"
         mkdir "$n"
         cp "target/${{ matrix.target }}/dist/wild" "$n"
         cp README.md LICENSE* CHANGELOG.md "$n"
@@ -80,6 +94,7 @@ jobs:
         tar zcf $n.tar.gz $n
 
     - name: Release
+      if: env.IS_RELEASE == 'true'
       uses: softprops/action-gh-release@v2
       with:
         body_path: REL.md

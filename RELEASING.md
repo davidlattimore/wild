@@ -1,5 +1,6 @@
 # Releasing wild
 
+* Manually trigger the release workflow to verify that it still works.
 * Run `git cliff {previous version}...`
 * Copy output into `CHANGELOG.md` and edit as necessary.
 * The header for the release must be just the version number that is going to be released.
@@ -24,3 +25,5 @@ When complete, it should create the release in [Releases](https://github.com/dav
 Maintainers can then edit the release notes associated with the release.
 
 If everything looks good, publish the release.
+
+Update [wild-action](https://github.com/davidlattimore/wild-action).
