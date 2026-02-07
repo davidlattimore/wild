@@ -5984,6 +5984,9 @@ fn layout_section_parts(
     output_order: &OutputOrder,
     args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
+    let segment_alignments =
+        compute_segment_alignments(sizes, program_segments, output_order, args);
+
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
@@ -6000,7 +6003,10 @@ fn layout_section_parts(
             }
             OrderEvent::SegmentStart(segment_id) => {
                 if program_segments.is_load_segment(segment_id) {
-                    let segment_alignment = program_segments.segment_alignment(segment_id, args);
+                    let segment_alignment = segment_alignments
+                        .get(&segment_id)
+                        .copied()
+                        .unwrap_or_else(|| args.loadable_segment_alignment());
                     if let Some(location) = pending_location.take() {
                         mem_offset = location.address;
                         file_offset =
@@ -6085,6 +6091,51 @@ fn layout_section_parts(
     }
 
     records_out
+}
+
+/// Computes the maximum alignment for each LOAD segment by examining the alignments of all sections
+/// that will be placed in that segment.
+fn compute_segment_alignments(
+    sizes: &OutputSectionPartMap<u64>,
+    program_segments: &ProgramSegments,
+    output_order: &OutputOrder,
+    args: &Args,
+) -> HashMap<ProgramSegmentId, Alignment> {
+    timing_phase!("Computing segment alignments");
+
+    let mut segment_alignments: HashMap<ProgramSegmentId, Alignment> = HashMap::new();
+    let mut active_load_segments: Vec<ProgramSegmentId> = Vec::new();
+
+    for event in output_order {
+        match event {
+            OrderEvent::SegmentStart(segment_id) => {
+                if program_segments.is_load_segment(segment_id) {
+                    // Initialize with the base loadable segment alignment
+                    segment_alignments
+                        .entry(segment_id)
+                        .or_insert_with(|| args.loadable_segment_alignment());
+                    active_load_segments.push(segment_id);
+                }
+            }
+            OrderEvent::SegmentEnd(segment_id) => {
+                active_load_segments.retain(|&id| id != segment_id);
+            }
+            OrderEvent::Section(section_id) => {
+                let part_id_range = section_id.part_id_range();
+                let max_alignment = sizes.max_alignment(part_id_range);
+
+                // Update the alignment for all active LOAD segments
+                for &segment_id in &active_load_segments {
+                    segment_alignments
+                        .entry(segment_id)
+                        .and_modify(|a| *a = (*a).max(max_alignment));
+                }
+            }
+            OrderEvent::SetLocation(_) => {}
+        }
+    }
+
+    segment_alignments
 }
 
 impl<'data> DynamicLayoutState<'data> {

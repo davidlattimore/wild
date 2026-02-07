@@ -1,4 +1,3 @@
-use crate::alignment::Alignment;
 use linker_utils::elf::SegmentFlags;
 use linker_utils::elf::SegmentType;
 use linker_utils::elf::pf;
@@ -105,18 +104,6 @@ impl ProgramSegments {
 
     pub(crate) fn len(&self) -> usize {
         self.program_segment_details.len()
-    }
-
-    pub(crate) fn segment_alignment(
-        &self,
-        segment_id: ProgramSegmentId,
-        args: &crate::Args,
-    ) -> Alignment {
-        if self.segment_def(segment_id).segment_type == pt::LOAD {
-            args.loadable_segment_alignment()
-        } else {
-            crate::alignment::MIN
-        }
     }
 
     pub(crate) fn segment_def(&self, segment_id: ProgramSegmentId) -> &ProgramSegmentDef {
