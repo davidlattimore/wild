@@ -45,6 +45,16 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionMode {
+    /// Don't print version
+    None,
+    /// Print version and continue linking (-v)
+    Verbose,
+    /// Print version and exit immediately (--version)
+    ExitAfterPrint,
+}
+
 #[derive(Debug)]
 pub(crate) enum DefsymValue {
     /// A numeric value (address)
@@ -122,7 +132,7 @@ pub struct Args {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
-    pub(crate) should_print_version: bool,
+    pub(crate) version_mode: VersionMode,
     pub(crate) demangle: bool,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
@@ -446,7 +456,7 @@ impl Default for Args {
             exclude_libs: ExcludeLibs::None,
             no_undefined: false,
             allow_shlib_undefined: false,
-            should_print_version: false,
+            version_mode: VersionMode::None,
             sysroot: None,
             save_dir: Default::default(),
             dependency_file: None,
@@ -1694,10 +1704,18 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("version")
-        .short("v")
-        .help("Show version information")
+        .help("Show version information and exit")
         .execute(|args, _modifier_stack| {
-            args.should_print_version = true;
+            args.version_mode = VersionMode::ExitAfterPrint;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("v")
+        .help("Print version and continue linking")
+        .execute(|args, _modifier_stack| {
+            args.version_mode = VersionMode::Verbose;
             Ok(())
         });
 
@@ -2585,6 +2603,7 @@ impl Display for CopyRelocationsDisabledReason {
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
+    use super::VersionMode;
     use crate::Args;
     use crate::args::InputSpec;
     use itertools::Itertools;
@@ -2751,7 +2770,7 @@ mod tests {
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.num_threads, Some(NonZeroUsize::new(1).unwrap()));
-        assert!(args.should_print_version);
+        assert_eq!(args.version_mode, VersionMode::Verbose);
         assert_eq!(
             args.sysroot,
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))

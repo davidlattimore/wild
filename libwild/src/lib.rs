@@ -174,10 +174,17 @@ impl Linker {
         args: &'layout_inputs ActivatedArgs,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let args = &args.args;
-        if args.should_print_version {
-            println!("{}", linker_identity());
-            if args.inputs.is_empty() {
+        match args.version_mode {
+            args::VersionMode::ExitAfterPrint => {
+                println!("{}", linker_identity());
                 return Ok(LinkerOutput { layout: None });
+            }
+            args::VersionMode::Verbose => {
+                println!("{}", linker_identity());
+                // Continue linking
+            }
+            args::VersionMode::None => {
+                // Don't print version
             }
         }
 
