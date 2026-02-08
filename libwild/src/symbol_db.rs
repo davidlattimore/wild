@@ -784,24 +784,10 @@ impl<'data> SymbolDb<'data> {
         resolved: &[ResolvedGroup],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        if let Some(common) = resolved[file_id.group()].files[file_id.file()].common() {
-            let local_index = symbol_id.to_input(common.symbol_id_range);
-            let Ok(obj_symbol) = common.object.symbol(local_index) else {
-                // Errors from this function should have been reported elsewhere.
-                return SymbolStrength::Undefined;
-            };
-            let e = LittleEndian;
-            if obj_symbol.is_weak() {
-                SymbolStrength::Weak
-            } else if obj_symbol.is_common(e) {
-                SymbolStrength::Common(obj_symbol.st_size(e))
-            } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
-                SymbolStrength::GnuUnique
-            } else {
-                SymbolStrength::Strong
-            }
-        } else {
-            SymbolStrength::Undefined
+        match &resolved[file_id.group()].files[file_id.file()] {
+            ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
+            ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
+            _ => SymbolStrength::Undefined,
         }
     }
 

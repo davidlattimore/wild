@@ -913,6 +913,24 @@ impl<'data> ResolvedCommon<'data> {
             symbol_id_range: obj.symbol_id_range,
         }
     }
+
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        let local_index = symbol_id.to_input(self.symbol_id_range);
+        let Ok(obj_symbol) = self.object.symbol(local_index) else {
+            // Errors from this function should have been reported elsewhere.
+            return SymbolStrength::Undefined;
+        };
+        let e = LittleEndian;
+        if obj_symbol.is_weak() {
+            SymbolStrength::Weak
+        } else if obj_symbol.is_common(e) {
+            SymbolStrength::Common(obj_symbol.st_size(e))
+        } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
+            SymbolStrength::GnuUnique
+        } else {
+            SymbolStrength::Strong
+        }
+    }
 }
 
 fn apply_init_fini_secondaries<'data>(
@@ -1297,16 +1315,6 @@ impl FrameIndex {
 
     pub(crate) fn as_usize(self) -> usize {
         self.0.get() as usize - 1
-    }
-}
-
-impl<'data> ResolvedFile<'data> {
-    pub(crate) fn common(&self) -> Option<&ResolvedCommon<'data>> {
-        match self {
-            ResolvedFile::Object(o) => Some(&o.common),
-            ResolvedFile::Dynamic(o) => Some(&o.common),
-            _ => None,
-        }
     }
 }
 
