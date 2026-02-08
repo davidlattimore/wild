@@ -242,7 +242,7 @@ pub fn compute<'data, A: Arch>(
         &output_order,
         &program_segments,
         &mut per_symbol_flags,
-        gc_outputs.sections_with_content,
+        gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
     )?;
 
@@ -1790,11 +1790,8 @@ struct GraphResources<'data, 'scope> {
 
     per_symbol_flags: &'scope AtomicPerSymbolFlags<'scope>,
 
-    /// Which sections have we loaded an input section into. This is not the same as checking
-    /// whether the mem sizes for that section are non-zero because we can load an input section
-    /// with size 0. If we do that, we still need to produce the output section so that we have
-    /// something to refer to in the symtab.
-    sections_with_content: OutputSectionMap<AtomicBool>,
+    /// Sections that we'll keep, even if their total size is zero.
+    must_keep_sections: OutputSectionMap<AtomicBool>,
 
     has_static_tls: AtomicBool,
 
@@ -2322,7 +2319,7 @@ fn compute_total_section_part_sizes(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments,
     per_symbol_flags: &mut PerSymbolFlags,
-    sections_with_content: OutputSectionMap<bool>,
+    must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources,
 ) -> Result<OutputSectionPartMap<u64>> {
     timing_phase!("Compute total section sizes");
@@ -2350,7 +2347,7 @@ fn compute_total_section_part_sizes(
     prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
-        sections_with_content,
+        must_keep_sections,
         output_sections,
         output_order,
         program_segments,
@@ -2477,7 +2474,7 @@ struct WorkerSlot<'data> {
 #[derive(Debug)]
 struct GcOutputs<'data> {
     group_states: Vec<GroupState<'data>>,
-    sections_with_content: OutputSectionMap<bool>,
+    must_keep_sections: OutputSectionMap<bool>,
     has_static_tls: bool,
     has_variant_pcs: bool,
 }
@@ -2572,7 +2569,7 @@ fn find_required_sections<'data, A: Arch>(
         worker_slots,
         errors: Mutex::new(Vec::new()),
         per_symbol_flags,
-        sections_with_content: output_sections.new_section_map(),
+        must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
@@ -2594,7 +2591,7 @@ fn find_required_sections<'data, A: Arch>(
     }
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
-    let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+    let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
     tracing::debug!(target: "metrics", total = group_states
         .iter()
@@ -2621,7 +2618,7 @@ fn find_required_sections<'data, A: Arch>(
 
     Ok(GcOutputs {
         group_states,
-        sections_with_content,
+        must_keep_sections,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
         has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
     })
@@ -2892,6 +2889,18 @@ impl<'data> GraphResources<'data, '_> {
     fn symbol_debug(&'_ self, symbol_id: SymbolId) -> SymbolDebug<'_> {
         self.symbol_db
             .symbol_debug(self.per_symbol_flags, symbol_id)
+    }
+
+    fn keep_section(&self, section_id: OutputSectionId) {
+        let keep = self.must_keep_sections.get(section_id);
+
+        // We only write after reading and determining that we need to write. This likely makes the
+        // case where we do write slower, but the case where we don't write faster and also avoids
+        // gaining exclusive access to the cache line unless necessary. This has a small but
+        // measurable performance effect.
+        if !keep.load(atomic::Ordering::Relaxed) {
+            keep.store(true, atomic::Ordering::Relaxed);
+        }
     }
 }
 
@@ -3725,7 +3734,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState,
         total_sizes: &mut OutputSectionPartMap<u64>,
-        sections_with_content: OutputSectionMap<bool>,
+        must_keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         output_order: &OutputOrder,
         program_segments: &ProgramSegments,
@@ -3740,7 +3749,7 @@ impl<'data> PreludeLayoutState<'data> {
         self.determine_header_sizes(
             total_sizes,
             &mut extra_sizes,
-            sections_with_content,
+            must_keep_sections,
             output_sections,
             program_segments,
             output_order,
@@ -3813,7 +3822,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         total_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
-        sections_with_content: OutputSectionMap<bool>,
+        must_keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         program_segments: &ProgramSegments,
         output_order: &OutputOrder,
@@ -3822,13 +3831,12 @@ impl<'data> PreludeLayoutState<'data> {
     ) {
         use output_section_id::OrderEvent;
 
-        // Determine which sections to keep. To start with, we keep all sections into which we've
-        // loaded an input section. Note, this includes where the input section and even the output
-        // section is empty. We still need the output section as it may contain symbols.
-        let mut keep_sections = sections_with_content;
+        // Determine which sections to keep. To start with, we keep all sections that we've
+        // previously marked as needing to be kept. These may include sections that are empty, but
+        // into which we've loaded an empty input section.
+        let mut keep_sections = must_keep_sections;
 
-        // Next, keep any sections for which we've recorded a non-zero size, even if we didn't
-        // record the loading of an input section. This covers sections where we generate content.
+        // Next, keep any sections for which we've recorded a non-zero size.
         total_sizes.map(|part_id, size| {
             if *size > 0 {
                 *keep_sections.get_mut(part_id.output_section_id()) = true;
@@ -4796,15 +4804,6 @@ impl<'data> ObjectLayoutState<'data> {
         common.section_loaded(part_id, header, section);
 
         let section_id = section.output_section_id();
-        let should_mark_content =
-            section.size > 0 || section_id.marks_zero_sized_inputs_as_content();
-
-        if should_mark_content {
-            resources
-                .sections_with_content
-                .get(section_id)
-                .fetch_or(true, atomic::Ordering::Relaxed);
-        }
 
         if section.size > 0 {
             let sizes = match &self.exception_frames {
@@ -4836,6 +4835,8 @@ impl<'data> ObjectLayoutState<'data> {
                     size_of::<EhFrameHdrEntry>() as u64 * sizes.num_frames,
                 );
             }
+        } else if section_id.marks_zero_sized_inputs_as_content() {
+            resources.keep_section(section_id);
         }
 
         self.sections[section_index.0] = SectionSlot::Loaded(section);
