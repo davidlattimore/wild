@@ -261,7 +261,7 @@ pub(crate) fn sort_sframe_section(
         return Ok(());
     }
 
-    entries.sort_by(|a, b| a.func_addr.cmp(&b.func_addr));
+    entries.sort_by_key(|a| a.func_addr);
 
     let num_fdes = entries.len();
     let header_end_offset = HEADER_SIZE + output_aux_len;
