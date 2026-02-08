@@ -563,11 +563,7 @@ impl<'data> SymbolDb<'data> {
                     return Visibility::Default;
                 };
 
-                match obj_symbol.st_visibility() {
-                    object::elf::STV_PROTECTED => Visibility::Protected,
-                    object::elf::STV_HIDDEN => Visibility::Hidden,
-                    _ => Visibility::Default,
-                }
+                Visibility::from_elf_st_visibility(obj_symbol.st_visibility())
             }
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
@@ -1085,6 +1081,16 @@ pub(crate) enum Visibility {
     Default,
     Protected,
     Hidden,
+}
+
+impl Visibility {
+    pub(crate) fn from_elf_st_visibility(st_visibility: u8) -> Visibility {
+        match st_visibility {
+            object::elf::STV_PROTECTED => Visibility::Protected,
+            object::elf::STV_HIDDEN => Visibility::Hidden,
+            _ => Visibility::Default,
+        }
+    }
 }
 
 fn process_alternatives(
