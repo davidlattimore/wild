@@ -701,7 +701,6 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
                 resolve_symbols(
                     obj,
                     resources,
-                    &resources.outputs.undefined_symbols,
                     work_item.symbol_start_offset,
                     definitions_out,
                     scope,
@@ -1142,7 +1141,6 @@ fn resolve_section<'data>(
 fn resolve_symbols<'data, 'scope>(
     obj: &SequencedInputObject<'data>,
     resources: &'scope ResolutionResources<'data, 'scope>,
-    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     start_symbol_offset: usize,
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
@@ -1155,78 +1153,94 @@ fn resolve_symbols<'data, 'scope>(
         .zip(definitions_out)
         .try_for_each(
             |((local_symbol_index, local_symbol), definition)| -> Result {
+                // Don't try to resolve symbols that are already defined, e.g. locals and globals
+                // that we define. Also don't try to resolve symbol zero - the undefined symbol.
+                // Hidden symbols exported from shared objects don't make sense, so we skip
+                // resolving them as well.
+                if !definition.is_undefined()
+                    || start_symbol_offset + local_symbol_index == 0
+                    || (obj.is_dynamic() && crate::elf::is_hidden_symbol(local_symbol))
+                {
+                    return Ok(());
+                }
+
+                let name_bytes = obj.parsed.object.symbol_name(local_symbol)?;
+
+                let name_info = if let Some(version_name) =
+                    verneed.version_name(object::SymbolIndex(local_symbol_index))
+                {
+                    RawSymbolName {
+                        name: name_bytes,
+                        version_name: Some(version_name),
+                        is_default: false,
+                    }
+                } else {
+                    RawSymbolName::parse(name_bytes)
+                };
+
+                let symbol_attributes = SymbolAttributes {
+                    name_info,
+                    is_local: local_symbol.is_local(),
+                    default_visibility: local_symbol.st_visibility() == object::elf::STV_DEFAULT,
+                    is_weak: local_symbol.is_weak(),
+                };
+
                 resolve_symbol(
-                    object::SymbolIndex(start_symbol_offset + local_symbol_index),
-                    local_symbol,
+                    obj.symbol_id_range
+                        .offset_to_id(start_symbol_offset + local_symbol_index),
+                    &symbol_attributes,
                     definition,
                     resources,
-                    obj,
-                    undefined_symbols_out,
+                    obj.is_dynamic(),
+                    obj.file_id,
                     scope,
-                    &verneed,
                 )
             },
         )
 }
 
+#[derive(Debug)]
+struct SymbolAttributes<'data> {
+    is_local: bool,
+    default_visibility: bool,
+    is_weak: bool,
+    name_info: RawSymbolName<'data>,
+}
+
 #[inline(always)]
 fn resolve_symbol<'data, 'scope>(
-    local_symbol_index: object::SymbolIndex,
-    local_symbol: &crate::elf::SymtabEntry,
+    local_symbol_id: SymbolId,
+    local_symbol_attributes: &SymbolAttributes<'data>,
     definition_out: &mut SymbolId,
     resources: &'scope ResolutionResources<'data, 'scope>,
-    obj: &SequencedInputObject<'data>,
-    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
+    is_dynamic: bool,
+    file_id: FileId,
     scope: &Scope<'scope>,
-    verneed: &VerneedTable<'data>,
 ) -> Result {
-    // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
-    // define. Also don't try to resolve symbol zero - the undefined symbol. Hidden symbols exported
-    // from shared objects don't make sense, so we skip resolving them as well.
-    if !definition_out.is_undefined()
-        || local_symbol_index.0 == 0
-        || (obj.is_dynamic() && crate::elf::is_hidden_symbol(local_symbol))
-    {
-        return Ok(());
-    }
-
-    let name_bytes = obj.parsed.object.symbol_name(local_symbol)?;
-
-    let name_info = if let Some(version_name) = verneed.version_name(local_symbol_index) {
-        RawSymbolName {
-            name: name_bytes,
-            version_name: Some(version_name),
-            is_default: false,
-        }
-    } else {
-        RawSymbolName::parse(name_bytes)
-    };
-
     debug_assert_bail!(
-        !local_symbol.is_local(),
-        "Only globals should be undefined, found symbol `{}` ({local_symbol_index})",
-        name_info,
+        !local_symbol_attributes.is_local,
+        "Only globals should be undefined, found symbol `{}` ({local_symbol_id})",
+        local_symbol_attributes.name_info,
     );
 
-    assert!(!local_symbol.is_definition(LittleEndian));
-    let prehashed_name = PreHashedSymbolName::from_raw(&name_info);
+    let prehashed_name = PreHashedSymbolName::from_raw(&local_symbol_attributes.name_info);
 
     // Only default-visibility symbols can reference symbols from shared objects.
-    let allow_dynamic = local_symbol.st_visibility() == object::elf::STV_DEFAULT;
+    let allow_dynamic = local_symbol_attributes.default_visibility;
 
     match resources.symbol_db.get(&prehashed_name, allow_dynamic) {
         Some(symbol_id) => {
             *definition_out = symbol_id;
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
 
-            if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
+            if symbol_file_id != file_id && !local_symbol_attributes.is_weak {
                 // Undefined symbols in shared objects should actually activate as-needed shared
                 // objects, however the rules for whether this should result in a DT_NEEDED entry
                 // are kind of subtle, so for now, we don't activate shared objects from shared
                 // objects. See
                 // https://github.com/davidlattimore/wild/issues/930#issuecomment-3007027924 for
                 // more details. TODO: Fix this.
-                if !obj.is_dynamic() || !resources.symbol_db.file(symbol_file_id).is_dynamic() {
+                if !is_dynamic || !resources.symbol_db.file(symbol_file_id).is_dynamic() {
                     resources.try_request_file_id(symbol_file_id, scope);
                 }
             } else if symbol_file_id != PRELUDE_FILE_ID {
@@ -1236,18 +1250,18 @@ fn resolve_symbol<'data, 'scope>(
                 // file got loaded. TODO: If the file is a non-archived object, or possibly even if
                 // it's an archived object that we've already decided to load, then we could skip
                 // this.
-                undefined_symbols_out.push(UndefinedSymbol {
+                resources.outputs.undefined_symbols.push(UndefinedSymbol {
                     ignore_if_loaded: Some(symbol_file_id),
                     name: prehashed_name,
-                    symbol_id: obj.symbol_id_range.input_to_id(local_symbol_index),
+                    symbol_id: local_symbol_id,
                 });
             }
         }
         None => {
-            undefined_symbols_out.push(UndefinedSymbol {
+            resources.outputs.undefined_symbols.push(UndefinedSymbol {
                 ignore_if_loaded: None,
                 name: prehashed_name,
-                symbol_id: obj.symbol_id_range.input_to_id(local_symbol_index),
+                symbol_id: local_symbol_id,
             });
         }
     }
