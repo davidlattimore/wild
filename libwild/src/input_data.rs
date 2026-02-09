@@ -423,7 +423,7 @@ fn process_linker_script<'data>(
 
 fn process_archive<'data>(
     input_file: &'data InputFile,
-    args: &Args,
+    state: &TemporaryState<'data>,
 ) -> Result<LoadedFileState<'data>> {
     let mut outputs = Vec::new();
 
@@ -463,7 +463,7 @@ fn process_archive<'data>(
                     modifiers: input_file.modifiers,
                 };
 
-                let parsed = ParsedInputObject::new(&input_bytes, args);
+                let parsed = ParsedInputObject::new(&input_bytes, state.args);
 
                 outputs.push(parsed);
             }
@@ -476,8 +476,7 @@ fn process_archive<'data>(
 
 fn process_thin_archive<'data>(
     input_file: &InputFile,
-    args: &Args,
-    inputs_arena: &'data Arena<InputFile>,
+    state: &TemporaryState<'data>,
 ) -> Result<LoadedFileState<'data>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
@@ -490,8 +489,8 @@ fn process_thin_archive<'data>(
                 let path = entry.ident.as_path();
                 let entry_path = parent_path.join(path);
 
-                let file_data =
-                    FileData::new(&entry_path, args.prepopulate_maps).with_context(|| {
+                let file_data = FileData::new(&entry_path, state.args.prepopulate_maps)
+                    .with_context(|| {
                         format!(
                             "Failed to open file referenced by thin archive `{}`",
                             input_file.filename.display()
@@ -508,11 +507,11 @@ fn process_thin_archive<'data>(
                     data: Some(file_data),
                 };
 
-                let input_file = &*inputs_arena.alloc(input_file);
+                let input_file = &*state.inputs_arena.alloc(input_file);
 
                 parsed_files.push(ParsedInputObject::new(
                     &InputBytes::from_file(input_file, FileKind::ElfObject),
-                    args,
+                    state.args,
                 ));
                 files.push(input_file);
             }
@@ -567,8 +566,8 @@ impl<'data> TemporaryState<'data> {
         let input_file = self.inputs_arena.alloc(input_file);
 
         match kind {
-            FileKind::Archive => process_archive(input_file, self.args),
-            FileKind::ThinArchive => process_thin_archive(input_file, self.args, self.inputs_arena),
+            FileKind::Archive => process_archive(input_file, self),
+            FileKind::ThinArchive => process_thin_archive(input_file, self),
             FileKind::Text => {
                 let script = process_linker_script(input_file, self.args)?;
 
