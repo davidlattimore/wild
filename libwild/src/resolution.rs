@@ -413,6 +413,12 @@ impl<'scope> ResolutionResources<'_, 'scope> {
             },
         );
     }
+
+    fn handle_result(&self, result: Result) {
+        if let Err(error) = result {
+            let _ = self.outputs.errors.push(error);
+        }
+    }
 }
 
 fn work_items_do<'definitions, 'data>(
@@ -691,19 +697,17 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 
             let obj = &parsed_input_objects[file_id.file()];
 
-            let res = resolve_symbols(
-                obj,
-                resources,
-                &resources.outputs.undefined_symbols,
-                work_item.symbol_start_offset,
-                definitions_out,
-                scope,
-            )
-            .with_context(|| format!("Failed to resolve symbols in {obj}"));
-
-            if let Err(error) = res {
-                let _ = resources.outputs.errors.push(error);
-            }
+            resources.handle_result(
+                resolve_symbols(
+                    obj,
+                    resources,
+                    &resources.outputs.undefined_symbols,
+                    work_item.symbol_start_offset,
+                    definitions_out,
+                    scope,
+                )
+                .with_context(|| format!("Failed to resolve symbols in {obj}")),
+            );
         }
         Group::LinkerScripts(_) => {}
         Group::SyntheticSymbols(_) => {}
