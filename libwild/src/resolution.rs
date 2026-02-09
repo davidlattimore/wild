@@ -788,9 +788,10 @@ fn canonicalise_undefined_symbols<'data>(
     let mut versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId> =
         Default::default();
 
-    // Sort by symbol ID to ensure deterministic behaviour. This means that the canonical symbol ID
-    // for any given name will be the one for the earliest file that refers to that symbol.
-    undefined_symbols.sort_by_key(|u| u.symbol_id);
+    // Sort by symbol ID to ensure deterministic behaviour. We sort in reverse order so that LTO
+    // outputs get higher priority than LTO inputs. This means that the canonical symbol ID for any
+    // given name will be the one for the last file that refers to that symbol.
+    undefined_symbols.sort_by_key(|u| usize::MAX - u.symbol_id.as_usize());
 
     for undefined in undefined_symbols {
         let is_defined = undefined.ignore_if_loaded.is_some_and(|file_id| {
