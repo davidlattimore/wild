@@ -142,15 +142,14 @@ struct LoadedFile<'data> {
 }
 
 enum LoadedFileState<'data> {
-    Loaded(&'data InputFile, Result<Box<ParsedInputObject<'data>>>),
-    Archive(&'data InputFile, Vec<Result<Box<ParsedInputObject<'data>>>>),
-    ThinArchive(
-        Vec<&'data InputFile>,
-        Vec<Result<Box<ParsedInputObject<'data>>>>,
-    ),
+    Loaded(&'data InputFile, InputRecord<'data>),
+    Archive(&'data InputFile, Vec<InputRecord<'data>>),
+    ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data>>),
     LinkerScript(LoadedLinkerScriptState<'data>),
     Error(Error),
 }
+
+struct InputRecord<'data>(Result<Box<ParsedInputObject<'data>>>);
 
 struct LoadedLinkerScriptState<'data> {
     /// The indexes of the files requested by the linker script. Some of these indexes may turn out
@@ -352,18 +351,18 @@ impl<'data> FileLoader<'data> {
         match core::mem::take(&mut files[index.0]) {
             None => {}
             Some(LoadedFileState::Loaded(input_file, parse_result)) => {
-                if parse_result.as_ref().is_ok_and(|obj| obj.is_dynamic()) {
+                if parse_result.is_dynamic_object() {
                     self.has_dynamic = true;
                 }
-                loaded.objects.push(parse_result);
+                loaded.add_record(parse_result);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::Archive(input_file, mut parsed_parts)) => {
-                loaded.objects.append(&mut parsed_parts);
+            Some(LoadedFileState::Archive(input_file, parsed_parts)) => {
+                loaded.add_records(parsed_parts);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::ThinArchive(mut input_files, mut parsed_parts)) => {
-                loaded.objects.append(&mut parsed_parts);
+            Some(LoadedFileState::ThinArchive(mut input_files, parsed_parts)) => {
+                loaded.add_records(parsed_parts);
                 self.loaded_files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
@@ -465,7 +464,7 @@ fn process_archive<'data>(
 
                 let parsed = ParsedInputObject::new(&input_bytes, state.args);
 
-                outputs.push(parsed);
+                outputs.push(InputRecord(parsed));
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
@@ -509,10 +508,10 @@ fn process_thin_archive<'data>(
 
                 let input_file = &*state.inputs_arena.alloc(input_file);
 
-                parsed_files.push(ParsedInputObject::new(
+                parsed_files.push(InputRecord(ParsedInputObject::new(
                     &InputBytes::from_file(input_file, FileKind::ElfObject),
                     state.args,
-                ));
+                )));
                 files.push(input_file);
             }
             ArchiveEntry::Regular(_) => {}
@@ -591,7 +590,7 @@ impl<'data> TemporaryState<'data> {
             _ => {
                 let input_bytes = InputBytes::from_file(input_file, kind);
                 let parsed = ParsedInputObject::new(&input_bytes, self.args);
-                Ok(LoadedFileState::Loaded(input_file, parsed))
+                Ok(LoadedFileState::Loaded(input_file, InputRecord(parsed)))
             }
         }
     }
@@ -861,5 +860,23 @@ impl<'data> InputBytes<'data> {
             data: file.data(),
             modifiers: file.modifiers,
         }
+    }
+}
+
+impl<'data> LoadedInputs<'data> {
+    fn add_record(&mut self, record: InputRecord<'data>) {
+        self.objects.push(record.0);
+    }
+
+    fn add_records(&mut self, parsed_parts: Vec<InputRecord<'data>>) {
+        for part in parsed_parts {
+            self.add_record(part);
+        }
+    }
+}
+
+impl InputRecord<'_> {
+    fn is_dynamic_object(&self) -> bool {
+        self.0.as_ref().is_ok_and(|obj| obj.is_dynamic())
     }
 }
