@@ -87,7 +87,7 @@ impl Converter {
                     };
                     let section_flags = SectionFlags::from(sh_flags);
                     if section.address() == value && section_flags.contains(shf::ALLOC) {
-                        if section.data().map(<[u8]>::len).unwrap_or(0) == 0 {
+                        if section.data().map_or(0, <[u8]>::len) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
                             return Ok(ConvertedValue::Single(section.name()?.to_owned()));
