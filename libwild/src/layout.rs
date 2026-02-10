@@ -3896,14 +3896,20 @@ impl<'data> PreludeLayoutState<'data> {
                 *keep_sections.get_mut(primary_id) |= keep_secondary;
             }
 
-            // Remove any sections without a type except for section 0 (the file header). This
-            // should just be the .phdr and .shdr sections which contain the program headers and
-            // section headers. We need these sections in order to allocate space for those
+            // Remove any built-in sections without a type except for section 0 (the file header).
+            // This should just be the .phdr and .shdr sections which contain the program headers
+            // and section headers. We need these sections in order to allocate space for those
             // structures, but other linkers don't emit section headers for them, so neither should
-            // we.
+            // we. Custom sections (e.g. from linker scripts) that still have NULL type get
+            // PROGBITS assigned instead, since an empty but explicitly defined section should still
+            // be emitted if something references it.
             let section_info = output_sections.section_infos.get(section_id);
             if section_info.ty == sht::NULL && section_id != output_section_id::FILE_HEADER {
-                *keep_sections.get_mut(section_id) = false;
+                if section_id.as_usize() >= output_section_id::NUM_BUILT_IN_SECTIONS {
+                    output_sections.section_infos.get_mut(section_id).ty = sht::PROGBITS;
+                } else {
+                    *keep_sections.get_mut(section_id) = false;
+                }
             }
         }
 
@@ -6636,6 +6642,15 @@ impl<'data> LinkerScriptLayoutState<'data> {
             let symbol_id = self.symbol_id_range.offset_to_id(offset);
             if !resources.symbol_db.is_canonical(symbol_id) {
                 continue;
+            }
+
+            // Mark the section referenced by this symbol so that empty sections
+            // defined by the linker script are still emitted.
+            if let Some(section_id) = def_info.section_id() {
+                resources
+                    .must_keep_sections
+                    .get(section_id)
+                    .fetch_or(true, atomic::Ordering::Relaxed);
             }
 
             // PROVIDE_HIDDEN symbols should not be exported to dynsym.

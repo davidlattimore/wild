@@ -22,6 +22,11 @@
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 //#DiffIgnore:section.riscv.attributes
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
+// GNU ld behaves strangely when a symbol referenced in a linker script is
+// empty. See this:
+// https://github.com/davidlattimore/wild/pull/1525#discussion_r2785478582
+//#DiffIgnore:dynsym.__data_start.section
+//#DiffIgnore:dynsym.__data_end.section
 
 extern char provided_absolute __attribute__((weak));
 extern char provided_hidden_absolute __attribute__((weak));
@@ -29,8 +34,6 @@ extern char __text_start __attribute__((weak));
 extern char __text_end __attribute__((weak));
 extern char __data_start __attribute__((weak));
 extern char __data_end __attribute__((weak));
-
-int test_data = 42;
 
 void* get_provided(void) {
   return &provided_absolute + (long)&provided_hidden_absolute;
