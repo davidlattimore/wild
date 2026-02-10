@@ -3760,11 +3760,24 @@ fn write_internal_symbols(
             address += RISCV_TLS_DTV_OFFSET;
         }
 
+        // PROVIDE_HIDDEN symbols should be local, not global
+        let st_bind = if def_info.is_hidden {
+            object::elf::STB_LOCAL
+        } else {
+            object::elf::STB_GLOBAL
+        };
+
         let entry = symbol_writer
-            .define_symbol(false, shndx, address, 0, symbol_name.bytes())
+            .define_symbol(
+                st_bind == object::elf::STB_LOCAL,
+                shndx,
+                address,
+                0,
+                symbol_name.bytes(),
+            )
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
-        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
+        entry.set_st_info(st_bind, st_type);
     }
     Ok(())
 }

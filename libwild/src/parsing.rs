@@ -70,6 +70,8 @@ pub(crate) struct InternalSymDefInfo<'data> {
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) elf_symbol_type: SymbolType,
+    /// If true, this symbol should have hidden visibility (from PROVIDE_HIDDEN).
+    pub(crate) is_hidden: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -178,6 +180,16 @@ impl<'data> InternalSymDefInfo<'data> {
             placement,
             name,
             elf_symbol_type: stt::NOTYPE,
+            is_hidden: false,
+        }
+    }
+
+    pub(crate) fn hidden(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+        Self {
+            placement,
+            name,
+            elf_symbol_type: stt::NOTYPE,
+            is_hidden: true,
         }
     }
 }
@@ -278,6 +290,7 @@ impl<'data> Prelude<'data> {
             },
             name: b"_TLS_MODULE_BASE_",
             elf_symbol_type: stt::TLS,
+            is_hidden: false,
         });
 
         symbol_definitions.extend(args.undefined.iter().map(|name| {

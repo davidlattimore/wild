@@ -4068,7 +4068,13 @@ impl<'data> InternalSymbols<'data> {
                 continue;
             }
 
-            sizes.increment(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
+            // PROVIDE_HIDDEN symbols are local, others are global
+            let symtab_part = if def_info.is_hidden {
+                part_id::SYMTAB_LOCAL
+            } else {
+                part_id::SYMTAB_GLOBAL
+            };
+            sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
             let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name;
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
@@ -6626,8 +6632,17 @@ impl<'data> LinkerScriptLayoutState<'data> {
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, '_>,
     ) -> Result {
-        for offset in 0..self.symbol_id_range.len() {
+        for (offset, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(offset);
+            if !resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
+            // PROVIDE_HIDDEN symbols should not be exported to dynsym.
+            if def_info.is_hidden {
+                continue;
+            }
+
             resources
                 .per_symbol_flags
                 .get_atomic(symbol_id)
