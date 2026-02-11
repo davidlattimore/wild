@@ -202,7 +202,7 @@ pub fn compute<'data, A: Arch>(
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
     let gnu_property_notes = merge_gnu_property_notes::<A>(&group_states, symbol_db.args.z_isa)?;
     let eflags = merge_eflags::<A>(&group_states)?;
-    let riscv_attributes = merge_riscv_attributes::<A>(&group_states);
+    let riscv_attributes = merge_riscv_attributes::<A>(&group_states)?;
 
     let finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
@@ -701,7 +701,7 @@ fn merge_eflags<A: Arch>(group_states: &[GroupState]) -> Result<Eflags> {
     Ok(Eflags(A::merge_eflags(&eflags)?))
 }
 
-fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> RiscVAttributes {
+fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
 
     let attributes = group_states
@@ -735,13 +735,14 @@ fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> RiscVAttribut
         })
         .flatten()
     {
-        // Right now, we merge all the ISA extensions and use the maximum version.
-        // TODO: Add more verifier that rejects invalid combination of extensions.
         arch_components
             .entry(name.clone())
             .and_modify(|v: &mut (u64, u64)| *v = (*v).max(*version))
             .or_insert(*version);
     }
+
+    verify_riscv_ext_conflicts(&arch_components)?;
+
     if !arch_components.is_empty() {
         merged.push(RiscVAttribute::Arch(RiscVArch {
             map: arch_components,
@@ -816,9 +817,40 @@ fn merge_riscv_attributes<A: Arch>(group_states: &[GroupState]) -> RiscVAttribut
 
     let section_size = EpilogueLayoutState::riscv_attributes_section_size(&merged);
 
-    RiscVAttributes {
+    Ok(RiscVAttributes {
         attributes: merged,
         section_size,
+    })
+}
+
+/// Conflicting pairs of RISC-V ISA extensions.
+const RISCV_CONFLICTING_EXT_PAIRS: &[(&str, &str)] = &[
+    ("f", "zfinx"),
+    ("d", "zdinx"),
+    ("q", "zqinx"),
+    ("zfh", "zhinx"),
+    ("zfhmin", "zhinxmin"),
+];
+
+fn verify_riscv_ext_conflicts(arch_components: &IndexMap<String, (u64, u64)>) -> Result {
+    if arch_components.is_empty() {
+        return Ok(());
+    }
+
+    let mut conflicts = Vec::new();
+    for &(std_ext, inx_ext) in RISCV_CONFLICTING_EXT_PAIRS {
+        if arch_components.contains_key(std_ext) && arch_components.contains_key(inx_ext) {
+            conflicts.push(format!("'{std_ext}' is incompatible with '{inx_ext}'"));
+        }
+    }
+
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "Conflicting RISC-V ISA extensions in merged .riscv.attributes:\n  - {}",
+            conflicts.join("\n  - ")
+        );
     }
 }
 
