@@ -771,7 +771,7 @@ fn load_symbol_named<'scope>(
 fn canonicalise_undefined_symbols<'data>(
     mut undefined_symbols: Vec<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
-    groups: &[ResolvedGroup],
+    groups: &[ResolvedGroup<'data>],
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,

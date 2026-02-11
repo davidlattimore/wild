@@ -1155,9 +1155,11 @@ fn select_symbol(
     let mut first_weak = None;
 
     for id in std::iter::once(first_id).chain(alternatives.iter().copied()) {
+        let flags = per_symbol_flags.flags_for_symbol(id);
+
         // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols, so in this
         // first pass, we ignore dynamic symbols.
-        if per_symbol_flags.flags_for_symbol(id).is_dynamic() {
+        if flags.is_dynamic() {
             continue;
         }
 
@@ -1373,7 +1375,13 @@ fn load_linker_script_symbols<'data>(
             ),
         ));
 
-        symbols_out.set_next(ValueFlags::NON_INTERPOSABLE, symbol_id, script.file_id);
+        let mut flags = ValueFlags::NON_INTERPOSABLE;
+        // PROVIDE_HIDDEN symbols have hidden visibility, which means they should be
+        // non-interposable (already set) and not exported to dynamic symbol table.
+        if definition.is_hidden {
+            flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
+        }
+        symbols_out.set_next(flags, symbol_id, script.file_id);
     }
 }
 

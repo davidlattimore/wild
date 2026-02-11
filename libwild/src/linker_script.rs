@@ -68,6 +68,7 @@ pub(crate) enum Command<'a> {
         name: &'a [u8],
         value: &'a [u8],
     },
+    Provide(ProvideSymbolDefinition<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,11 +100,19 @@ pub(crate) enum ContentsCommand<'a> {
     Matcher(Matcher<'a>),
     SymbolAssignment(SymbolAssignment<'a>),
     Align(Alignment),
+    Provide(ProvideSymbolDefinition<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SymbolAssignment<'a> {
     pub(crate) name: &'a [u8],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ProvideSymbolDefinition<'a> {
+    pub(crate) name: &'a [u8],
+    pub(crate) value: &'a [u8],
+    pub(crate) hidden: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -192,6 +201,8 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
         b"ENTRY" => Command::Entry(parse_entry(input)?),
         b"VERSION" => Command::Version(parse_version(input)?),
+        b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
+        b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -210,6 +221,31 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
     skip_comments_and_whitespace(input)?;
 
     Ok(command)
+}
+
+fn parse_provide<'input>(
+    input: &mut &'input BStr,
+    hidden: bool,
+) -> winnow::Result<ProvideSymbolDefinition<'input>> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+    '='.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let value = take_while(1.., |b| b != b')' && b != b';').parse_next(input)?;
+    let value = value.trim_ascii_end();
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(ProvideSymbolDefinition {
+        name,
+        value,
+        hidden,
+    })
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
@@ -341,7 +377,16 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_matcher, parse_assignment)).parse_next(input)
+    alt((parse_contents_provide, parse_matcher, parse_assignment)).parse_next(input)
+}
+
+fn parse_contents_provide<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<ContentsCommand<'input>> {
+    let hidden = alt(("PROVIDE_HIDDEN", "PROVIDE")).parse_next(input)? == b"PROVIDE_HIDDEN";
+    skip_comments_and_whitespace(input)?;
+    let provide = parse_provide(input, hidden)?;
+    Ok(ContentsCommand::Provide(provide))
 }
 
 fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {

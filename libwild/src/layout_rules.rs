@@ -108,7 +108,17 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut symbol_defs = Vec::new();
 
         for cmd in &input.script.commands {
-            if let linker_script::Command::SymbolDefinition { name, value } = cmd {
+            if let linker_script::Command::Provide(provide) = cmd {
+                let value_str = std::str::from_utf8(provide.value)
+                    .map_err(|_| crate::error!("Invalid UTF-8 in PROVIDE symbol value"))?;
+
+                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
+                symbol_defs.push(if provide.hidden {
+                    crate::parsing::InternalSymDefInfo::hidden(placement, provide.name)
+                } else {
+                    crate::parsing::InternalSymDefInfo::notype(placement, provide.name)
+                });
+            } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
                 let value_str = std::str::from_utf8(value)
                     .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
 
@@ -183,6 +193,19 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         });
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
+                                    ContentsCommand::Provide(provide) => {
+                                        let placement = if let Some(id) = last_section_id {
+                                            SymbolPlacement::SectionEnd(id)
+                                        } else {
+                                            SymbolPlacement::SectionStart(primary_section_id)
+                                        };
+
+                                        symbol_defs.push(if provide.hidden {
+                                            InternalSymDefInfo::hidden(placement, provide.name)
+                                        } else {
+                                            InternalSymDefInfo::notype(placement, provide.name)
+                                        });
+                                    }
                                 }
                             }
                         }

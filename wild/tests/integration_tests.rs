@@ -3473,6 +3473,7 @@ fn integration_test(
         "shlib-archive-activation.c",
         "linker-script.c",
         "linker-script-executable.c",
+        "linker-script-provide.c",
         "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",
