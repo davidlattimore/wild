@@ -3524,7 +3524,8 @@ fn integration_test(
         "stack-size.c",
         "undefined-weak-sym.c",
         "auxiliary.c",
-        "new-dtags.c"
+        "new-dtags.c",
+        "riscv-attr-conflict.s"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
