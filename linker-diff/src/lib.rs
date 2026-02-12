@@ -271,6 +271,7 @@ impl Config {
         match arch {
             ArchKind::Aarch64 => self.ignore.extend(
                 [
+                    "section.ARM.attributes",
                     // Other linkers have a bigger initial PLT entry, thus the entsize is set to
                     // zero: https://sourceware.org/bugzilla/show_bug.cgi?id=26312
                     "section.plt.entsize",
