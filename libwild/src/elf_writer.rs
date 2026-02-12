@@ -102,6 +102,8 @@ use linker_utils::elf::sht;
 use linker_utils::elf::stt;
 use linker_utils::loongarch64::highest_relocation_with_bias;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::relaxation::SectionRelaxDeltas;
+use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
@@ -1103,7 +1105,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
         output_section_id: OutputSectionId,
         value: u64,
-    ) -> Result {
+    ) -> Result<&mut SymtabEntry> {
         let shndx = self
             .output_sections
             .output_index_of_section(output_section_id)
@@ -1125,14 +1127,14 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
         shndx: u16,
         value: u64,
-    ) -> Result {
+    ) -> Result<&mut SymtabEntry> {
         let e = LittleEndian;
         let is_local = sym.is_local();
         let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
-        Ok(())
+        Ok(entry)
     }
 
     fn copy_absolute_symbol(&mut self, sym: &crate::elf::Symbol, name: &[u8]) -> Result {
@@ -1458,14 +1460,49 @@ fn write_section_raw<'out>(
             );
         }
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
-        // Cut off any padding so that our output buffer is the size of our input buffer.
         let object_section = object.object.section(sec.index)?;
-        let section_size = object.object.section_size(object_section)?;
-        let (out, padding) = out.split_at_mut(section_size as usize);
-        object.object.copy_section_data(object_section, out)?;
-        // Fill padding. This is especially important if we're writing the file in place.
-        padding.fill(0);
-        Ok(out)
+        let relax_deltas = object.section_relax_deltas.get(sec.index.0);
+
+        match relax_deltas {
+            None => {
+                let section_size = object.object.section_size(object_section)?;
+                let (out, padding) = out.split_at_mut(section_size as usize);
+                object.object.copy_section_data(object_section, out)?;
+                padding.fill(0);
+                Ok(out)
+            }
+            Some(deltas) => {
+                let input_data = object.object.raw_section_data(object_section)?;
+                let effective_size = sec.size as usize;
+
+                let mut input_pos: usize = 0;
+                let mut output_pos: usize = 0;
+
+                for delta in deltas.deltas() {
+                    let skip_start = delta.input_offset as usize;
+                    // Copy everything from input_pos up to the deletion point.
+                    let copy_len = skip_start - input_pos;
+                    if copy_len > 0 {
+                        out[output_pos..output_pos + copy_len]
+                            .copy_from_slice(&input_data[input_pos..skip_start]);
+                        output_pos += copy_len;
+                    }
+                    // Skip over the deleted bytes in the input.
+                    input_pos = skip_start + delta.bytes_deleted as usize;
+                }
+
+                // Copy the remainder after the last deletion.
+                let remaining = input_data.len() - input_pos;
+                if remaining > 0 {
+                    out[output_pos..output_pos + remaining]
+                        .copy_from_slice(&input_data[input_pos..]);
+                    output_pos += remaining;
+                }
+                out[output_pos..].fill(0);
+
+                Ok(&mut out[..effective_size])
+            }
+        }
     } else {
         Ok(&mut [])
     }
@@ -1539,9 +1576,22 @@ fn write_symbols(
                 symbol_value -= layout.tls_start_address();
             }
 
-            symbol_writer
+            let entry = symbol_writer
                 .copy_symbol(sym, info.name, section_id, symbol_value)
                 .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
+
+            // Adjust symbol size for relaxation-induced byte deletions.
+            if let Some(section_index) = object.object.symbol_section(sym, sym_index)?
+                && let Some(deltas) = object.section_relax_deltas.get(section_index.0)
+            {
+                let st_value = sym.st_value(e);
+                let st_size = sym.st_size(e);
+                if st_size > 0 {
+                    let start_output = deltas.input_to_output_offset(st_value);
+                    let end_output = deltas.input_to_output_offset(st_value + st_size);
+                    entry.st_size.set(e, end_output - start_output);
+                }
+            }
         }
     }
     Ok(())
@@ -1565,12 +1615,15 @@ fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
 
     let mut relocation_count = 0;
     let mut relocation_cache = RelocationCache::default();
+    let relax_deltas = object.section_relax_deltas.get(section.index.0);
+    let mut relax_cursor = relax_deltas.map(|deltas| deltas.cursor());
 
     while let Some(rel) = relocations.next() {
         let rel = rel?;
         relocation_count += 1;
         if A::high_part_relocations().contains(&rel.r_type) {
-            relocation_cache.high_part_symbols.insert(rel.r_offset, rel);
+            let cache_offset = opt_input_to_output(relax_deltas, rel.r_offset);
+            relocation_cache.high_part_symbols.insert(cache_offset, rel);
         }
 
         if modifier == RelocationModifier::SkipNextRelocation {
@@ -1578,7 +1631,15 @@ fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
             relocation_cache.previous = Some(rel);
             continue;
         }
-        let offset_in_section = rel.r_offset;
+
+        // When relaxation deltas are present, translate the relocation's input
+        // offset to the corresponding output offset so that it points to the
+        // correct position in the (compacted) output buffer.
+        let offset_in_section = match relax_cursor.as_mut() {
+            Some(cursor) => cursor.translate(rel.r_offset),
+            None => rel.r_offset,
+        };
+
         modifier = apply_relocation::<A, _>(
             object,
             offset_in_section,
@@ -1594,6 +1655,7 @@ fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
             trace,
             &relocation_cache,
             &relocations,
+            relax_deltas,
         )
         .with_context(|| {
             format!(
@@ -1770,7 +1832,13 @@ fn write_eh_frame_relocations<A: Arch>(
                                 })?;
 
                             if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                let frame_ptr = (section_address + offset_in_section) as i64
+                                // When relaxation has deleted bytes from the target section, the
+                                // symbol's input offset no longer matches the output position.
+                                let output_offset_in_section = opt_input_to_output(
+                                    object.section_relax_deltas.get(section_index.0),
+                                    offset_in_section,
+                                );
+                                let frame_ptr = (section_address + output_offset_in_section) as i64
                                     - eh_frame_hdr_address as i64;
                                 let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
                                     as i64
@@ -1818,6 +1886,7 @@ fn write_eh_frame_relocations<A: Arch>(
                     trace,
                     &RelocationCache::default(),
                     &iter::empty(),
+                    None,
                 )
                 .with_context(|| {
                     format!(
@@ -2085,6 +2154,7 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     trace: &TraceOutput,
     relocation_cache: &RelocationCache,
     relocation_iterator: &I,
+    relax_deltas: Option<&SectionRelaxDeltas>,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
@@ -2231,11 +2301,12 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
                     // It's very unlikely that a high part follows the low part:
                     relocation_iterator.clone().find_map(|r| {
                         if let Ok(r) = r
-                            && r.r_offset == hi_offset_in_section
-                        // RELAX relocations have the same offset as the HIGH part relocation!
-                        && A::high_part_relocations().contains(&r.r_type)
+                            && A::high_part_relocations().contains(&r.r_type)
                         {
-                            return Some(r);
+                            let r_output_offset = opt_input_to_output(relax_deltas, r.r_offset);
+                            if r_output_offset == hi_offset_in_section {
+                                return Some(r);
+                            }
                         }
                         None
                     })

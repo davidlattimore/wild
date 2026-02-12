@@ -10,6 +10,7 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
+use object::SectionIndex;
 use object::elf::EM_AARCH64;
 use object::elf::EM_LOONGARCH;
 use object::elf::EM_RISCV;
@@ -120,4 +121,14 @@ pub(crate) trait Relaxation {
     fn next_modifier(&self) -> RelocationModifier;
 
     fn is_mandatory(&self) -> bool;
+}
+
+#[expect(unused)]
+pub(crate) struct RelaxSymbolInfo {
+    /// The section in which the symbol is defined.
+    pub section_index: SectionIndex,
+    /// The symbol's offset within its section.
+    pub offset: u64,
+    /// Whether the symbol may be interposed at runtime.
+    pub is_interposable: bool,
 }
