@@ -3723,6 +3723,8 @@ impl<'data> PreludeLayoutState<'data> {
             return;
         };
 
+        let symbol_id = resources.symbol_db.definition(symbol_id);
+
         self.entry_symbol_id = Some(symbol_id);
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         let old_flags = resources
