@@ -3437,6 +3437,7 @@ fn integration_test(
         "tls.c",
         "tlsdesc.c",
         "tls-variant.c",
+        "weak-entry.c",
         "no_start.c",
         "old_init.c",
         "custom_section.c",
