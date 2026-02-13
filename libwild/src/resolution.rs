@@ -892,9 +892,13 @@ fn allocate_start_stop_symbol_id<'data>(
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
     let def_info = if is_start {
-        InternalSymDefInfo::notype(SymbolPlacement::SectionStart(section_id), name.bytes())
+        InternalSymDefInfo::notype(
+            SymbolPlacement::SectionStart(section_id),
+            name.bytes(),
+            false,
+        )
     } else {
-        InternalSymDefInfo::notype(SymbolPlacement::SectionEnd(section_id), name.bytes())
+        InternalSymDefInfo::notype(SymbolPlacement::SectionEnd(section_id), name.bytes(), false)
     };
 
     let symbol_id = symbol_db.add_synthetic_symbol(per_symbol_flags, name, custom_start_stop_defs);

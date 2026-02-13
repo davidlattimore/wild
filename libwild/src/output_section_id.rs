@@ -464,6 +464,9 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) start_symbol_name: Option<&'static str>,
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) group_end_symbol_name: Option<&'static str>,
+    pub(crate) start_symbol_use_provide: bool,
+    pub(crate) end_symbol_use_provide: bool,
+    pub(crate) group_end_symbol_use_provide: bool,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
@@ -481,6 +484,9 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     start_symbol_name: None,
     end_symbol_name: None,
     group_end_symbol_name: None,
+    start_symbol_use_provide: false,
+    end_symbol_use_provide: false,
+    group_end_symbol_use_provide: false,
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
@@ -728,6 +734,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         group_end_symbol_name: Some("__init_array_end"),
+        start_symbol_use_provide: true,
+        group_end_symbol_use_provide: true,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -739,6 +747,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         group_end_symbol_name: Some("__fini_array_end"),
+        start_symbol_use_provide: true,
+        group_end_symbol_use_provide: true,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -749,6 +759,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         start_symbol_name: Some("__preinit_array_start"),
         end_symbol_name: Some("__preinit_array_end"),
+        start_symbol_use_provide: true,
+        end_symbol_use_provide: true,
         is_relro: true,
         ..DEFAULT_DEFS
     },
@@ -795,6 +807,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         end_symbol_name: Some("_end"),
+        end_symbol_use_provide: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
