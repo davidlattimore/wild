@@ -48,7 +48,6 @@ pub(crate) enum SequencedInput<'data> {
 
 impl Group<'_> {
     // This is used when the verbose-ttttiming feature is enabled.
-    #[allow(dead_code)]
     pub(crate) fn group_id(&self) -> usize {
         match self {
             Group::Prelude(_) => 0,

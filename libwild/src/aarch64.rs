@@ -134,7 +134,6 @@ macro_rules! rel_info_from_type {
 }
 
 impl crate::arch::Relaxation for Relaxation {
-    #[allow(unused_variables)]
     #[inline(always)]
     fn new(
         relocation_kind: u32,
