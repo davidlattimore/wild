@@ -72,6 +72,7 @@ use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
 use crate::value_flags::PerSymbolFlags;
+use crate::version_script::VersionScript;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -259,8 +260,6 @@ impl Linker {
 
         resolver.resolve_symbols_and_select_archive_entries(&mut symbol_db)?;
 
-        let layout_rules = layout_rules_builder.build();
-
         // Now that we know which archive entries are being loaded, we can resolve alternative
         // symbol definitions.
         crate::symbol_db::resolve_alternative_symbol_definitions(
@@ -268,6 +267,14 @@ impl Linker {
             &mut per_symbol_flags,
             &resolver.resolved_groups,
         )?;
+
+        // If it's a rust version script, apply the global symbol visibility now.
+        // We previously downgraded all symbols to local visibility.
+        if let VersionScript::Rust(rust_vscript) = &symbol_db.version_script {
+            symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+        }
+
+        let layout_rules = layout_rules_builder.build();
 
         let resolved = resolver.resolve_sections_and_canonicalise_undefined(
             &mut symbol_db,

@@ -286,7 +286,7 @@ impl<'data> SymbolDb<'data> {
     /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
     /// This promotes symbols marked for global visibility in a Rust version script back to global.
     /// Also adds the non-interposable flag to all local symbols.
-    fn handle_rust_version_script(
+    pub(crate) fn handle_rust_version_script(
         &self,
         rust_vscript: &RustVersionScript<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
@@ -298,19 +298,8 @@ impl<'data> SymbolDb<'data> {
             let prehashed = UnversionedSymbolName::prehashed(symbol);
             if let Some(symbol_id) = self.get_unversioned(&prehashed) {
                 atomic_per_symbol_flags
-                    .get_atomic(symbol_id)
+                    .get_atomic(self.definition(symbol_id))
                     .remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-
-                // There might be alternative definitions of the symbol. We haven't yet selected
-                // which definition will be used, so we need to update all of them.
-                let bucket = &self.buckets[prehashed.hash() as usize % self.buckets.len()];
-                if let Some(alternatives) = bucket.alternative_definitions.get(&symbol_id) {
-                    for alt in alternatives {
-                        atomic_per_symbol_flags
-                            .get_atomic(*alt)
-                            .remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-                    }
-                }
             }
         });
 
@@ -453,12 +442,6 @@ impl<'data> SymbolDb<'data> {
                 drop(per_group_outputs);
             },
             || {
-                // If it's a rust version script, apply the global symbol visibility now.
-                // We previously downgraded all symbols to local visibility.
-                if let VersionScript::Rust(rust_vscript) = &self.version_script {
-                    self.handle_rust_version_script(rust_vscript, per_symbol_flags);
-                }
-
                 verbose_timing_phase!("Apply linker scripts");
 
                 for script in &loaded.linker_scripts {
