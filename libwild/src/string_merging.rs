@@ -199,7 +199,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
     /// The offset within the section of the next string to be added, or if we're done adding
     /// things, then this is the size of the output section.
-    next_offset: u32,
+    next_offset: u64,
 
     /// The total size of all added strings, used for statistics.
     input_string_byte_size: usize,
@@ -208,7 +208,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     input_string_count: usize,
 
     /// The offsets of each string in the output section, keyed by the string contents.
-    string_offsets: PassThroughHashMap<MergeString<'data>, u32>,
+    string_offsets: PassThroughHashMap<MergeString<'data>, u64>,
 }
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
@@ -471,8 +471,7 @@ impl<'data> MergedStringsSection<'data> {
 
         // Compute the starting offset of each bucket.
         for i in 1..MERGE_STRING_BUCKETS {
-            self.bucket_offsets[i] =
-                self.bucket_offsets[i - 1] + u64::from(self.buckets[i - 1].next_offset);
+            self.bucket_offsets[i] = self.bucket_offsets[i - 1] + self.buckets[i - 1].next_offset;
         }
 
         resources.finished_shards.into_iter().for_each(|shard| {
@@ -488,9 +487,7 @@ impl<'data> MergedStringsSection<'data> {
     pub(crate) fn len(&self) -> u64 {
         self.buckets
             .last()
-            .map(|last_bucket| {
-                u64::from(last_bucket.next_offset) + self.bucket_offsets[last_bucket.index]
-            })
+            .map(|last_bucket| last_bucket.next_offset + self.bucket_offsets[last_bucket.index])
             .unwrap_or_default()
     }
 
@@ -890,7 +887,7 @@ fn work_with_bucket<'data, 'scope>(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct BucketOffset(u32);
+struct BucketOffset(u64);
 
 struct OverflowedOffset {
     input: LinearInputOffset,
@@ -898,21 +895,21 @@ struct OverflowedOffset {
 }
 
 impl BucketOffset {
-    fn new(offset: u32, bucket: usize) -> Result<Self> {
-        if offset >= 1 << (32 - MERGE_STRING_BUCKET_BITS) {
+    fn new(offset: u64, bucket: usize) -> Result<Self> {
+        if offset >= 1 << (64 - MERGE_STRING_BUCKET_BITS) {
             bail!("Merge-string bucket too large");
         }
         Ok(BucketOffset(
-            ((bucket as u32) << (32 - MERGE_STRING_BUCKET_BITS)) | offset,
+            ((bucket as u64) << (64 - MERGE_STRING_BUCKET_BITS)) | offset,
         ))
     }
 
     fn bucket(self) -> usize {
-        (self.0 >> (32 - MERGE_STRING_BUCKET_BITS)) as usize
+        (self.0 >> (64 - MERGE_STRING_BUCKET_BITS)) as usize
     }
 
     fn offset_in_bucket(self) -> u64 {
-        u64::from(self.0 & ((1 << (32 - MERGE_STRING_BUCKET_BITS)) - 1))
+        self.0 & ((1 << (64 - MERGE_STRING_BUCKET_BITS)) - 1)
     }
 }
 
@@ -951,7 +948,7 @@ impl<'data> MergeStringsSectionBucket<'data> {
         self.input_string_count += 1;
         let offset = *self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
-            self.next_offset += string.bytes.len() as u32;
+            self.next_offset += string.bytes.len() as u64;
             self.strings.push(string.bytes);
             offset
         });
@@ -1078,7 +1075,7 @@ fn find_string(
             });
 
         if let Some(string_offset) = string_offset {
-            return Ok(BucketOffset(string_offset.0 + i as u32));
+            return Ok(BucketOffset(string_offset.0 + i));
         }
     }
 
