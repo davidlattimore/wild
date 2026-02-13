@@ -30,8 +30,6 @@ pub trait BitExtraction {
 }
 
 impl BitExtraction for u64 {
-    // TODO: seems like a clippy issue as `position..=position` would lead to InclusiveRange type.
-    #[allow(clippy::range_plus_one)]
     fn extract_bit(self, position: u32) -> u64 {
         self.extract_bit_range(position..position + 1)
     }

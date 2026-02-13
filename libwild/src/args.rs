@@ -251,7 +251,6 @@ pub(crate) enum RelocationModel {
     Relocatable,
 }
 
-#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Copy, Clone)]
 pub(crate) enum Experiment {
     /// How much parallelism to allow when splitting string-merge sections.

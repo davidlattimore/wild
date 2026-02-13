@@ -159,7 +159,6 @@ pub struct LinkerOutput<'layout_inputs> {
 }
 
 impl Linker {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let (guard_a, guard_b) = timing_guard!("Link");
 
