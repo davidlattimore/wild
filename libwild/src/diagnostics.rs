@@ -43,6 +43,8 @@ impl<'data> SymbolInfoPrinter<'data> {
                     ResolvedFile::Dynamic(obj) => Some(obj.common.file_id),
                     ResolvedFile::LinkerScript(obj) => Some(obj.file_id),
                     ResolvedFile::SyntheticSymbols(obj) => Some(obj.file_id),
+                    #[cfg(feature = "plugins")]
+                    ResolvedFile::LtoInput(obj) => Some(obj.file_id),
                 })
             })
             .collect();
@@ -135,6 +137,11 @@ impl<'data> SymbolInfoPrinter<'data> {
                     SequencedInput::SyntheticSymbols(_) => {
                         input = "  <synthetic>".to_owned();
                         sym_debug = "Synthetic symbol".to_owned();
+                    }
+                    #[cfg(feature = "plugins")]
+                    SequencedInput::LtoInput(o) => {
+                        input = o.to_string();
+                        sym_debug = o.symbol_properties_display(symbol_id).to_string();
                     }
                 }
 

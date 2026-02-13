@@ -12,6 +12,7 @@ use crate::input_data::FileData;
 use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
 use foldhash::HashSet;
+use std::borrow::Cow;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
@@ -138,7 +139,7 @@ impl SaveDirState {
         }
 
         let run_with_file = self.dir.join("run-with");
-        self.write_args_file(&run_with_file)
+        self.write_args_file(&run_with_file, parsed_args)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
 
         if std::env::var(SKIP_LINKING_ENV).is_ok() {
@@ -147,12 +148,14 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn write_args_file(&self, run_file: &Path) -> Result {
+    fn write_args_file(&self, run_file: &Path, args: &Args) -> Result {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
 
         let mut original_output_file = None;
+        write_env(&mut out, args)?;
+        out.write_all(b"exec \"$@\"")?;
         self.write_args(&self.args, &mut out, &mut original_output_file)?;
 
         if let Some(orig) = original_output_file {
@@ -452,6 +455,34 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
+}
+
+/// Saves certain environment variables into the script. We only propagate environment variables
+/// that are known to be used for communication between the compiler and say linker plugins.
+fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &Args) -> Result {
+    for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
+        if let Ok(mut value) = std::env::var(var) {
+            // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
+            // that we use the run-with scripts output file instead.
+            if let Some(out) = args.output.to_str() {
+                value = value.replace(out, "${OUT}");
+            }
+            out.write_all(b"export ")?;
+            out.write_all(var.as_bytes())?;
+            out.write_all(b"=\"")?;
+            out.write_all(shell_escape_string(&value).as_bytes())?;
+            out.write_all(b"\"\n")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn shell_escape_string(value: &'_ str) -> Cow<'_, str> {
+    if !value.contains('\\') && !value.contains('\"') {
+        return Cow::Borrowed(value);
+    }
+    Cow::Owned(value.replace("\\", "\\\\").replace("\"", "\\\""))
 }
 
 #[cfg(test)]

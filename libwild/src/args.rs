@@ -33,6 +33,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use rayon::ThreadPoolBuilder;
+use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::take;
 use std::num::NonZero;
@@ -108,6 +109,8 @@ pub struct Args {
     pub(crate) export_list_path: Option<PathBuf>,
     pub(crate) auxiliary: Vec<String>,
     pub(crate) enable_new_dtags: bool,
+    pub(crate) plugin_path: Option<String>,
+    pub(crate) plugin_args: Vec<CString>,
 
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
     pub(crate) defsym: Vec<(String, DefsymValue)>,
@@ -292,6 +295,12 @@ pub struct Modifiers {
 
     /// Whether archive semantics should be applied even for regular objects.
     pub(crate) archive_semantics: bool,
+
+    /// Whether the file is known to be a temporary file that will be deleted when the linker
+    /// exits, e.g. an output file from a linker plugin. This doesn't affect linking, but is
+    /// stored in the layout file if written so that linker-diff knows not to error if the file
+    /// is missing.
+    pub(crate) temporary: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -487,6 +496,8 @@ impl Default for Args {
             auxiliary: Vec::new(),
             numeric_experiments: Vec::new(),
             rpath_set: Default::default(),
+            plugin_path: None,
+            plugin_args: Vec::new(),
         }
     }
 }
@@ -722,6 +733,7 @@ impl Default for Modifiers {
             allow_shared: true,
             whole_archive: false,
             archive_semantics: false,
+            temporary: false,
         }
     }
 }
@@ -2408,8 +2420,9 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("plugin-opt")
         .help("Pass options to the plugin")
-        .execute(|_args, _modifier_stack, _value| {
-            // TODO: Implement support for linker plugins.
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_args
+                .push(CString::new(value).context("Invalid --plugin-opt argument")?);
             Ok(())
         });
 
@@ -2426,8 +2439,8 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("plugin")
         .help("Load plugin")
-        .execute(|_args, _modifier_stack, value| {
-            warn_unsupported(&format!("--plugin {value}"))?;
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_path = Some(value.to_owned());
             Ok(())
         });
 
