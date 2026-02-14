@@ -47,6 +47,7 @@ pub(crate) mod perf;
 ))]
 #[path = "perf_unsupported.rs"]
 pub(crate) mod perf;
+pub(crate) mod platform;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod riscv64;

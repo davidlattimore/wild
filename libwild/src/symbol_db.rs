@@ -32,6 +32,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
+use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ResolvedSyntheticSymbols;
@@ -55,7 +56,6 @@ use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use object::LittleEndian;
-use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
@@ -881,7 +881,7 @@ impl<'data> SymbolDb<'data> {
             return false;
         };
 
-        let section_index = object::SectionIndex(usize::from(obj_symbol.st_shndx(LittleEndian)));
+        let section_index = obj_symbol.section_index();
         let Ok(header) = obj.common.object.section(section_index) else {
             return false;
         };
@@ -1553,14 +1553,13 @@ trait SymbolLoader<'data> {
         symbols_out: &mut SymbolWriterShard,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) -> Result {
-        let e = LittleEndian;
         let base_symbol_id = symbols_out.next;
 
         for symbol in self.object().symbols.iter() {
             let symbol_id = symbols_out.next;
             let mut flags = self.compute_value_flags(symbol);
 
-            if symbol.is_undefined(e) || self.should_ignore_symbol(symbol) {
+            if symbol.is_undefined() || self.should_ignore_symbol(symbol) {
                 symbols_out.set_next(flags, SymbolId::undefined(), file_id);
                 continue;
             }
@@ -1694,7 +1693,7 @@ impl<'a, 'data> DynamicObjectSymbolLoader<'a, 'data> {
 
 impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
-        let is_undefined = sym.is_undefined(LittleEndian);
+        let is_undefined = sym.is_undefined();
 
         let symbol_is_exported = || {
             if let Some(export_list) = &self.export_list
@@ -1736,7 +1735,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
                 && !(self.export_list.is_some() && symbol_is_exported())
             ));
 
-        let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
+        let mut flags: ValueFlags = if sym.is_absolute() {
             ValueFlags::ABSOLUTE
         } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
             ValueFlags::IFUNC
@@ -1814,7 +1813,7 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
         if st_type == object::elf::STT_FUNC || st_type == object::elf::STT_GNU_IFUNC {
             flags |= ValueFlags::FUNCTION;
         }
-        if symbol.is_undefined(LittleEndian) {
+        if symbol.is_undefined() {
             flags |= ValueFlags::ABSOLUTE;
         }
         flags

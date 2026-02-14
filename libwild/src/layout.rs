@@ -55,6 +55,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
@@ -75,6 +76,7 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::Visibility;
 use crate::symbol_db::is_mapping_symbol_name;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
@@ -102,13 +104,11 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::STT_TLS;
 use object::elf::gnu_hash;
 use object::read::elf::Crel;
 use object::read::elf::Dyn as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
-use object::read::elf::Sym;
 use object::read::elf::VerdefIterator;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
@@ -1059,17 +1059,8 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
                     self.file_id,
                     section_id,
                 )));
-        } else if local_symbol.is_common(LittleEndian) {
-            let common_symbol = CommonSymbol::new(local_symbol)?;
-            let output_section_id = if local_symbol.st_type() == STT_TLS {
-                output_section_id::TBSS
-            } else {
-                output_section_id::BSS
-            };
-            common.allocate(
-                output_section_id.part_id_with_alignment(common_symbol.alignment),
-                common_symbol.size,
-            );
+        } else if let Some(common_symbol) = local_symbol.as_common() {
+            common.allocate(common_symbol.part_id, common_symbol.size);
         }
 
         Ok(())
@@ -3884,7 +3875,7 @@ fn should_emit_undefined_error(
     }
 
     let is_symbol_undefined =
-        sym_file_id == sym_def_file_id && symbol.is_undefined(LittleEndian) && flags.is_absolute();
+        sym_file_id == sym_def_file_id && symbol.is_undefined() && flags.is_absolute();
 
     match args.unresolved_symbols {
         crate::args::UnresolvedSymbols::IgnoreAll
@@ -4893,14 +4884,12 @@ impl<'data> ObjectLayoutState<'data> {
             return Ok(None);
         }
 
-        let e = LittleEndian;
-
         let raw_value = if let Some(section_index) = self
             .object
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = local_symbol.st_value(e);
+                let input_offset = local_symbol.value();
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,
@@ -4932,20 +4921,13 @@ impl<'data> ObjectLayoutState<'data> {
                     }
                 }
             }
-        } else if local_symbol.is_common(e) {
-            let common = CommonSymbol::new(local_symbol)?;
-            let output_section_id = if local_symbol.st_type() == STT_TLS {
-                output_section_id::TBSS
-            } else {
-                output_section_id::BSS
-            };
-            let offset =
-                memory_offsets.get_mut(output_section_id.part_id_with_alignment(common.alignment));
+        } else if let Some(common) = local_symbol.as_common() {
+            let offset = memory_offsets.get_mut(common.part_id);
             let address = *offset;
             *offset += common.size;
             address
         } else {
-            local_symbol.st_value(e)
+            local_symbol.value()
         };
 
         let mut dynamic_symbol_index = None;
@@ -5058,8 +5040,7 @@ impl<'data> SymbolCopyInfo<'data> {
         symbol_state: ValueFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
-        let e = LittleEndian;
-        if !symbol_db.is_canonical(symbol_id) || sym.is_undefined(e) {
+        if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
             return None;
         }
 
@@ -5070,7 +5051,7 @@ impl<'data> SymbolCopyInfo<'data> {
             return None;
         }
 
-        if sym.is_common(e) && !symbol_state.has_resolution() {
+        if sym.as_common().is_some() && !symbol_state.has_resolution() {
             return None;
         }
 
@@ -5102,13 +5083,13 @@ fn can_export_symbol(
     resources: &GraphResources,
     export_all_dynamic: bool,
 ) -> bool {
-    if sym.is_undefined(LittleEndian) || sym.is_local() {
+    if sym.is_undefined() || sym.is_local() {
         return false;
     }
 
-    let visibility = sym.st_visibility();
+    let visibility = sym.visibility();
 
-    if visibility != object::elf::STV_DEFAULT && visibility != object::elf::STV_PROTECTED {
+    if visibility == Visibility::Hidden {
         return false;
     }
 
@@ -5356,24 +5337,6 @@ struct CieAtOffset<'data> {
     #[allow(dead_code)]
     offset: u32,
     cie: Cie<'data>,
-}
-
-#[derive(Clone, Copy)]
-struct CommonSymbol {
-    size: u64,
-    alignment: Alignment,
-}
-
-impl CommonSymbol {
-    fn new(local_symbol: &crate::elf::SymtabEntry) -> Result<CommonSymbol> {
-        let e = LittleEndian;
-        debug_assert!(local_symbol.is_common(e));
-        // Common symbols misuse the value field (which we access via `address()`) to store the
-        // alignment.
-        let alignment = Alignment::new(local_symbol.st_value(e))?;
-        let size = alignment.align_up(local_symbol.st_size(e));
-        Ok(CommonSymbol { size, alignment })
-    }
 }
 
 struct ResolutionWriter<'writer, 'out> {
@@ -5937,7 +5900,7 @@ impl<'data> DynamicLayoutState<'data> {
         symbol_db: &SymbolDb<'data>,
     ) -> Result {
         for (i, symbol) in self.object.symbols.iter().enumerate() {
-            let address = symbol.st_value(LittleEndian);
+            let address = symbol.value();
             let Some(info) = self.copy_relocations.get_mut(&address) else {
                 continue;
             };
@@ -5973,19 +5936,17 @@ impl<'data> DynamicLayoutState<'data> {
                 .object
                 .symbol(self.symbol_id_range().id_to_input(symbol_id))?;
 
-            let section_index = symbol.st_shndx(LittleEndian);
+            let section_index = symbol.section_index();
 
-            let section = self
-                .object
-                .section(SectionIndex(usize::from(section_index)))?;
+            let section = self.object.section(section_index)?;
 
             let alignment = Alignment::new(self.object.section_alignment(section)?)?;
 
             // Allocate space in BSS for the copy of the symbol.
-            let st_size = symbol.st_size(LittleEndian);
+            let size = symbol.size();
             common.allocate(
                 output_section_id::BSS.part_id_with_alignment(alignment),
-                alignment.align_up(st_size),
+                alignment.align_up(size),
             );
 
             // Allocate space required for the copy relocation itself.
@@ -6050,7 +6011,7 @@ impl<'data> DynamicLayoutState<'data> {
             let dynamic_symbol_index;
 
             if flags.needs_copy_relocation() {
-                let input_address = local_symbol.st_value(LittleEndian);
+                let input_address = local_symbol.value();
 
                 address = *copy_relocation_addresses
                     .get(&input_address)
@@ -6123,7 +6084,7 @@ impl<'data> DynamicLayoutState<'data> {
         // Note, we're a shared object, so this is the address relative to the load address of the
         // shared object, not an offset within a section like with regular input objects. That means
         // that we don't need to take the section into account.
-        let address = symbol.st_value(LittleEndian);
+        let address = symbol.value();
 
         let info = self
             .copy_relocations
@@ -6150,7 +6111,7 @@ impl<'data> DynamicLayoutState<'data> {
                     .object
                     .symbol(self.symbol_id_range.id_to_input(*symbol_id))?;
 
-                let input_address = symbol.st_value(LittleEndian);
+                let input_address = symbol.value();
 
                 let output_address =
                     assign_copy_relocation_address(self.object, symbol, memory_offsets)?;
@@ -6293,12 +6254,12 @@ fn assign_copy_relocation_address(
     local_symbol: &object::elf::Sym64<LittleEndian>,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> Result<u64, Error> {
-    let section_index = local_symbol.st_shndx(LittleEndian);
-    let section = file.section(SectionIndex(usize::from(section_index)))?;
+    let section_index = local_symbol.section_index();
+    let section = file.section(section_index)?;
     let alignment = Alignment::new(file.section_alignment(section)?)?;
     let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
-    *bss += alignment.align_up(local_symbol.st_size(LittleEndian));
+    *bss += alignment.align_up(local_symbol.size());
     Ok(a)
 }
 

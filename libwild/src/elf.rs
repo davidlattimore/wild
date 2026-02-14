@@ -1,4 +1,5 @@
 use crate::Args;
+use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::elf_arch::ElfArch;
@@ -6,7 +7,11 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::InputRef;
+use crate::output_section_id;
+use crate::platform;
+use crate::platform::CommonSymbol;
 use crate::resolution::LoadedMetrics;
+use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -37,7 +42,6 @@ use object::read::elf::Dyn as _;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
-use object::read::elf::Sym as _;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::ffi::CStr;
@@ -379,6 +383,73 @@ impl<'data> File<'data> {
     }
 }
 
+impl platform::Symbol for Symbol {
+    type Debug<'data> = SymDebug<'data>;
+
+    fn as_common(&self) -> Option<CommonSymbol> {
+        let e = LittleEndian;
+        if !object::read::elf::Sym::is_common(self, e) {
+            return None;
+        }
+
+        // Common symbols misuse the value field (which we access via `address()`) to store the
+        // alignment.
+        let Ok(alignment) = Alignment::new(object::read::elf::Sym::st_value(self, e)) else {
+            return None;
+        };
+        let size = alignment.align_up(object::read::elf::Sym::st_size(self, e));
+
+        let output_section_id = if self.st_type() == object::elf::STT_TLS {
+            output_section_id::TBSS
+        } else {
+            output_section_id::BSS
+        };
+
+        let part_id = output_section_id.part_id_with_alignment(alignment);
+
+        Some(CommonSymbol { size, part_id })
+    }
+
+    fn is_undefined(&self) -> bool {
+        object::read::elf::Sym::is_undefined(self, LittleEndian)
+    }
+
+    fn is_local(&self) -> bool {
+        object::read::elf::Sym::is_local(self)
+    }
+
+    fn visibility(&self) -> Visibility {
+        Visibility::from_elf_st_visibility(self.st_visibility())
+    }
+
+    fn is_absolute(&self) -> bool {
+        object::read::elf::Sym::is_absolute(self, LittleEndian)
+    }
+
+    fn is_weak(&self) -> bool {
+        object::read::elf::Sym::is_weak(self)
+    }
+
+    fn value(&self) -> u64 {
+        object::read::elf::Sym::st_value(self, LittleEndian)
+    }
+
+    fn size(&self) -> u64 {
+        object::read::elf::Sym::st_size(self, LittleEndian)
+    }
+
+    fn section_index(&self) -> object::SectionIndex {
+        object::SectionIndex(usize::from(object::read::elf::Sym::st_shndx(
+            self,
+            LittleEndian,
+        )))
+    }
+
+    fn has_name(&self) -> bool {
+        object::read::elf::Sym::st_name(self, LittleEndian) != 0
+    }
+}
+
 fn dynamic_tags<'data>(
     sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
     data: &'data [u8],
@@ -648,15 +719,15 @@ impl std::fmt::Display for SymDebug<'_> {
         let e = LittleEndian;
         let sym = self.0;
 
-        let vis = if sym.is_local() {
+        let vis = if object::read::elf::Sym::is_local(sym) {
             "Local"
-        } else if sym.is_weak() {
+        } else if object::read::elf::Sym::is_weak(sym) {
             "Weak"
         } else {
             "Global"
         };
 
-        let kind = if sym.is_undefined(e) {
+        let kind = if object::read::elf::Sym::is_undefined(sym, e) {
             "Undefined"
         } else {
             match sym.st_type() {

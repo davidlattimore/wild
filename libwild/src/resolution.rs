@@ -30,6 +30,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
+use crate::platform::Symbol as _;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
@@ -56,7 +57,6 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::read::elf::Sym as _;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
@@ -1075,11 +1075,10 @@ impl<'data> ResolvedCommon<'data> {
             // Errors from this function should have been reported elsewhere.
             return SymbolStrength::Undefined;
         };
-        let e = LittleEndian;
         if obj_symbol.is_weak() {
             SymbolStrength::Weak
-        } else if obj_symbol.is_common(e) {
-            SymbolStrength::Common(obj_symbol.st_size(e))
+        } else if obj_symbol.is_common() {
+            SymbolStrength::Common(obj_symbol.size())
         } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
             SymbolStrength::GnuUnique
         } else {
