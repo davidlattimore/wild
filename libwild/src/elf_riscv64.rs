@@ -3,6 +3,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
+use crate::platform::RelaxSymbolInfo;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -13,10 +14,13 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
+use linker_utils::riscv64::distance_fits_jal;
 use linker_utils::riscv64::relocation_type_from_raw;
+use object::SectionIndex;
 use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
+use object::read::elf::Crel;
 
 pub(crate) struct ElfRiscV64;
 
@@ -149,6 +153,23 @@ pub(crate) struct Relaxation {
     mandatory: bool,
 }
 
+/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
+/// by a size-changing relaxation.
+fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
+    if offset + 8 > section_bytes.len() {
+        return true;
+    }
+
+    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
+    let auipc_rd = (auipc_word >> 7) & 0x1f;
+    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
+    // jalr opcode = 0x67; rs1 in bits [19:15]
+    let is_jalr_with_matching_rs1 =
+        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
+
+    !is_jalr_with_matching_rs1
+}
+
 macro_rules! rel_info_from_type {
     ($r_type:expr) => {
         const { relocation_type_from_raw($r_type).unwrap() }
@@ -184,14 +205,23 @@ impl crate::platform::Relaxation for Relaxation {
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
                 return if non_zero_address {
-                    relocation.kind = RelocationKind::Relative;
-                    Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
-                        mandatory: output_kind.is_static_executable(),
-                    })
+                    if is_jalr_deleted(section_bytes, offset) {
+                        // Rewrite auipc into jal.
+                        Some(Relaxation {
+                            kind: RelaxationKind::CallToJal,
+                            rel_info: rel_info_from_type!(object::elf::R_RISCV_JAL),
+                            mandatory: output_kind.is_static_executable(),
+                        })
+                    } else {
+                        relocation.kind = RelocationKind::Relative;
+                        Some(Relaxation {
+                            kind: RelaxationKind::NoOp,
+                            rel_info: relocation,
+                            mandatory: output_kind.is_static_executable(),
+                        })
+                    }
                 } else {
-                    // GNU ld replaces: 'bl 0' with 'nop'
+                    // Target resolved to zero (e.g. weak undef) — replace with nop.
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
                         rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
@@ -225,4 +255,38 @@ impl crate::platform::Relaxation for Relaxation {
     fn is_mandatory(&self) -> bool {
         self.mandatory
     }
+}
+
+pub(crate) fn collect_relaxation_deltas(
+    section_index: SectionIndex,
+    relocations: impl Iterator<Item = Crel>,
+    mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+) -> Vec<(u64, u32)> {
+    let mut raw_deltas = Vec::new();
+    let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
+
+    for rel in relocations {
+        match rel.r_type {
+            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
+                prev_call = rel.symbol().map(|sym_idx| (rel.r_offset, sym_idx));
+            }
+            object::elf::R_RISCV_RELAX => {
+                if let Some((call_offset, sym_idx)) = prev_call
+                    && rel.r_offset == call_offset
+                    && let Some(info) = resolve_symbol(sym_idx)
+                    && info.section_index == section_index
+                    && !info.is_interposable
+                    && distance_fits_jal((info.offset as i64).wrapping_sub(call_offset as i64))
+                {
+                    // Delete the jalr instruction (4 bytes at call_offset + 4).
+                    raw_deltas.push((call_offset + 4, 4));
+                }
+                prev_call = None;
+            }
+            _ => {
+                prev_call = None;
+            }
+        }
+    }
+    raw_deltas
 }

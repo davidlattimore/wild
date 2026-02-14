@@ -72,7 +72,6 @@ impl OutputSectionPartMap<u64> {
         *self.get_mut(part_id) += size;
     }
 
-    #[expect(unused)]
     pub(crate) fn decrement(&mut self, part_id: PartId, size: u64) {
         let v = self.get_mut(part_id);
         debug_assert!(

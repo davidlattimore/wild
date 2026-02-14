@@ -9,6 +9,15 @@ use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 
+/// JAL instruction range: signed 21-bit immediate, 2-byte aligned.
+pub const JAL_RANGE: std::ops::RangeInclusive<i64> = -(1i64 << 20)..=((1i64 << 20) - 1);
+
+#[inline]
+#[must_use]
+pub fn distance_fits_jal(distance: i64) -> bool {
+    JAL_RANGE.contains(&distance)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -16,6 +25,9 @@ pub enum RelaxationKind {
 
     /// Replace with nop
     ReplaceWithNop,
+
+    /// Rewrite auipc+jalr to jal.
+    CallToJal,
 }
 
 impl RelaxationKind {
@@ -29,12 +41,21 @@ impl RelaxationKind {
                     0x01, 0x0, // nop
                 ]);
             }
+            RelaxationKind::CallToJal => {
+                let auipc_word = u32_from_slice(&section_bytes[offset..]);
+                let rd = (auipc_word >> 7) & 0x1f;
+                let jal_base = 0x6fu32 | (rd << 7);
+                section_bytes[offset..offset + 4].copy_from_slice(&jal_base.to_le_bytes());
+            }
         }
     }
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        match self {
+            RelaxationKind::CallToJal => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
+        }
     }
 }
 

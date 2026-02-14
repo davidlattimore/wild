@@ -86,7 +86,6 @@ pub(crate) trait Relaxation {
     fn is_mandatory(&self) -> bool;
 }
 
-#[expect(unused)]
 pub(crate) struct RelaxSymbolInfo {
     /// The section in which the symbol is defined.
     pub section_index: SectionIndex,

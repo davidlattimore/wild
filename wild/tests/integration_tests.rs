@@ -156,6 +156,9 @@
 //! Requires that section is also specified.
 //!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
+//!
+//! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
+//! size-changing relaxations (e.g. RISC-V call relaxation) were applied.
 
 mod external_tests;
 
@@ -889,6 +892,8 @@ struct SymtabAssertions {
 
     #[serde(rename = "address")]
     absolute_address: Option<u64>,
+
+    size: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
@@ -2951,6 +2956,16 @@ fn verify_symbol_assertions(
                 );
             }
         }
+
+        if let Some(expected_size) = exp.assertions.size {
+            let actual_size = sym.size();
+            if expected_size != actual_size {
+                bail!(
+                    "Expected symbol `{name}` to have size {expected_size}, \
+                                but it actually had size {actual_size}"
+                );
+            }
+        }
     }
 
     let missing: Vec<&str> = missing.into_keys().collect();
@@ -3561,7 +3576,8 @@ fn integration_test(
         "undefined-weak-sym.c",
         "auxiliary.c",
         "new-dtags.c",
-        "riscv-attr-conflict.s"
+        "riscv-attr-conflict.s",
+        "riscv-call-relaxation.s"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

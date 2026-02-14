@@ -28,6 +28,7 @@ use crate::elf::RelocationList;
 use crate::elf::RelocationSequence;
 use crate::elf::SectionAttributes;
 use crate::elf::Versym;
+use crate::elf_riscv64;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -56,6 +57,7 @@ use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -104,6 +106,7 @@ use linker_utils::elf::sht::NOTE;
 use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -4639,8 +4642,6 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        // Scan for size-changing relaxation opportunities (e.g. RISC-V call relaxation)
-        // when --relax is enabled.
         if resources.symbol_db.args.relax {
             self.scan_relaxations(common, per_symbol_flags, resources);
         }
@@ -4654,22 +4655,101 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Scan loaded executable sections for size-changing relaxation opportunities.
-    // These warnings are intentional since they are expected to be removed when actual collection
-    // of relaxation deltas is implemented.
-    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     fn scan_relaxations(
         &mut self,
-        _common: &mut CommonGroupState,
-        _per_symbol_flags: &AtomicPerSymbolFlags,
+        common: &mut CommonGroupState,
+        per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_>,
     ) {
         let symbol_db = resources.symbol_db;
         let arch = symbol_db.args.arch;
 
         // Relaxations that reduce bytes are currently only implemented for RISC-V
-        if !matches!(arch, Architecture::RISCV64) {}
+        if !matches!(arch, Architecture::RISCV64) {
+            return;
+        }
 
-        // TODO: For each loaded executable section, collect relaxation deltas.
+        timing_phase!("Scan relaxation opportunities");
+
+        let loaded_section_indices: SmallVec<[usize; 16]> = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                if let SectionSlot::Loaded(_) = slot
+                    && let Ok(header) = self.object.section(SectionIndex(i))
+                    && SectionFlags::from_header(header).contains(shf::EXECINSTR)
+                {
+                    return Some(i);
+                }
+                None
+            })
+            .collect();
+
+        for sec_idx in loaded_section_indices {
+            let section_index = SectionIndex(sec_idx);
+            let relocs = match self.object.relocations(section_index, &self.relocations) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            if !matches!(&self.sections[sec_idx], SectionSlot::Loaded(_)) {
+                continue;
+            }
+
+            // A callback that resolves symbol properties needed by the arch-specific scanners.
+            let mut resolve_symbol = |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
+                let sym = self.object.symbol(sym_idx).ok()?;
+                let sym_section = self.object.symbol_section(sym, sym_idx).ok()??;
+                let local_symbol_id = self.symbol_id_range.input_to_id(sym_idx);
+                let definition_id = symbol_db.definition(local_symbol_id);
+                let flags = per_symbol_flags.flags_for_symbol(definition_id);
+
+                Some(RelaxSymbolInfo {
+                    section_index: sym_section,
+                    offset: sym.value(),
+                    is_interposable: flags.is_interposable(),
+                })
+            };
+
+            let raw_deltas = match arch {
+                Architecture::RISCV64 => match relocs {
+                    RelocationList::Rela(rela_list) => elf_riscv64::collect_relaxation_deltas(
+                        section_index,
+                        rela_list.crel_iter(),
+                        &mut resolve_symbol,
+                    ),
+                    RelocationList::Crel(crel_iter) => elf_riscv64::collect_relaxation_deltas(
+                        section_index,
+                        crel_iter.flatten(),
+                        &mut resolve_symbol,
+                    ),
+                },
+                _ => unreachable!(),
+            };
+
+            if !raw_deltas.is_empty() {
+                let deltas = SectionRelaxDeltas::new(raw_deltas);
+                let total_deleted = deltas.total_deleted();
+
+                // Reduce the section's size so that capacity() reflects the reduced size.
+                if let SectionSlot::Loaded(sec) = &mut self.sections[sec_idx] {
+                    // Compute the old capacity (what was already allocated) before reducing
+                    // size, then compute the new capacity after, and subtract the difference.
+                    let old_capacity = sec.capacity();
+                    sec.size -= total_deleted;
+                    let new_capacity = sec.capacity();
+                    debug_assert!(old_capacity >= new_capacity);
+                    let capacity_reduction = old_capacity - new_capacity;
+                    if capacity_reduction > 0 {
+                        let part_id = sec.part_id;
+                        common.mem_sizes.decrement(part_id, capacity_reduction);
+                    }
+                }
+
+                self.section_relax_deltas.insert(sec_idx, deltas);
+            }
+        }
     }
 
     fn allocate_symtab_space(
