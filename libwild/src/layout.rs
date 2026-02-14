@@ -11,6 +11,7 @@ use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
+use crate::arch::Architecture;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
@@ -106,7 +107,9 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::sht::NOTE;
 use linker_utils::elf::sht::RISCV_ATTRIBUTES;
+use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::elf::GNU_PROPERTY_X86_ISA_1_NEEDED;
@@ -1060,6 +1063,8 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
     /// SFrame section ranges for this object, relative to the start of the .sframe output section.
     pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
+    /// Sparse map from section index to relaxation delta details.
+    pub(crate) section_relax_deltas: RelaxDeltaMap,
 }
 
 #[derive(Debug)]
@@ -1641,6 +1646,10 @@ struct ObjectLayoutState<'data> {
 
     /// Indexed by `FrameIndex`.
     exception_frames: ExceptionFrames<'data>,
+
+    /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
+    /// and later transferred to `ObjectLayout`.
+    section_relax_deltas: RelaxDeltaMap,
 }
 
 enum ExceptionFrames<'data> {
@@ -1766,7 +1775,8 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
 pub(crate) struct Section {
     pub(crate) index: object::SectionIndex,
     pub(crate) part_id: PartId,
-    /// Size in memory.
+    /// Size in the output. This starts as the input section size, then may be reduced by
+    /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
     pub(crate) flags: ValueFlags,
     pub(crate) is_writable: bool,
@@ -2035,9 +2045,12 @@ impl<'data> Layout<'data> {
                                     && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                 .then(|| {
                                     let address = res.address;
+                                    let size = match section_slot {
+                                        SectionSlot::Loaded(sec) => sec.size,
+                                        _ => obj.object.section_size(section).unwrap(),
+                                    };
                                     linker_layout::Section {
-                                        mem_range: address
-                                            ..(address + obj.object.section_size(section).unwrap()),
+                                        mem_range: address..(address + size),
                                     }
                                 })
                             })
@@ -3273,8 +3286,8 @@ impl Section {
         Ok(section)
     }
 
-    // How much space we take up. This is our size rounded up to the next multiple of our alignment,
-    // unless we're in a packed section, in which case it's just our size.
+    // How much space we take up. This is our size rounded up to the next multiple of our
+    // alignment, unless we're in a packed section, in which case it's just our size.
     pub(crate) fn capacity(&self) -> u64 {
         if self.part_id.should_pack() {
             self.size
@@ -4609,6 +4622,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
         gnu_property_notes: Default::default(),
         riscv_attributes: Default::default(),
         exception_frames: Default::default(),
+        section_relax_deltas: RelaxDeltaMap::new(),
     })
 }
 
@@ -5037,12 +5051,38 @@ impl<'data> ObjectLayoutState<'data> {
                 allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
             }
         }
+
+        // Scan for size-changing relaxation opportunities (e.g. RISC-V call relaxation)
+        // when --relax is enabled.
+        if resources.symbol_db.args.relax {
+            self.scan_relaxations(common, per_symbol_flags, resources);
+        }
+
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
         for cie in &self.cies {
             self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
         common.allocate(part_id::EH_FRAME, self.eh_frame_size);
+    }
+
+    /// Scan loaded executable sections for size-changing relaxation opportunities.
+    // These warnings are intentional since they are expected to be removed when actual collection
+    // of relaxation deltas is implemented.
+    #[expect(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
+    fn scan_relaxations(
+        &mut self,
+        _common: &mut CommonGroupState,
+        _per_symbol_flags: &AtomicPerSymbolFlags,
+        resources: &FinaliseSizesResources<'data, '_>,
+    ) {
+        let symbol_db = resources.symbol_db;
+        let arch = symbol_db.args.arch;
+
+        // Relaxations that reduce bytes are currently only implemented for RISC-V
+        if !matches!(arch, Architecture::RISCV64) {}
+
+        // TODO: For each loaded executable section, collect relaxation deltas.
     }
 
     fn allocate_symtab_space(
@@ -5167,6 +5207,7 @@ impl<'data> ObjectLayoutState<'data> {
             section_resolutions,
             symbol_id_range,
             sframe_ranges,
+            section_relax_deltas: self.section_relax_deltas,
         })
     }
 
@@ -5215,7 +5256,12 @@ impl<'data> ObjectLayoutState<'data> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                local_symbol.st_value(e) + section_address
+                let input_offset = local_symbol.st_value(e);
+                let output_offset = opt_input_to_output(
+                    self.section_relax_deltas.get(section_index.0),
+                    input_offset,
+                );
+                output_offset + section_address
             } else {
                 match get_merged_string_output_address(
                     local_symbol_index,
