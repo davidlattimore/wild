@@ -21,6 +21,7 @@ use object::read::elf::Dyn as _;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
+use object::read::elf::Sym as _;
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -619,5 +620,40 @@ impl<'data> DynamicTagValues<'data> {
 
     pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
         self.soname.unwrap_or_else(|| input.lib_name())
+    }
+}
+
+pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
+
+impl std::fmt::Display for SymDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let e = LittleEndian;
+        let sym = self.0;
+
+        let vis = if sym.is_local() {
+            "Local"
+        } else if sym.is_weak() {
+            "Weak"
+        } else {
+            "Global"
+        };
+
+        let kind = if sym.is_undefined(e) {
+            "Undefined"
+        } else {
+            match sym.st_type() {
+                object::elf::STT_FUNC => "Func",
+                object::elf::STT_GNU_IFUNC => "IFunc",
+                object::elf::STT_OBJECT => "Data",
+                object::elf::STT_COMMON => "Common",
+                object::elf::STT_SECTION => "Section",
+                object::elf::STT_FILE => "File",
+                object::elf::STT_NOTYPE => "NoType",
+                object::elf::STT_TLS => "Tls",
+                _ => "Unknown",
+            }
+        };
+
+        write!(f, "{vis} {kind}")
     }
 }
