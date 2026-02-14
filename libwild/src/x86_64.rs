@@ -40,7 +40,7 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for X86_64 {
+impl crate::elf_arch::ElfArch for X86_64 {
     type Relaxation = Relaxation;
 
     const KIND: crate::arch::Architecture = crate::arch::Architecture::X86_64;
@@ -127,7 +127,7 @@ pub(crate) struct Relaxation {
     mandatory: bool,
 }
 
-impl crate::arch::Relaxation for Relaxation {
+impl crate::elf_arch::Relaxation for Relaxation {
     #[inline(always)]
     fn new(
         relocation_kind: u32,
@@ -461,8 +461,8 @@ impl TlsGdForm {
 
 #[test]
 fn test_relaxation() {
-    use crate::arch::Relaxation as _;
     use crate::args::RelocationModel;
+    use crate::elf_arch::Relaxation as _;
 
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {

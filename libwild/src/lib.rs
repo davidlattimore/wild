@@ -8,6 +8,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
+pub(crate) mod elf_arch;
 pub(crate) mod elf_writer;
 pub mod error;
 pub(crate) mod export_list;
@@ -201,7 +202,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'layout_inputs, A: arch::Arch>(
+    fn link_for_arch<'layout_inputs, A: elf_arch::ElfArch>(
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
@@ -229,7 +230,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: arch::Arch>(
+    fn load_inputs_and_link<'data, A: elf_arch::ElfArch>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,

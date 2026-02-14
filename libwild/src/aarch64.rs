@@ -1,5 +1,5 @@
-use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf_arch::ElfArch;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
@@ -31,7 +31,7 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for AArch64 {
+impl crate::elf_arch::ElfArch for AArch64 {
     type Relaxation = Relaxation;
 
     const KIND: crate::arch::Architecture = crate::arch::Architecture::AArch64;
@@ -133,7 +133,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::arch::Relaxation for Relaxation {
+impl crate::elf_arch::Relaxation for Relaxation {
     #[inline(always)]
     fn new(
         relocation_kind: u32,

@@ -4,8 +4,6 @@ use self::elf::NoteProperty;
 use self::elf::get_page_mask;
 use crate::OutputKind;
 use crate::alignment;
-use crate::arch::Arch;
-use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::bail;
@@ -29,6 +27,8 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::write_relocation_to_buffer;
+use crate::elf_arch::ElfArch;
+use crate::elf_arch::Relaxation as _;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -141,7 +141,7 @@ struct RelocationCache {
     high_part_symbols: HashMap<u64, Crel>,
 }
 
-pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+pub(crate) fn write<A: ElfArch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
     write_file_contents::<A>(sized_output, layout)?;
     if layout.args().validate_output {
         crate::validation::validate_bytes(layout, &sized_output.out)?;
@@ -203,7 +203,7 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
         .finalize()
 }
 
-fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+fn write_file_contents<A: ElfArch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
@@ -336,7 +336,7 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
     Ok(())
 }
 
-fn populate_file_header<A: Arch>(
+fn populate_file_header<A: ElfArch>(
     layout: &Layout,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
@@ -384,7 +384,7 @@ fn populate_file_header<A: Arch>(
     Ok(())
 }
 
-fn write_file<A: Arch>(
+fn write_file<A: ElfArch>(
     file: &FileLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -586,7 +586,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         }
     }
 
-    fn process_resolution<A: Arch>(&mut self, layout: Option<&Layout>, res: &Resolution) -> Result {
+    fn process_resolution<A: ElfArch>(
+        &mut self,
+        layout: Option<&Layout>,
+        res: &Resolution,
+    ) -> Result {
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
@@ -665,7 +669,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_offset<A: Arch>(
+    fn process_got_tls_offset<A: ElfArch>(
         &mut self,
         res: &Resolution,
         layout: &Layout,
@@ -707,7 +711,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_mod_and_offset<A: Arch>(
+    fn process_got_tls_mod_and_offset<A: ElfArch>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -744,7 +748,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_descriptor<A: Arch>(
+    fn process_got_tls_descriptor<A: ElfArch>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -774,7 +778,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_plt_entry<A: Arch>(&mut self, got_address: u64, plt_address: u64) -> Result {
+    fn write_plt_entry<A: ElfArch>(&mut self, got_address: u64, plt_address: u64) -> Result {
         let plt_entry = self.take_plt_got_entry()?;
         A::write_plt_entry(plt_entry, got_address, plt_address)
     }
@@ -845,7 +849,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation<A: Arch>(&mut self, res: &Resolution) -> Result {
+    fn write_ifunc_relocation<A: ElfArch>(&mut self, res: &Resolution) -> Result {
         let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
@@ -863,7 +867,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_dtpmod_relocation<A: Arch>(
+    fn write_dtpmod_relocation<A: ElfArch>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -876,7 +880,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tls_descriptor_relocation<A: Arch>(
+    fn write_tls_descriptor_relocation<A: ElfArch>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -890,7 +894,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dtpoff_relocation<A: Arch>(
+    fn write_dtpoff_relocation<A: ElfArch>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -903,7 +907,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tpoff_relocation<A: Arch>(
+    fn write_tpoff_relocation<A: ElfArch>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -918,7 +922,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
-    fn write_address_relocation<A: Arch>(&mut self, place: u64, relative_address: i64) -> Result {
+    fn write_address_relocation<A: ElfArch>(
+        &mut self,
+        place: u64,
+        relative_address: i64,
+    ) -> Result {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "write_address_relocation called when output is not relocatable"
@@ -937,7 +945,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation_for_data<A: Arch>(
+    fn write_ifunc_relocation_for_data<A: ElfArch>(
         &mut self,
         place: u64,
         resolver_address: i64,
@@ -952,7 +960,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dynamic_symbol_relocation<A: Arch>(
+    fn write_dynamic_symbol_relocation<A: ElfArch>(
         &mut self,
         place: u64,
         addend: i64,
@@ -1228,7 +1236,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     }
 }
 
-fn write_object<A: Arch>(
+fn write_object<A: ElfArch>(
     object: &ObjectLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -1291,7 +1299,7 @@ fn write_object<A: Arch>(
     Ok(())
 }
 
-fn write_object_section<A: Arch>(
+fn write_object_section<A: ElfArch>(
     object: &ObjectLayout,
     layout: &Layout,
     section: &Section,
@@ -1337,7 +1345,7 @@ fn write_object_section<A: Arch>(
     Ok(())
 }
 
-fn write_section_reversed<A: Arch>(
+fn write_section_reversed<A: ElfArch>(
     object: &ObjectLayout<'_>,
     layout: &Layout<'_>,
     section: &Section,
@@ -1408,7 +1416,7 @@ fn write_section_reversed<A: Arch>(
     Ok(())
 }
 
-fn write_debug_section<A: Arch>(
+fn write_debug_section<A: ElfArch>(
     object: &ObjectLayout,
     layout: &Layout,
     section: &Section,
@@ -1597,7 +1605,7 @@ fn write_symbols(
     Ok(())
 }
 
-fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_relocations<A: ElfArch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
@@ -1673,7 +1681,7 @@ fn apply_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     Ok(())
 }
 
-fn apply_debug_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_debug_relocations<A: ElfArch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
@@ -1727,7 +1735,7 @@ fn apply_debug_relocations<A: Arch, I: Iterator<Item = object::Result<Crel>> + C
     Ok(())
 }
 
-fn write_eh_frame_data<A: Arch>(
+fn write_eh_frame_data<A: ElfArch>(
     object: &ObjectLayout,
     eh_frame_section_index: object::SectionIndex,
     layout: &Layout,
@@ -1755,7 +1763,7 @@ fn write_eh_frame_data<A: Arch>(
     }
 }
 
-fn write_eh_frame_relocations<A: Arch>(
+fn write_eh_frame_relocations<A: ElfArch>(
     object: &ObjectLayout<'_>,
     layout: &Layout<'_>,
     table_writer: &mut TableWriter<'_, '_>,
@@ -1925,7 +1933,7 @@ fn write_eh_frame_relocations<A: Arch>(
     Ok(())
 }
 
-fn display_relocation<'a, A: Arch>(
+fn display_relocation<'a, A: ElfArch>(
     object: &'a ObjectLayout,
     rel: &'a Crel,
     layout: &'a Layout,
@@ -1939,7 +1947,7 @@ fn display_relocation<'a, A: Arch>(
     }
 }
 
-struct DisplayRelocation<'a, A: Arch> {
+struct DisplayRelocation<'a, A: ElfArch> {
     rel: &'a Crel,
     symbol_db: &'a SymbolDb<'a>,
     per_symbol_flags: &'a PerSymbolFlags,
@@ -1947,7 +1955,7 @@ struct DisplayRelocation<'a, A: Arch> {
     phantom: PhantomData<A>,
 }
 
-impl<A: Arch> Display for DisplayRelocation<'_, A> {
+impl<A: ElfArch> Display for DisplayRelocation<'_, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -2100,7 +2108,7 @@ fn adjust_relocation_based_on_value(
 }
 
 #[inline(always)]
-fn get_pair_subtraction_relocation_value<A: Arch>(
+fn get_pair_subtraction_relocation_value<A: ElfArch>(
     object_layout: &ObjectLayout,
     rel: &Crel,
     layout: &Layout,
@@ -2143,7 +2151,7 @@ fn get_pair_subtraction_relocation_value<A: Arch>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_relocation<A: ElfArch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &Crel,
@@ -2596,7 +2604,7 @@ fn apply_relocation<A: Arch, I: Iterator<Item = object::Result<Crel>> + Clone>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<A: Arch>(
+fn apply_debug_relocation<A: ElfArch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &Crel,
@@ -2705,7 +2713,7 @@ fn apply_debug_relocation<A: Arch>(
 }
 
 #[inline(always)]
-fn write_absolute_relocation<A: Arch>(
+fn write_absolute_relocation<A: ElfArch>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
     place: u64,
@@ -2768,7 +2776,7 @@ fn write_absolute_relocation<A: Arch>(
     }
 }
 
-fn write_prelude<A: Arch>(
+fn write_prelude<A: ElfArch>(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -2866,7 +2874,7 @@ fn write_merged_strings(
     }
 }
 
-fn write_plt_got_entries<A: Arch>(
+fn write_plt_got_entries<A: ElfArch>(
     prelude: &PreludeLayout,
     layout: &Layout,
     table_writer: &mut TableWriter,
@@ -3071,7 +3079,7 @@ pub(crate) struct EpilogueOffsets {
     pub(crate) soname: Option<u32>,
 }
 
-fn write_linker_script_state<A: Arch>(
+fn write_linker_script_state<A: ElfArch>(
     script: &LinkerScriptLayoutState,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3089,7 +3097,7 @@ fn write_linker_script_state<A: Arch>(
     Ok(())
 }
 
-fn write_synthetic_symbols<A: Arch>(
+fn write_synthetic_symbols<A: ElfArch>(
     syn: &SyntheticSymbolsLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3109,7 +3117,7 @@ fn write_synthetic_symbols<A: Arch>(
     Ok(())
 }
 
-fn write_epilogue<A: Arch>(
+fn write_epilogue<A: ElfArch>(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -4372,7 +4380,7 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 }
 
-fn write_internal_symbols_plt_got_entries<A: Arch>(
+fn write_internal_symbols_plt_got_entries<A: ElfArch>(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4397,7 +4405,7 @@ fn write_internal_symbols_plt_got_entries<A: Arch>(
     Ok(())
 }
 
-fn write_dynamic_file<A: Arch>(
+fn write_dynamic_file<A: ElfArch>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4552,7 +4560,7 @@ fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Resu
     Ok(())
 }
 
-fn write_copy_relocations<A: Arch>(
+fn write_copy_relocations<A: ElfArch>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4571,7 +4579,7 @@ fn write_copy_relocations<A: Arch>(
     Ok(())
 }
 
-fn write_copy_relocation_for_symbol<A: Arch>(
+fn write_copy_relocation_for_symbol<A: ElfArch>(
     symbol_id: SymbolId,
     table_writer: &mut TableWriter,
     layout: &Layout,

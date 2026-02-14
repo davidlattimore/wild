@@ -1,5 +1,5 @@
-use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf_arch::ElfArch;
 use crate::error;
 use crate::error::Result;
 use itertools::Itertools;
@@ -28,7 +28,7 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for LoongArch64 {
+impl crate::elf_arch::ElfArch for LoongArch64 {
     type Relaxation = Relaxation;
 
     const KIND: crate::arch::Architecture = crate::arch::Architecture::LoongArch64;
@@ -116,7 +116,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::arch::Relaxation for Relaxation {
+impl crate::elf_arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
     fn new(
