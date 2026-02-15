@@ -881,6 +881,7 @@ dependencies = [
  "hashbrown",
  "iced-x86",
  "itertools",
+ "leb128",
  "linker-layout",
  "linker-trace",
  "linker-utils",
