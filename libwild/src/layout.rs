@@ -230,7 +230,7 @@ pub fn compute<'data, P: Platform>(
         output_order.display(&output_sections, &program_segments)
     );
 
-    let section_part_sizes = compute_total_section_part_sizes(
+    let mut section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
         &output_order,
@@ -240,13 +240,27 @@ pub fn compute<'data, P: Platform>(
         &finalise_sizes_resources,
     )?;
 
-    let section_part_layouts = layout_section_parts(
+    let mut section_part_layouts = layout_section_parts(
         &section_part_sizes,
         &output_sections,
         &program_segments,
         &output_order,
         symbol_db.args,
     );
+
+    if symbol_db.args.relax && matches!(symbol_db.args.arch, Architecture::RISCV64) {
+        perform_iterative_relaxation(
+            &mut group_states,
+            &mut section_part_sizes,
+            &mut section_part_layouts,
+            &output_sections,
+            &program_segments,
+            &output_order,
+            &symbol_db,
+            &per_symbol_flags,
+        );
+    }
+
     let section_layouts = layout_sections(&output_sections, &section_part_layouts);
     let mut merged_section_layouts = section_layouts.clone();
     merge_secondary_parts(&output_sections, &mut merged_section_layouts);
@@ -4642,114 +4656,12 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        if resources.symbol_db.args.relax {
-            self.scan_relaxations(common, per_symbol_flags, resources);
-        }
-
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
         for cie in &self.cies {
             self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
         common.allocate(part_id::EH_FRAME, self.eh_frame_size);
-    }
-
-    /// Scan loaded executable sections for size-changing relaxation opportunities.
-    fn scan_relaxations(
-        &mut self,
-        common: &mut CommonGroupState,
-        per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources<'data, '_>,
-    ) {
-        let symbol_db = resources.symbol_db;
-        let arch = symbol_db.args.arch;
-
-        // Relaxations that reduce bytes are currently only implemented for RISC-V
-        if !matches!(arch, Architecture::RISCV64) {
-            return;
-        }
-
-        timing_phase!("Scan relaxation opportunities");
-
-        let loaded_section_indices: SmallVec<[usize; 16]> = self
-            .sections
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| {
-                if let SectionSlot::Loaded(_) = slot
-                    && let Ok(header) = self.object.section(SectionIndex(i))
-                    && SectionFlags::from_header(header).contains(shf::EXECINSTR)
-                {
-                    return Some(i);
-                }
-                None
-            })
-            .collect();
-
-        for sec_idx in loaded_section_indices {
-            let section_index = SectionIndex(sec_idx);
-            let relocs = match self.object.relocations(section_index, &self.relocations) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if !matches!(&self.sections[sec_idx], SectionSlot::Loaded(_)) {
-                continue;
-            }
-
-            // A callback that resolves symbol properties needed by the arch-specific scanners.
-            let mut resolve_symbol = |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
-                let sym = self.object.symbol(sym_idx).ok()?;
-                let sym_section = self.object.symbol_section(sym, sym_idx).ok()??;
-                let local_symbol_id = self.symbol_id_range.input_to_id(sym_idx);
-                let definition_id = symbol_db.definition(local_symbol_id);
-                let flags = per_symbol_flags.flags_for_symbol(definition_id);
-
-                Some(RelaxSymbolInfo {
-                    section_index: sym_section,
-                    offset: sym.value(),
-                    is_interposable: flags.is_interposable(),
-                })
-            };
-
-            let raw_deltas = match arch {
-                Architecture::RISCV64 => match relocs {
-                    RelocationList::Rela(rela_list) => elf_riscv64::collect_relaxation_deltas(
-                        section_index,
-                        rela_list.crel_iter(),
-                        &mut resolve_symbol,
-                    ),
-                    RelocationList::Crel(crel_iter) => elf_riscv64::collect_relaxation_deltas(
-                        section_index,
-                        crel_iter.flatten(),
-                        &mut resolve_symbol,
-                    ),
-                },
-                _ => unreachable!(),
-            };
-
-            if !raw_deltas.is_empty() {
-                let deltas = SectionRelaxDeltas::new(raw_deltas);
-                let total_deleted = deltas.total_deleted();
-
-                // Reduce the section's size so that capacity() reflects the reduced size.
-                if let SectionSlot::Loaded(sec) = &mut self.sections[sec_idx] {
-                    // Compute the old capacity (what was already allocated) before reducing
-                    // size, then compute the new capacity after, and subtract the difference.
-                    let old_capacity = sec.capacity();
-                    sec.size -= total_deleted;
-                    let new_capacity = sec.capacity();
-                    debug_assert!(old_capacity >= new_capacity);
-                    let capacity_reduction = old_capacity - new_capacity;
-                    if capacity_reduction > 0 {
-                        let part_id = sec.part_id;
-                        common.mem_sizes.decrement(part_id, capacity_reduction);
-                    }
-                }
-
-                self.section_relax_deltas.insert(sec_idx, deltas);
-            }
-        }
     }
 
     fn allocate_symtab_space(
@@ -5578,6 +5490,299 @@ impl Resolution {
             return Ok(r);
         }
         Ok(self.raw_value.wrapping_add(addend as u64))
+    }
+}
+
+/// Maximum number of relaxation scan iterations. In practice convergence
+/// happens in 2–3 passes.
+const MAX_RELAXATION_ITERATIONS: usize = 5;
+
+/// Stores precomputed output-address information for every symbol.
+struct SymbolOutputInfos {
+    addresses: Vec<u64>,
+}
+
+impl SymbolOutputInfos {
+    fn resolve(
+        &self,
+        symbol_id: SymbolId,
+        per_symbol_flags: &PerSymbolFlags,
+    ) -> Option<RelaxSymbolInfo> {
+        let addr = *self.addresses.get(symbol_id.as_usize())?;
+        if addr == 0 {
+            return None;
+        }
+        Some(RelaxSymbolInfo {
+            output_address: addr,
+            is_interposable: per_symbol_flags
+                .flags_for_symbol(symbol_id)
+                .is_interposable(),
+        })
+    }
+}
+
+/// Compute the output address of every loaded input section across all object files.
+fn compute_object_section_addresses(
+    group_states: &[GroupState],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+) -> Vec<Vec<Vec<u64>>> {
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
+    let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
+
+    group_states
+        .iter()
+        .enumerate()
+        .map(|(group_idx, group)| {
+            let mut offsets = starting_offsets[group_idx].clone();
+
+            group
+                .files
+                .iter()
+                .map(|file| match file {
+                    FileLayoutState::Object(obj) => {
+                        let mut addresses = vec![0u64; obj.sections.len()];
+                        for (sec_idx, slot) in obj.sections.iter().enumerate() {
+                            match slot {
+                                SectionSlot::Loaded(sec) => {
+                                    addresses[sec_idx] = *offsets.get(sec.part_id);
+                                    *offsets.get_mut(sec.part_id) += sec.capacity();
+                                }
+                                SectionSlot::LoadedDebugInfo(sec) => {
+                                    // Advance offsets so subsequent sections are placed
+                                    // correctly, but we don't need the address for relaxation.
+                                    *offsets.get_mut(sec.part_id) += sec.capacity();
+                                }
+                                _ => {}
+                            }
+                        }
+                        offsets.increment(part_id::EH_FRAME, obj.eh_frame_size);
+                        addresses
+                    }
+                    _ => vec![],
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn build_symbol_output_infos(
+    group_states: &[GroupState],
+    section_addresses: &[Vec<Vec<u64>>],
+    symbol_db: &SymbolDb,
+) -> SymbolOutputInfos {
+    let mut addresses = vec![0u64; symbol_db.num_symbols()];
+
+    for (group_idx, group) in group_states.iter().enumerate() {
+        for (file_idx, file) in group.files.iter().enumerate() {
+            let FileLayoutState::Object(obj) = file else {
+                continue;
+            };
+            let file_section_addrs = &section_addresses[group_idx][file_idx];
+
+            for sym_offset in 0..obj.symbol_id_range.len() {
+                let sym_input_idx = object::SymbolIndex(sym_offset);
+                let Ok(sym) = obj.object.symbol(sym_input_idx) else {
+                    continue;
+                };
+                let Ok(Some(section)) = obj.object.symbol_section(sym, sym_input_idx) else {
+                    continue;
+                };
+                let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
+                let def_id = symbol_db.definition(sym_id);
+                // Only record the address for the canonical definition.
+                if def_id != sym_id {
+                    continue;
+                }
+                let sec_addr = file_section_addrs.get(section.0).copied().unwrap_or(0);
+                if sec_addr == 0 {
+                    continue;
+                }
+                addresses[sym_id.as_usize()] = sec_addr + sym.value();
+            }
+        }
+    }
+
+    SymbolOutputInfos { addresses }
+}
+
+/// Run one pass of the relaxation scan across all groups/objects. Returns the total number of bytes
+/// newly deleted in this pass.
+fn relaxation_scan_pass(
+    group_states: &mut [GroupState],
+    section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+    symbol_db: &SymbolDb,
+    per_symbol_flags: &PerSymbolFlags,
+    section_part_sizes: &mut OutputSectionPartMap<u64>,
+) -> u64 {
+    timing_phase!("Relaxation scan pass");
+
+    let arch = symbol_db.args.arch;
+
+    // Compute per-section output addresses from the current layout.
+    let section_addresses = compute_object_section_addresses(group_states, section_part_layouts);
+
+    // Build a flat symbol to output-address table.
+    let symbol_infos = build_symbol_output_infos(group_states, &section_addresses, symbol_db);
+
+    // Scan each group.
+    let group_reductions: Vec<OutputSectionPartMap<u64>> = group_states
+        .par_iter_mut()
+        .enumerate()
+        .map(|(group_idx, group)| {
+            let mut reductions = OutputSectionPartMap::with_size(section_part_sizes.num_parts());
+
+            for (file_idx, file) in group.files.iter_mut().enumerate() {
+                let FileLayoutState::Object(obj) = file else {
+                    continue;
+                };
+
+                let file_section_addrs = &section_addresses[group_idx][file_idx];
+
+                let exec_sections: SmallVec<[usize; 16]> = obj
+                    .sections
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, slot)| {
+                        if let SectionSlot::Loaded(_) = slot
+                            && let Ok(header) = obj.object.section(SectionIndex(i))
+                            && SectionFlags::from_header(header).contains(shf::EXECINSTR)
+                        {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                for sec_idx in exec_sections {
+                    let section_index = SectionIndex(sec_idx);
+                    let relocs = match obj.object.relocations(section_index, &obj.relocations) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+
+                    let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
+                    if sec_output_addr == 0 {
+                        continue;
+                    }
+
+                    let existing_deltas = obj.section_relax_deltas.get(sec_idx);
+
+                    // Symbol resolver: look up the canonical definition's output
+                    // address via the precomputed table.
+                    let mut resolve_symbol =
+                        |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
+                            let local_id = obj.symbol_id_range.input_to_id(sym_idx);
+                            let def_id = symbol_db.definition(local_id);
+                            symbol_infos.resolve(def_id, per_symbol_flags)
+                        };
+
+                    let raw_deltas = match arch {
+                        Architecture::RISCV64 => match relocs {
+                            RelocationList::Rela(rela_list) => {
+                                elf_riscv64::collect_relaxation_deltas(
+                                    sec_output_addr,
+                                    rela_list.crel_iter(),
+                                    existing_deltas,
+                                    &mut resolve_symbol,
+                                )
+                            }
+                            RelocationList::Crel(crel_iter) => {
+                                elf_riscv64::collect_relaxation_deltas(
+                                    sec_output_addr,
+                                    crel_iter.flatten(),
+                                    existing_deltas,
+                                    &mut resolve_symbol,
+                                )
+                            }
+                        },
+                        _ => continue,
+                    };
+
+                    if raw_deltas.is_empty() {
+                        continue;
+                    }
+
+                    let new_total_deleted: u64 =
+                        raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
+
+                    if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
+                        let old_capacity = sec.capacity();
+                        sec.size -= new_total_deleted;
+                        let new_capacity = sec.capacity();
+                        debug_assert!(old_capacity >= new_capacity);
+                        let capacity_reduction = old_capacity - new_capacity;
+                        if capacity_reduction > 0 {
+                            let part_id = sec.part_id;
+                            group
+                                .common
+                                .mem_sizes
+                                .decrement(part_id, capacity_reduction);
+                            *reductions.get_mut(part_id) += capacity_reduction;
+                        }
+                    }
+
+                    if let Some(existing) = obj.section_relax_deltas.get_mut(sec_idx) {
+                        existing.merge_additional(raw_deltas);
+                    } else {
+                        obj.section_relax_deltas
+                            .insert_sorted(sec_idx, SectionRelaxDeltas::new(raw_deltas));
+                    }
+                }
+            }
+
+            reductions
+        })
+        .collect();
+
+    // Aggregate the per-group reductions into section_part_sizes and compute the total bytes
+    // deleted.
+    let mut total_deleted = 0u64;
+    for reduction in &group_reductions {
+        for (idx, &amount) in reduction.parts.iter().enumerate() {
+            if amount > 0 {
+                let part_id = PartId::from_usize(idx);
+                section_part_sizes.decrement(part_id, amount);
+                total_deleted += amount;
+            }
+        }
+    }
+
+    total_deleted
+}
+
+fn perform_iterative_relaxation(
+    group_states: &mut [GroupState],
+    section_part_sizes: &mut OutputSectionPartMap<u64>,
+    section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
+    output_sections: &OutputSections,
+    program_segments: &ProgramSegments,
+    output_order: &OutputOrder,
+    symbol_db: &SymbolDb,
+    per_symbol_flags: &PerSymbolFlags,
+) {
+    timing_phase!("Iterative relaxation");
+
+    for _iteration in 0..MAX_RELAXATION_ITERATIONS {
+        let deleted = relaxation_scan_pass(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            per_symbol_flags,
+            section_part_sizes,
+        );
+
+        if deleted == 0 {
+            break;
+        }
+
+        *section_part_layouts = layout_section_parts(
+            section_part_sizes,
+            output_sections,
+            program_segments,
+            output_order,
+            symbol_db.args,
+        );
     }
 }
 

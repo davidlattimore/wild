@@ -13,10 +13,10 @@ use linker_utils::elf::RiscVInstruction;
 use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::distance_fits_jal;
 use linker_utils::riscv64::relocation_type_from_raw;
-use object::SectionIndex;
 use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
@@ -257,9 +257,15 @@ impl crate::platform::Relaxation for Relaxation {
     }
 }
 
+/// Scan relocations for call relaxation candidates.
+///
+/// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
+/// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
+/// returns the output address and interposability of a symbol.
 pub(crate) fn collect_relaxation_deltas(
-    section_index: SectionIndex,
+    section_output_address: u64,
     relocations: impl Iterator<Item = Crel>,
+    existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
 ) -> Vec<(u64, u32)> {
     let mut raw_deltas = Vec::new();
@@ -273,10 +279,14 @@ pub(crate) fn collect_relaxation_deltas(
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
                     && rel.r_offset == call_offset
+                    // Skip calls that were already relaxed in a previous pass.
+                    && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
                     && let Some(info) = resolve_symbol(sym_idx)
-                    && info.section_index == section_index
                     && !info.is_interposable
-                    && distance_fits_jal((info.offset as i64).wrapping_sub(call_offset as i64))
+                    && distance_fits_jal(
+                        info.output_address as i64
+                            - (section_output_address + call_offset) as i64,
+                    )
                 {
                     // Delete the jalr instruction (4 bytes at call_offset + 4).
                     raw_deltas.push((call_offset + 4, 4));

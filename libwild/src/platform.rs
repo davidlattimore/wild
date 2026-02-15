@@ -10,7 +10,6 @@ use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
-use object::SectionIndex;
 use std::borrow::Cow;
 
 /// Represents a supported object file format + architecture combination.
@@ -87,10 +86,8 @@ pub(crate) trait Relaxation {
 }
 
 pub(crate) struct RelaxSymbolInfo {
-    /// The section in which the symbol is defined.
-    pub section_index: SectionIndex,
-    /// The symbol's offset within its section.
-    pub offset: u64,
+    /// The symbol's approximate output address (section base + offset within section).
+    pub output_address: u64,
     /// Whether the symbol may be interposed at runtime.
     pub is_interposable: bool,
 }

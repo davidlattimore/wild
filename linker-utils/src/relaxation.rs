@@ -60,6 +60,27 @@ impl SectionRelaxDeltas {
         self.deltas.last().map_or(0, |d| d.cumulative_deleted)
     }
 
+    /// Merges additional `(input_offset, bytes_deleted)` pairs into this set of deltas.
+    /// The additional pairs must not overlap with existing entries.
+    /// After merging, cumulative deleted counts are recomputed.
+    pub fn merge_additional(&mut self, additional: Vec<(u64, u32)>) {
+        if additional.is_empty() {
+            return;
+        }
+        let mut raw: Vec<(u64, u32)> = self
+            .deltas
+            .iter()
+            .map(|d| (d.input_offset, d.bytes_deleted))
+            .chain(additional)
+            .collect();
+        raw.sort_by_key(|(offset, _)| *offset);
+        debug_assert!(
+            raw.windows(2).all(|w| w[0].0 < w[1].0),
+            "merge_additional: duplicate or overlapping offsets"
+        );
+        *self = SectionRelaxDeltas::new(raw);
+    }
+
     #[must_use]
     pub fn has_delta_at(&self, offset: u64) -> bool {
         self.deltas
@@ -179,6 +200,25 @@ impl RelaxDeltaMap {
             .binary_search_by_key(&section_index, |(idx, _)| *idx)
             .ok()
             .map(|i| &self.entries[i].1)
+    }
+
+    #[must_use]
+    pub fn get_mut(&mut self, section_index: usize) -> Option<&mut SectionRelaxDeltas> {
+        self.entries
+            .binary_search_by_key(&section_index, |(idx, _)| *idx)
+            .ok()
+            .map(|i| &mut self.entries[i].1)
+    }
+
+    pub fn insert_sorted(&mut self, section_index: usize, deltas: SectionRelaxDeltas) {
+        let pos = self
+            .entries
+            .partition_point(|(idx, _)| *idx < section_index);
+        debug_assert!(
+            pos >= self.entries.len() || self.entries[pos].0 != section_index,
+            "insert_sorted: duplicate section_index {section_index}"
+        );
+        self.entries.insert(pos, (section_index, deltas));
     }
 
     #[must_use]
