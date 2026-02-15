@@ -3602,7 +3602,7 @@ impl<'data> PreludeLayoutState<'data> {
 
     fn activate<'scope, A: Arch>(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
@@ -3623,6 +3623,37 @@ impl<'data> PreludeLayoutState<'data> {
         }
 
         self.load_entry_point::<A>(resources, queue, scope);
+
+        for (offset, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.symbol_id_range.offset_to_id(offset);
+            if !resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
+            // Mark the section referenced by this symbol so that empty sections
+            // defined by the linker script are still emitted.
+            if let Some(section_id) = def_info.section_id() {
+                resources
+                    .must_keep_sections
+                    .get(section_id)
+                    .fetch_or(true, atomic::Ordering::Relaxed);
+            }
+
+            // Only export symbols that are intended to be user-visible (e.g. _end,
+            // __rela_iplt_start if it was Provide).
+            if def_info.is_hidden || !def_info.use_provide {
+                continue;
+            }
+
+            resources
+                .per_symbol_flags
+                .get_atomic(symbol_id)
+                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+
+            if resources.symbol_db.output_kind.needs_dynsym() {
+                export_dynamic(common, symbol_id, resources.symbol_db)?;
+            }
+        }
 
         if resources.symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.

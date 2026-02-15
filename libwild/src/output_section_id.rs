@@ -456,6 +456,13 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) secondary_order: Option<SecondaryOrder>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum DefinitionMode {
+    Strong,
+    Provide,
+    ProvideHidden,
+}
+
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
@@ -464,9 +471,9 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) start_symbol_name: Option<&'static str>,
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) group_end_symbol_name: Option<&'static str>,
-    pub(crate) start_symbol_use_provide: bool,
-    pub(crate) end_symbol_use_provide: bool,
-    pub(crate) group_end_symbol_use_provide: bool,
+    pub(crate) start_symbol_mode: DefinitionMode,
+    pub(crate) end_symbol_mode: DefinitionMode,
+    pub(crate) group_end_symbol_mode: DefinitionMode,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
@@ -484,9 +491,9 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     start_symbol_name: None,
     end_symbol_name: None,
     group_end_symbol_name: None,
-    start_symbol_use_provide: false,
-    end_symbol_use_provide: false,
-    group_end_symbol_use_provide: false,
+    start_symbol_mode: DefinitionMode::Strong,
+    end_symbol_mode: DefinitionMode::Strong,
+    group_end_symbol_mode: DefinitionMode::Strong,
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
@@ -557,7 +564,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         link: &[DYNSYM, SYMTAB_LOCAL],
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
+        start_symbol_mode: DefinitionMode::ProvideHidden,
         end_symbol_name: Some("__rela_iplt_end"),
+        end_symbol_mode: DefinitionMode::ProvideHidden,
         info_fn: Some(rela_plt_info),
         ..DEFAULT_DEFS
     },
@@ -725,6 +734,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
+        end_symbol_name: Some("_etext"),
+        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -734,8 +745,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         group_end_symbol_name: Some("__init_array_end"),
-        start_symbol_use_provide: true,
-        group_end_symbol_use_provide: true,
+        start_symbol_mode: DefinitionMode::ProvideHidden,
+        group_end_symbol_mode: DefinitionMode::ProvideHidden,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -747,8 +758,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         group_end_symbol_name: Some("__fini_array_end"),
-        start_symbol_use_provide: true,
-        group_end_symbol_use_provide: true,
+        start_symbol_mode: DefinitionMode::ProvideHidden,
+        group_end_symbol_mode: DefinitionMode::ProvideHidden,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -759,8 +770,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         start_symbol_name: Some("__preinit_array_start"),
         end_symbol_name: Some("__preinit_array_end"),
-        start_symbol_use_provide: true,
-        end_symbol_use_provide: true,
+        start_symbol_mode: DefinitionMode::ProvideHidden,
+        end_symbol_mode: DefinitionMode::ProvideHidden,
         is_relro: true,
         ..DEFAULT_DEFS
     },
@@ -788,12 +799,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         // TODO: define the symbol only on RISC-V target
         start_symbol_name: Some(GLOBAL_POINTER_SYMBOL_NAME),
+        end_symbol_name: Some("_edata"),
+        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        start_symbol_name: Some("__tdata_start"),
+        start_symbol_mode: DefinitionMode::ProvideHidden,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -807,7 +822,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         end_symbol_name: Some("_end"),
-        end_symbol_use_provide: true,
+        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

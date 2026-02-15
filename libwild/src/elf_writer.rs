@@ -3509,7 +3509,35 @@ fn write_prelude_dynsym(
         .get(offset)
         .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
 
-    write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info)
+    if matches!(
+        def_info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ) {
+        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
+    }
+
+    let section_id = def_info
+        .section_id()
+        .context("Tried to export dynamic symbol not associated with a section")?;
+
+    let section_id = layout.output_sections.primary_output_section(section_id);
+
+    let shndx = layout
+        .output_sections
+        .output_index_of_section(section_id)
+        .context("Tried to write dynamic symbol in section that's not being output")?;
+
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+
+    let address = resolution.address()?;
+    let name = layout.symbol_db.symbol_name(symbol_id)?;
+
+    dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
+
+    Ok(())
 }
 
 /// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.

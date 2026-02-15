@@ -15,6 +15,7 @@ use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id;
+use crate::output_section_id::DefinitionMode;
 use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
@@ -73,6 +74,7 @@ pub(crate) struct InternalSymDefInfo<'data> {
     /// If true, this symbol should have hidden visibility (from PROVIDE_HIDDEN).
     pub(crate) is_hidden: bool,
     /// If true, this symbol should only be defined if not already defined (PROVIDE semantics).
+    #[allow(dead_code)]
     pub(crate) use_provide: bool,
 }
 
@@ -263,37 +265,61 @@ impl<'data> Prelude<'data> {
             }
 
             let def = section_id.built_in_details();
-            // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
-            // Emitting them for relocatable binaries causes glibc to try to call the resolver
-            // functions without taking into account that the binary has been relocated.
-            if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
-                && section_id == output_section_id::RELA_PLT
-            {
-                continue;
+
+            // ... (imports)
+
+            // ... inside Prelude::new ...
+            fn add_symbol<'data>(
+                defs: &mut Vec<InternalSymDefInfo<'data>>,
+                mode: DefinitionMode,
+                placement: SymbolPlacement<'data>,
+                name: &'static str,
+            ) {
+                let (is_hidden, use_provide) = match mode {
+                    DefinitionMode::Strong => (false, false),
+                    DefinitionMode::Provide => (false, true),
+                    DefinitionMode::ProvideHidden => (true, true),
+                };
+                if is_hidden {
+                    defs.push(InternalSymDefInfo::hidden(
+                        placement,
+                        name.as_bytes(),
+                        use_provide,
+                    ));
+                } else {
+                    defs.push(InternalSymDefInfo::notype(
+                        placement,
+                        name.as_bytes(),
+                        use_provide,
+                    ));
+                }
             }
 
             if let Some(name) = def.start_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
+                add_symbol(
+                    &mut symbol_definitions,
+                    def.start_symbol_mode,
                     SymbolPlacement::SectionStart(section_id),
-                    name.as_bytes(),
-                    def.start_symbol_use_provide,
-                ));
+                    name,
+                );
             }
 
             if let Some(name) = def.end_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
+                add_symbol(
+                    &mut symbol_definitions,
+                    def.end_symbol_mode,
                     SymbolPlacement::SectionEnd(section_id),
-                    name.as_bytes(),
-                    def.end_symbol_use_provide,
-                ));
+                    name,
+                );
             }
 
             if let Some(name) = def.group_end_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
+                add_symbol(
+                    &mut symbol_definitions,
+                    def.group_end_symbol_mode,
                     SymbolPlacement::SectionGroupEnd(section_id),
-                    name.as_bytes(),
-                    def.group_end_symbol_use_provide,
-                ));
+                    name,
+                );
             }
         }
 
@@ -330,7 +356,33 @@ impl<'data> Prelude<'data> {
         symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
-            false,
+            true,
+        ));
+
+        // etext aliases
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::RODATA),
+            b"etext",
+            true,
+        ));
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::RODATA),
+            b"__etext",
+            true,
+        ));
+
+        // edata alias
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::DATA),
+            b"edata",
+            true,
+        ));
+
+        // end alias
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::BSS),
+            b"end",
+            true,
         ));
 
         Self { symbol_definitions }

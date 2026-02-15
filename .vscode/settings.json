@@ -4,5 +4,6 @@
     ],
     "search.exclude": {
         "/external_test_suites/": true
-    }
+    },
+    "kiroAgent.configureMCP": "Disabled"
 }
