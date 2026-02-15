@@ -44,6 +44,7 @@ mod header_diff;
 mod init_order;
 mod loongarch64;
 mod riscv64;
+mod riscv_attributes;
 pub(crate) mod section_map;
 mod segment;
 mod symbol_diff;
@@ -671,6 +672,7 @@ impl Report {
 
             ArchKind::RISCV64 => {
                 self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
+                riscv_attributes::report_diffs(self, objects);
             }
             ArchKind::LoongArch64 => {
                 self.report_arch_specific_diffs::<crate::loongarch64::LoongArch64>(objects);
