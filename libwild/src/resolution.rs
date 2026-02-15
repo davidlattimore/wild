@@ -497,11 +497,12 @@ fn work_items_do<'definitions, 'data>(
         Group::Objects(parsed_input_objects) => {
             let obj = &parsed_input_objects[file_id.file()];
             let common = ResolvedCommon::new(obj);
-            let resolved_object = if let Some(dynamic_tag_values) = obj.parsed.dynamic_tag_values {
-                ResolvedFile::Dynamic(ResolvedDynamic::new(common, dynamic_tag_values))
-            } else {
-                ResolvedFile::Object(ResolvedObject::new(common))
-            };
+            let resolved_object =
+                if let Some(dynamic_tag_values) = obj.parsed.object.dynamic_tag_values {
+                    ResolvedFile::Dynamic(ResolvedDynamic::new(common, dynamic_tag_values))
+                } else {
+                    ResolvedFile::Object(ResolvedObject::new(common))
+                };
             // Push won't fail because we allocated enough space for all the objects.
             outputs.loaded.push(resolved_object).unwrap();
         }
@@ -665,7 +666,7 @@ pub(crate) struct ResolvedObject<'data> {
 #[derive(Debug)]
 pub(crate) struct ResolvedDynamic<'data> {
     pub(crate) common: ResolvedCommon<'data>,
-    dynamic_tag_values: crate::parsing::DynamicTagValues<'data>,
+    dynamic_tag_values: crate::elf::DynamicTagValues<'data>,
 }
 
 #[derive(Debug)]
@@ -1125,7 +1126,7 @@ impl<'data> ResolvedObject<'data> {
 impl<'data> ResolvedDynamic<'data> {
     fn new(
         common: ResolvedCommon<'data>,
-        dynamic_tag_values: crate::parsing::DynamicTagValues<'data>,
+        dynamic_tag_values: crate::elf::DynamicTagValues<'data>,
     ) -> Self {
         Self {
             common,
