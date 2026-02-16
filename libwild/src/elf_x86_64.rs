@@ -28,7 +28,7 @@ use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 
-pub(crate) struct X86_64;
+pub(crate) struct ElfX86_64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
@@ -40,8 +40,9 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::elf_arch::ElfArch for X86_64 {
+impl crate::platform::Platform for ElfX86_64 {
     type Relaxation = Relaxation;
+    type Format = crate::elf::Elf;
 
     const KIND: crate::arch::Architecture = crate::arch::Architecture::X86_64;
 
@@ -127,7 +128,7 @@ pub(crate) struct Relaxation {
     mandatory: bool,
 }
 
-impl crate::elf_arch::Relaxation for Relaxation {
+impl crate::platform::Relaxation for Relaxation {
     #[inline(always)]
     fn new(
         relocation_kind: u32,
@@ -462,7 +463,7 @@ impl TlsGdForm {
 #[test]
 fn test_relaxation() {
     use crate::args::RelocationModel;
-    use crate::elf_arch::Relaxation as _;
+    use crate::platform::Relaxation as _;
 
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {

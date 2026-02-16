@@ -1,10 +1,10 @@
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
-use crate::elf_arch::ElfArch;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::platform::Platform;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
@@ -18,7 +18,7 @@ use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
 
-pub(crate) struct AArch64;
+pub(crate) struct ElfAArch64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x10, 0x00, 0x00, 0x90, // adrp x16, page(&(.got.plt[n]))
@@ -31,8 +31,9 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::elf_arch::ElfArch for AArch64 {
+impl crate::platform::Platform for ElfAArch64 {
     type Relaxation = Relaxation;
+    type Format = crate::elf::Elf;
 
     const KIND: crate::arch::Architecture = crate::arch::Architecture::AArch64;
 
@@ -133,7 +134,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::elf_arch::Relaxation for Relaxation {
+impl crate::platform::Relaxation for Relaxation {
     #[inline(always)]
     fn new(
         relocation_kind: u32,
@@ -147,7 +148,7 @@ impl crate::elf_arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
+        let mut relocation = ElfAArch64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.

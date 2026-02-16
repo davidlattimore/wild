@@ -28,8 +28,6 @@ use crate::elf::RelocationList;
 use crate::elf::RelocationSequence;
 use crate::elf::SectionAttributes;
 use crate::elf::Versym;
-use crate::elf_arch::ElfArch;
-use crate::elf_arch::Relaxation as _;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -57,6 +55,8 @@ use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::ObjectFile as _;
+use crate::platform::Platform;
+use crate::platform::Relaxation as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
@@ -134,7 +134,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use zerocopy::FromBytes;
 
-pub fn compute<'data, A: ElfArch>(
+pub fn compute<'data, P: Platform>(
     symbol_db: SymbolDb<'data>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data>>,
@@ -163,7 +163,7 @@ pub fn compute<'data, A: ElfArch>(
             )
         },
         || {
-            find_required_sections::<A>(
+            find_required_sections::<P>(
                 groups,
                 &symbol_db,
                 &atomic_per_symbol_flags,
@@ -191,7 +191,7 @@ pub fn compute<'data, A: ElfArch>(
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     let (dynamic_symbol_definitions, gnu_hash_layout) =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    let properties_and_attributes = ElfLayoutProperties::new::<A>(
+    let properties_and_attributes = ElfLayoutProperties::new::<P>(
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
         symbol_db.args,
@@ -907,7 +907,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         Ok(())
     }
 
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -1034,7 +1034,7 @@ impl HandlerData for ObjectLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -1080,7 +1080,7 @@ impl HandlerData for DynamicLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
@@ -1102,7 +1102,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         }
 
         // Check for VARIANT_PCS flag in AArch64 symbols
-        if A::KIND == crate::arch::Architecture::AArch64
+        if P::KIND == crate::arch::Architecture::AArch64
             && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
             && (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0
         {
@@ -1112,7 +1112,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         }
 
         // Check for VARIANT_CC flag in RISC-V symbols
-        if A::KIND == crate::arch::Architecture::RISCV64
+        if P::KIND == crate::arch::Architecture::RISCV64
             && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
             && (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0
         {
@@ -1136,7 +1136,7 @@ impl HandlerData for PreludeLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState<'data> {
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         _common: &mut CommonGroupState,
         _symbol_id: SymbolId,
@@ -1159,7 +1159,7 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         _common: &mut CommonGroupState<'data>,
         _symbol_id: SymbolId,
@@ -1182,7 +1182,7 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
-    fn load_symbol<'scope, A: ElfArch>(
+    fn load_symbol<'scope, P: Platform>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
@@ -1198,7 +1198,7 @@ impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
             // sections that would go into that section.
             let sections = resources.start_stop_sections.get(output_section_id);
             while let Some(request) = sections.pop() {
-                resources.send_work::<A>(
+                resources.send_work::<P>(
                     request.file_id,
                     WorkItem::LoadSection(request),
                     resources,
@@ -2157,7 +2157,7 @@ struct GroupActivationInputs<'data> {
 }
 
 impl<'data> GroupActivationInputs<'data> {
-    fn activate_group<'scope, A: ElfArch>(
+    fn activate_group<'scope, P: Platform>(
         self,
         resources: &'scope GraphResources<'data, '_>,
         scope: &Scope<'scope>,
@@ -2183,7 +2183,7 @@ impl<'data> GroupActivationInputs<'data> {
         let mut should_delay_processing = false;
 
         for file in &mut group.files {
-            let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
+            let r = activate::<P>(&mut group.common, file, &mut group.queue, resources, scope)
                 .with_context(|| format!("Failed to activate {file}"));
 
             // SyntheticSymbols can't be processed until all groups have completed activation, since
@@ -2199,7 +2199,7 @@ impl<'data> GroupActivationInputs<'data> {
         if should_delay_processing {
             resources.delay_processing.push(group).unwrap();
         } else {
-            group.do_pending_work::<A>(resources, scope);
+            group.do_pending_work::<P>(resources, scope);
         }
 
         let remaining = resources
@@ -2209,13 +2209,13 @@ impl<'data> GroupActivationInputs<'data> {
 
         if remaining == 0 {
             while let Some(group) = resources.delay_processing.pop() {
-                group.do_pending_work::<A>(resources, scope);
+                group.do_pending_work::<P>(resources, scope);
             }
         }
     }
 }
 
-fn find_required_sections<'data, A: ElfArch>(
+fn find_required_sections<'data, P: Platform>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &SymbolDb<'data>,
     per_symbol_flags: &AtomicPerSymbolFlags,
@@ -2252,7 +2252,7 @@ fn find_required_sections<'data, A: ElfArch>(
     let resources_ref = &resources;
 
     rayon::in_place_scope(|scope| {
-        queue_initial_group_processing::<A>(groups_in, symbol_db, resources_ref, scope);
+        queue_initial_group_processing::<P>(groups_in, symbol_db, resources_ref, scope);
     });
 
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
@@ -2295,7 +2295,7 @@ fn find_required_sections<'data, A: ElfArch>(
     })
 }
 
-fn queue_initial_group_processing<'data, 'scope, A: ElfArch>(
+fn queue_initial_group_processing<'data, 'scope, P: Platform>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &'scope SymbolDb<'data>,
     resources: &'scope GraphResources<'data, '_>,
@@ -2317,7 +2317,7 @@ fn queue_initial_group_processing<'data, 'scope, A: ElfArch>(
                     num_symbols: group.num_symbols(),
                     group_index,
                 };
-                inputs.activate_group::<A>(resources, scope);
+                inputs.activate_group::<P>(resources, scope);
             });
         });
 }
@@ -2334,7 +2334,7 @@ fn unwrap_worker_states<'data>(
 impl<'data> GroupState<'data> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, A: ElfArch>(
+    fn do_pending_work<'scope, P: Platform>(
         mut self,
         resources: &'scope GraphResources<'data, '_>,
         scope: &Scope<'scope>,
@@ -2343,7 +2343,7 @@ impl<'data> GroupState<'data> {
             while let Some(work_item) = self.queue.local_work.pop() {
                 let file_id = work_item.file_id(resources.symbol_db);
                 let file = &mut self.files[file_id.file()];
-                if let Err(error) = file.do_work::<A>(
+                if let Err(error) = file.do_work::<P>(
                     &mut self.common,
                     work_item,
                     resources,
@@ -2448,7 +2448,7 @@ fn set_last_verneed(
     }
 }
 
-fn activate<'data, 'scope, A: ElfArch>(
+fn activate<'data, 'scope, P: Platform>(
     common: &mut CommonGroupState<'data>,
     file: &mut FileLayoutState<'data>,
     queue: &mut LocalWorkQueue,
@@ -2456,9 +2456,9 @@ fn activate<'data, 'scope, A: ElfArch>(
     scope: &Scope<'scope>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, scope)?,
-        FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
-        FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
+        FileLayoutState::Object(s) => s.activate::<P>(common, resources, queue, scope)?,
+        FileLayoutState::Prelude(s) => s.activate::<P>(common, resources, queue, scope)?,
+        FileLayoutState::Dynamic(s) => s.activate::<P>(common, resources, queue, scope)?,
         FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
         FileLayoutState::Epilogue(_) => {}
         FileLayoutState::NotLoaded(_) => {}
@@ -2469,7 +2469,7 @@ fn activate<'data, 'scope, A: ElfArch>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data, 'scope, A: ElfArch>(
+    fn send_work<'data, 'scope, P: Platform>(
         &mut self,
         resources: &'scope GraphResources<'data, '_>,
         file_id: FileId,
@@ -2479,7 +2479,7 @@ impl LocalWorkQueue {
         if file_id.group() == self.index {
             self.local_work.push(work);
         } else {
-            resources.send_work::<A>(file_id, work, resources, scope);
+            resources.send_work::<P>(file_id, work, resources, scope);
         }
     }
 
@@ -2491,7 +2491,7 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, A: ElfArch>(
+    fn send_symbol_request<'data, 'scope, P: Platform>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_>,
@@ -2499,7 +2499,7 @@ impl LocalWorkQueue {
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work::<A>(
+        self.send_work::<P>(
             resources,
             symbol_file_id,
             WorkItem::LoadGlobalSymbol(symbol_id),
@@ -2507,7 +2507,7 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<'data, 'scope, A: ElfArch>(
+    fn send_copy_relocation_request<'data, 'scope, P: Platform>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_>,
@@ -2515,7 +2515,7 @@ impl LocalWorkQueue {
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work::<A>(
+        self.send_work::<P>(
             resources,
             symbol_file_id,
             WorkItem::CopyRelocateSymbol(symbol_id),
@@ -2532,7 +2532,7 @@ impl<'data> GraphResources<'data, '_> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work<'scope, A: ElfArch>(
+    fn send_work<'scope, P: Platform>(
         &self,
         file_id: FileId,
         work: WorkItem,
@@ -2548,7 +2548,7 @@ impl<'data> GraphResources<'data, '_> {
         if let Some(worker) = worker {
             scope.spawn(|scope| {
                 verbose_timing_phase!("Work with object");
-                worker.do_pending_work::<A>(resources, scope);
+                worker.do_pending_work::<P>(resources, scope);
             });
         }
     }
@@ -2615,7 +2615,7 @@ impl<'data> FileLayoutState<'data> {
         Ok(())
     }
 
-    fn do_work<'scope, A: ElfArch>(
+    fn do_work<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         work_item: WorkItem,
@@ -2625,7 +2625,7 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result {
         match work_item {
             WorkItem::LoadGlobalSymbol(symbol_id) => self
-                .handle_symbol_request::<A>(common, symbol_id, resources, queue, scope)
+                .handle_symbol_request::<P>(common, symbol_id, resources, queue, scope)
                 .with_context(|| {
                     format!(
                         "Failed to load {} from {self}",
@@ -2644,7 +2644,7 @@ impl<'data> FileLayoutState<'data> {
             },
             WorkItem::LoadSection(request) => match self {
                 FileLayoutState::Object(object_layout_state) => object_layout_state
-                    .handle_section_load_request::<A>(
+                    .handle_section_load_request::<P>(
                         common,
                         resources,
                         queue,
@@ -2655,7 +2655,7 @@ impl<'data> FileLayoutState<'data> {
             },
             WorkItem::ExportDynamic(symbol_id) => match self {
                 FileLayoutState::Object(object) => {
-                    object.export_dynamic::<A>(common, symbol_id, resources, queue, scope)
+                    object.export_dynamic::<P>(common, symbol_id, resources, queue, scope)
                 }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
@@ -2666,7 +2666,7 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    fn handle_symbol_request<'scope, A: ElfArch>(
+    fn handle_symbol_request<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -2676,18 +2676,18 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result {
         match self {
             FileLayoutState::Object(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::Prelude(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::Dynamic(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::SyntheticSymbols(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::Epilogue(_) => {
                 // The epilogue doesn't define symbols. In fact, it isn't even created until after
@@ -2963,7 +2963,7 @@ impl Section {
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, A: ElfArch>(
+fn process_relocation<'data, 'scope, P: Platform>(
     object: &ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &Crel,
@@ -2985,7 +2985,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
         let r_type = rel.r_type;
         let section_flags = SectionFlags::from_header(section);
 
-        let rel_info = if let Some(relaxation) = A::Relaxation::new(
+        let rel_info = if let Some(relaxation) = P::Relaxation::new(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,
@@ -2999,7 +2999,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
         } else {
-            A::relocation_from_raw(r_type)?
+            P::relocation_from_raw(r_type)?
         };
 
         let section_is_writable = section_flags.is_writable();
@@ -3035,7 +3035,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
                         bail!(
                             "Direct relocation ({}) to dynamic symbol from non-writable section, \
                             but copy relocations are disabled because {reason}. {}",
-                            A::rel_type_to_string(r_type),
+                            P::rel_type_to_string(r_type),
                             resources.symbol_debug(symbol_id),
                         );
                     }
@@ -3057,7 +3057,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
                 bail!(
                     "Cannot apply relocation {} to read-only section. \
                     Please recompile with -fPIC or link with -no-pie",
-                    A::rel_type_to_string(r_type),
+                    P::rel_type_to_string(r_type),
                 );
             }
         }
@@ -3085,7 +3085,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
                 atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
             }
 
-            queue.send_symbol_request::<A>(symbol_id, resources, scope);
+            queue.send_symbol_request::<P>(symbol_id, resources, scope);
             if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
@@ -3095,7 +3095,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
                 symbol_db.output_kind,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                let source_info = crate::dwarf_address_info::get_source_info::<A>(
+                let source_info = crate::dwarf_address_info::get_source_info::<P>(
                     object.object,
                     &object.relocations,
                     section,
@@ -3118,7 +3118,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
         }
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-            queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
+            queue.send_copy_relocation_request::<P>(symbol_id, resources, scope);
         }
     }
     Ok(next_modifier)
@@ -3193,7 +3193,7 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate<'scope, A: ElfArch>(
+    fn activate<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState,
         resources: &'scope GraphResources<'data, '_>,
@@ -3215,7 +3215,7 @@ impl<'data> PreludeLayoutState<'data> {
             common.allocate(part_id::STRTAB, 1);
         }
 
-        self.load_entry_point::<A>(resources, queue, scope);
+        self.load_entry_point::<P>(resources, queue, scope);
 
         if resources.symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -3239,14 +3239,14 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
-        self.mark_defsyms_as_used::<A>(resources, queue, scope);
+        self.mark_defsyms_as_used::<P>(resources, queue, scope);
 
         Ok(())
     }
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, A: ElfArch>(
+    fn mark_defsyms_as_used<'scope, P: Platform>(
         &self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
@@ -3285,7 +3285,7 @@ impl<'data> PreludeLayoutState<'data> {
                             .fetch_or(ValueFlags::DIRECT);
 
                         if !old_flags.has_resolution() {
-                            queue.send_work::<A>(
+                            queue.send_work::<P>(
                                 resources,
                                 file_id,
                                 WorkItem::LoadGlobalSymbol(canonical_target_id),
@@ -3299,7 +3299,7 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point<'scope, A: ElfArch>(
+    fn load_entry_point<'scope, P: Platform>(
         &mut self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
@@ -3325,7 +3325,7 @@ impl<'data> PreludeLayoutState<'data> {
             .get_atomic(symbol_id)
             .fetch_or(ValueFlags::DIRECT);
         if !old_flags.has_resolution() {
-            queue.send_work::<A>(
+            queue.send_work::<P>(
                 resources,
                 file_id,
                 WorkItem::LoadGlobalSymbol(symbol_id),
@@ -4233,7 +4233,7 @@ fn new_dynamic_object_layout_state<'data>(
 
 impl<'data> ObjectLayoutState<'data> {
     #[inline(always)]
-    fn activate<'scope, A: ElfArch>(
+    fn activate<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4290,7 +4290,7 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if let Some(eh_frame_section_index) = eh_frame_section {
-            process_eh_frame_data::<A>(
+            process_eh_frame_data::<P>(
                 self,
                 common,
                 self.symbol_id_range(),
@@ -4309,7 +4309,7 @@ impl<'data> ObjectLayoutState<'data> {
 
         if let Some(riscv_attributes_index) = riscv_attributes_section {
             ensure!(
-                A::elf_header_arch_magic() == object::elf::EM_RISCV,
+                P::elf_header_arch_magic() == object::elf::EM_RISCV,
                 ".riscv.attribute section is supported only for riscv64 target"
             );
             self.format_specific_layout_state.riscv_attributes =
@@ -4330,13 +4330,13 @@ impl<'data> ObjectLayoutState<'data> {
             || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.export_list.is_some()
         {
-            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
+            self.load_non_hidden_symbols::<P>(common, resources, queue, export_all_dynamic, scope)?;
         }
 
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, A: ElfArch>(
+    fn handle_section_load_request<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4346,12 +4346,12 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result<(), Error> {
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
+                self.load_section::<P>(common, queue, *unloaded, section_index, resources, scope)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
-                self.load_debug_section::<A>(
+                self.load_debug_section::<P>(
                     common,
                     queue,
                     *part_id,
@@ -4383,7 +4383,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section<'scope, A: ElfArch>(
+    fn load_section<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4398,7 +4398,7 @@ impl<'data> ObjectLayoutState<'data> {
 
         match self.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                self.load_section_relocations::<A>(
+                self.load_section_relocations::<P>(
                     common,
                     queue,
                     resources,
@@ -4408,7 +4408,7 @@ impl<'data> ObjectLayoutState<'data> {
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                self.load_section_relocations::<A>(
+                self.load_section_relocations::<P>(
                     common,
                     queue,
                     resources,
@@ -4428,7 +4428,7 @@ impl<'data> ObjectLayoutState<'data> {
         if section.size > 0 {
             let sizes = match &self.exception_frames {
                 ExceptionFrames::Rela(exception_frames) => self
-                    .process_section_exception_frames::<A, Rela>(
+                    .process_section_exception_frames::<P, Rela>(
                         unloaded.last_frame_index,
                         common,
                         resources,
@@ -4437,7 +4437,7 @@ impl<'data> ObjectLayoutState<'data> {
                         exception_frames,
                     )?,
                 ExceptionFrames::Crel(exception_frames) => self
-                    .process_section_exception_frames::<A, Crel>(
+                    .process_section_exception_frames::<P, Crel>(
                         unloaded.last_frame_index,
                         common,
                         resources,
@@ -4464,7 +4464,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section_relocations<'scope, A: ElfArch>(
+    fn load_section_relocations<'scope, P: Platform>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4479,7 +4479,7 @@ impl<'data> ObjectLayoutState<'data> {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
-            modifier = process_relocation::<A>(
+            modifier = process_relocation::<P>(
                 self,
                 common,
                 &rel,
@@ -4501,7 +4501,7 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<'scope, A: ElfArch, R: Relocation<'data>>(
+    fn process_section_exception_frames<'scope, P: Platform, R: Relocation<'data>>(
         &self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
@@ -4525,7 +4525,7 @@ impl<'data> ObjectLayoutState<'data> {
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
                 for rel in frame_data.relocations.crel_iter() {
-                    process_relocation::<A>(
+                    process_relocation::<P>(
                         self,
                         common,
                         &rel,
@@ -4546,7 +4546,7 @@ impl<'data> ObjectLayoutState<'data> {
         })
     }
 
-    fn load_debug_section<'scope, A: ElfArch>(
+    fn load_debug_section<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4558,9 +4558,9 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        if A::local_symbols_in_debug_info() {
+        if P::local_symbols_in_debug_info() {
             match self.relocations(section.index)? {
-                RelocationList::Rela(relocations) => self.load_debug_relocations::<A>(
+                RelocationList::Rela(relocations) => self.load_debug_relocations::<P>(
                     common,
                     queue,
                     resources,
@@ -4568,7 +4568,7 @@ impl<'data> ObjectLayoutState<'data> {
                     relocations.crel_iter(),
                     scope,
                 )?,
-                RelocationList::Crel(relocations) => self.load_debug_relocations::<A>(
+                RelocationList::Crel(relocations) => self.load_debug_relocations::<P>(
                     common,
                     queue,
                     resources,
@@ -4586,7 +4586,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_relocations<'scope, A: ElfArch>(
+    fn load_debug_relocations<'scope, P: Platform>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4596,7 +4596,7 @@ impl<'data> ObjectLayoutState<'data> {
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         for rel in relocations {
-            let modifier = process_relocation::<A>(
+            let modifier = process_relocation::<P>(
                 self,
                 common,
                 &rel,
@@ -4901,7 +4901,7 @@ impl<'data> ObjectLayoutState<'data> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, A: ElfArch>(
+    fn load_non_hidden_symbols<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4922,7 +4922,7 @@ impl<'data> ObjectLayoutState<'data> {
                 .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
             if !old_flags.has_resolution() {
-                self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+                self.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
             }
 
             if !old_flags.needs_export_dynamic() {
@@ -4932,7 +4932,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, A: ElfArch>(
+    fn export_dynamic<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -4959,7 +4959,7 @@ impl<'data> ObjectLayoutState<'data> {
             .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
         if !old_flags.has_resolution() {
-            self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+            self.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
         }
 
         if !old_flags.needs_export_dynamic() {
@@ -5066,7 +5066,7 @@ fn can_export_symbol(
     true
 }
 
-fn process_eh_frame_data<'data, 'scope, A: ElfArch>(
+fn process_eh_frame_data<'data, 'scope, P: Platform>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5079,7 +5079,7 @@ fn process_eh_frame_data<'data, 'scope, A: ElfArch>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     let exception_frames = match object.relocations(eh_frame_section_index)? {
         RelocationList::Rela(relocations) => {
-            ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
+            ExceptionFrames::Rela(process_eh_frame_relocations::<P, Rela>(
                 object,
                 common,
                 file_symbol_id_range,
@@ -5092,7 +5092,7 @@ fn process_eh_frame_data<'data, 'scope, A: ElfArch>(
             )?)
         }
         RelocationList::Crel(crel_iterator) => {
-            ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
+            ExceptionFrames::Crel(process_eh_frame_relocations::<P, Crel>(
                 object,
                 common,
                 file_symbol_id_range,
@@ -5111,7 +5111,7 @@ fn process_eh_frame_data<'data, 'scope, A: ElfArch>(
     Ok(())
 }
 
-fn process_eh_frame_relocations<'data, 'scope, A: ElfArch, R: Relocation<'data>>(
+fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5158,7 +5158,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: ElfArch, R: Relocation<'data>>
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation::<A>(
+                process_relocation::<P>(
                     object,
                     common,
                     rel,
@@ -5663,7 +5663,7 @@ fn compute_segment_alignments(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate<'scope, A: ElfArch>(
+    fn activate<'scope, P: Platform>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, '_>,
@@ -5679,10 +5679,10 @@ impl<'data> DynamicLayoutState<'data> {
 
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
 
-        self.request_all_undefined_symbols::<A>(resources, queue, scope)
+        self.request_all_undefined_symbols::<P>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols<'scope, A: ElfArch>(
+    fn request_all_undefined_symbols<'scope, P: Platform>(
         &self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
@@ -5740,7 +5740,7 @@ impl<'data> DynamicLayoutState<'data> {
             } else if definition_symbol_id != symbol_id {
                 let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
 
-                queue.send_work::<A>(
+                queue.send_work::<P>(
                     resources,
                     file_id,
                     WorkItem::ExportDynamic(definition_symbol_id),

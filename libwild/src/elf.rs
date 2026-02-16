@@ -2,7 +2,6 @@ use crate::Args;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
-use crate::elf_arch::ElfArch;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -14,7 +13,9 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
 use crate::platform::CommonSymbol;
+use crate::platform::Format;
 use crate::platform::ObjectFile as _;
+use crate::platform::Platform;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
@@ -89,6 +90,8 @@ pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
+
+pub(crate) struct Elf;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -178,7 +181,12 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 /// Threshold size for using parallel copy for section data copying.
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
+impl Format for Elf {
+    type File<'data> = File<'data>;
+}
+
 impl<'data> platform::ObjectFile<'data> for File<'data> {
+    type Format = Elf;
     type Symbol = Symbol;
     type SectionHeader = SectionHeader;
     type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
@@ -940,14 +948,14 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files, A: ElfArch>(
+    pub(crate) fn new<'files, 'states, 'data: 'files, P: Platform>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState> + Clone,
         args: &Args,
     ) -> Result<Self> {
-        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
-        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
-        let eflags = merge_eflags::<A>(objects)?;
+        let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<P>(states)?;
+        let eflags = merge_eflags::<P>(objects)?;
 
         Ok(Self {
             gnu_property_notes,
@@ -957,7 +965,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, A: ElfArch>(
+fn merge_gnu_property_notes<'states, P: Platform>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -970,7 +978,7 @@ fn merge_gnu_property_notes<'states, A: ElfArch>(
 
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype)
+            let property_class = P::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -1021,17 +1029,17 @@ fn merge_gnu_property_notes<'states, A: ElfArch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, A: ElfArch>(
+fn merge_eflags<'files, 'data: 'files, P: Platform>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
 
-    Ok(Eflags(A::merge_eflags(
+    Ok(Eflags(P::merge_eflags(
         objects.map(|object| object.eflags),
     )?))
 }
 
-fn merge_riscv_attributes<'groups, A: ElfArch>(
+fn merge_riscv_attributes<'groups, P: Platform>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");

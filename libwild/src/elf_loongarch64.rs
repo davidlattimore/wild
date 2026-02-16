@@ -1,48 +1,46 @@
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::elf_arch::ElfArch;
-use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::platform::Platform;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RiscVInstruction;
-use linker_utils::elf::riscv64_rel_type_to_string;
+use linker_utils::elf::SIZE_2KB;
+use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::loongarch64::RelaxationKind;
+use linker_utils::loongarch64::relocation_type_from_raw;
 use linker_utils::relaxation::RelocationModifier;
-use linker_utils::riscv64::RelaxationKind;
-use linker_utils::riscv64::relocation_type_from_raw;
-use object::elf::EF_RISCV_FLOAT_ABI;
-use object::elf::EF_RISCV_RV64ILP32;
-use object::elf::EF_RISCV_RVE;
+use linker_utils::utils::or_from_slice;
 
-pub(crate) struct RiscV64;
+pub(crate) struct ElfLoongArch64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
-    0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
-    0x03, 0x3e, 0x0e, 0x0, // ld t3,offset_low(&(.got.plt[n])(t3)
-    0x67, 0x03, 0x0e, 0x0, // jalr t1,t3
-    0x73, 0x0, 0x10, 0x0, // ebreak
+    0x0f, 0x0, 0x0, 0x1a, // pcalau12i $t3, offset_high(&(.got.plt[n])
+    0xef, 0x1, 0xc0, 0x28, // ld.d $t3, $t3,offset_low(&(.got.plt[n])(t3)
+    0xed, 0x1, 0x0, 0x4c, // jirl $t1, $t3, 0
+    0x0, 0x0, 0x2a, 0x0, // break
 ];
 
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::elf_arch::ElfArch for RiscV64 {
+impl crate::platform::Platform for ElfLoongArch64 {
     type Relaxation = Relaxation;
+    type Format = crate::elf::Elf;
 
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::RISCV64;
+    const KIND: crate::arch::Architecture = crate::arch::Architecture::LoongArch64;
 
     fn elf_header_arch_magic() -> u16 {
-        object::elf::EM_RISCV
+        object::elf::EM_LOONGARCH
     }
 
     #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
-        linker_utils::riscv64::relocation_type_from_raw(r_type).ok_or_else(|| {
+        linker_utils::loongarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
             error!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
@@ -51,11 +49,11 @@ impl crate::elf_arch::ElfArch for RiscV64 {
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
-        relocation.riscv64_r_type()
+        relocation.loongarch64_r_type()
     }
 
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
-        riscv64_rel_type_to_string(r_type)
+        loongarch64_rel_type_to_string(r_type)
     }
 
     fn write_plt_entry(
@@ -68,16 +66,17 @@ impl crate::elf_arch::ElfArch for RiscV64 {
         debug_assert!(plt_address < got_address);
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        RiscVInstruction::UiType.write_to_value(
-            got_address.wrapping_sub(plt_address),
-            false,
-            &mut plt_entry[0..8],
-        );
+        let pcala_hi20 =
+            ((((got_address + SIZE_2KB) & !PAGE_MASK_4KB) - (plt_address & !PAGE_MASK_4KB)) >> 12)
+                << 5;
+        let pcala_lo12 = (got_address & 0xfff) << 10;
+        or_from_slice(&mut plt_entry[0..4], &(pcala_hi20 as u32).to_le_bytes());
+        or_from_slice(&mut plt_entry[4..8], &(pcala_lo12 as u32).to_le_bytes());
         Ok(())
     }
 
     fn get_dtv_offset() -> u64 {
-        RISCV_TLS_DTV_OFFSET
+        0
     }
 
     fn local_symbols_in_debug_info() -> bool {
@@ -92,52 +91,14 @@ impl crate::elf_arch::ElfArch for RiscV64 {
         None
     }
 
-    // Allow the lint for `exactly_one`.
-    // Tracking issue available at: https://github.com/rust-lang/rust/issues/149266
-    #[allow(unstable_name_collisions)]
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32> {
-        let eflags = eflags.collect_vec();
-        let or_eflags = eflags.iter().fold(0, |acc, x| acc | x);
-        ensure!(
-            eflags
-                .iter()
-                .map(|flag| flag & EF_RISCV_FLOAT_ABI)
-                .unique()
-                .exactly_one()
-                .is_ok(),
-            "Float ABI flag mismatch"
-        );
-        ensure!(
-            eflags
-                .iter()
-                .map(|flag| flag & EF_RISCV_RVE)
-                .unique()
-                .exactly_one()
-                .is_ok(),
-            "RVE flag mismatch"
-        );
-        ensure!(
-            eflags
-                .iter()
-                .map(|flag| flag & EF_RISCV_RV64ILP32)
-                .unique()
-                .exactly_one()
-                .is_ok(),
-            "RV64ILP32 flag mismatch"
-        );
-
-        Ok(or_eflags)
+    fn merge_eflags(mut eflags: impl Iterator<Item = u32>) -> Result<u32> {
+        eflags
+            .all_equal_value()
+            .map_err(|_e| error!("non-unique e_flags"))
     }
 
     fn high_part_relocations() -> &'static [u32] {
-        &[
-            object::elf::R_RISCV_HI20,
-            object::elf::R_RISCV_PCREL_HI20,
-            object::elf::R_RISCV_GOT_HI20,
-            object::elf::R_RISCV_TLS_GOT_HI20,
-            object::elf::R_RISCV_TLS_GD_HI20,
-            object::elf::R_RISCV_TPREL_HI20,
-        ]
+        &[]
     }
 }
 
@@ -154,7 +115,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::elf_arch::Relaxation for Relaxation {
+impl crate::platform::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
     fn new(
@@ -169,7 +130,7 @@ impl crate::elf_arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = RiscV64::relocation_from_raw(relocation_kind).unwrap();
+        let mut relocation = ElfLoongArch64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
@@ -181,7 +142,7 @@ impl crate::elf_arch::Relaxation for Relaxation {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
-            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
+            object::elf::R_LARCH_B26 if !interposable => {
                 return if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
                     Some(Relaxation {
@@ -193,7 +154,7 @@ impl crate::elf_arch::Relaxation for Relaxation {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
+                        rel_info: rel_info_from_type!(object::elf::R_LARCH_NONE),
                         mandatory: output_kind.is_static_executable(),
                     })
                 };

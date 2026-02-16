@@ -1,4 +1,3 @@
-pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;
@@ -8,8 +7,11 @@ pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
-pub(crate) mod elf_arch;
+pub(crate) mod elf_aarch64;
+pub(crate) mod elf_loongarch64;
+pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;
+pub(crate) mod elf_x86_64;
 pub mod error;
 pub(crate) mod export_list;
 pub(crate) mod file_kind;
@@ -25,7 +27,6 @@ pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
-pub(crate) mod loongarch64;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -50,7 +51,6 @@ pub(crate) mod perf;
 pub(crate) mod platform;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
-pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
@@ -67,7 +67,6 @@ pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
-pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
 use crate::error::Context;
@@ -196,14 +195,16 @@ impl Linker {
         }
 
         match args.arch {
-            arch::Architecture::X86_64 => self.link_for_arch::<x86_64::X86_64>(args),
-            arch::Architecture::AArch64 => self.link_for_arch::<aarch64::AArch64>(args),
-            arch::Architecture::RISCV64 => self.link_for_arch::<riscv64::RiscV64>(args),
-            arch::Architecture::LoongArch64 => self.link_for_arch::<loongarch64::LoongArch64>(args),
+            arch::Architecture::X86_64 => self.link_for_arch::<elf_x86_64::ElfX86_64>(args),
+            arch::Architecture::AArch64 => self.link_for_arch::<elf_aarch64::ElfAArch64>(args),
+            arch::Architecture::RISCV64 => self.link_for_arch::<elf_riscv64::ElfRiscV64>(args),
+            arch::Architecture::LoongArch64 => {
+                self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)
+            }
         }
     }
 
-    fn link_for_arch<'layout_inputs, A: elf_arch::ElfArch>(
+    fn link_for_arch<'layout_inputs, P: platform::Platform>(
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
@@ -211,7 +212,7 @@ impl Linker {
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<P>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
@@ -231,7 +232,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: elf_arch::ElfArch>(
+    fn load_inputs_and_link<'data, P: platform::Platform>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,
@@ -309,7 +310,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<A>(
+        let layout = layout::compute::<P>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -317,7 +318,7 @@ impl Linker {
             &mut output,
         )?;
 
-        output.write(&layout, elf_writer::write::<A>)?;
+        output.write(&layout, elf_writer::write::<P>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
