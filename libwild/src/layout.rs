@@ -202,18 +202,18 @@ pub fn compute<'data, A: ElfArch>(
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     let (dynamic_symbol_definitions, gnu_hash_layout) =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    let gnu_property_notes = merge_gnu_property_notes::<A>(&group_states, symbol_db.args.z_isa)?;
-    let eflags = merge_eflags::<A>(&group_states)?;
-    let riscv_attributes = merge_riscv_attributes::<A>(&group_states)?;
+    let properties_and_attributes = ElfLayoutProperties::new::<A>(
+        objects_iter(&group_states).map(|obj| obj.object),
+        objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
+        symbol_db.args,
+    )?;
 
     let finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         gnu_hash_layout,
-        gnu_property_notes: &gnu_property_notes,
-        riscv_attributes: &riscv_attributes,
-        eflags,
+        properties_and_attributes: &properties_and_attributes,
     };
 
     finalise_all_sizes(
@@ -305,10 +305,9 @@ pub fn compute<'data, A: ElfArch>(
         merged_strings: &merged_strings,
         per_symbol_flags: &per_symbol_flags,
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
-        gnu_property_notes: &gnu_property_notes,
-        riscv_attributes: &riscv_attributes,
         segment_layouts: &segment_layouts,
         program_segments: &program_segments,
+        properties_and_attributes: &properties_and_attributes,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -353,8 +352,7 @@ pub fn compute<'data, A: ElfArch>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
-        gnu_property_notes,
-        riscv_attributes,
+        properties_and_attributes,
     })
 }
 
@@ -363,9 +361,7 @@ struct FinaliseSizesResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
-    gnu_property_notes: &'scope [GnuProperty],
-    riscv_attributes: &'scope RiscVAttributes,
-    eflags: Eflags,
+    properties_and_attributes: &'scope ElfLayoutProperties,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -611,24 +607,55 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
-fn merge_gnu_property_notes<A: ElfArch>(
-    group_states: &[GroupState],
+fn objects_iter<'groups, 'data>(
+    group_states: &'groups [GroupState<'data>],
+) -> impl Iterator<Item = &'groups ObjectLayoutState<'data>> + Clone {
+    group_states.iter().flat_map(|group| {
+        group.files.iter().filter_map(|file| match file {
+            FileLayoutState::Object(object) => Some(object),
+            _ => None,
+        })
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct ElfObjectLayoutState {
+    pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) riscv_attributes: Vec<RiscVAttribute>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ElfLayoutProperties {
+    pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) riscv_attributes: RiscVAttributes,
+    pub(crate) eflags: Eflags,
+}
+
+impl ElfLayoutProperties {
+    fn new<'files, 'states, 'data: 'files, A: ElfArch>(
+        objects: impl Iterator<Item = &'files File<'data>>,
+        states: impl Iterator<Item = &'states ElfObjectLayoutState> + Clone,
+        args: &Args,
+    ) -> Result<Self> {
+        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
+        let eflags = merge_eflags::<A>(objects)?;
+
+        Ok(Self {
+            gnu_property_notes,
+            riscv_attributes,
+            eflags,
+        })
+    }
+}
+
+fn merge_gnu_property_notes<'states, A: ElfArch>(
+    states: impl Iterator<Item = &'states ElfObjectLayoutState>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
     timing_phase!("Merge GNU property notes");
 
-    let properties_per_file = group_states
-        .iter()
-        .flat_map(|group| {
-            group.files.iter().filter_map(|file| {
-                if let FileLayoutState::Object(object) = file {
-                    Some(&object.gnu_property_notes)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect_vec();
+    let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
 
     // Merge bits of each property type based on type: OR or AND operation.
     let mut property_map = HashMap::new();
@@ -686,39 +713,23 @@ fn merge_gnu_property_notes<A: ElfArch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<A: ElfArch>(group_states: &[GroupState]) -> Result<Eflags> {
+fn merge_eflags<'files, 'data: 'files, A: ElfArch>(
+    objects: impl Iterator<Item = &'files File<'data>>,
+) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
 
-    let eflags = group_states
-        .iter()
-        .flat_map(|group| {
-            group.files.iter().filter_map(|file| {
-                if let FileLayoutState::Object(object) = file {
-                    Some(object.object.eflags)
-                } else {
-                    None
-                }
-            })
-        })
-        .collect_vec();
-
-    Ok(Eflags(A::merge_eflags(&eflags)?))
+    Ok(Eflags(A::merge_eflags(
+        objects.map(|object| object.eflags),
+    )?))
 }
 
-fn merge_riscv_attributes<A: ElfArch>(group_states: &[GroupState]) -> Result<RiscVAttributes> {
+fn merge_riscv_attributes<'groups, A: ElfArch>(
+    states: impl Iterator<Item = &'groups ElfObjectLayoutState>,
+) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
 
-    let attributes = group_states
-        .iter()
-        .flat_map(|group| {
-            group.files.iter().filter_map(|file| {
-                if let FileLayoutState::Object(object) = file {
-                    Some(&object.riscv_attributes)
-                } else {
-                    None
-                }
-            })
-        })
+    let attributes = states
+        .map(|state| &state.riscv_attributes)
         // Sort by the number of ISAs: better output ordering
         .sorted_by_key(|x| x.len())
         .rev()
@@ -891,8 +902,7 @@ pub struct Layout<'data> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) riscv_attributes: RiscVAttributes,
+    pub(crate) properties_and_attributes: ElfLayoutProperties,
 }
 
 #[derive(Debug)]
@@ -1641,8 +1651,7 @@ struct ObjectLayoutState<'data> {
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
 
-    gnu_property_notes: Vec<GnuProperty>,
-    riscv_attributes: Vec<RiscVAttribute>,
+    format_specific_layout_state: ElfObjectLayoutState,
 
     /// Indexed by `FrameIndex`.
     exception_frames: ExceptionFrames<'data>,
@@ -1863,10 +1872,9 @@ struct FinaliseLayoutResources<'scope, 'data> {
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
-    gnu_property_notes: &'scope [GnuProperty],
-    riscv_attributes: &'scope RiscVAttributes,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments,
+    properties_and_attributes: &'scope ElfLayoutProperties,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -3979,7 +3987,7 @@ impl<'data> PreludeLayoutState<'data> {
                 .expect("output section count must fit in a u16"),
 
             active_segment_ids,
-            eflags: resources.eflags,
+            eflags: resources.properties_and_attributes.eflags,
         };
 
         // Allocate space for headers based on segment and section counts.
@@ -4403,11 +4411,16 @@ impl EpilogueLayoutState {
 
         common.allocate(
             part_id::NOTE_GNU_PROPERTY,
-            Self::gnu_property_notes_section_size(resources.gnu_property_notes),
+            Self::gnu_property_notes_section_size(
+                &resources.properties_and_attributes.gnu_property_notes,
+            ),
         );
         common.allocate(
             part_id::RISCV_ATTRIBUTES,
-            resources.riscv_attributes.section_size,
+            resources
+                .properties_and_attributes
+                .riscv_attributes
+                .section_size,
         );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
@@ -4552,12 +4565,17 @@ impl EpilogueLayoutState {
 
         memory_offsets.increment(
             part_id::NOTE_GNU_PROPERTY,
-            Self::gnu_property_notes_section_size(resources.gnu_property_notes),
+            Self::gnu_property_notes_section_size(
+                &resources.properties_and_attributes.gnu_property_notes,
+            ),
         );
 
         memory_offsets.increment(
             part_id::RISCV_ATTRIBUTES,
-            resources.riscv_attributes.section_size,
+            resources
+                .properties_and_attributes
+                .riscv_attributes
+                .section_size,
         );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
@@ -4580,7 +4598,10 @@ impl EpilogueLayoutState {
             gnu_hash_layout: self.gnu_hash_layout,
             dynsym_start_index,
             verdefs: self.verdefs,
-            riscv_attributes_length: resources.riscv_attributes.section_size as u32,
+            riscv_attributes_length: resources
+                .properties_and_attributes
+                .riscv_attributes
+                .section_size as u32,
         })
     }
 }
@@ -4619,8 +4640,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
         sections: input_state.sections,
         relocations: input_state.relocations,
         cies: Default::default(),
-        gnu_property_notes: Default::default(),
-        riscv_attributes: Default::default(),
+        format_specific_layout_state: Default::default(),
         exception_frames: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
     })
@@ -5685,10 +5705,13 @@ fn process_gnu_property_note(
             if gnu_property.pr_data().len() != 4 {
                 continue;
             }
-            object.gnu_property_notes.push(GnuProperty {
-                ptype: gnu_property.pr_type(),
-                data: gnu_property.data_u32(e)?,
-            });
+            object
+                .format_specific_layout_state
+                .gnu_property_notes
+                .push(GnuProperty {
+                    ptype: gnu_property.pr_type(),
+                    data: gnu_property.data_u32(e)?,
+                });
         }
     }
 
@@ -5798,7 +5821,7 @@ fn process_riscv_attributes(
         attributes.push(attribute);
     }
 
-    object.riscv_attributes = attributes;
+    object.format_specific_layout_state.riscv_attributes = attributes;
     ensure!(content.is_empty(), "Unexpected multiple sub-sections");
 
     Ok(())

@@ -105,7 +105,7 @@ impl crate::elf_arch::ElfArch for X86_64 {
         }
     }
 
-    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
+    fn merge_eflags(_eflags: impl Iterator<Item = u32>) -> Result<u32> {
         Ok(0)
     }
 

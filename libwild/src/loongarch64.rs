@@ -90,11 +90,9 @@ impl crate::elf_arch::ElfArch for LoongArch64 {
         None
     }
 
-    fn merge_eflags(eflags: &[u32]) -> Result<u32> {
+    fn merge_eflags(mut eflags: impl Iterator<Item = u32>) -> Result<u32> {
         eflags
-            .iter()
             .all_equal_value()
-            .copied()
             .map_err(|_e| error!("non-unique e_flags"))
     }
 
