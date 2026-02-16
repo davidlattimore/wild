@@ -3135,10 +3135,19 @@ fn write_epilogue<A: ElfArch>(
 
     write_dynamic_symbol_definitions(table_writer, layout)?;
 
-    if !layout.gnu_property_notes.is_empty() {
+    if !layout
+        .properties_and_attributes
+        .gnu_property_notes
+        .is_empty()
+    {
         write_gnu_property_notes(layout, buffers)?;
     }
-    if layout.riscv_attributes.section_size != 0 {
+    if layout
+        .properties_and_attributes
+        .riscv_attributes
+        .section_size
+        != 0
+    {
         write_riscv_attributes(epilogue, layout, buffers)?;
     }
 
@@ -3172,14 +3181,15 @@ fn write_gnu_property_notes(
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(
         e,
-        (layout.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
+        (layout.properties_and_attributes.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE)
+            as u32,
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
     let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    for note in &layout.gnu_property_notes {
+    for note in &layout.properties_and_attributes.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
         property.pr_type = note.ptype;
@@ -3211,7 +3221,7 @@ fn write_riscv_attributes(
             .to_le_bytes()
             .as_slice(),
     )?;
-    for tag in &layout.riscv_attributes.attributes {
+    for tag in &layout.properties_and_attributes.riscv_attributes.attributes {
         match tag {
             &RiscVAttribute::StackAlign(align) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_STACK_ALIGN)?;

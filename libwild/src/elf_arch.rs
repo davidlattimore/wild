@@ -52,7 +52,7 @@ pub(crate) trait ElfArch {
 
     // Merge e_flags of the input files and provide an error
     // if the flags are not compatible.
-    fn merge_eflags(eflags: &[u32]) -> Result<u32>;
+    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32>;
 
     // A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];

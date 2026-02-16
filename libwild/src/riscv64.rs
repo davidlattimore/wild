@@ -95,7 +95,8 @@ impl crate::elf_arch::ElfArch for RiscV64 {
     // Allow the lint for `exactly_one`.
     // Tracking issue available at: https://github.com/rust-lang/rust/issues/149266
     #[allow(unstable_name_collisions)]
-    fn merge_eflags(eflags: &[u32]) -> Result<u32> {
+    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32> {
+        let eflags = eflags.collect_vec();
         let or_eflags = eflags.iter().fold(0, |acc, x| acc | x);
         ensure!(
             eflags
