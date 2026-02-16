@@ -5,9 +5,9 @@
 
 use crate::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf::PropertyClass;
 use crate::error;
 use crate::error::Result;
-use crate::layout::PropertyClass;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -88,7 +88,7 @@ impl crate::elf_arch::ElfArch for X86_64 {
         layout.tls_end_address()
     }
 
-    fn get_property_class(property_type: u32) -> Option<crate::layout::PropertyClass> {
+    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass> {
         match property_type {
             GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => {
                 Some(PropertyClass::And)

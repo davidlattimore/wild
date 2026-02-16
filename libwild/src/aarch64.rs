@@ -1,10 +1,10 @@
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf::PropertyClass;
 use crate::elf_arch::ElfArch;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::PropertyClass;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
