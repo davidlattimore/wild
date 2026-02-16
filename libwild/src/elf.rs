@@ -3,6 +3,7 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::input_data::InputRef;
 use crate::resolution::LoadedMetrics;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
@@ -16,6 +17,7 @@ use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
 use object::read::elf::CrelIterator;
+use object::read::elf::Dyn as _;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
@@ -82,6 +84,8 @@ pub(crate) struct File<'data> {
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
+
+    pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
 
 pub(crate) trait Relocation<'data> {
@@ -182,6 +186,9 @@ impl<'data> File<'data> {
             }
         }
 
+        let dynamic_tag_values =
+            is_dynamic.then(|| DynamicTagValues::read(&sections, data, &symbols));
+
         Ok(Self {
             arch: architecture,
             data,
@@ -192,6 +199,7 @@ impl<'data> File<'data> {
             verdefnum,
             verneed,
             eflags,
+            dynamic_tag_values,
         })
     }
 
@@ -342,13 +350,7 @@ impl<'data> File<'data> {
     }
 
     pub(crate) fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
-        let e = LittleEndian;
-        if let Some(dynamic) = self.sections.dynamic(e, self.data).transpose() {
-            return dynamic
-                .map(|(dynamic, _)| dynamic)
-                .context("Failed to read dynamic table");
-        }
-        Ok(&[])
+        dynamic_tags(&self.sections, self.data)
     }
 
     pub(crate) fn parse_relocations(&self) -> Result<RelocationSections> {
@@ -356,6 +358,19 @@ impl<'data> File<'data> {
             .sections
             .relocation_sections(LittleEndian, self.symbols.section())?)
     }
+}
+
+fn dynamic_tags<'data>(
+    sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+    data: &'data [u8],
+) -> Result<&'data [object::elf::Dyn64<LittleEndian>]> {
+    let e = LittleEndian;
+    if let Some(dynamic) = sections.dynamic(e, data).transpose() {
+        return dynamic
+            .map(|(dynamic, _)| dynamic)
+            .context("Failed to read dynamic table");
+    }
+    Ok(&[])
 }
 
 fn decompress_into(
@@ -568,4 +583,41 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
     symbol.st_visibility() == object::elf::STV_HIDDEN
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct DynamicTagValues<'data> {
+    pub(crate) verdefnum: u64,
+    pub(crate) soname: Option<&'data [u8]>,
+}
+
+impl<'data> DynamicTagValues<'data> {
+    fn read(
+        sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+        data: &'data [u8],
+        symbols: &SymbolTable<'data>,
+    ) -> Self {
+        let mut values = DynamicTagValues::default();
+        let Ok(dynamic_tags) = dynamic_tags(sections, data) else {
+            return values;
+        };
+        let e = LittleEndian;
+        for entry in dynamic_tags {
+            let value = entry.d_val(e);
+            match entry.d_tag(e) as u32 {
+                object::elf::DT_VERDEFNUM => {
+                    values.verdefnum = value;
+                }
+                object::elf::DT_SONAME => {
+                    values.soname = symbols.strings().get(value as u32).ok();
+                }
+                _ => {}
+            }
+        }
+        values
+    }
+
+    pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
+        self.soname.unwrap_or_else(|| input.lib_name())
+    }
 }

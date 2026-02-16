@@ -7035,6 +7035,7 @@ impl<'data> Sonames<'data> {
                     objects.iter().filter_map(|input| {
                         input
                             .parsed
+                            .object
                             .dynamic_tag_values
                             .map(|tag_values| tag_values.lib_name(&input.parsed.input))
                     })

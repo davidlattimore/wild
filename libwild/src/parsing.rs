@@ -23,8 +23,6 @@ use crate::timing_phase;
 use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
-use object::LittleEndian;
-use object::read::elf::Dyn as _;
 
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
@@ -48,7 +46,6 @@ pub(crate) struct Prelude<'data> {
 pub(crate) struct ParsedInputObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: File<'data>,
-    pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -211,18 +208,15 @@ impl<'data> ParsedInputObject<'data> {
             )
         }
 
-        let dynamic_tag_values = is_dynamic.then(|| DynamicTagValues::read(&object));
-
         Ok(Box::new(Self {
             input: input.input,
             object,
-            dynamic_tag_values,
             modifiers: input.modifiers,
         }))
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.dynamic_tag_values.is_some()
+        self.object.dynamic_tag_values.is_some()
     }
 
     pub(crate) fn num_symbols(&self) -> usize {
@@ -325,39 +319,6 @@ impl<'data> Prelude<'data> {
 impl<'data> ProcessedLinkerScript<'data> {
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbol_defs.len()
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct DynamicTagValues<'data> {
-    pub(crate) verdefnum: u64,
-    pub(crate) soname: Option<&'data [u8]>,
-}
-
-impl<'data> DynamicTagValues<'data> {
-    fn read(file: &File<'data>) -> Self {
-        let mut values = DynamicTagValues::default();
-        let Ok(dynamic_tags) = file.dynamic_tags() else {
-            return values;
-        };
-        let e = LittleEndian;
-        for entry in dynamic_tags {
-            let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
-                object::elf::DT_VERDEFNUM => {
-                    values.verdefnum = value;
-                }
-                object::elf::DT_SONAME => {
-                    values.soname = file.symbols.strings().get(value as u32).ok();
-                }
-                _ => {}
-            }
-        }
-        values
-    }
-
-    pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
-        self.soname.unwrap_or_else(|| input.lib_name())
     }
 }
 
