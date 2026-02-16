@@ -3,7 +3,6 @@
 //! where in the output file then allocates addresses for each symbol.
 
 use self::elf::GNU_NOTE_NAME;
-use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::Symbol;
 use self::output_section_id::InfoInputs;
@@ -19,6 +18,8 @@ use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
+use crate::elf::ElfLayoutProperties;
+use crate::elf::ElfObjectLayoutState;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::Rela;
@@ -86,22 +87,11 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use foldhash::HashSet;
 use hashbrown::HashMap;
-use indexmap::IndexMap;
 use itertools::Itertools;
-use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::pt;
-use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
-use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
-use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
-use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_MINOR;
-use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
-use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
-use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
-use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
-use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
@@ -112,7 +102,6 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::GNU_PROPERTY_X86_ISA_1_NEEDED;
 use object::elf::STT_TLS;
 use object::elf::gnu_hash;
 use object::read::elf::Crel;
@@ -128,10 +117,8 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
-use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::io::Cursor;
 use std::mem::replace;
 use std::mem::size_of;
 use std::mem::swap;
@@ -591,21 +578,6 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
 
     Ok(())
 }
-pub(crate) enum PropertyClass {
-    // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the output pr_data field are zero, this property should be removed from
-    // output.
-    Or,
-    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
-    // fields. If all bits in the output pr_data field are zero, this property should be
-    // removed from output.
-    And,
-    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
-    // fields and this property is present in all relocatable input files. When all bits in
-    // the output pr_data field are zero, this property should not be removed from output to
-    // indicate it has zero in all bits.
-    AndOr,
-}
 
 fn objects_iter<'groups, 'data>(
     group_states: &'groups [GroupState<'data>],
@@ -616,257 +588,6 @@ fn objects_iter<'groups, 'data>(
             _ => None,
         })
     })
-}
-
-#[derive(Default)]
-pub(crate) struct ElfObjectLayoutState {
-    pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) riscv_attributes: Vec<RiscVAttribute>,
-}
-
-#[derive(Debug)]
-pub(crate) struct ElfLayoutProperties {
-    pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) riscv_attributes: RiscVAttributes,
-    pub(crate) eflags: Eflags,
-}
-
-impl ElfLayoutProperties {
-    fn new<'files, 'states, 'data: 'files, A: ElfArch>(
-        objects: impl Iterator<Item = &'files File<'data>>,
-        states: impl Iterator<Item = &'states ElfObjectLayoutState> + Clone,
-        args: &Args,
-    ) -> Result<Self> {
-        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
-        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
-        let eflags = merge_eflags::<A>(objects)?;
-
-        Ok(Self {
-            gnu_property_notes,
-            riscv_attributes,
-            eflags,
-        })
-    }
-}
-
-fn merge_gnu_property_notes<'states, A: ElfArch>(
-    states: impl Iterator<Item = &'states ElfObjectLayoutState>,
-    isa_needed: Option<NonZeroU32>,
-) -> Result<Vec<GnuProperty>> {
-    timing_phase!("Merge GNU property notes");
-
-    let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
-
-    // Merge bits of each property type based on type: OR or AND operation.
-    let mut property_map = HashMap::new();
-
-    for file_props in &properties_per_file {
-        for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype)
-                .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
-            property_map
-                .entry(prop.ptype)
-                .and_modify(|entry: &mut (u32, PropertyClass)| {
-                    if matches!(property_class, PropertyClass::And) {
-                        entry.0 &= prop.data;
-                    } else {
-                        entry.0 |= prop.data;
-                    }
-                })
-                .or_insert_with(|| (prop.data, property_class));
-        }
-    }
-
-    // Merge needed ISA from CLI if set.
-    if let Some(isa_needed) = isa_needed {
-        property_map
-            .entry(GNU_PROPERTY_X86_ISA_1_NEEDED)
-            .or_insert((0, PropertyClass::Or))
-            .0 |= isa_needed.get();
-    }
-
-    // Iterate the properties sorted by property_type so that we have a stable output!
-    let output_properties = property_map
-        .into_iter()
-        .sorted_by_key(|x| x.0)
-        .filter_map(|(property_type, (property_value, property_class))| {
-            let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
-                props_per_file
-                    .iter()
-                    .any(|prop| prop.ptype == property_type)
-            });
-            if match property_class {
-                PropertyClass::Or => property_value != 0,
-                PropertyClass::And => type_present_in_all && property_value != 0,
-                PropertyClass::AndOr => type_present_in_all,
-            } {
-                Some(GnuProperty {
-                    ptype: property_type,
-                    data: property_value,
-                })
-            } else {
-                None
-            }
-        })
-        .collect_vec();
-
-    Ok(output_properties)
-}
-
-fn merge_eflags<'files, 'data: 'files, A: ElfArch>(
-    objects: impl Iterator<Item = &'files File<'data>>,
-) -> Result<Eflags> {
-    timing_phase!("Merge e_flags");
-
-    Ok(Eflags(A::merge_eflags(
-        objects.map(|object| object.eflags),
-    )?))
-}
-
-fn merge_riscv_attributes<'groups, A: ElfArch>(
-    states: impl Iterator<Item = &'groups ElfObjectLayoutState>,
-) -> Result<RiscVAttributes> {
-    timing_phase!("Merge .riscv.attributes sections");
-
-    let attributes = states
-        .map(|state| &state.riscv_attributes)
-        // Sort by the number of ISAs: better output ordering
-        .sorted_by_key(|x| x.len())
-        .rev()
-        .flatten()
-        .collect_vec();
-
-    let mut merged = Vec::new();
-
-    let mut arch_components = IndexMap::new();
-    for (name, version) in attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::Arch(arch) = a {
-                Some(&arch.map)
-            } else {
-                None
-            }
-        })
-        .flatten()
-    {
-        arch_components
-            .entry(name.clone())
-            .and_modify(|v: &mut (u64, u64)| *v = (*v).max(*version))
-            .or_insert(*version);
-    }
-
-    verify_riscv_ext_conflicts(&arch_components)?;
-
-    if !arch_components.is_empty() {
-        merged.push(RiscVAttribute::Arch(RiscVArch {
-            map: arch_components,
-        }));
-    }
-
-    if let Some(align) = attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::StackAlign(align) = a {
-                Some(align)
-            } else {
-                None
-            }
-        })
-        .max()
-    {
-        merged.push(RiscVAttribute::StackAlign(*align));
-    }
-    if let Some(access) = attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::UnalignedAccess(access) = a {
-                Some(access)
-            } else {
-                None
-            }
-        })
-        .max()
-    {
-        merged.push(RiscVAttribute::UnalignedAccess(*access));
-    }
-    if let Some(version) = attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::PrivilegedSpecMajor(version) = a {
-                Some(version)
-            } else {
-                None
-            }
-        })
-        .max()
-    {
-        merged.push(RiscVAttribute::PrivilegedSpecMajor(*version));
-    }
-    if let Some(version) = attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::PrivilegedSpecMinor(version) = a {
-                Some(version)
-            } else {
-                None
-            }
-        })
-        .max()
-    {
-        merged.push(RiscVAttribute::PrivilegedSpecMinor(*version));
-    }
-    if let Some(version) = attributes
-        .iter()
-        .filter_map(|a| {
-            if let RiscVAttribute::PrivilegedSpecRevision(version) = a {
-                Some(version)
-            } else {
-                None
-            }
-        })
-        .max()
-    {
-        merged.push(RiscVAttribute::PrivilegedSpecRevision(*version));
-    }
-
-    let section_size = EpilogueLayoutState::riscv_attributes_section_size(&merged);
-
-    Ok(RiscVAttributes {
-        attributes: merged,
-        section_size,
-    })
-}
-
-/// Conflicting pairs of RISC-V ISA extensions.
-const RISCV_CONFLICTING_EXT_PAIRS: &[(&str, &str)] = &[
-    ("f", "zfinx"),
-    ("d", "zdinx"),
-    ("q", "zqinx"),
-    ("zfh", "zhinx"),
-    ("zfhmin", "zhinxmin"),
-];
-
-fn verify_riscv_ext_conflicts(arch_components: &IndexMap<String, (u64, u64)>) -> Result {
-    if arch_components.is_empty() {
-        return Ok(());
-    }
-
-    let mut conflicts = Vec::new();
-    for &(std_ext, inx_ext) in RISCV_CONFLICTING_EXT_PAIRS {
-        if arch_components.contains_key(std_ext) && arch_components.contains_key(inx_ext) {
-            conflicts.push(format!("'{std_ext}' is incompatible with '{inx_ext}'"));
-        }
-    }
-
-    if conflicts.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "Conflicting RISC-V ISA extensions in merged .riscv.attributes:\n  - {}",
-            conflicts.join("\n  - ")
-        );
-    }
 }
 
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
@@ -1009,9 +730,6 @@ struct PreludeLayoutState<'data> {
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
 }
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Eflags(pub(crate) u32);
 
 pub(crate) struct SyntheticSymbolsLayoutState<'data> {
     file_id: FileId,
@@ -1676,49 +1394,6 @@ struct ExceptionFrame<'data, R: Relocation<'data>> {
 
     /// The index of the previous frame that is for the same section.
     previous_frame_for_section: Option<FrameIndex>,
-}
-
-#[derive(Debug)]
-pub(crate) struct GnuProperty {
-    pub(crate) ptype: u32,
-    pub(crate) data: u32,
-}
-
-#[derive(Debug)]
-pub(crate) struct RiscVArch {
-    map: IndexMap<String, (u64, u64)>,
-}
-
-impl RiscVArch {
-    pub(crate) fn to_attribute_string(&self) -> String {
-        self.map
-            .iter()
-            .map(|(arch, (major, minor))| format!("{arch}{major}p{minor}"))
-            .join("_")
-            .clone()
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct RiscVAttributes {
-    pub(crate) attributes: Vec<RiscVAttribute>,
-    pub(crate) section_size: u64,
-}
-
-#[derive(Debug)]
-pub(crate) enum RiscVAttribute {
-    /// Indicates the stack alignment requirement in bytes.
-    StackAlign(u64),
-    /// Indicates the target architecture of this object.
-    Arch(RiscVArch),
-    /// Indicates whether to impose unaligned memory accesses in code generation.
-    UnalignedAccess(bool),
-    /// Indicates the major version of the privileged specification.
-    PrivilegedSpecMajor(u64),
-    /// Indicates the major version of the privileged specification.
-    PrivilegedSpecMinor(u64),
-    /// Indicates the revision version of the privileged specification.
-    PrivilegedSpecRevision(u64),
 }
 
 #[derive(Debug, Default)]
@@ -4307,60 +3982,6 @@ impl EpilogueLayoutState {
         Ok(())
     }
 
-    fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]) -> u64 {
-        if gnu_property_notes.is_empty() {
-            0
-        } else {
-            (size_of::<NoteHeader>()
-                + GNU_NOTE_NAME.len()
-                + gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
-        }
-    }
-
-    fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
-        let size_of_uleb_encoded = |value| {
-            let mut cursor = Cursor::new([0u8; 10]);
-            leb128::write::unsigned(&mut cursor, value).unwrap()
-        };
-
-        (if riscv_attributes.is_empty() {
-            0
-        } else {
-            1 // 'A'
-            + 4 // sizeof(u32)
-            + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
-            + 4 // sizeof(u32)
-            + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
-            + riscv_attributes.iter().map(|attr| {
-                match attr {
-                    RiscVAttribute::StackAlign(align) => {
-                                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
-                                        size_of_uleb_encoded(*align)
-                                    }
-                    RiscVAttribute::Arch(arch) => {
-                                        size_of_uleb_encoded(TAG_RISCV_ARCH)
-                                        +arch.to_attribute_string().len() + 1
-                                    }
-                    RiscVAttribute::UnalignedAccess(_) => {
-                                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
-                                    }
-                    RiscVAttribute::PrivilegedSpecMajor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC) +
-                                        size_of_uleb_encoded(*version)
-                    },
-                    RiscVAttribute::PrivilegedSpecMinor(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_MINOR) +
-                                        size_of_uleb_encoded(*version)
-                    }
-                    RiscVAttribute::PrivilegedSpecRevision(version) => {
-                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_REVISION) +
-                                        size_of_uleb_encoded(*version)
-                    }
-                                    }
-            }).sum::<usize>()
-        }) as u64
-    }
-
     fn gnu_build_id_note_section_size(&self) -> Option<u64> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
@@ -4411,7 +4032,7 @@ impl EpilogueLayoutState {
 
         common.allocate(
             part_id::NOTE_GNU_PROPERTY,
-            Self::gnu_property_notes_section_size(
+            crate::elf::gnu_property_notes_section_size(
                 &resources.properties_and_attributes.gnu_property_notes,
             ),
         );
@@ -4565,7 +4186,7 @@ impl EpilogueLayoutState {
 
         memory_offsets.increment(
             part_id::NOTE_GNU_PROPERTY,
-            Self::gnu_property_notes_section_size(
+            crate::elf::gnu_property_notes_section_size(
                 &resources.properties_and_attributes.gnu_property_notes,
             ),
         );
@@ -4610,7 +4231,7 @@ impl EpilogueLayoutState {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
-    pub(crate) eflags: Eflags,
+    pub(crate) eflags: crate::elf::Eflags,
 }
 
 impl HeaderInfo {
@@ -4738,16 +4359,19 @@ impl<'data> ObjectLayoutState<'data> {
             let eh_frame_section = self.object.section(eh_frame_section_index)?;
             self.eh_frame_section = Some(eh_frame_section);
         }
+
         if let Some(note_gnu_property_index) = note_gnu_property_section {
             process_gnu_property_note(self, note_gnu_property_index)?;
         }
+
         if let Some(riscv_attributes_index) = riscv_attributes_section {
             ensure!(
                 A::elf_header_arch_magic() == object::elf::EM_RISCV,
                 ".riscv.attribute section is supported only for riscv64 target"
             );
-            process_riscv_attributes(self, riscv_attributes_index)
-                .context("Cannot parse .riscv.attributes section")?;
+            self.format_specific_layout_state.riscv_attributes =
+                crate::elf::process_riscv_attributes(self.object, riscv_attributes_index)
+                    .context("Cannot parse .riscv.attributes section")?;
         }
 
         let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
@@ -5708,121 +5332,12 @@ fn process_gnu_property_note(
             object
                 .format_specific_layout_state
                 .gnu_property_notes
-                .push(GnuProperty {
+                .push(crate::elf::GnuProperty {
                     ptype: gnu_property.pr_type(),
                     data: gnu_property.data_u32(e)?,
                 });
         }
     }
-
-    Ok(())
-}
-
-fn process_riscv_attributes(
-    object: &mut ObjectLayoutState,
-    riscv_attributes_section_index: object::SectionIndex,
-) -> Result {
-    let section = object.object.section(riscv_attributes_section_index)?;
-    let e = LittleEndian;
-
-    let content = section.data(e, object.object.data)?;
-    ensure!(content.starts_with(b"A"), "Header must start with 'A'");
-    let mut content = &content[1..];
-
-    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
-    let read_string = |content: &mut &[u8]| -> Result<String> {
-        let string = CStr::from_bytes_until_nul(content)?;
-        *content = &content[string.count_bytes() + 1..];
-        Ok(string.to_string_lossy().to_string())
-    };
-    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
-        let value = u32::from_le_bytes(content[..4].try_into()?);
-        *content = &content[4..];
-        Ok(value)
-    };
-
-    // Expect only one subsection
-    let _size = read_u32(&mut content)?;
-    let vendor = read_string(&mut content).context("Cannot read vendor string")?;
-    ensure!(
-        vendor == RISCV_ATTRIBUTE_VENDOR_NAME,
-        "Unsupported vendor ('{vendor:?}') subsection"
-    );
-
-    // Assume only one sub-sub-section
-    let tag = read_uleb128(&mut content).context("Cannot read tag of subsection")?;
-    ensure!(tag == TAG_RISCV_WHOLE_FILE, "Whole file tag expected");
-    let _size = read_u32(&mut content)?;
-    let mut attributes = Vec::new();
-
-    while !content.is_empty() {
-        let tag = read_uleb128(&mut content).context("Cannot read tag of sub-subsection")?;
-        let attribute = match tag {
-            TAG_RISCV_STACK_ALIGN => {
-                let align = read_uleb128(&mut content).context("Cannot read stack alignment")?;
-                RiscVAttribute::StackAlign(align)
-            }
-            TAG_RISCV_ARCH => {
-                let arch = read_string(&mut content).context("Cannot read arch attributes")?;
-                let components = arch
-                    .split('_')
-                    .map(|part| {
-                        let mut it = part.chars().rev();
-                        let minor = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse minor"))?
-                            .to_string();
-                        let p = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse 'p' separator"))?;
-                        ensure!(p == 'p', "Separator expected");
-                        let major = it
-                            .next()
-                            .ok_or_else(|| crate::error!("Cannot parse major"))?
-                            .to_string();
-                        let name = String::from_iter(it.rev());
-                        Ok((name, (major.parse()?, minor.parse()?)))
-                    })
-                    .collect::<Result<IndexMap<_, _>>>()?;
-
-                RiscVAttribute::Arch(RiscVArch { map: components })
-            }
-            TAG_RISCV_UNALIGNED_ACCESS => {
-                let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
-                RiscVAttribute::UnalignedAccess(access > 0)
-            }
-            TAG_RISCV_PRIV_SPEC => {
-                let version =
-                    read_uleb128(&mut content).context("Cannot read privileged major version")?;
-                RiscVAttribute::PrivilegedSpecMajor(version)
-            }
-            TAG_RISCV_PRIV_SPEC_MINOR => {
-                let version =
-                    read_uleb128(&mut content).context("Cannot read privileged minor version")?;
-                RiscVAttribute::PrivilegedSpecMinor(version)
-            }
-            TAG_RISCV_PRIV_SPEC_REVISION => {
-                let version = read_uleb128(&mut content)
-                    .context("Cannot read privileged revision version")?;
-                RiscVAttribute::PrivilegedSpecRevision(version)
-            }
-            TAG_RISCV_ATOMIC_ABI => {
-                let _abi = read_uleb128(&mut content).context("Cannot read atomic ABI")?;
-                bail!("TAG_RISCV_ATOMIC_ABI is not supported yet");
-            }
-            TAG_RISCV_X3_REG_USAGE => {
-                let _x3 = read_uleb128(&mut content).context("Cannot read x3 register usage")?;
-                bail!("TAG_RISCV_X3_REG_USAGE is not supported yet");
-            }
-            _ => {
-                bail!("Unsupported tag: {tag}");
-            }
-        };
-        attributes.push(attribute);
-    }
-
-    object.format_specific_layout_state.riscv_attributes = attributes;
-    ensure!(content.is_empty(), "Unexpected multiple sub-sections");
 
     Ok(())
 }
@@ -6950,7 +6465,7 @@ fn test_no_disallowed_overlaps() {
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),
-        eflags: Eflags(0),
+        eflags: elf::Eflags(0),
     };
 
     let mut section_index = 0;

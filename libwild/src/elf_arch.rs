@@ -4,7 +4,6 @@ use crate::OutputKind;
 use crate::arch::Architecture;
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::PropertyClass;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -48,7 +47,7 @@ pub(crate) trait ElfArch {
     fn tp_offset_start(layout: &Layout) -> u64;
 
     // Classify a GNU property note.
-    fn get_property_class(property_type: u32) -> Option<PropertyClass>;
+    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
 
     // Merge e_flags of the input files and provide an error
     // if the flags are not compatible.

@@ -88,7 +88,7 @@ impl crate::elf_arch::ElfArch for RiscV64 {
         layout.tls_start_address()
     }
 
-    fn get_property_class(_property_type: u32) -> Option<crate::layout::PropertyClass> {
+    fn get_property_class(_property_type: u32) -> Option<crate::elf::PropertyClass> {
         None
     }
 
