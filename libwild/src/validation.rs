@@ -4,14 +4,15 @@ use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::platform::ObjectFile as _;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
 use zerocopy::FromBytes;
 
 pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
-    let object =
-        crate::elf::File::parse(file_bytes, true).context("Failed to parse our output file")?;
+    let object = crate::elf::File::parse_bytes(file_bytes, true)
+        .context("Failed to parse our output file")?;
     validate_object(&object, layout).context("Output validation failed")
 }
 

@@ -6,6 +6,7 @@ use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
+use crate::platform::ObjectFile as _;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -13,7 +14,6 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use object::LittleEndian;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -122,7 +122,7 @@ pub(crate) fn create_groups<'data>(
 
     while let Some(parsed) = objects.next() {
         let file_id = FileId::new(symbol_db.next_group_index(), group_objects.len() as u32);
-        let num_symbols_in_file = parsed.object.symbols.len();
+        let num_symbols_in_file = parsed.object.num_symbols();
 
         group_objects.push(SequencedInputObject {
             parsed,
@@ -138,7 +138,7 @@ pub(crate) fn create_groups<'data>(
         // this is the last file or if the next file would put us over the per-group symbol limit.
         let finish_group = group_objects.len() >= max_files_per_group
             || objects.peek().is_none_or(|next_obj| {
-                num_symbols_in_group + next_obj.object.symbols.len() > symbols_per_group
+                num_symbols_in_group + next_obj.object.num_symbols() > symbols_per_group
             });
 
         if finish_group {
@@ -241,60 +241,9 @@ impl<'data> SequencedInputObject<'data> {
         &self,
         symbol_id: crate::symbol_db::SymbolId,
     ) -> Option<String> {
-        let object = &self.parsed.object;
-        let endian = LittleEndian;
-        let local_index = symbol_id.to_input(self.symbol_id_range);
-
-        let versym = object.versym.get(local_index.0)?;
-        let versym = versym.0.get(endian);
-        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
-
-        if let Some((verdefs, string_table_index)) = self.parsed.object.verdef.clone() {
-            let strings = object
-                .sections
-                .strings(endian, object.data, string_table_index)
-                .ok()?;
-
-            for r in verdefs {
-                let (verdef, aux_iterator) = r.ok()?;
-                for aux in aux_iterator {
-                    let aux = aux.ok()?;
-                    let version_index = verdef.vd_ndx.get(endian);
-                    if version_index == symbol_version_index {
-                        return Some(format!(
-                            "{}{}",
-                            if is_default { "@@" } else { "@" },
-                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
-                        ));
-                    }
-                }
-            }
-        }
-
-        if let Some((verneeds, string_table_index)) = self.parsed.object.verneed.clone() {
-            let strings = object
-                .sections
-                .strings(endian, object.data, string_table_index)
-                .ok()?;
-
-            for r in verneeds {
-                let (_verneed, aux_iterator) = r.ok()?;
-                for aux in aux_iterator {
-                    let aux = aux.ok()?;
-                    let version_index = aux.vna_other.get(endian);
-                    if version_index == symbol_version_index {
-                        return Some(format!(
-                            "{}{}",
-                            if is_default { "@@" } else { "@" },
-                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
-                        ));
-                    }
-                }
-            }
-        }
-
-        None
+        self.parsed
+            .object
+            .symbol_version_debug(symbol_id.to_input(self.symbol_id_range))
     }
 
     /// Returns whether this input should be skipped if there are no non-weak references to symbols
@@ -306,7 +255,7 @@ impl<'data> SequencedInputObject<'data> {
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.parsed.object.dynamic_tag_values.is_some()
+        self.parsed.object.is_dynamic()
     }
 }
 

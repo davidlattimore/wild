@@ -22,6 +22,7 @@ use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
+use crate::platform::ObjectFile as _;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
 use itertools::Itertools;
@@ -80,7 +81,7 @@ fn write_gc_stats(
 
             let mut file_kept = 0;
             let mut file_discarded = 0;
-            for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
+            for (slot, section) in obj.sections.iter().zip(obj.object.section_iter()) {
                 match slot {
                     SectionSlot::Unloaded(unloaded) => {
                         if unloaded.part_id.output_section_id() == output_section_id::TEXT {

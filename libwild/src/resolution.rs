@@ -30,6 +30,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
+use crate::platform::ObjectFile as _;
 use crate::platform::Symbol as _;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
@@ -498,7 +499,7 @@ fn work_items_do<'definitions, 'data>(
             let obj = &parsed_input_objects[file_id.file()];
             let common = ResolvedCommon::new(obj);
             let resolved_object =
-                if let Some(dynamic_tag_values) = obj.parsed.object.dynamic_tag_values {
+                if let Some(dynamic_tag_values) = obj.parsed.object.dynamic_tag_values() {
                     ResolvedFile::Dynamic(ResolvedDynamic::new(common, dynamic_tag_values))
                 } else {
                     ResolvedFile::Object(ResolvedObject::new(common))

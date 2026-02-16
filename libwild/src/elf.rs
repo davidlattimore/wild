@@ -6,12 +6,15 @@ use crate::elf_arch::ElfArch;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_kind::FileKind;
+use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
 use crate::platform::CommonSymbol;
+use crate::platform::ObjectFile as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
@@ -172,11 +175,36 @@ impl<'data> RelocationSequence<'data> for Vec<Crel> {
 // its contents.
 const _: () = assert!(!core::mem::needs_drop::<File>());
 
-impl<'data> File<'data> {
-    /// Threshold size for using parallel copy for section data copying.
-    const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+/// Threshold size for using parallel copy for section data copying.
+const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
-    pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+impl<'data> platform::ObjectFile<'data> for File<'data> {
+    type Symbol = Symbol;
+    type SectionHeader = SectionHeader;
+    type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
+    type DynamicTagValues = crate::elf::DynamicTagValues<'data>;
+    type DynamicEntry = DynamicEntry;
+    type RelocationList = RelocationList<'data>;
+    type RelocationSections = RelocationSections;
+
+    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+        let is_dynamic = input.kind == FileKind::ElfDynamic;
+
+        let file = Self::parse_bytes(input.data, is_dynamic)?;
+
+        if file.arch != args.arch {
+            bail!(
+                "`{}` has incompatible architecture: {}, expecting {}",
+                input,
+                file.arch,
+                args.arch,
+            )
+        }
+
+        Ok(file)
+    }
+
+    fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
         let header = FileHeader::parse(data)?;
         let endian = header.endian()?;
         let architecture = header.e_machine(endian).try_into()?;
@@ -230,22 +258,19 @@ impl<'data> File<'data> {
         })
     }
 
-    pub(crate) fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
-    pub(crate) fn section_by_name(
-        &self,
-        name: &str,
-    ) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    pub(crate) fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
-    pub(crate) fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
+    fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
         self.section(index)
             .and_then(|section| self.section_name(section))
             .map_or_else(
@@ -254,14 +279,13 @@ impl<'data> File<'data> {
             )
     }
 
-    /// Returns the raw section data. Doesn't handle decompression.
-    pub(crate) fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn raw_section_data(&self, section: &Self::SectionHeader) -> Result<&'data [u8]> {
         Ok(section.data(LittleEndian, self.data)?)
     }
 
-    pub(crate) fn section_data(
+    fn section_data(
         &self,
-        section: &SectionHeader,
+        section: &Self::SectionHeader,
         member: &bumpalo_herd::Member<'data>,
         loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
@@ -286,16 +310,14 @@ impl<'data> File<'data> {
         }
     }
 
-    /// Copies the data for the specified section into `out`, which must be the correct size.
-    /// Decompresses the data if necessary.
-    pub(crate) fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
             out.fill(0);
-        } else if data.len() >= Self::SECTION_PAR_COPY_SIZE_THRESHOLD {
+        } else if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
             let threads = rayon::current_num_threads();
             let chunk_size = (data.len() / threads).max(1);
 
@@ -308,8 +330,7 @@ impl<'data> File<'data> {
         Ok(())
     }
 
-    /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
-    pub(crate) fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
+    fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
@@ -326,24 +347,24 @@ impl<'data> File<'data> {
         }
     }
 
-    pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_size(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
             || section.sh_size.get(LittleEndian),
             |compression| compression.0.ch_size(LittleEndian),
         ))
     }
 
-    pub(crate) fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
             || section.sh_addralign(LittleEndian),
             |compression| compression.0.ch_addralign(LittleEndian),
         ))
     }
 
-    pub(crate) fn relocations(
+    fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &RelocationSections,
+        relocations: &Self::RelocationSections,
     ) -> Result<RelocationList<'data>> {
         let Some(section_index) = relocations.get(index) else {
             return Ok(RelocationList::Rela(&[]));
@@ -360,30 +381,95 @@ impl<'data> File<'data> {
         )
     }
 
-    pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    pub(crate) fn symbol_name(&self, symbol: &Symbol) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
-    pub(crate) fn symbol_section(
+    fn symbol_section(
         &self,
-        symbol: &Symbol,
+        symbol: &Self::Symbol,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
     }
 
-    pub(crate) fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
+    fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]> {
         dynamic_tags(&self.sections, self.data)
     }
 
-    pub(crate) fn parse_relocations(&self) -> Result<RelocationSections> {
+    fn parse_relocations(&self) -> Result<Self::RelocationSections> {
         Ok(self
             .sections
             .relocation_sections(LittleEndian, self.symbols.section())?)
+    }
+
+    fn num_symbols(&self) -> usize {
+        self.symbols.len()
+    }
+
+    fn is_dynamic(&self) -> bool {
+        self.dynamic_tag_values.is_some()
+    }
+
+    fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues> {
+        self.dynamic_tag_values
+    }
+
+    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
+        let endian = LittleEndian;
+        let versym = self.versym.get(symbol_index.0)?;
+        let versym = versym.0.get(endian);
+        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+        if let Some((verdefs, string_table_index)) = self.verdef.clone() {
+            let strings = self
+                .sections
+                .strings(endian, self.data, string_table_index)
+                .ok()?;
+            for r in verdefs {
+                let (verdef, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = verdef.vd_ndx.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some((verneeds, string_table_index)) = self.verneed.clone() {
+            let strings = self
+                .sections
+                .strings(endian, self.data, string_table_index)
+                .ok()?;
+            for r in verneeds {
+                let (_verneed, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = aux.vna_other.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn section_iter(&self) -> Self::SectionIterator {
+        self.sections.iter()
     }
 }
 

@@ -2,6 +2,7 @@ use crate::elf::SymDebug;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::platform::ObjectFile as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::symbol::PreHashedSymbolName;

@@ -56,6 +56,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::ObjectFile as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
@@ -1679,7 +1680,7 @@ impl<'data> Layout<'data> {
                         sections: obj
                             .section_resolutions
                             .iter()
-                            .zip(obj.object.sections.iter())
+                            .zip(obj.object.section_iter())
                             .zip(&obj.sections)
                             .map(|((res, section), section_slot)| {
                                 (matches!(section_slot, SectionSlot::Loaded(..))
@@ -6487,7 +6488,7 @@ impl<'data> Sonames<'data> {
                         input
                             .parsed
                             .object
-                            .dynamic_tag_values
+                            .dynamic_tag_values()
                             .map(|tag_values| tag_values.lib_name(&input.parsed.input))
                     })
                 })

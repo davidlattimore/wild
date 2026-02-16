@@ -4,11 +4,9 @@ use crate::args::Args;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
-use crate::bail;
 use crate::elf::File;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::file_kind::FileKind;
 use crate::input_data::FileId;
 use crate::input_data::InputBytes;
 use crate::input_data::InputLinkerScript;
@@ -16,6 +14,7 @@ use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
+use crate::platform::ObjectFile as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -194,19 +193,9 @@ impl<'data> InternalSymDefInfo<'data> {
 impl<'data> ParsedInputObject<'data> {
     pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
-        let is_dynamic = input.kind == FileKind::ElfDynamic;
 
-        let object = File::parse(input.data, is_dynamic)
+        let object = File::parse(input, args)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
-
-        if object.arch != args.arch {
-            bail!(
-                "`{}` has incompatible architecture: {}, expecting {}",
-                input.input,
-                object.arch,
-                args.arch,
-            )
-        }
 
         Ok(Box::new(Self {
             input: input.input,
@@ -216,7 +205,7 @@ impl<'data> ParsedInputObject<'data> {
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.object.dynamic_tag_values.is_some()
+        self.object.is_dynamic()
     }
 
     pub(crate) fn num_symbols(&self) -> usize {

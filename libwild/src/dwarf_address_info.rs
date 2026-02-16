@@ -5,6 +5,7 @@ use crate::elf::File;
 use crate::elf::RelocationSequence;
 use crate::elf_arch::ElfArch;
 use crate::error::Result;
+use crate::platform::ObjectFile as _;
 use anyhow::Context;
 use object::LittleEndian;
 use object::SymbolIndex;
