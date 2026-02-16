@@ -1,3 +1,4 @@
+use crate::elf::SymDebug;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
@@ -118,7 +119,7 @@ impl<'data> SymbolInfoPrinter<'data> {
                     }
                     SequencedInput::Object(o) => match o.parsed.object.symbol(local_index) {
                         Ok(sym) => {
-                            sym_debug = crate::symbol::SymDebug(sym).to_string();
+                            sym_debug = SymDebug(sym).to_string();
                             input = o.parsed.input.to_string();
                         }
                         Err(e) => {

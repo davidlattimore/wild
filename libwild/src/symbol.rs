@@ -1,6 +1,4 @@
 use crate::hash::PreHashed;
-use object::LittleEndian;
-use object::read::elf::Sym as _;
 use std::fmt::Display;
 use std::ops::BitXor as _;
 
@@ -69,8 +67,6 @@ impl Display for UnversionedSymbolName<'_> {
     }
 }
 
-pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
-
 impl<'data> PreHashedSymbolName<'data> {
     pub(crate) fn from_raw(
         name_info: &crate::symbol_db::RawSymbolName<'data>,
@@ -81,38 +77,5 @@ impl<'data> PreHashedSymbolName<'data> {
         } else {
             PreHashedSymbolName::Unversioned(name)
         }
-    }
-}
-
-impl Display for SymDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let e = LittleEndian;
-        let sym = self.0;
-
-        let vis = if sym.is_local() {
-            "Local"
-        } else if sym.is_weak() {
-            "Weak"
-        } else {
-            "Global"
-        };
-
-        let kind = if sym.is_undefined(e) {
-            "Undefined"
-        } else {
-            match sym.st_type() {
-                object::elf::STT_FUNC => "Func",
-                object::elf::STT_GNU_IFUNC => "IFunc",
-                object::elf::STT_OBJECT => "Data",
-                object::elf::STT_COMMON => "Common",
-                object::elf::STT_SECTION => "Section",
-                object::elf::STT_FILE => "File",
-                object::elf::STT_NOTYPE => "NoType",
-                object::elf::STT_TLS => "Tls",
-                _ => "Unknown",
-            }
-        };
-
-        write!(f, "{vis} {kind}")
     }
 }
