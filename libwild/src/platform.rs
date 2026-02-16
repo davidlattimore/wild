@@ -102,18 +102,18 @@ pub(crate) struct RelaxSymbolInfo {
 /// lifetime.
 pub(crate) trait Format {
     type File<'data>: ObjectFile<'data>;
+    type Symbol: Symbol;
+    type SectionHeader: SectionHeader + 'static;
+    type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
+    type DynamicTagValues<'data>;
+    type RelocationSections;
+    type RelocationList<'data>;
+    type DynamicEntry;
 }
 
 /// An object file. Implementations are 1:1 with `Format`.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     type Format: Format;
-    type Symbol: Symbol;
-    type SectionHeader: SectionHeader + 'static;
-    type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
-    type DynamicTagValues;
-    type RelocationSections;
-    type RelocationList;
-    type DynamicEntry;
 
     fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> Result<Self>;
 
@@ -125,57 +125,77 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
 
     fn num_symbols(&self) -> usize;
 
-    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
+    fn symbol(&self, index: object::SymbolIndex)
+    -> Result<&'data <Self::Format as Format>::Symbol>;
 
-    fn section_size(&self, header: &Self::SectionHeader) -> Result<u64>;
+    fn section_size(&self, header: &<Self::Format as Format>::SectionHeader) -> Result<u64>;
 
-    fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]>;
+    fn symbol_name(&self, symbol: &<Self::Format as Format>::Symbol) -> Result<&'data [u8]>;
 
-    fn section_iter(&self) -> Self::SectionIterator;
+    fn section_iter(&self) -> <Self::Format as Format>::SectionIterator<'data>;
 
-    fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader>;
+    fn section(
+        &self,
+        index: object::SectionIndex,
+    ) -> Result<&'data <Self::Format as Format>::SectionHeader>;
 
     fn section_by_name(
         &self,
         name: &str,
-    ) -> Option<(object::SectionIndex, &'data Self::SectionHeader)>;
+    ) -> Option<(
+        object::SectionIndex,
+        &'data <Self::Format as Format>::SectionHeader,
+    )>;
 
     fn symbol_section(
         &self,
-        symbol: &Self::Symbol,
+        symbol: &<Self::Format as Format>::Symbol,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
 
-    fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]>;
+    fn dynamic_tags(&self) -> Result<&'data [<Self::Format as Format>::DynamicEntry]>;
 
-    fn section_name(&self, section_header: &Self::SectionHeader) -> Result<&'data [u8]>;
+    fn section_name(
+        &self,
+        section_header: &<Self::Format as Format>::SectionHeader,
+    ) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.
-    fn raw_section_data(&self, section: &Self::SectionHeader) -> Result<&'data [u8]>;
+    fn raw_section_data(
+        &self,
+        section: &<Self::Format as Format>::SectionHeader,
+    ) -> Result<&'data [u8]>;
 
     fn section_data(
         &self,
-        section: &Self::SectionHeader,
+        section: &<Self::Format as Format>::SectionHeader,
         member: &bumpalo_herd::Member<'data>,
         loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]>;
 
     /// Copies the data for the specified section into `out`, which must be the correct size.
     /// Decompresses the data if necessary.
-    fn copy_section_data(&self, section: &Self::SectionHeader, out: &mut [u8]) -> Result;
+    fn copy_section_data(
+        &self,
+        section: &<Self::Format as Format>::SectionHeader,
+        out: &mut [u8],
+    ) -> Result;
 
     /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
-    fn section_data_cow(&self, section: &Self::SectionHeader) -> Result<Cow<'data, [u8]>>;
+    fn section_data_cow(
+        &self,
+        section: &<Self::Format as Format>::SectionHeader,
+    ) -> Result<Cow<'data, [u8]>>;
 
-    fn section_alignment(&self, section: &Self::SectionHeader) -> Result<u64>;
+    fn section_alignment(&self, section: &<Self::Format as Format>::SectionHeader) -> Result<u64>;
 
     fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &Self::RelocationSections,
-    ) -> Result<Self::RelocationList>;
+        relocations: &<Self::Format as Format>::RelocationSections,
+    ) -> Result<<Self::Format as Format>::RelocationList<'data>>;
 
-    fn parse_relocations(&self) -> Result<Self::RelocationSections>;
+    fn parse_relocations(&self) -> Result<<Self::Format as Format>::RelocationSections>;
 
     /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
     /// quite slow.
@@ -183,7 +203,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
 
-    fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues>;
+    fn dynamic_tag_values(&self) -> Option<<Self::Format as Format>::DynamicTagValues<'data>>;
 }
 
 pub(crate) trait SectionHeader {
