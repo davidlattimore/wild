@@ -1,9 +1,9 @@
 //! Uses DWARF debug info, if available, to find file and line number information for a particular
 //! offset in an input section.
 
-use crate::arch::Arch;
 use crate::elf::File;
 use crate::elf::RelocationSequence;
+use crate::elf_arch::ElfArch;
 use crate::error::Result;
 use anyhow::Context;
 use object::LittleEndian;
@@ -31,7 +31,7 @@ pub(crate) struct SourceInfoDetails {
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<A: Arch>(
+pub(crate) fn get_source_info<A: ElfArch>(
     object: &File,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -97,7 +97,7 @@ pub(crate) fn get_source_info<A: Arch>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<A: Arch>(
+fn section_data_with_relocations<A: ElfArch>(
     object: &File,
     relocations: &RelocationSections,
     id: gimli::SectionId,
@@ -131,7 +131,7 @@ fn section_data_with_relocations<A: Arch>(
     Ok(data)
 }
 
-fn apply_section_relocations<A: Arch>(
+fn apply_section_relocations<A: ElfArch>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
