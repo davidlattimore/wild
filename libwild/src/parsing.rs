@@ -69,6 +69,8 @@ pub(crate) struct InternalSymDefInfo<'data> {
     pub(crate) elf_symbol_type: SymbolType,
     /// If true, this symbol should have hidden visibility (from PROVIDE_HIDDEN).
     pub(crate) is_hidden: bool,
+    /// If true, this symbol should only be defined if not already defined (PROVIDE semantics).
+    pub(crate) use_provide: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -172,21 +174,31 @@ pub(crate) fn parse_number(s: &str) -> Result<u64, ()> {
 }
 
 impl<'data> InternalSymDefInfo<'data> {
-    pub(crate) fn notype(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+    pub(crate) fn notype(
+        placement: SymbolPlacement<'data>,
+        name: &'data [u8],
+        use_provide: bool,
+    ) -> Self {
         Self {
             placement,
             name,
             elf_symbol_type: stt::NOTYPE,
             is_hidden: false,
+            use_provide,
         }
     }
 
-    pub(crate) fn hidden(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+    pub(crate) fn hidden(
+        placement: SymbolPlacement<'data>,
+        name: &'data [u8],
+        use_provide: bool,
+    ) -> Self {
         Self {
             placement,
             name,
             elf_symbol_type: stt::NOTYPE,
             is_hidden: true,
+            use_provide,
         }
     }
 }
@@ -229,8 +241,11 @@ impl<'data> Prelude<'data> {
         verbose_timing_phase!("Construct prelude");
 
         // The undefined symbol must always be symbol 0.
-        let mut symbol_definitions =
-            vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
+        let mut symbol_definitions = vec![InternalSymDefInfo::notype(
+            SymbolPlacement::Undefined,
+            &[],
+            false,
+        )];
 
         for section_id in output_section_id::built_in_section_ids() {
             // If we're producing non-relocatable, static executable, then don't define any symbols
@@ -255,6 +270,7 @@ impl<'data> Prelude<'data> {
                 symbol_definitions.push(InternalSymDefInfo::notype(
                     SymbolPlacement::SectionStart(section_id),
                     name.as_bytes(),
+                    def.start_symbol_use_provide,
                 ));
             }
 
@@ -262,6 +278,7 @@ impl<'data> Prelude<'data> {
                 symbol_definitions.push(InternalSymDefInfo::notype(
                     SymbolPlacement::SectionEnd(section_id),
                     name.as_bytes(),
+                    def.end_symbol_use_provide,
                 ));
             }
 
@@ -269,6 +286,7 @@ impl<'data> Prelude<'data> {
                 symbol_definitions.push(InternalSymDefInfo::notype(
                     SymbolPlacement::SectionGroupEnd(section_id),
                     name.as_bytes(),
+                    def.group_end_symbol_use_provide,
                 ));
             }
         }
@@ -285,10 +303,11 @@ impl<'data> Prelude<'data> {
             name: b"_TLS_MODULE_BASE_",
             elf_symbol_type: stt::TLS,
             is_hidden: false,
+            use_provide: false,
         });
 
         symbol_definitions.extend(args.undefined.iter().map(|name| {
-            InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes())
+            InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes(), false)
         }));
 
         // Add symbols defined via --defsym
@@ -299,12 +318,13 @@ impl<'data> Prelude<'data> {
                     SymbolPlacement::DefsymSymbol(target.as_str(), *offset)
                 }
             };
-            InternalSymDefInfo::notype(placement, name.as_bytes())
+            InternalSymDefInfo::notype(placement, name.as_bytes(), false)
         }));
 
         symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
+            false,
         ));
 
         Self { symbol_definitions }
