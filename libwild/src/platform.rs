@@ -1,4 +1,16 @@
 use crate::part_id::PartId;
+pub(crate) trait SectionHeader {
+    type SectionFlags: SectionFlags;
+    type Attributes;
+
+    fn flags(&self) -> Self::SectionFlags;
+    fn attributes(&self) -> Self::Attributes;
+}
+
+pub(crate) trait SectionFlags: Copy {
+    fn is_alloc(self) -> bool;
+    fn is_writable(self) -> bool;
+}
 
 pub(crate) trait Symbol {
     type Debug<'data>: std::fmt::Display

@@ -26,6 +26,7 @@ use crate::elf::Rela;
 use crate::elf::Relocation;
 use crate::elf::RelocationList;
 use crate::elf::RelocationSequence;
+use crate::elf::SectionAttributes;
 use crate::elf::Versym;
 use crate::elf_arch::ElfArch;
 use crate::elf_arch::Relaxation as _;
@@ -55,6 +56,8 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
@@ -92,7 +95,6 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::pt;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
@@ -108,7 +110,6 @@ use object::elf::gnu_hash;
 use object::read::elf::Crel;
 use object::read::elf::Dyn as _;
 use object::read::elf::RelocationSections;
-use object::read::elf::SectionHeader as _;
 use object::read::elf::VerdefIterator;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
@@ -1209,39 +1210,6 @@ impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
     }
 }
 
-/// Attributes that we'll take from an input section and apply to the output section into which it's
-/// placed.
-#[derive(Debug, Clone, Copy)]
-struct SectionAttributes {
-    flags: SectionFlags,
-    ty: SectionType,
-    entsize: u64,
-}
-
-impl SectionAttributes {
-    fn from_header(header: &crate::elf::SectionHeader) -> Self {
-        Self {
-            flags: SectionFlags::from_header(header),
-            ty: SectionType::from_header(header),
-            entsize: header.sh_entsize.get(LittleEndian),
-        }
-    }
-
-    fn merge(&mut self, rhs: Self) {
-        self.flags |= rhs.flags;
-
-        // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
-        // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
-        self.ty = self.ty.max(rhs.ty);
-
-        // If all input sections specify the same entsize, then we use that. If there's any
-        // inconsistency, then we set entsize to 0.
-        if self.entsize != rhs.entsize {
-            self.entsize = 0;
-        }
-    }
-}
-
 #[derive(Debug)]
 struct CommonGroupState<'data> {
     mem_sizes: OutputSectionPartMap<u64>,
@@ -1333,7 +1301,7 @@ impl CommonGroupState<'_> {
     ) {
         let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
 
-        let new_attributes = SectionAttributes::from_header(header);
+        let new_attributes = header.attributes();
 
         if let Some(existing) = existing_attributes {
             existing.merge(new_attributes);
@@ -1715,7 +1683,7 @@ impl<'data> Layout<'data> {
                             .zip(&obj.sections)
                             .map(|((res, section), section_slot)| {
                                 (matches!(section_slot, SectionSlot::Loaded(..))
-                                    && SectionFlags::from_header(section).contains(shf::ALLOC)
+                                    && section.flags().is_alloc()
                                     && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                 .then(|| {
                                     let address = res.address;
@@ -2077,11 +2045,6 @@ fn compute_total_section_part_sizes(
     Ok(total_sizes)
 }
 
-/// Section flags that should be propagated from input sections to the output section in which they
-/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP);
-
 /// Propagates attributes from input sections to the output sections into which they were placed.
 fn propagate_section_attributes(group_states: &[GroupState], output_sections: &mut OutputSections) {
     timing_phase!("Propagate section attributes");
@@ -2095,18 +2058,6 @@ fn propagate_section_attributes(group_states: &[GroupState], output_sections: &m
                     attributes.apply(output_sections, section_id);
                 }
             });
-    }
-}
-
-impl SectionAttributes {
-    pub(crate) fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
-        let info = output_sections.section_infos.get_mut(section_id);
-
-        info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
-
-        info.entsize = self.entsize;
-
-        info.ty = info.ty.max(self.ty);
     }
 }
 
@@ -2955,7 +2906,7 @@ impl Section {
             part_id,
             size,
             flags: ValueFlags::empty(),
-            is_writable: SectionFlags::from_header(header).contains(shf::WRITE),
+            is_writable: header.flags().is_writable(),
         };
         Ok(section)
     }
@@ -3050,7 +3001,7 @@ fn process_relocation<'data, 'scope, A: ElfArch>(
             A::relocation_from_raw(r_type)?
         };
 
-        let section_is_writable = section_flags.contains(shf::WRITE);
+        let section_is_writable = section_flags.is_writable();
         let mut flags_to_add = resolution_flags(rel_info.kind);
 
         if !section_flags.contains(shf::ALLOC) {
@@ -5292,7 +5243,8 @@ fn process_gnu_property_note(
     let section = object.object.section(note_section_index)?;
     let e = LittleEndian;
 
-    let Some(notes) = section.notes(e, object.object.data)? else {
+    let Some(notes) = object::read::elf::SectionHeader::notes(section, e, object.object.data)?
+    else {
         return Ok(());
     };
 

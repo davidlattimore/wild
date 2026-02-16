@@ -8,6 +8,8 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::InputRef;
 use crate::output_section_id;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::platform;
 use crate::platform::CommonSymbol;
 use crate::resolution::LoadedMetrics;
@@ -23,6 +25,7 @@ use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
@@ -33,6 +36,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
@@ -380,6 +384,33 @@ impl<'data> File<'data> {
         Ok(self
             .sections
             .relocation_sections(LittleEndian, self.symbols.section())?)
+    }
+}
+
+impl platform::SectionHeader for SectionHeader {
+    type SectionFlags = SectionFlags;
+    type Attributes = SectionAttributes;
+
+    fn flags(&self) -> Self::SectionFlags {
+        SectionFlags::from_header(self)
+    }
+
+    fn attributes(&self) -> Self::Attributes {
+        Self::Attributes {
+            flags: SectionFlags::from_header(self),
+            ty: SectionType::from_header(self),
+            entsize: self.sh_entsize.get(LittleEndian),
+        }
+    }
+}
+
+impl platform::SectionFlags for SectionFlags {
+    fn is_alloc(self) -> bool {
+        self.contains(shf::ALLOC)
+    }
+
+    fn is_writable(self) -> bool {
+        self.contains(shf::WRITE)
     }
 }
 
@@ -1220,4 +1251,44 @@ pub(crate) fn process_riscv_attributes(
     ensure!(content.is_empty(), "Unexpected multiple sub-sections");
 
     Ok(attributes)
+}
+
+/// Attributes that we'll take from an input section and apply to the output section into which it's
+/// placed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SectionAttributes {
+    flags: SectionFlags,
+    ty: SectionType,
+    entsize: u64,
+}
+
+/// Section flags that should be propagated from input sections to the output section in which they
+/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
+    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+
+impl SectionAttributes {
+    pub(crate) fn merge(&mut self, rhs: Self) {
+        self.flags |= rhs.flags;
+
+        // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
+        // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
+        self.ty = self.ty.max(rhs.ty);
+
+        // If all input sections specify the same entsize, then we use that. If there's any
+        // inconsistency, then we set entsize to 0.
+        if self.entsize != rhs.entsize {
+            self.entsize = 0;
+        }
+    }
+
+    pub(crate) fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
+        let info = output_sections.section_infos.get_mut(section_id);
+
+        info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+
+        info.entsize = self.entsize;
+
+        info.ty = info.ty.max(self.ty);
+    }
 }
