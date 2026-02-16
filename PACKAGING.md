@@ -9,9 +9,8 @@ Linker-diff is mainly a tool to aid Wild development, so you most likely don't w
 ## Building
 
 This project uses Cargo as its build system. The official releases are built with `--profile dist`
-that enables compiler's internal ThinLTO and strips the binaries. The benefit from ThinLTO
-is very mild in Wild's case, so it's up to you whether to use it. Musl releases also enable
-`--feature mimalloc`, see below for the explanation.
+that enables stripping of the binaries. Musl releases also enable `--feature mimalloc`, see below
+for the explanation.
 
 ### Optional features
 

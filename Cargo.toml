@@ -103,14 +103,25 @@ winnow = { version = "0.7.10", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
 zstd = "0.13.0"
 
-[profile.opt-debug]
+[profile.release]
+codegen-units = 1
+
+[profile.release-debug]
 inherits = "release"
 debug = true
 
-# The profile that 'dist' will build with
+# Optimised build, not quite as fast as release, but should be close.
+[profile.opt]
+inherits = "release"
+codegen-units = 16
+
+[profile.opt-debug]
+inherits = "opt"
+debug = true
+
+# The profile that we use for release builds distributed via github.
 [profile.dist]
 inherits = "release"
-lto = "thin"
 strip = true
 
 # In CI, we disable debug info. This gives us faster builds. It also reduces the size of the target
