@@ -6,7 +6,7 @@ use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -17,9 +17,9 @@ use crate::verbose_timing_phase;
 use std::fmt::Display;
 
 #[derive(Debug)]
-pub(crate) enum Group<'data> {
+pub(crate) enum Group<'data, O: ObjectFile<'data>> {
     Prelude(Prelude<'data>),
-    Objects(&'data [SequencedInputObject<'data>]),
+    Objects(&'data [SequencedInputObject<'data, O>]),
     LinkerScripts(Vec<SequencedLinkerScript<'data>>),
     SyntheticSymbols(SyntheticSymbols),
     #[cfg(feature = "plugins")]
@@ -27,8 +27,8 @@ pub(crate) enum Group<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SequencedInputObject<'data> {
-    pub(crate) parsed: Box<ParsedInputObject<'data, crate::elf::File<'data>>>,
+pub(crate) struct SequencedInputObject<'data, O: ObjectFile<'data>> {
+    pub(crate) parsed: Box<ParsedInputObject<'data, O>>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -41,16 +41,16 @@ pub(crate) struct SequencedLinkerScript<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) enum SequencedInput<'data> {
+pub(crate) enum SequencedInput<'data, O: ObjectFile<'data>> {
     Prelude(&'data Prelude<'data>),
-    Object(&'data SequencedInputObject<'data>),
+    Object(&'data SequencedInputObject<'data, O>),
     LinkerScript(&'data SequencedLinkerScript<'data>),
     SyntheticSymbols(&'data SyntheticSymbols),
     #[cfg(feature = "plugins")]
     LtoInput(&'data crate::linker_plugins::LtoInput<'data>),
 }
 
-impl Group<'_> {
+impl<'data, O: ObjectFile<'data>> Group<'data, O> {
     // This is used when the verbose-ttttiming feature is enabled.
     pub(crate) fn group_id(&self) -> usize {
         match self {
@@ -223,9 +223,9 @@ fn count_symbols<'data>(
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()
 }
 
-struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);
+struct GroupsDisplay<'a, 'data, O: ObjectFile<'data>>(&'a [Group<'data, O>]);
 
-impl<'data> SequencedInputObject<'data> {
+impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
     pub(crate) fn symbol_name(
         &self,
         symbol_id: crate::symbol_db::SymbolId,
@@ -268,7 +268,7 @@ impl<'data> SequencedLinkerScript<'data> {
     }
 }
 
-impl SequencedInput<'_> {
+impl<'data, O: ObjectFile<'data>> SequencedInput<'data, O> {
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
@@ -289,7 +289,7 @@ impl SequencedInput<'_> {
     }
 }
 
-impl Display for GroupsDisplay<'_, '_> {
+impl<'data, O: ObjectFile<'data>> Display for GroupsDisplay<'_, 'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, group) in self.0.iter().enumerate() {
             writeln!(f, "{i}: {group}")?;
@@ -298,13 +298,13 @@ impl Display for GroupsDisplay<'_, '_> {
     }
 }
 
-impl std::fmt::Display for SequencedInputObject<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInputObject<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.parsed.input, f)
     }
 }
 
-impl Display for Group<'_> {
+impl<'data, O: ObjectFile<'data>> Display for Group<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Group::Prelude(_) => write!(f, "<prelude>"),
@@ -328,7 +328,7 @@ impl Display for Group<'_> {
     }
 }
 
-impl std::fmt::Display for SequencedInput<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInput<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),

@@ -241,7 +241,7 @@ fn resolve_symbols_and_select_archive_entries<'data>(
 }
 
 fn resolve_group<'data, 'definitions>(
-    group: &Group<'data>,
+    group: &Group<'data, crate::elf::File<'data>>,
     initial_work_out: &mut Vec<LoadObjectSymbolsRequest<'definitions>>,
     definitions_out_per_file: &mut Vec<AtomicTake<&'definitions mut [SymbolId]>>,
     symbol_definitions_slice: &mut &'definitions mut [SymbolId],
@@ -1061,7 +1061,7 @@ fn allocate_start_stop_symbol_id<'data>(
 }
 
 impl<'data> ResolvedCommon<'data> {
-    fn new(obj: &'data SequencedInputObject<'data>) -> Self {
+    fn new(obj: &'data SequencedInputObject<'data, crate::elf::File<'data>>) -> Self {
         Self {
             input: obj.parsed.input,
             object: &obj.parsed.object,
@@ -1293,7 +1293,7 @@ fn resolve_section<'data>(
 }
 
 fn resolve_symbols<'data, 'scope>(
-    obj: &SequencedInputObject<'data>,
+    obj: &SequencedInputObject<'data, crate::elf::File<'data>>,
     resources: &'scope ResolutionResources<'data, 'scope>,
     start_symbol_offset: usize,
     definitions_out: &mut [SymbolId],

@@ -6765,7 +6765,7 @@ impl<'data> Sonames<'data> {
     /// --as-needed shared objects that we're not actually linking against. This means that we can
     /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
     /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
-    fn new(groups: &[Group<'data>]) -> Self {
+    fn new(groups: &[Group<'data, crate::elf::File<'data>>]) -> Self {
         timing_phase!("Build SONAME index");
 
         Sonames(

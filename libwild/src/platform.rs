@@ -95,7 +95,7 @@ pub(crate) struct RelaxSymbolInfo {
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
-    type Symbol: Symbol;
+    type Symbol: Symbol + 'static;
     type SectionHeader: SectionHeader + 'static;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues;

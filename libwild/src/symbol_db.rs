@@ -71,7 +71,7 @@ use symbolic_demangle::demangle;
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
-    pub(crate) groups: Vec<Group<'data>>,
+    pub(crate) groups: Vec<Group<'data, crate::elf::File<'data>>>,
 
     buckets: Vec<SymbolBucket<'data>>,
 
@@ -770,7 +770,10 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file(&self, file_id: FileId) -> SequencedInput<'_> {
+    pub(crate) fn file<'db>(
+        &'db self,
+        file_id: FileId,
+    ) -> SequencedInput<'db, crate::elf::File<'db>> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => SequencedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
@@ -987,7 +990,7 @@ impl<'data> SymbolDb<'data> {
         self.groups.len() as u32
     }
 
-    pub(crate) fn add_group(&mut self, group: Group<'data>) {
+    pub(crate) fn add_group(&mut self, group: Group<'data, crate::elf::File<'data>>) {
         self.groups.push(group);
     }
 
@@ -1028,7 +1031,7 @@ impl<'out> SymbolVecWriters<'out> {
 
     fn new_shard<'group, 'data>(
         &mut self,
-        group: &'group Group<'data>,
+        group: &'group Group<'data, crate::elf::File<'data>>,
     ) -> SymbolWriterShard<'out, 'group, 'data> {
         let num_symbols = group.num_symbols();
         SymbolWriterShard {
@@ -1502,7 +1505,7 @@ fn load_linker_script_symbols<'data>(
 }
 
 fn load_symbols_from_file<'data>(
-    s: &SequencedInputObject<'data>,
+    s: &SequencedInputObject<'data, crate::elf::File<'data>>,
     version_script: &VersionScript,
     symbols_out: &mut SymbolWriterShard,
     outputs: &mut SymbolLoadOutputs<'data>,
@@ -1531,7 +1534,7 @@ fn load_symbols_from_file<'data>(
 }
 
 struct SymbolWriterShard<'out, 'group, 'data> {
-    group: &'group Group<'data>,
+    group: &'group Group<'data, crate::elf::File<'data>>,
     resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
     flags: sharded_vec_writer::Shard<'out, RawFlags>,
     file_ids: sharded_vec_writer::Shard<'out, FileId>,
@@ -2140,7 +2143,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.db.symbol_name_for_display(symbol_id)
     }
 
-    fn file(&self, file_id: FileId) -> SequencedInput<'_> {
+    fn file(&'db self, file_id: FileId) -> SequencedInput<'db, crate::elf::File<'db>> {
         self.db.file(file_id)
     }
 
