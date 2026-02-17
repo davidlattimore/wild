@@ -211,17 +211,17 @@ const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
 impl Format for Elf {
     type File<'data> = File<'data>;
-    type Symbol = Symbol;
-    type SectionHeader = SectionHeader;
-    type SectionIterator<'data> = core::slice::Iter<'data, Self::SectionHeader>;
-    type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
-    type DynamicEntry = DynamicEntry;
-    type RelocationList<'data> = RelocationList<'data>;
-    type RelocationSections = RelocationSections;
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Format = Elf;
+    type Symbol = Symbol;
+    type SectionHeader = SectionHeader;
+    type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
+    type DynamicTagValues = crate::elf::DynamicTagValues<'data>;
+    type DynamicEntry = DynamicEntry;
+    type RelocationList = RelocationList<'data>;
+    type RelocationSections = RelocationSections;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -294,10 +294,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn section(
-        &self,
-        index: object::SectionIndex,
-    ) -> Result<&'data <Self::Format as Format>::SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
@@ -318,16 +315,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             )
     }
 
-    fn raw_section_data(
-        &self,
-        section: &<Self::Format as Format>::SectionHeader,
-    ) -> Result<&'data [u8]> {
+    fn raw_section_data(&self, section: &Self::SectionHeader) -> Result<&'data [u8]> {
         Ok(section.data(LittleEndian, self.data)?)
     }
 
     fn section_data(
         &self,
-        section: &<Self::Format as Format>::SectionHeader,
+        section: &Self::SectionHeader,
         member: &bumpalo_herd::Member<'data>,
         loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
@@ -406,7 +400,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &RelocationSections,
+        relocations: &Self::RelocationSections,
     ) -> Result<RelocationList<'data>> {
         let Some(section_index) = relocations.get(index) else {
             return Ok(RelocationList::Rela(&[]));
@@ -427,23 +421,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    fn symbol_name(&self, symbol: &Symbol) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
     fn symbol_section(
         &self,
-        symbol: &Symbol,
+        symbol: &Self::Symbol,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
     }
 
-    fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
+    fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]> {
         dynamic_tags(&self.sections, self.data)
     }
 
-    fn parse_relocations(&self) -> Result<RelocationSections> {
+    fn parse_relocations(&self) -> Result<Self::RelocationSections> {
         Ok(self
             .sections
             .relocation_sections(LittleEndian, self.symbols.section())?)
@@ -457,7 +451,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.dynamic_tag_values.is_some()
     }
 
-    fn dynamic_tag_values(&self) -> Option<<Self::Format as Format>::DynamicTagValues<'data>> {
+    fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues> {
         self.dynamic_tag_values
     }
 
@@ -510,7 +504,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         None
     }
 
-    fn section_iter(&self) -> <Self::Format as Format>::SectionIterator<'data> {
+    fn section_iter(&self) -> Self::SectionIterator {
         self.sections.iter()
     }
 }
