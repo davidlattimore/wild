@@ -76,7 +76,7 @@ tests = [
 
 [skipped_groups.version_script]
 reason = "Version script support"
-tests  = ["version-script15.sh", "version-script17.sh"]
+tests  = ["version-script15.sh"]
 
 [skipped_groups.z_options]
 reason = "Related to -z"
