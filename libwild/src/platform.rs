@@ -11,6 +11,7 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use std::borrow::Cow;
+use std::ops::Range;
 
 /// Represents a supported object file format + architecture combination.
 pub(crate) trait Platform {
@@ -251,4 +252,24 @@ pub(crate) trait Symbol {
 pub(crate) struct CommonSymbol {
     pub(crate) size: u64,
     pub(crate) part_id: PartId,
+}
+
+pub(crate) trait Relocation: Copy {
+    type Sequence<'data>: RelocationSequence<'data>;
+
+    fn symbol(&self) -> Option<object::SymbolIndex>;
+
+    fn raw_type(&self) -> u32;
+
+    fn offset(&self) -> u64;
+
+    fn addend(&self) -> i64;
+}
+
+pub(crate) trait RelocationSequence<'data> {
+    type Rel: Relocation;
+
+    fn rel_iter(&self) -> impl Iterator<Item = Self::Rel>;
+    fn subsequence(&self, range: Range<usize>) -> Self;
+    fn num_relocations(&self) -> usize;
 }

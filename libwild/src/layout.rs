@@ -23,9 +23,7 @@ use crate::elf::ElfObjectLayoutState;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::Rela;
-use crate::elf::Relocation;
 use crate::elf::RelocationList;
-use crate::elf::RelocationSequence;
 use crate::elf::SectionAttributes;
 use crate::elf::Versym;
 use crate::elf_riscv64;
@@ -59,6 +57,8 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
@@ -1362,9 +1362,9 @@ enum ExceptionFrames<'data> {
 }
 
 #[derive(Default)]
-struct ExceptionFrame<'data, R: Relocation<'data>> {
+struct ExceptionFrame<'data, R: Relocation> {
     /// The relocations that need to be processed if we load this frame.
-    relocations: R::Sequence,
+    relocations: R::Sequence<'data>,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -2980,10 +2980,10 @@ impl Section {
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, P: Platform>(
+fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
     object: &ObjectLayoutState,
     common: &mut CommonGroupState,
-    rel: &Crel,
+    rel: &R,
     section: &object::elf::SectionHeader64<LittleEndian>,
     resources: &'scope GraphResources<'data, '_>,
     queue: &mut LocalWorkQueue,
@@ -2998,8 +2998,8 @@ fn process_relocation<'data, 'scope, P: Platform>(
         let symbol_id = symbol_db.definition(local_symbol_id);
         let mut flags = resources.local_flags_for_symbol(symbol_id);
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
-        let rel_offset = rel.r_offset;
-        let r_type = rel.r_type;
+        let rel_offset = rel.offset();
+        let r_type = rel.raw_type();
         let section_flags = SectionFlags::from_header(section);
 
         let rel_info = if let Some(relaxation) = P::Relaxation::new(
@@ -4415,17 +4415,17 @@ impl<'data> ObjectLayoutState<'data> {
 
         match self.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                self.load_section_relocations::<P>(
+                self.load_section_relocations::<P, Rela>(
                     common,
                     queue,
                     resources,
                     section,
-                    relocations.crel_iter(),
+                    relocations.rel_iter(),
                     scope,
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                self.load_section_relocations::<P>(
+                self.load_section_relocations::<P, Crel>(
                     common,
                     queue,
                     resources,
@@ -4481,13 +4481,13 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section_relocations<'scope, P: Platform>(
+    fn load_section_relocations<'scope, P: Platform, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
         resources: &'scope GraphResources<'data, '_>,
         section: Section,
-        relocations: impl Iterator<Item = Crel>,
+        relocations: impl Iterator<Item = R>,
         scope: &Scope<'scope>,
     ) -> Result {
         let mut modifier = RelocationModifier::Normal;
@@ -4496,7 +4496,7 @@ impl<'data> ObjectLayoutState<'data> {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
-            modifier = process_relocation::<P>(
+            modifier = process_relocation::<P, R>(
                 self,
                 common,
                 &rel,
@@ -4518,7 +4518,7 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<'scope, P: Platform, R: Relocation<'data>>(
+    fn process_section_exception_frames<'scope, P: Platform, R: Relocation>(
         &self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
@@ -4541,8 +4541,8 @@ impl<'data> ObjectLayoutState<'data> {
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                for rel in frame_data.relocations.crel_iter() {
-                    process_relocation::<P>(
+                for rel in frame_data.relocations.rel_iter() {
+                    process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
                         self,
                         common,
                         &rel,
@@ -4577,15 +4577,15 @@ impl<'data> ObjectLayoutState<'data> {
         let section = Section::create(header, self, section_index, part_id)?;
         if P::local_symbols_in_debug_info() {
             match self.relocations(section.index)? {
-                RelocationList::Rela(relocations) => self.load_debug_relocations::<P>(
+                RelocationList::Rela(relocations) => self.load_debug_relocations::<P, Rela>(
                     common,
                     queue,
                     resources,
                     section,
-                    relocations.crel_iter(),
+                    relocations.rel_iter(),
                     scope,
                 )?,
-                RelocationList::Crel(relocations) => self.load_debug_relocations::<P>(
+                RelocationList::Crel(relocations) => self.load_debug_relocations::<P, Crel>(
                     common,
                     queue,
                     resources,
@@ -4603,17 +4603,17 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_relocations<'scope, P: Platform>(
+    fn load_debug_relocations<'scope, P: Platform, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
         resources: &'scope GraphResources<'data, '_>,
         section: Section,
-        relocations: impl Iterator<Item = Crel>,
+        relocations: impl Iterator<Item = R>,
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         for rel in relocations {
-            let modifier = process_relocation::<P>(
+            let modifier = process_relocation::<P, R>(
                 self,
                 common,
                 &rel,
@@ -5103,7 +5103,7 @@ fn process_eh_frame_data<'data, 'scope, P: Platform>(
     Ok(())
 }
 
-fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>>(
+fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5111,12 +5111,12 @@ fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>
     queue: &mut LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
-    relocations: &R::Sequence,
+    relocations: &R::Sequence<'data>,
     scope: &Scope<'scope>,
 ) -> Result<Vec<ExceptionFrame<'data, R>>> {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
 
-    let mut rel_iter = relocations.crel_iter().enumerate().peekable();
+    let mut rel_iter = relocations.rel_iter().enumerate().peekable();
     let mut offset = 0;
     let mut exception_frames = Vec::new();
 
@@ -5142,7 +5142,7 @@ fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
             while let Some((_, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset;
+                let rel_offset = rel.offset();
                 if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
                     break;
@@ -5150,7 +5150,7 @@ fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation::<P>(
+                process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     rel,
@@ -5186,7 +5186,7 @@ fn process_eh_frame_relocations<'data, 'scope, P: Platform, R: Relocation<'data>
             let mut rel_end_index = 0;
 
             while let Some((rel_index, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset;
+                let rel_offset = rel.offset();
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
 
@@ -5682,7 +5682,7 @@ fn relaxation_scan_pass(
                             RelocationList::Rela(rela_list) => {
                                 elf_riscv64::collect_relaxation_deltas(
                                     sec_output_addr,
-                                    rela_list.crel_iter(),
+                                    rela_list.rel_iter(),
                                     existing_deltas,
                                     &mut resolve_symbol,
                                 )

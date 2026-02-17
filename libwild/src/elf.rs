@@ -16,6 +16,8 @@ use crate::platform::CommonSymbol;
 use crate::platform::Format;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
@@ -121,16 +123,44 @@ pub(crate) struct File<'data> {
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
 
-pub(crate) trait Relocation<'data> {
-    type Sequence: RelocationSequence<'data>;
+impl Relocation for Rela {
+    type Sequence<'data> = &'data [Rela];
+
+    fn symbol(&self) -> Option<object::SymbolIndex> {
+        object::read::elf::Rela::symbol(self, LittleEndian, false)
+    }
+
+    fn raw_type(&self) -> u32 {
+        object::read::elf::Rela::r_type(self, LittleEndian, false)
+    }
+
+    fn offset(&self) -> u64 {
+        object::read::elf::Rela::r_offset(self, LittleEndian)
+    }
+
+    fn addend(&self) -> i64 {
+        object::read::elf::Rela::r_addend(self, LittleEndian)
+    }
 }
 
-impl<'data> Relocation<'data> for Rela {
-    type Sequence = &'data [Rela];
-}
+impl Relocation for Crel {
+    type Sequence<'data> = Vec<Crel>;
 
-impl<'data> Relocation<'data> for Crel {
-    type Sequence = Vec<Crel>;
+    fn symbol(&self) -> Option<object::SymbolIndex> {
+        object::read::elf::Crel::symbol(self)
+    }
+
+    fn raw_type(&self) -> u32 {
+        self.r_type
+    }
+
+    fn offset(&self) -> u64 {
+        self.r_offset
+    }
+
+    fn addend(&self) -> i64 {
+        self.r_addend
+    }
 }
 
 /// A list of relocations that supports iteration.
@@ -140,15 +170,11 @@ pub(crate) enum RelocationList<'data> {
     Crel(CrelIterator<'data>),
 }
 
-pub(crate) trait RelocationSequence<'data> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
-    fn subsequence(&self, range: Range<usize>) -> Self;
-    fn num_relocations(&self) -> usize;
-}
-
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
+    type Rel = Rela;
+
+    fn rel_iter(&self) -> impl Iterator<Item = Rela> {
+        self.iter().copied()
     }
 
     fn subsequence(&self, range: Range<usize>) -> Self {
@@ -161,7 +187,9 @@ impl<'data> RelocationSequence<'data> for &'data [Rela] {
 }
 
 impl<'data> RelocationSequence<'data> for Vec<Crel> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+    type Rel = Crel;
+
+    fn rel_iter(&self) -> impl Iterator<Item = Crel> {
         self.clone().into_iter()
     }
 

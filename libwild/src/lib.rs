@@ -74,6 +74,7 @@ use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
+use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 pub use args::Args;
@@ -204,7 +205,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'layout_inputs, P: platform::Platform>(
+    fn link_for_arch<'layout_inputs, P: Platform>(
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
@@ -232,7 +233,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: platform::Platform>(
+    fn load_inputs_and_link<'data, P: Platform>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,

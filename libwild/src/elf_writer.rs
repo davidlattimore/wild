@@ -17,7 +17,7 @@ use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
-use crate::elf::RelocationSequence;
+use crate::elf::Rela;
 use crate::elf::RiscVAttribute;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
@@ -68,6 +68,8 @@ use crate::part_id;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relaxation as _;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence;
 use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
@@ -133,13 +135,13 @@ use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
 
 /// A cache for managing ELF relocations and optimization of relocation entries.
-#[derive(Debug, Default)]
-struct RelocationCache {
+#[derive(Debug)]
+struct RelocationCache<R> {
     /// The last relocation entry processed, used to optimize consecutive relocations.
-    previous: Option<Crel>,
+    previous: Option<R>,
     /// A cache mapping symbol addresses to their relocation entries, optimizing
     /// lookups for relocations involving the high parts of address.
-    high_part_symbols: HashMap<u64, Crel>,
+    high_part_symbols: HashMap<u64, R>,
 }
 
 pub(crate) fn write<P: Platform>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
@@ -1319,19 +1321,24 @@ fn write_object_section<P: Platform>(
     let relocations = object.relocations(section.index)?;
 
     let result = match relocations {
-        elf::RelocationList::Rela(rela) => apply_relocations::<P, _>(
+        elf::RelocationList::Rela(rela) => apply_relocations::<P, Rela, _>(
             object,
             out,
             section,
-            rela.iter()
-                .map(|rela| Ok(Crel::from_rela(rela, LittleEndian, false))),
+            rela.iter().map(|rela| Ok(*rela)),
             layout,
             table_writer,
             trace,
         ),
-        elf::RelocationList::Crel(crel_iter) => {
-            apply_relocations::<P, _>(object, out, section, crel_iter, layout, table_writer, trace)
-        }
+        elf::RelocationList::Crel(crel_iter) => apply_relocations::<P, Crel, _>(
+            object,
+            out,
+            section,
+            crel_iter,
+            layout,
+            table_writer,
+            trace,
+        ),
     };
     result.with_context(|| {
         format!(
@@ -1373,7 +1380,7 @@ fn write_section_reversed<P: Platform>(
     let relocations = object.relocations(section.index)?;
 
     let result = match relocations {
-        elf::RelocationList::Rela(rela) => apply_relocations::<P, _>(
+        elf::RelocationList::Rela(rela) => apply_relocations::<P, Crel, _>(
             object,
             out,
             section,
@@ -1386,7 +1393,7 @@ fn write_section_reversed<P: Platform>(
             table_writer,
             trace,
         ),
-        elf::RelocationList::Crel(crel_iter) => apply_relocations::<P, _>(
+        elf::RelocationList::Crel(crel_iter) => apply_relocations::<P, Crel, _>(
             object,
             out,
             section,
@@ -1426,16 +1433,15 @@ fn write_debug_section<P: Platform>(
     let out = write_section_raw(object, layout, section, buffers)?;
     let relocations = object.relocations(section.index)?;
     let result = match relocations {
-        elf::RelocationList::Rela(rela) => apply_debug_relocations::<P, _>(
+        elf::RelocationList::Rela(rela) => apply_debug_relocations::<P, Rela, _>(
             object,
             out,
             section,
-            rela.iter()
-                .map(|rela| Ok(Crel::from_rela(rela, LittleEndian, false))),
+            rela.iter().map(|rela| Ok(*rela)),
             layout,
         ),
         elf::RelocationList::Crel(crel_iter) => {
-            apply_debug_relocations::<P, _>(object, out, section, crel_iter, layout)
+            apply_debug_relocations::<P, Crel, _>(object, out, section, crel_iter, layout)
         }
     };
     result.with_context(|| {
@@ -1606,7 +1612,7 @@ fn write_symbols(
     Ok(())
 }
 
-fn apply_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_relocations<P: Platform, R: Relocation, I: Iterator<Item = object::Result<R>> + Clone>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
@@ -1623,15 +1629,15 @@ fn apply_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clo
     let mut modifier = RelocationModifier::Normal;
 
     let mut relocation_count = 0;
-    let mut relocation_cache = RelocationCache::default();
+    let mut relocation_cache = RelocationCache::<R>::default();
     let relax_deltas = object.section_relax_deltas.get(section.index.0);
     let mut relax_cursor = relax_deltas.map(|deltas| deltas.cursor());
 
     while let Some(rel) = relocations.next() {
         let rel = rel?;
         relocation_count += 1;
-        if P::high_part_relocations().contains(&rel.r_type) {
-            let cache_offset = opt_input_to_output(relax_deltas, rel.r_offset);
+        if P::high_part_relocations().contains(&rel.raw_type()) {
+            let cache_offset = opt_input_to_output(relax_deltas, rel.offset());
             relocation_cache.high_part_symbols.insert(cache_offset, rel);
         }
 
@@ -1645,11 +1651,11 @@ fn apply_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clo
         // offset to the corresponding output offset so that it points to the
         // correct position in the (compacted) output buffer.
         let offset_in_section = match relax_cursor.as_mut() {
-            Some(cursor) => cursor.translate(rel.r_offset),
-            None => rel.r_offset,
+            Some(cursor) => cursor.translate(rel.offset()),
+            None => rel.offset(),
         };
 
-        modifier = apply_relocation::<P, _>(
+        modifier = apply_relocation::<P, R, _>(
             object,
             offset_in_section,
             &rel,
@@ -1669,7 +1675,7 @@ fn apply_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clo
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<P>(object, &rel, layout)
+                display_relocation::<P, R>(object, &rel, layout)
             )
         })?;
         relocation_cache.previous = Some(rel);
@@ -1682,7 +1688,11 @@ fn apply_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clo
     Ok(())
 }
 
-fn apply_debug_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_debug_relocations<
+    P: Platform,
+    R: Relocation,
+    I: Iterator<Item = object::Result<R>> + Clone,
+>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
@@ -1711,8 +1721,8 @@ fn apply_debug_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>>
     for rel in relocations {
         relocation_count += 1;
         let rel = rel?;
-        let offset_in_section = rel.r_offset;
-        apply_debug_relocation::<P>(
+        let offset_in_section = rel.offset();
+        apply_debug_relocation::<P, R>(
             object,
             offset_in_section,
             &rel,
@@ -1724,7 +1734,7 @@ fn apply_debug_relocations<P: Platform, I: Iterator<Item = object::Result<Crel>>
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<P>(object, &rel, layout)
+                display_relocation::<P, R>(object, &rel, layout)
             )
         })?;
         relocation_cache.previous = Some(rel);
@@ -1745,15 +1755,15 @@ fn write_eh_frame_data<P: Platform>(
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     match object.relocations(eh_frame_section_index)? {
-        elf::RelocationList::Rela(relocations) => write_eh_frame_relocations::<P>(
+        elf::RelocationList::Rela(relocations) => write_eh_frame_relocations::<P, Rela>(
             object,
             layout,
             table_writer,
             trace,
             eh_frame_section,
-            relocations.crel_iter(),
+            relocations.rel_iter(),
         ),
-        elf::RelocationList::Crel(relocations) => write_eh_frame_relocations::<P>(
+        elf::RelocationList::Crel(relocations) => write_eh_frame_relocations::<P, Crel>(
             object,
             layout,
             table_writer,
@@ -1764,13 +1774,13 @@ fn write_eh_frame_data<P: Platform>(
     }
 }
 
-fn write_eh_frame_relocations<P: Platform>(
+fn write_eh_frame_relocations<P: Platform, R: Relocation>(
     object: &ObjectLayout<'_>,
     layout: &Layout<'_>,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
     eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
-    relocations: impl Iterator<Item = Crel>,
+    relocations: impl Iterator<Item = R>,
 ) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
@@ -1804,7 +1814,7 @@ fn write_eh_frame_relocations<P: Platform>(
         } else {
             // This is an FDE
             if let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset;
+                let rel_offset = rel.offset();
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
@@ -1819,7 +1829,7 @@ fn write_eh_frame_relocations<P: Platform>(
                             bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
                         };
                         let offset_in_section =
-                            (elf_symbol.st_value(e) as i64 + rel.r_addend) as u64;
+                            (elf_symbol.st_value(e) as i64 + rel.addend()) as u64;
                         if let Some(section_address) =
                             object.section_resolutions[section_index.0].address()
                             && object
@@ -1875,12 +1885,12 @@ fn write_eh_frame_relocations<P: Platform>(
                 entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
             }
             while let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset;
+                let rel_offset = rel.offset();
                 if rel_offset >= next_input_pos as u64 {
                     // This relocation belongs to the next entry.
                     break;
                 }
-                apply_relocation::<P, _>(
+                apply_relocation::<P, R, _>(
                     object,
                     rel_offset - input_pos as u64,
                     rel,
@@ -1900,7 +1910,7 @@ fn write_eh_frame_relocations<P: Platform>(
                 .with_context(|| {
                     format!(
                         "Failed to apply eh_frame {}",
-                        display_relocation::<P>(object, rel, layout)
+                        display_relocation::<P, R>(object, rel, layout)
                     )
                 })?;
                 relocations.next();
@@ -1909,7 +1919,7 @@ fn write_eh_frame_relocations<P: Platform>(
         } else {
             // We're ignoring this entry, skip any relocations for it.
             while let Some(rel) = relocations.peek() {
-                if rel.r_offset < next_input_pos as u64 {
+                if rel.offset() < next_input_pos as u64 {
                     relocations.next();
                 } else {
                     break;
@@ -1934,12 +1944,12 @@ fn write_eh_frame_relocations<P: Platform>(
     Ok(())
 }
 
-fn display_relocation<'a, P: Platform>(
+fn display_relocation<'a, P: Platform, R: Relocation>(
     object: &'a ObjectLayout,
-    rel: &'a Crel,
+    rel: &'a R,
     layout: &'a Layout,
-) -> DisplayRelocation<'a, P> {
-    DisplayRelocation::<'a, P> {
+) -> DisplayRelocation<'a, P, R> {
+    DisplayRelocation::<'a, P, R> {
         rel,
         symbol_db: &layout.symbol_db,
         per_symbol_flags: &layout.per_symbol_flags,
@@ -1948,20 +1958,20 @@ fn display_relocation<'a, P: Platform>(
     }
 }
 
-struct DisplayRelocation<'a, P: Platform> {
-    rel: &'a Crel,
+struct DisplayRelocation<'a, P: Platform, R: Relocation> {
+    rel: &'a R,
     symbol_db: &'a SymbolDb<'a>,
     per_symbol_flags: &'a PerSymbolFlags,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<P>,
 }
 
-impl<P: Platform> Display for DisplayRelocation<'_, P> {
+impl<P: Platform, R: Relocation> Display for DisplayRelocation<'_, P, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "relocation of type {} to ",
-            P::rel_type_to_string(self.rel.r_type)
+            P::rel_type_to_string(self.rel.raw_type())
         )?;
         match self.rel.symbol() {
             None => write!(f, "absolute")?,
@@ -1986,8 +1996,8 @@ struct SectionInfo {
     section_flags: SectionFlags,
 }
 
-fn get_resolution(
-    rel: &Crel,
+fn get_resolution<R: Relocation>(
+    rel: &R,
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<(Resolution, SymbolIndex, SymbolId)> {
@@ -2109,30 +2119,30 @@ fn adjust_relocation_based_on_value(
 }
 
 #[inline(always)]
-fn get_pair_subtraction_relocation_value<P: Platform>(
+fn get_pair_subtraction_relocation_value<P: Platform, R: Relocation>(
     object_layout: &ObjectLayout,
-    rel: &Crel,
+    rel: &R,
     layout: &Layout,
     resolution: Resolution,
     symbol_index: SymbolIndex,
     addend: i64,
-    set_rel: &Crel,
+    set_rel: &R,
     expected_r_type: u32,
 ) -> Result<u64> {
     ensure!(
-        set_rel.r_offset == rel.r_offset,
+        set_rel.offset() == rel.offset(),
         "PairSubtractionULEB128 relocation must have equal offset"
     );
     ensure!(
-        set_rel.r_type == expected_r_type,
+        set_rel.raw_type() == expected_r_type,
         "unexpected previous relocation: expected: {}, was: {}",
         P::rel_type_to_string(expected_r_type),
-        P::rel_type_to_string(set_rel.r_type)
+        P::rel_type_to_string(set_rel.raw_type())
     );
     let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
     let set_resolution_val = set_resolution.value_with_addend(
-        set_rel.r_addend,
+        set_rel.addend(),
         set_symbol_index,
         object_layout,
         &layout.merged_strings,
@@ -2152,16 +2162,16 @@ fn get_pair_subtraction_relocation_value<P: Platform>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clone>(
+fn apply_relocation<P: Platform, R: Relocation, I: Iterator<Item = object::Result<R>> + Clone>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
-    rel: &Crel,
+    rel: &R,
     section_info: SectionInfo,
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    relocation_cache: &RelocationCache,
+    relocation_cache: &RelocationCache<R>,
     relocation_iterator: &I,
     relax_deltas: Option<&SectionRelaxDeltas>,
 ) -> Result<RelocationModifier> {
@@ -2174,14 +2184,14 @@ fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clon
     )
     .entered();
 
-    let r_type = rel.r_type;
-    let mut addend = rel.r_addend;
+    let r_type = rel.raw_type();
+    let mut addend = rel.addend();
 
     match P::relocation_from_raw(r_type)?.kind {
         RelocationKind::None => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
-            let address = section_address + rel.r_offset;
+            let address = section_address + rel.offset();
             ensure!(
                 addend.is_power_of_two(),
                 "A power of 2 expected for Alignment relocation: {}",
@@ -2310,9 +2320,9 @@ fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clon
                     // It's very unlikely that a high part follows the low part:
                     relocation_iterator.clone().find_map(|r| {
                         if let Ok(r) = r
-                            && P::high_part_relocations().contains(&r.r_type)
+                            && P::high_part_relocations().contains(&r.raw_type())
                         {
-                            let r_output_offset = opt_input_to_output(relax_deltas, r.r_offset);
+                            let r_output_offset = opt_input_to_output(relax_deltas, r.offset());
                             if r_output_offset == hi_offset_in_section {
                                 return Some(r);
                             }
@@ -2322,8 +2332,8 @@ fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clon
                 })
                 .context("Missing High relocation connected with R_RISCV_PCREL_LO12")?;
 
-            let hi_rel_info = P::relocation_from_raw(hi_rel.r_type)?;
-            let addend = hi_rel.r_addend;
+            let hi_rel_info = P::relocation_from_raw(hi_rel.raw_type())?;
+            let addend = hi_rel.addend();
             let (resolution, symbol_index, _) = get_resolution(&hi_rel, object_layout, layout)
                 .with_context(|| {
                     "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
@@ -2372,7 +2382,7 @@ fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clon
             }
         }
         RelocationKind::PairSubtractionULEB128(expected_r_type) => {
-            get_pair_subtraction_relocation_value::<P>(
+            get_pair_subtraction_relocation_value::<P, R>(
                 object_layout,
                 rel,
                 layout,
@@ -2605,21 +2615,21 @@ fn apply_relocation<P: Platform, I: Iterator<Item = object::Result<Crel>> + Clon
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<P: Platform>(
+fn apply_debug_relocation<P: Platform, R: Relocation>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
-    rel: &Crel,
+    rel: &R,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocation_cache: &RelocationCache,
+    relocation_cache: &RelocationCache<R>,
 ) -> Result<()> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
-    let addend = rel.r_addend;
-    let r_type = rel.r_type;
+    let addend = rel.addend();
+    let r_type = rel.raw_type();
     let rel_info = P::relocation_from_raw(r_type)?;
 
     let resolution = layout
@@ -2668,7 +2678,7 @@ fn apply_debug_relocation<P: Platform>(
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
             RelocationKind::PairSubtractionULEB128(expected_r_type) => {
-                get_pair_subtraction_relocation_value::<P>(
+                get_pair_subtraction_relocation_value::<P, R>(
                     object_layout,
                     rel,
                     layout,
@@ -4711,4 +4721,13 @@ pub(crate) fn verify_resolution_allocation(
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)
+}
+
+impl<R> Default for RelocationCache<R> {
+    fn default() -> Self {
+        Self {
+            previous: Default::default(),
+            high_part_symbols: Default::default(),
+        }
+    }
 }

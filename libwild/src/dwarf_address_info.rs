@@ -2,13 +2,14 @@
 //! offset in an input section.
 
 use crate::elf::File;
-use crate::elf::RelocationSequence;
+use crate::elf::Rela;
 use crate::error::Result;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence as _;
 use anyhow::Context;
 use object::LittleEndian;
-use object::SymbolIndex;
 use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use std::borrow::Cow;
@@ -110,18 +111,22 @@ fn section_data_with_relocations<P: Platform>(
 
             // Apply relocations.
             match object.relocations(index, relocations)? {
-                crate::elf::RelocationList::Rela(relocations) => apply_section_relocations::<P>(
-                    object,
-                    section_of_interest,
-                    &mut section_data,
-                    relocations.crel_iter(),
-                )?,
-                crate::elf::RelocationList::Crel(relocations) => apply_section_relocations::<P>(
-                    object,
-                    section_of_interest,
-                    &mut section_data,
-                    relocations.flat_map(|r| r.ok()),
-                )?,
+                crate::elf::RelocationList::Rela(relocations) => {
+                    apply_section_relocations::<P, Rela>(
+                        object,
+                        section_of_interest,
+                        &mut section_data,
+                        relocations.rel_iter(),
+                    )?;
+                }
+                crate::elf::RelocationList::Crel(relocations) => {
+                    apply_section_relocations::<P, Crel>(
+                        object,
+                        section_of_interest,
+                        &mut section_data,
+                        relocations.flat_map(|r| r.ok()),
+                    )?;
+                }
             }
 
             Cow::Owned(section_data)
@@ -132,26 +137,26 @@ fn section_data_with_relocations<P: Platform>(
     Ok(data)
 }
 
-fn apply_section_relocations<P: Platform>(
+fn apply_section_relocations<P: Platform, R: Relocation>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
-    relocations: impl Iterator<Item = Crel>,
+    relocations: impl Iterator<Item = R>,
 ) -> Result {
     for rel in relocations {
-        let sym_index = rel.r_sym;
-        let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
+        let sym_index = rel.symbol().context("Relocation for undefine symbol")?;
+        let symbol = object.symbol(sym_index)?;
 
         let mut value = symbol
             .st_value
             .get(LittleEndian)
-            .wrapping_add(rel.r_addend as u64);
+            .wrapping_add(rel.addend() as u64);
 
         let symbol_section = object.section(object::SectionIndex(
             symbol.st_shndx.get(LittleEndian) as usize,
         ))?;
 
-        let data_offset = rel.r_offset as usize;
+        let data_offset = rel.offset() as usize;
 
         if symbol_section.sh_offset.get(LittleEndian)
             == section_of_interest.sh_offset.get(LittleEndian)
@@ -159,7 +164,7 @@ fn apply_section_relocations<P: Platform>(
             value += SECTION_LOAD_ADDRESS;
         }
 
-        let r_type = P::relocation_from_raw(rel.r_type)?;
+        let r_type = P::relocation_from_raw(rel.raw_type())?;
 
         let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
             continue;

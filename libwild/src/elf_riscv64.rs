@@ -4,6 +4,7 @@ use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
+use crate::platform::Relocation;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -20,7 +21,6 @@ use linker_utils::riscv64::relocation_type_from_raw;
 use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
-use object::read::elf::Crel;
 
 pub(crate) struct ElfRiscV64;
 
@@ -262,9 +262,9 @@ impl crate::platform::Relaxation for Relaxation {
 /// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
 /// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
 /// returns the output address and interposability of a symbol.
-pub(crate) fn collect_relaxation_deltas(
+pub(crate) fn collect_relaxation_deltas<R: Relocation>(
     section_output_address: u64,
-    relocations: impl Iterator<Item = Crel>,
+    relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
 ) -> Vec<(u64, u32)> {
@@ -272,13 +272,13 @@ pub(crate) fn collect_relaxation_deltas(
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
 
     for rel in relocations {
-        match rel.r_type {
+        match rel.raw_type() {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
-                prev_call = rel.symbol().map(|sym_idx| (rel.r_offset, sym_idx));
+                prev_call = rel.symbol().map(|sym_idx| (rel.offset(), sym_idx));
             }
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
-                    && rel.r_offset == call_offset
+                    && rel.offset() == call_offset
                     // Skip calls that were already relaxed in a previous pass.
                     && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
                     && let Some(info) = resolve_symbol(sym_idx)
