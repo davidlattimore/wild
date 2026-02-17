@@ -186,10 +186,10 @@ impl Output {
         }
     }
 
-    pub fn write<'data>(
+    pub fn write<'data, 'layout>(
         &self,
-        layout: &Layout<'data>,
-        write_fn: impl Fn(&mut SizedOutput, &Layout) -> Result,
+        layout: &'layout Layout<'data>,
+        write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data>) -> Result,
     ) -> Result {
         timing_phase!("Write output file");
         if layout.args().write_layout {

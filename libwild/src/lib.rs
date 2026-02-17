@@ -205,10 +205,10 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'layout_inputs, P: Platform>(
-        &'layout_inputs self,
-        args: &'layout_inputs Args,
-    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+    fn link_for_arch<'data, P: Platform<'data>>(
+        &'data self,
+        args: &'data Args,
+    ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
@@ -233,7 +233,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: Platform>(
+    fn load_inputs_and_link<'data, P: Platform<'data>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,

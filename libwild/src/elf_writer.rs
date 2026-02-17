@@ -144,7 +144,10 @@ struct RelocationCache<R> {
     high_part_symbols: HashMap<u64, R>,
 }
 
-pub(crate) fn write<P: Platform>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+pub(crate) fn write<'data, P: Platform<'data>>(
+    sized_output: &mut SizedOutput,
+    layout: &Layout<'data>,
+) -> Result {
     write_file_contents::<P>(sized_output, layout)?;
     if layout.args().validate_output {
         crate::validation::validate_bytes(layout, &sized_output.out)?;
@@ -206,7 +209,10 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
         .finalize()
 }
 
-fn write_file_contents<P: Platform>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+fn write_file_contents<'data, P: Platform<'data>>(
+    sized_output: &mut SizedOutput,
+    layout: &Layout<'data>,
+) -> Result {
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
@@ -339,7 +345,7 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
     Ok(())
 }
 
-fn populate_file_header<P: Platform>(
+fn populate_file_header<'data, P: Platform<'data>>(
     layout: &Layout,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
@@ -387,11 +393,11 @@ fn populate_file_header<P: Platform>(
     Ok(())
 }
 
-fn write_file<P: Platform>(
-    file: &FileLayout,
+fn write_file<'data, P: Platform<'data>>(
+    file: &FileLayout<'data>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
     trace: &TraceOutput,
 ) -> Result {
     match file {
@@ -589,7 +595,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         }
     }
 
-    fn process_resolution<P: Platform>(
+    fn process_resolution<'data, P: Platform<'data>>(
         &mut self,
         layout: Option<&Layout>,
         res: &Resolution,
@@ -672,7 +678,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_offset<P: Platform>(
+    fn process_got_tls_offset<'data, P: Platform<'data>>(
         &mut self,
         res: &Resolution,
         layout: &Layout,
@@ -714,7 +720,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_mod_and_offset<P: Platform>(
+    fn process_got_tls_mod_and_offset<'data, P: Platform<'data>>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -751,7 +757,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_descriptor<P: Platform>(
+    fn process_got_tls_descriptor<'data, P: Platform<'data>>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -781,7 +787,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_plt_entry<P: Platform>(&mut self, got_address: u64, plt_address: u64) -> Result {
+    fn write_plt_entry<'data, P: Platform<'data>>(
+        &mut self,
+        got_address: u64,
+        plt_address: u64,
+    ) -> Result {
         let plt_entry = self.take_plt_got_entry()?;
         P::write_plt_entry(plt_entry, got_address, plt_address)
     }
@@ -852,7 +862,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation<P: Platform>(&mut self, res: &Resolution) -> Result {
+    fn write_ifunc_relocation<'data, P: Platform<'data>>(&mut self, res: &Resolution) -> Result {
         let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
@@ -870,7 +880,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_dtpmod_relocation<P: Platform>(
+    fn write_dtpmod_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -883,7 +893,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tls_descriptor_relocation<P: Platform>(
+    fn write_tls_descriptor_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -897,7 +907,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dtpoff_relocation<P: Platform>(
+    fn write_dtpoff_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -910,7 +920,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tpoff_relocation<P: Platform>(
+    fn write_tpoff_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -925,7 +935,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
-    fn write_address_relocation<P: Platform>(
+    fn write_address_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         relative_address: i64,
@@ -948,7 +958,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation_for_data<P: Platform>(
+    fn write_ifunc_relocation_for_data<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         resolver_address: i64,
@@ -963,7 +973,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dynamic_symbol_relocation<P: Platform>(
+    fn write_dynamic_symbol_relocation<'data, P: Platform<'data>>(
         &mut self,
         place: u64,
         addend: i64,
@@ -1261,11 +1271,11 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     }
 }
 
-fn write_object<P: Platform>(
-    object: &ObjectLayout,
+fn write_object<'data, P: Platform<'data>>(
+    object: &ObjectLayout<'data>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
     trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
@@ -1328,9 +1338,9 @@ fn write_object<P: Platform>(
     Ok(())
 }
 
-fn write_object_section<P: Platform>(
-    object: &ObjectLayout,
-    layout: &Layout,
+fn write_object_section<'data, P: Platform<'data>>(
+    object: &ObjectLayout<'data>,
+    layout: &Layout<'data>,
     section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -1379,9 +1389,9 @@ fn write_object_section<P: Platform>(
     Ok(())
 }
 
-fn write_section_reversed<P: Platform>(
-    object: &ObjectLayout<'_>,
-    layout: &Layout<'_>,
+fn write_section_reversed<'data, P: Platform<'data>>(
+    object: &ObjectLayout<'data>,
+    layout: &Layout<'data>,
     section: &Section,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
@@ -1450,9 +1460,9 @@ fn write_section_reversed<P: Platform>(
     Ok(())
 }
 
-fn write_debug_section<P: Platform>(
-    object: &ObjectLayout,
-    layout: &Layout,
+fn write_debug_section<'data, P: Platform<'data>>(
+    object: &ObjectLayout<'data>,
+    layout: &Layout<'data>,
     section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -1638,12 +1648,17 @@ fn write_symbols(
     Ok(())
 }
 
-fn apply_relocations<P: Platform, R: Relocation, I: Iterator<Item = object::Result<R>> + Clone>(
-    object: &ObjectLayout,
+fn apply_relocations<
+    'data,
+    P: Platform<'data>,
+    R: Relocation,
+    I: Iterator<Item = object::Result<R>> + Clone,
+>(
+    object: &ObjectLayout<'data>,
     out: &mut [u8],
     section: &Section,
     mut relocations: I,
-    layout: &Layout,
+    layout: &Layout<'data>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
@@ -1715,15 +1730,16 @@ fn apply_relocations<P: Platform, R: Relocation, I: Iterator<Item = object::Resu
 }
 
 fn apply_debug_relocations<
-    P: Platform,
+    'data,
+    P: Platform<'data>,
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
-    object: &ObjectLayout,
+    object: &ObjectLayout<'data>,
     out: &mut [u8],
     section: &Section,
     relocations: I,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     let object_section = object.object.section(section.index)?;
     let section_name = object.object.section_name(object_section)?;
@@ -1772,10 +1788,10 @@ fn apply_debug_relocations<
     Ok(())
 }
 
-fn write_eh_frame_data<P: Platform>(
-    object: &ObjectLayout,
+fn write_eh_frame_data<'data, P: Platform<'data>>(
+    object: &ObjectLayout<'data>,
     eh_frame_section_index: object::SectionIndex,
-    layout: &Layout,
+    layout: &Layout<'data>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
@@ -1800,9 +1816,9 @@ fn write_eh_frame_data<P: Platform>(
     }
 }
 
-fn write_eh_frame_relocations<P: Platform, R: Relocation>(
-    object: &ObjectLayout<'_>,
-    layout: &Layout<'_>,
+fn write_eh_frame_relocations<'data, P: Platform<'data>, R: Relocation>(
+    object: &ObjectLayout<'data>,
+    layout: &Layout<'data>,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
     eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
@@ -1970,12 +1986,12 @@ fn write_eh_frame_relocations<P: Platform, R: Relocation>(
     Ok(())
 }
 
-fn display_relocation<'a, P: Platform, R: Relocation>(
-    object: &'a ObjectLayout,
+fn display_relocation<'a, 'data, P: Platform<'data>, R: Relocation>(
+    object: &'a ObjectLayout<'data>,
     rel: &'a R,
-    layout: &'a Layout,
-) -> DisplayRelocation<'a, P, R> {
-    DisplayRelocation::<'a, P, R> {
+    layout: &'a Layout<'data>,
+) -> DisplayRelocation<'a, 'data, P, R> {
+    DisplayRelocation::<'a, 'data, P, R> {
         rel,
         symbol_db: &layout.symbol_db,
         per_symbol_flags: &layout.per_symbol_flags,
@@ -1984,15 +2000,15 @@ fn display_relocation<'a, P: Platform, R: Relocation>(
     }
 }
 
-struct DisplayRelocation<'a, P: Platform, R: Relocation> {
+struct DisplayRelocation<'a, 'data, P: Platform<'data>, R: Relocation> {
     rel: &'a R,
-    symbol_db: &'a SymbolDb<'a>,
+    symbol_db: &'a SymbolDb<'data>,
     per_symbol_flags: &'a PerSymbolFlags,
-    object: &'a ObjectLayout<'a>,
+    object: &'a ObjectLayout<'data>,
     phantom: PhantomData<P>,
 }
 
-impl<P: Platform, R: Relocation> Display for DisplayRelocation<'_, P, R> {
+impl<'a, 'data, P: Platform<'data>, R: Relocation> Display for DisplayRelocation<'a, 'data, P, R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -2145,7 +2161,7 @@ fn adjust_relocation_based_on_value(
 }
 
 #[inline(always)]
-fn get_pair_subtraction_relocation_value<P: Platform, R: Relocation>(
+fn get_pair_subtraction_relocation_value<'data, P: Platform<'data>, R: Relocation>(
     object_layout: &ObjectLayout,
     rel: &R,
     layout: &Layout,
@@ -2188,7 +2204,12 @@ fn get_pair_subtraction_relocation_value<P: Platform, R: Relocation>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<P: Platform, R: Relocation, I: Iterator<Item = object::Result<R>> + Clone>(
+fn apply_relocation<
+    'data,
+    P: Platform<'data>,
+    R: Relocation,
+    I: Iterator<Item = object::Result<R>> + Clone,
+>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &R,
@@ -2641,7 +2662,7 @@ fn apply_relocation<P: Platform, R: Relocation, I: Iterator<Item = object::Resul
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<P: Platform, R: Relocation>(
+fn apply_debug_relocation<'data, P: Platform<'data>, R: Relocation>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &R,
@@ -2750,7 +2771,7 @@ fn apply_debug_relocation<P: Platform, R: Relocation>(
 }
 
 #[inline(always)]
-fn write_absolute_relocation<P: Platform>(
+fn write_absolute_relocation<'data, P: Platform<'data>>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
     place: u64,
@@ -2813,7 +2834,7 @@ fn write_absolute_relocation<P: Platform>(
     }
 }
 
-fn write_prelude<P: Platform>(
+fn write_prelude<'data, P: Platform<'data>>(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -2911,7 +2932,7 @@ fn write_merged_strings(
     }
 }
 
-fn write_plt_got_entries<P: Platform>(
+fn write_plt_got_entries<'data, P: Platform<'data>>(
     prelude: &PreludeLayout,
     layout: &Layout,
     table_writer: &mut TableWriter,
@@ -3116,7 +3137,7 @@ pub(crate) struct EpilogueOffsets {
     pub(crate) soname: Option<u32>,
 }
 
-fn write_linker_script_state<P: Platform>(
+fn write_linker_script_state<'data, P: Platform<'data>>(
     script: &LinkerScriptLayoutState,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3134,7 +3155,7 @@ fn write_linker_script_state<P: Platform>(
     Ok(())
 }
 
-fn write_synthetic_symbols<P: Platform>(
+fn write_synthetic_symbols<'data, P: Platform<'data>>(
     syn: &SyntheticSymbolsLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3154,7 +3175,7 @@ fn write_synthetic_symbols<P: Platform>(
     Ok(())
 }
 
-fn write_epilogue<P: Platform>(
+fn write_epilogue<'data, P: Platform<'data>>(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -4433,7 +4454,7 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 }
 
-fn write_internal_symbols_plt_got_entries<P: Platform>(
+fn write_internal_symbols_plt_got_entries<'data, P: Platform<'data>>(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4458,7 +4479,7 @@ fn write_internal_symbols_plt_got_entries<P: Platform>(
     Ok(())
 }
 
-fn write_dynamic_file<P: Platform>(
+fn write_dynamic_file<'data, P: Platform<'data>>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4614,7 +4635,7 @@ fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Resu
     Ok(())
 }
 
-fn write_copy_relocations<P: Platform>(
+fn write_copy_relocations<'data, P: Platform<'data>>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4633,7 +4654,7 @@ fn write_copy_relocations<P: Platform>(
     Ok(())
 }
 
-fn write_copy_relocation_for_symbol<P: Platform>(
+fn write_copy_relocation_for_symbol<'data, P: Platform<'data>>(
     symbol_id: SymbolId,
     table_writer: &mut TableWriter,
     layout: &Layout,

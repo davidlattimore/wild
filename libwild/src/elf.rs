@@ -13,7 +13,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
 use crate::platform::CommonSymbol;
-use crate::platform::Format;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relocation;
@@ -92,8 +91,6 @@ pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
-
-pub(crate) struct Elf;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -209,12 +206,7 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 /// Threshold size for using parallel copy for section data copying.
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
-impl Format for Elf {
-    type File<'data> = File<'data>;
-}
-
 impl<'data> platform::ObjectFile<'data> for File<'data> {
-    type Format = Elf;
     type Symbol = Symbol;
     type SectionHeader = SectionHeader;
     type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
@@ -976,7 +968,7 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files, P: Platform>(
+    pub(crate) fn new<'files, 'states, 'data: 'files, P: Platform<'data>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState> + Clone,
         args: &Args,
@@ -993,7 +985,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, P: Platform>(
+fn merge_gnu_property_notes<'states, 'data, P: Platform<'data>>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -1057,7 +1049,7 @@ fn merge_gnu_property_notes<'states, P: Platform>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, P: Platform>(
+fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
@@ -1067,7 +1059,7 @@ fn merge_eflags<'files, 'data: 'files, P: Platform>(
     )?))
 }
 
-fn merge_riscv_attributes<'groups, P: Platform>(
+fn merge_riscv_attributes<'groups, 'data, P: Platform<'data>>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");

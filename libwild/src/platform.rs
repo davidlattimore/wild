@@ -14,9 +14,9 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 /// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform {
+pub(crate) trait Platform<'data> {
     type Relaxation: Relaxation;
-    type Format: Format;
+    type File: ObjectFile<'data>;
 
     // Architecture identifier
     const KIND: Architecture;
@@ -94,16 +94,7 @@ pub(crate) struct RelaxSymbolInfo {
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
-/// This is 1:1 with `ObjectFile`. It exists separately since `ObjectFile` has state and is generic
-/// over a lifetime. It's convenient to be able to talk about a format without involving the
-/// lifetime.
-pub(crate) trait Format {
-    type File<'data>: ObjectFile<'data>;
-}
-
-/// An object file. Implementations are 1:1 with `Format`.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
-    type Format: Format;
     type Symbol: Symbol;
     type SectionHeader: SectionHeader + 'static;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
@@ -234,7 +225,7 @@ pub(crate) struct CommonSymbol {
     pub(crate) part_id: PartId,
 }
 
-pub(crate) trait Relocation: Copy {
+pub(crate) trait Relocation: Copy + 'static {
     type Sequence<'data>: RelocationSequence<'data>;
 
     fn symbol(&self) -> Option<object::SymbolIndex>;

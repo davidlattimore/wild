@@ -33,7 +33,7 @@ pub(crate) struct SourceInfoDetails {
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<P: Platform>(
+pub(crate) fn get_source_info<'data, P: Platform<'data>>(
     object: &File,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -99,7 +99,7 @@ pub(crate) fn get_source_info<P: Platform>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<P: Platform>(
+fn section_data_with_relocations<'data, P: Platform<'data>>(
     object: &File,
     relocations: &RelocationSections,
     id: gimli::SectionId,
@@ -137,7 +137,7 @@ fn section_data_with_relocations<P: Platform>(
     Ok(data)
 }
 
-fn apply_section_relocations<P: Platform, R: Relocation>(
+fn apply_section_relocations<'data, P: Platform<'data>, R: Relocation>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
