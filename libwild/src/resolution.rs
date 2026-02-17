@@ -80,7 +80,7 @@ impl<'data> Resolver<'data> {
     /// the SymbolDb in between.
     pub(crate) fn resolve_symbols_and_select_archive_entries(
         &mut self,
-        symbol_db: &mut SymbolDb<'data>,
+        symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
     ) -> Result {
         resolve_symbols_and_select_archive_entries(self, symbol_db)
     }
@@ -91,7 +91,7 @@ impl<'data> Resolver<'data> {
     /// appropriate name.
     pub(crate) fn resolve_sections_and_canonicalise_undefined(
         mut self,
-        symbol_db: &mut SymbolDb<'data>,
+        symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data>,
         layout_rules: &LayoutRules<'data>,
@@ -123,7 +123,7 @@ impl<'data> Resolver<'data> {
 
 fn resolve_symbols_and_select_archive_entries<'data>(
     resolver: &mut Resolver<'data>,
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
 ) -> Result {
     timing_phase!("Resolve symbols");
 
@@ -246,7 +246,7 @@ fn resolve_group<'data, 'definitions>(
     initial_work_out: &mut Vec<LoadObjectSymbolsRequest<'definitions>>,
     definitions_out_per_file: &mut Vec<AtomicTake<&'definitions mut [SymbolId]>>,
     symbol_definitions_slice: &mut &'definitions mut [SymbolId],
-    symbol_db: &SymbolDb<'data>,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     outputs: &Outputs<'data>,
 ) -> ResolvedGroup<'data> {
     match group {
@@ -370,7 +370,7 @@ fn resolve_group<'data, 'definitions>(
 
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
-    symbol_db: &SymbolDb<'data>,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
     timing_phase!("Resolve sections");
@@ -439,7 +439,7 @@ impl LoadedMetrics {
 
 struct ResolutionResources<'data, 'scope> {
     definitions_per_file: &'scope Vec<Vec<AtomicTake<&'scope mut [SymbolId]>>>,
-    symbol_db: &'scope SymbolDb<'data>,
+    symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
     outputs: &'scope Outputs<'data>,
 }
 
@@ -491,7 +491,7 @@ impl<'scope> ResolutionResources<'_, 'scope> {
 fn work_items_do<'definitions, 'data>(
     file_id: FileId,
     mut definitions_out: &'definitions mut [SymbolId],
-    symbol_db: &SymbolDb<'data>,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     outputs: &Outputs<'data>,
     mut request_callback: impl FnMut(LoadObjectSymbolsRequest<'definitions>),
 ) {
@@ -928,7 +928,7 @@ fn canonicalise_undefined_symbols<'data>(
     mut undefined_symbols: Vec<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
     groups: &[ResolvedGroup<'data>],
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
 ) {
@@ -1031,7 +1031,7 @@ fn canonicalise_undefined_symbols<'data>(
 
 fn allocate_start_stop_symbol_id<'data>(
     name: PreHashed<UnversionedSymbolName<'data>>,
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
     output_sections: &OutputSections,

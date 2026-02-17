@@ -12,6 +12,7 @@ use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
+use crate::elf::ElfPlatform;
 use crate::elf::FileHeader;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
@@ -67,7 +68,6 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::platform::ObjectFile as _;
-use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
@@ -145,7 +145,7 @@ struct RelocationCache<R> {
     high_part_symbols: HashMap<u64, R>,
 }
 
-pub(crate) fn write<'data, P: Platform<'data>>(
+pub(crate) fn write<'data, P: ElfPlatform<'data>>(
     sized_output: &mut SizedOutput,
     layout: &Layout<'data>,
 ) -> Result {
@@ -210,7 +210,7 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
         .finalize()
 }
 
-fn write_file_contents<'data, P: Platform<'data>>(
+fn write_file_contents<'data, P: ElfPlatform<'data>>(
     sized_output: &mut SizedOutput,
     layout: &Layout<'data>,
 ) -> Result {
@@ -346,7 +346,7 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
     Ok(())
 }
 
-fn populate_file_header<'data, P: Platform<'data>>(
+fn populate_file_header<'data, P: ElfPlatform<'data>>(
     layout: &Layout,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
@@ -394,7 +394,7 @@ fn populate_file_header<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_file<'data, P: Platform<'data>>(
+fn write_file<'data, P: ElfPlatform<'data>>(
     file: &FileLayout<'data>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -596,7 +596,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         }
     }
 
-    fn process_resolution<'data, P: Platform<'data>>(
+    fn process_resolution<'data, P: ElfPlatform<'data>>(
         &mut self,
         layout: Option<&Layout>,
         res: &Resolution,
@@ -679,7 +679,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_offset<'data, P: Platform<'data>>(
+    fn process_got_tls_offset<'data, P: ElfPlatform<'data>>(
         &mut self,
         res: &Resolution,
         layout: &Layout,
@@ -721,7 +721,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_mod_and_offset<'data, P: Platform<'data>>(
+    fn process_got_tls_mod_and_offset<'data, P: ElfPlatform<'data>>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -758,7 +758,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_descriptor<'data, P: Platform<'data>>(
+    fn process_got_tls_descriptor<'data, P: ElfPlatform<'data>>(
         &mut self,
         res: &Resolution,
         got_address: u64,
@@ -788,7 +788,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_plt_entry<'data, P: Platform<'data>>(
+    fn write_plt_entry<'data, P: ElfPlatform<'data>>(
         &mut self,
         got_address: u64,
         plt_address: u64,
@@ -863,7 +863,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation<'data, P: Platform<'data>>(&mut self, res: &Resolution) -> Result {
+    fn write_ifunc_relocation<'data, P: ElfPlatform<'data>>(&mut self, res: &Resolution) -> Result {
         let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
@@ -881,7 +881,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_dtpmod_relocation<'data, P: Platform<'data>>(
+    fn write_dtpmod_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -894,7 +894,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tls_descriptor_relocation<'data, P: Platform<'data>>(
+    fn write_tls_descriptor_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -908,7 +908,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dtpoff_relocation<'data, P: Platform<'data>>(
+    fn write_dtpoff_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -921,7 +921,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_tpoff_relocation<'data, P: Platform<'data>>(
+    fn write_tpoff_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -936,7 +936,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
-    fn write_address_relocation<'data, P: Platform<'data>>(
+    fn write_address_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         relative_address: i64,
@@ -959,7 +959,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation_for_data<'data, P: Platform<'data>>(
+    fn write_ifunc_relocation_for_data<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         resolver_address: i64,
@@ -974,7 +974,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         )
     }
 
-    fn write_dynamic_symbol_relocation<'data, P: Platform<'data>>(
+    fn write_dynamic_symbol_relocation<'data, P: ElfPlatform<'data>>(
         &mut self,
         place: u64,
         addend: i64,
@@ -1272,7 +1272,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     }
 }
 
-fn write_object<'data, P: Platform<'data>>(
+fn write_object<'data, P: ElfPlatform<'data>>(
     object: &ObjectLayout<'data>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -1339,7 +1339,7 @@ fn write_object<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_object_section<'data, P: Platform<'data>>(
+fn write_object_section<'data, P: ElfPlatform<'data>>(
     object: &ObjectLayout<'data>,
     layout: &Layout<'data>,
     section: &Section,
@@ -1390,7 +1390,7 @@ fn write_object_section<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_section_reversed<'data, P: Platform<'data>>(
+fn write_section_reversed<'data, P: ElfPlatform<'data>>(
     object: &ObjectLayout<'data>,
     layout: &Layout<'data>,
     section: &Section,
@@ -1461,7 +1461,7 @@ fn write_section_reversed<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_debug_section<'data, P: Platform<'data>>(
+fn write_debug_section<'data, P: ElfPlatform<'data>>(
     object: &ObjectLayout<'data>,
     layout: &Layout<'data>,
     section: &Section,
@@ -1651,7 +1651,7 @@ fn write_symbols(
 
 fn apply_relocations<
     'data,
-    P: Platform<'data>,
+    P: ElfPlatform<'data>,
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
@@ -1732,7 +1732,7 @@ fn apply_relocations<
 
 fn apply_debug_relocations<
     'data,
-    P: Platform<'data>,
+    P: ElfPlatform<'data>,
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
@@ -1789,7 +1789,7 @@ fn apply_debug_relocations<
     Ok(())
 }
 
-fn write_eh_frame_data<'data, P: Platform<'data>>(
+fn write_eh_frame_data<'data, P: ElfPlatform<'data>>(
     object: &ObjectLayout<'data>,
     eh_frame_section_index: object::SectionIndex,
     layout: &Layout<'data>,
@@ -1817,7 +1817,7 @@ fn write_eh_frame_data<'data, P: Platform<'data>>(
     }
 }
 
-fn write_eh_frame_relocations<'data, P: Platform<'data>, R: Relocation>(
+fn write_eh_frame_relocations<'data, P: ElfPlatform<'data>, R: Relocation>(
     object: &ObjectLayout<'data>,
     layout: &Layout<'data>,
     table_writer: &mut TableWriter<'_, '_>,
@@ -1987,7 +1987,7 @@ fn write_eh_frame_relocations<'data, P: Platform<'data>, R: Relocation>(
     Ok(())
 }
 
-fn display_relocation<'a, 'data, P: Platform<'data>, R: Relocation>(
+fn display_relocation<'a, 'data, P: ElfPlatform<'data>, R: Relocation>(
     object: &'a ObjectLayout<'data>,
     rel: &'a R,
     layout: &'a Layout<'data>,
@@ -2001,15 +2001,17 @@ fn display_relocation<'a, 'data, P: Platform<'data>, R: Relocation>(
     }
 }
 
-struct DisplayRelocation<'a, 'data, P: Platform<'data>, R: Relocation> {
+struct DisplayRelocation<'a, 'data, P: ElfPlatform<'data>, R: Relocation> {
     rel: &'a R,
-    symbol_db: &'a SymbolDb<'data>,
+    symbol_db: &'a SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &'a PerSymbolFlags,
     object: &'a ObjectLayout<'data>,
     phantom: PhantomData<P>,
 }
 
-impl<'a, 'data, P: Platform<'data>, R: Relocation> Display for DisplayRelocation<'a, 'data, P, R> {
+impl<'a, 'data, P: ElfPlatform<'data>, R: Relocation> Display
+    for DisplayRelocation<'a, 'data, P, R>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -2162,7 +2164,7 @@ fn adjust_relocation_based_on_value(
 }
 
 #[inline(always)]
-fn get_pair_subtraction_relocation_value<'data, P: Platform<'data>, R: Relocation>(
+fn get_pair_subtraction_relocation_value<'data, P: ElfPlatform<'data>, R: Relocation>(
     object_layout: &ObjectLayout,
     rel: &R,
     layout: &Layout,
@@ -2207,7 +2209,7 @@ fn get_pair_subtraction_relocation_value<'data, P: Platform<'data>, R: Relocatio
 #[inline(always)]
 fn apply_relocation<
     'data,
-    P: Platform<'data>,
+    P: ElfPlatform<'data>,
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
@@ -2663,7 +2665,7 @@ fn apply_relocation<
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<'data, P: Platform<'data>, R: Relocation>(
+fn apply_debug_relocation<'data, P: ElfPlatform<'data>, R: Relocation>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &R,
@@ -2772,7 +2774,7 @@ fn apply_debug_relocation<'data, P: Platform<'data>, R: Relocation>(
 }
 
 #[inline(always)]
-fn write_absolute_relocation<'data, P: Platform<'data>>(
+fn write_absolute_relocation<'data, P: ElfPlatform<'data>>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
     place: u64,
@@ -2835,7 +2837,7 @@ fn write_absolute_relocation<'data, P: Platform<'data>>(
     }
 }
 
-fn write_prelude<'data, P: Platform<'data>>(
+fn write_prelude<'data, P: ElfPlatform<'data>>(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -2933,7 +2935,7 @@ fn write_merged_strings(
     }
 }
 
-fn write_plt_got_entries<'data, P: Platform<'data>>(
+fn write_plt_got_entries<'data, P: ElfPlatform<'data>>(
     prelude: &PreludeLayout,
     layout: &Layout,
     table_writer: &mut TableWriter,
@@ -3138,7 +3140,7 @@ pub(crate) struct EpilogueOffsets {
     pub(crate) soname: Option<u32>,
 }
 
-fn write_linker_script_state<'data, P: Platform<'data>>(
+fn write_linker_script_state<'data, P: ElfPlatform<'data>>(
     script: &LinkerScriptLayoutState,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3156,7 +3158,7 @@ fn write_linker_script_state<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_synthetic_symbols<'data, P: Platform<'data>>(
+fn write_synthetic_symbols<'data, P: ElfPlatform<'data>>(
     syn: &SyntheticSymbolsLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -3176,7 +3178,7 @@ fn write_synthetic_symbols<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_epilogue<'data, P: Platform<'data>>(
+fn write_epilogue<'data, P: ElfPlatform<'data>>(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -4455,7 +4457,7 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 }
 
-fn write_internal_symbols_plt_got_entries<'data, P: Platform<'data>>(
+fn write_internal_symbols_plt_got_entries<'data, P: ElfPlatform<'data>>(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4480,7 +4482,7 @@ fn write_internal_symbols_plt_got_entries<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_dynamic_file<'data, P: Platform<'data>>(
+fn write_dynamic_file<'data, P: ElfPlatform<'data>>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4636,7 +4638,7 @@ fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Resu
     Ok(())
 }
 
-fn write_copy_relocations<'data, P: Platform<'data>>(
+fn write_copy_relocations<'data, P: ElfPlatform<'data>>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -4655,7 +4657,7 @@ fn write_copy_relocations<'data, P: Platform<'data>>(
     Ok(())
 }
 
-fn write_copy_relocation_for_symbol<'data, P: Platform<'data>>(
+fn write_copy_relocation_for_symbol<'data, P: ElfPlatform<'data>>(
     symbol_id: SymbolId,
     table_writer: &mut TableWriter,
     layout: &Layout,

@@ -70,10 +70,10 @@ use std::sync::atomic::Ordering;
 use symbolic_demangle::demangle;
 
 #[derive(Debug)]
-pub struct SymbolDb<'data> {
+pub struct SymbolDb<'data, O: ObjectFile<'data>> {
     pub(crate) args: &'data Args,
 
-    pub(crate) groups: Vec<Group<'data, crate::elf::File<'data>>>,
+    pub(crate) groups: Vec<Group<'data, O>>,
 
     buckets: Vec<SymbolBucket<'data>>,
 
@@ -103,8 +103,8 @@ pub struct SymbolDb<'data> {
 /// are returned to the original SymbolDb when the AtomicSymbolDb is dropped. If the AtomicSymbolDb
 /// gets leaked, then the tables in the original SymbolDb will remain empty. Provides some, but not
 /// all of the APIs provided by SymbolDb.
-struct AtomicSymbolDb<'data, 'db> {
-    db: &'db mut SymbolDb<'data>,
+struct AtomicSymbolDb<'data, 'db, O: ObjectFile<'data>> {
+    db: &'db mut SymbolDb<'data, O>,
     definitions: Vec<AtomicSymbolId>,
 }
 
@@ -285,7 +285,7 @@ struct PendingSymbolHashBucket<'data> {
     versioned_symbols: Vec<PendingVersionedSymbol<'data>>,
 }
 
-impl<'data> SymbolDb<'data> {
+impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
     /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
     /// This promotes symbols marked for global visibility in a Rust version script back to global.
     /// Also adds the non-interposable flag to all local symbols.
@@ -375,7 +375,7 @@ impl<'data> SymbolDb<'data> {
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
-        loaded: LoadedInputs<'data, crate::elf::File<'data>>,
+        loaded: LoadedInputs<'data, O>,
     ) -> Result {
         timing_phase!("Load inputs into symbol DB");
 
@@ -608,7 +608,7 @@ impl<'data> SymbolDb<'data> {
                     return Visibility::Default;
                 };
 
-                Visibility::from_elf_st_visibility(obj_symbol.st_visibility())
+                obj_symbol.visibility()
             }
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
@@ -624,7 +624,7 @@ impl<'data> SymbolDb<'data> {
         &'a self,
         per_symbol_flags: &'a dyn FlagsForSymbol,
         symbol_id: SymbolId,
-    ) -> SymbolDebug<'a> {
+    ) -> SymbolDebug<'a, 'data, O> {
         SymbolDebug {
             db: self,
             symbol_id,
@@ -734,7 +734,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions = definitions;
     }
 
-    fn borrow_atomic<'db>(&'db mut self) -> AtomicSymbolDb<'data, 'db> {
+    fn borrow_atomic<'db>(&'db mut self) -> AtomicSymbolDb<'data, 'db, O> {
         let definitions = self
             .take_definitions()
             .into_iter()
@@ -772,10 +772,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file<'db>(
-        &'db self,
-        file_id: FileId,
-    ) -> SequencedInput<'db, crate::elf::File<'db>> {
+    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> SequencedInput<'db, 'data, O> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => SequencedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
@@ -992,7 +989,7 @@ impl<'data> SymbolDb<'data> {
         self.groups.len() as u32
     }
 
-    pub(crate) fn add_group(&mut self, group: Group<'data, crate::elf::File<'data>>) {
+    pub(crate) fn add_group(&mut self, group: Group<'data, O>) {
         self.groups.push(group);
     }
 
@@ -1031,10 +1028,10 @@ impl<'out> SymbolVecWriters<'out> {
         }
     }
 
-    fn new_shard<'group, 'data>(
+    fn new_shard<'group, 'data, O: ObjectFile<'data>>(
         &mut self,
-        group: &'group Group<'data, crate::elf::File<'data>>,
-    ) -> SymbolWriterShard<'out, 'group, 'data> {
+        group: &'group Group<'data, O>,
+    ) -> SymbolWriterShard<'out, 'group, 'data, O> {
         let num_symbols = group.num_symbols();
         SymbolWriterShard {
             group,
@@ -1045,7 +1042,10 @@ impl<'out> SymbolVecWriters<'out> {
         }
     }
 
-    fn return_shard(&mut self, shard: SymbolWriterShard) {
+    fn return_shard<'data, O: ObjectFile<'data>>(
+        &mut self,
+        shard: SymbolWriterShard<'_, '_, 'data, O>,
+    ) {
         self.symbol_definitions_writer
             .return_shard(shard.resolutions);
         self.per_symbol_flags_writer.return_shard(shard.flags);
@@ -1089,7 +1089,11 @@ impl<'data> SymbolBucket<'data> {
     }
 
     /// Returns the selected non-dynamic alternative to the supplied symbol, if any.
-    fn get_non_dynamic(&self, symbol_id: SymbolId, symbol_db: &SymbolDb) -> Option<SymbolId> {
+    fn get_non_dynamic<O: ObjectFile<'data>>(
+        &self,
+        symbol_id: SymbolId,
+        symbol_db: &SymbolDb<'data, O>,
+    ) -> Option<SymbolId> {
         self.alternative_definitions
             .get(&symbol_id)?
             .iter()
@@ -1109,8 +1113,8 @@ impl<'data> SymbolBucket<'data> {
 /// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
 /// object, or if there are no strong definitions, then the first definition in a loaded object. If
 /// a symbol definition is a common symbol, then the largest definition will be used.
-pub(crate) fn resolve_alternative_symbol_definitions<'data>(
-    symbol_db: &mut SymbolDb<'data>,
+pub(crate) fn resolve_alternative_symbol_definitions<'data, O: ObjectFile<'data>>(
+    symbol_db: &mut SymbolDb<'data, O>,
     per_symbol_flags: &mut PerSymbolFlags,
     resolved: &[ResolvedGroup],
 ) -> Result {
@@ -1178,10 +1182,10 @@ impl Visibility {
     }
 }
 
-fn process_alternatives(
+fn process_alternatives<'data, O: ObjectFile<'data>>(
     alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
     error_queue: &SegQueue<Error>,
-    symbol_db: &AtomicSymbolDb,
+    symbol_db: &AtomicSymbolDb<'data, '_, O>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resolved: &[ResolvedGroup],
 ) {
@@ -1234,8 +1238,8 @@ fn handle_non_default_visibility(per_symbol_flags: &AtomicPerSymbolFlags, symbol
 /// Selects which version of the symbol to use. For more information on symbol priority, see
 /// https://maskray.me/blog/2021-06-20-linker-symbol-resolution
 #[inline(always)]
-fn select_symbol(
-    symbol_db: &AtomicSymbolDb,
+fn select_symbol<'data, O: ObjectFile<'data>>(
+    symbol_db: &AtomicSymbolDb<'data, '_, O>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     first_id: SymbolId,
     alternatives: &[SymbolId],
@@ -1343,9 +1347,9 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
     name.starts_with(b"$x") || name.starts_with(b"$d") || name == b"L0\x01"
 }
 
-fn read_symbols<'data>(
+fn read_symbols<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
-    shards: &mut [SymbolWriterShard<'_, '_, 'data>],
+    shards: &mut [SymbolWriterShard<'_, '_, 'data, O>],
     args: &Args,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
@@ -1369,8 +1373,8 @@ fn read_symbols<'data>(
         .collect::<Result<Vec<SymbolLoadOutputs>>>()
 }
 
-fn read_symbols_for_group<'data>(
-    shard: &mut SymbolWriterShard<'_, '_, 'data>,
+fn read_symbols_for_group<'data, O: ObjectFile<'data>>(
+    shard: &mut SymbolWriterShard<'_, '_, 'data, O>,
     version_script: &VersionScript,
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
@@ -1480,9 +1484,9 @@ fn populate_symbol_db<'data>(
     });
 }
 
-fn load_linker_script_symbols<'data>(
+fn load_linker_script_symbols<'data, O: ObjectFile<'data>>(
     script: &SequencedLinkerScript<'data>,
-    symbols_out: &mut SymbolWriterShard,
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
     for (offset, definition) in script.parsed.symbol_defs.iter().enumerate() {
@@ -1506,10 +1510,10 @@ fn load_linker_script_symbols<'data>(
     }
 }
 
-fn load_symbols_from_file<'data>(
-    s: &SequencedInputObject<'data, crate::elf::File<'data>>,
+fn load_symbols_from_file<'data, O: ObjectFile<'data>>(
+    s: &SequencedInputObject<'data, O>,
     version_script: &VersionScript,
-    symbols_out: &mut SymbolWriterShard,
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
     export_list: &Option<ExportList<'data>>,
@@ -1535,15 +1539,15 @@ fn load_symbols_from_file<'data>(
     }
 }
 
-struct SymbolWriterShard<'out, 'group, 'data> {
-    group: &'group Group<'data, crate::elf::File<'data>>,
+struct SymbolWriterShard<'out, 'group, 'data, O: ObjectFile<'data>> {
+    group: &'group Group<'data, O>,
     resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
     flags: sharded_vec_writer::Shard<'out, RawFlags>,
     file_ids: sharded_vec_writer::Shard<'out, FileId>,
     next: SymbolId,
 }
 
-impl<'out, 'group, 'data> SymbolWriterShard<'out, 'group, 'data> {
+impl<'out, 'group, 'data, O: ObjectFile<'data>> SymbolWriterShard<'out, 'group, 'data, O> {
     fn set_next(&mut self, flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
         self.flags.push(flags.raw());
         self.resolutions.push(resolution);
@@ -1556,7 +1560,7 @@ trait SymbolLoader<'data, O: ObjectFile<'data>> {
     fn load_symbols(
         &self,
         file_id: FileId,
-        symbols_out: &mut SymbolWriterShard,
+        symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) -> Result {
         let base_symbol_id = symbols_out.next;
@@ -1788,13 +1792,13 @@ impl<'data, O: ObjectFile<'data>> SymbolLoader<'data, O>
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SymbolDebug<'a> {
-    db: &'a SymbolDb<'a>,
+pub(crate) struct SymbolDebug<'a, 'data, O: ObjectFile<'data>> {
+    db: &'a SymbolDb<'data, O>,
     symbol_id: SymbolId,
     per_symbol_flags: &'a dyn FlagsForSymbol,
 }
 
-impl std::fmt::Display for SymbolDebug<'_> {
+impl<'a, 'data, O: ObjectFile<'data>> std::fmt::Display for SymbolDebug<'a, 'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let definition = self.db.definition(symbol_id);
@@ -1943,9 +1947,9 @@ impl TryFrom<usize> for SymbolId {
 }
 
 impl<'data> Prelude<'data> {
-    fn load_symbols(
+    fn load_symbols<O: ObjectFile<'data>>(
         &self,
-        symbols_out: &mut SymbolWriterShard,
+        symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) {
         for definition in &self.symbol_definitions {
@@ -2045,7 +2049,7 @@ impl<'data> SymbolLoadOutputs<'data> {
     }
 }
 
-impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
+impl<'data, 'db, O: ObjectFile<'data>> AtomicSymbolDb<'data, 'db, O> {
     fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
         self.db.input_symbol_visibility(symbol_id)
     }
@@ -2066,7 +2070,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.db.symbol_name_for_display(symbol_id)
     }
 
-    fn file(&'db self, file_id: FileId) -> SequencedInput<'db, crate::elf::File<'db>> {
+    fn file(&'db self, file_id: FileId) -> SequencedInput<'db, 'data, O> {
         self.db.file(file_id)
     }
 
@@ -2075,7 +2079,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
     }
 }
 
-impl Drop for AtomicSymbolDb<'_, '_> {
+impl<'data, O: ObjectFile<'data>> Drop for AtomicSymbolDb<'data, '_, O> {
     fn drop(&mut self) {
         // Convert our atomic tables back to non-atomic tables and return them to the symbol-db that
         // we took them from. This operation should be basically free, at least in optimised builds.

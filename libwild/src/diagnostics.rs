@@ -2,7 +2,7 @@ use crate::elf::RawSymbolName;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
@@ -16,22 +16,22 @@ use crate::value_flags::FlagsForSymbol as _;
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
 /// either after resolution flags have been computed, or, if layout gets an error, then before we
 /// unwind.
-pub(crate) struct SymbolInfoPrinter<'data> {
+pub(crate) struct SymbolInfoPrinter<'data, O: ObjectFile<'data>> {
     loaded_file_ids: hashbrown::HashSet<FileId>,
-    symbol_db: &'data SymbolDb<'data>,
+    symbol_db: &'data SymbolDb<'data, O>,
     name: &'data str,
     per_symbol_flags: &'data AtomicPerSymbolFlags<'data>,
 }
 
-impl Drop for SymbolInfoPrinter<'_> {
+impl<'data, O: ObjectFile<'data>> Drop for SymbolInfoPrinter<'data, O> {
     fn drop(&mut self) {
         self.print();
     }
 }
 
-impl<'data> SymbolInfoPrinter<'data> {
+impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
     pub(crate) fn new(
-        symbol_db: &'data SymbolDb,
+        symbol_db: &'data SymbolDb<'data, O>,
         name: &'data str,
         flags: &'data AtomicPerSymbolFlags<'data>,
         groups: &[ResolvedGroup],
@@ -200,7 +200,12 @@ impl NameMatcher {
         }
     }
 
-    fn matches(&self, name: &[u8], symbol_id: SymbolId, symbol_db: &SymbolDb) -> bool {
+    fn matches<'data, O: ObjectFile<'data>>(
+        &self,
+        name: &[u8],
+        symbol_id: SymbolId,
+        symbol_db: &SymbolDb<'data, O>,
+    ) -> bool {
         if let Some(i) = name.iter().position(|b| *b == b'@') {
             let (name, version) = name.split_at(i);
             return name == self.name.as_bytes() && self.version.matches_at_prefixed(version);
