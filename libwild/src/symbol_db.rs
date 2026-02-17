@@ -373,7 +373,7 @@ impl<'data> SymbolDb<'data> {
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
-        loaded: LoadedInputs<'data>,
+        loaded: LoadedInputs<'data, crate::elf::File<'data>>,
     ) -> Result {
         timing_phase!("Load inputs into symbol DB");
 

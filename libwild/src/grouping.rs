@@ -28,7 +28,7 @@ pub(crate) enum Group<'data> {
 
 #[derive(Debug)]
 pub(crate) struct SequencedInputObject<'data> {
-    pub(crate) parsed: Box<ParsedInputObject<'data>>,
+    pub(crate) parsed: Box<ParsedInputObject<'data, crate::elf::File<'data>>>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -100,7 +100,7 @@ impl Group<'_> {
 
 pub(crate) fn create_groups<'data>(
     symbol_db: &mut SymbolDb<'data>,
-    parsed_objects: Vec<Box<ParsedInputObject<'data>>>,
+    parsed_objects: Vec<Box<ParsedInputObject<'data, crate::elf::File<'data>>>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
 ) {
     timing_phase!("Group files");
@@ -215,7 +215,9 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 }
 
 /// Compute the total number of symbols in the supplied objects.
-fn count_symbols(objects: &[Box<ParsedInputObject>]) -> usize {
+fn count_symbols<'data>(
+    objects: &[Box<ParsedInputObject<'data, crate::elf::File<'data>>>],
+) -> usize {
     verbose_timing_phase!("Count symbols");
 
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()

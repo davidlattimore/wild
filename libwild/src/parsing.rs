@@ -4,7 +4,6 @@ use crate::args::Args;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
-use crate::elf::File;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -14,7 +13,7 @@ use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -42,9 +41,9 @@ pub(crate) struct Prelude<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ParsedInputObject<'data> {
+pub(crate) struct ParsedInputObject<'data, O: ObjectFile<'data>> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: File<'data>,
+    pub(crate) object: O,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -190,11 +189,11 @@ impl<'data> InternalSymDefInfo<'data> {
     }
 }
 
-impl<'data> ParsedInputObject<'data> {
+impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
     pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
-        let object = File::parse(input, args)
+        let object = O::parse(input, args)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
 
         Ok(Box::new(Self {
@@ -209,7 +208,7 @@ impl<'data> ParsedInputObject<'data> {
     }
 
     pub(crate) fn num_symbols(&self) -> usize {
-        self.object.symbols.len()
+        self.object.num_symbols()
     }
 }
 
@@ -311,7 +310,7 @@ impl<'data> ProcessedLinkerScript<'data> {
     }
 }
 
-impl std::fmt::Display for ParsedInputObject<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for ParsedInputObject<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
