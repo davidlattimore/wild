@@ -1303,9 +1303,13 @@ fn write_object<A: ElfArch>(
                     .object
                     .symbol(object.symbol_id_range.id_to_input(symbol_id))?;
                 let name = object.object.symbol_name(symbol)?;
-                table_writer
-                    .dynsym_writer
-                    .copy_symbol_shndx(symbol, name, 0, 0, ValueFlags::empty())?;
+                table_writer.dynsym_writer.copy_symbol_shndx(
+                    symbol,
+                    name,
+                    0,
+                    0,
+                    ValueFlags::empty(),
+                )?;
                 if layout.gnu_version_enabled() {
                     table_writer
                         .version_writer
@@ -3775,7 +3779,13 @@ fn write_regular_object_dynamic_symbol_definition(
                 symbol_value -= layout.tls_start_address();
             }
             dynamic_symbol_writer
-                .copy_symbol(sym, name, output_section_id, symbol_value, ValueFlags::empty())
+                .copy_symbol(
+                    sym,
+                    name,
+                    output_section_id,
+                    symbol_value,
+                    ValueFlags::empty(),
+                )
                 .with_context(|| {
                     format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
                 })?;
