@@ -4759,7 +4759,7 @@ impl<'data> ObjectLayoutState<'data> {
                 // If we've decided to emit the symbol even though it's not referenced (because it's
                 // in a section we're emitting), then make sure we have a resolution for it.
                 flags.fetch_or(ValueFlags::DIRECT);
-                if sym.is_local() {
+                if is_symtab_local(sym, flags.get()) {
                     num_locals += 1;
                 } else {
                     num_globals += 1;
@@ -5038,6 +5038,13 @@ impl<'data> ObjectLayoutState<'data> {
     fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
+}
+
+/// Returns true if a symbol should be treated as local in the symbol table.
+/// This includes both originally-local symbols and symbols downgraded by version scripts.
+#[inline]
+fn is_symtab_local(sym: &crate::elf::Symbol, flags: ValueFlags) -> bool {
+    sym.is_local() || flags.is_downgraded_to_local()
 }
 
 pub(crate) struct SymbolCopyInfo<'data> {
