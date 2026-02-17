@@ -188,10 +188,6 @@ pub(crate) trait SectionFlags: Copy {
 }
 
 pub(crate) trait Symbol {
-    type Debug<'data>: std::fmt::Display
-    where
-        Self: 'data;
-
     /// Returns information about the symbol if it's a common symbol. Platforms that don't have
     /// common symbols can just return None.
     fn as_common(&self) -> Option<CommonSymbol>;
@@ -217,6 +213,8 @@ pub(crate) trait Symbol {
     fn section_index(&self) -> object::SectionIndex;
 
     fn has_name(&self) -> bool;
+
+    fn debug_string(&self) -> String;
 }
 
 #[derive(Clone, Copy)]

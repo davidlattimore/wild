@@ -529,8 +529,6 @@ impl platform::SectionFlags for SectionFlags {
 }
 
 impl platform::Symbol for Symbol {
-    type Debug<'data> = SymDebug<'data>;
-
     fn as_common(&self) -> Option<CommonSymbol> {
         let e = LittleEndian;
         if !object::read::elf::Sym::is_common(self, e) {
@@ -592,6 +590,10 @@ impl platform::Symbol for Symbol {
 
     fn has_name(&self) -> bool {
         object::read::elf::Sym::st_name(self, LittleEndian) != 0
+    }
+
+    fn debug_string(&self) -> String {
+        SymDebug(self).to_string()
     }
 }
 
@@ -857,7 +859,7 @@ impl<'data> DynamicTagValues<'data> {
     }
 }
 
-pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
+struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
 
 impl std::fmt::Display for SymDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

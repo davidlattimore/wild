@@ -1,8 +1,8 @@
-use crate::elf::SymDebug;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::platform::ObjectFile as _;
+use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::symbol::PreHashedSymbolName;
@@ -120,7 +120,7 @@ impl<'data> SymbolInfoPrinter<'data> {
                     }
                     SequencedInput::Object(o) => match o.parsed.object.symbol(local_index) {
                         Ok(sym) => {
-                            sym_debug = SymDebug(sym).to_string();
+                            sym_debug = sym.debug_string();
                             input = o.parsed.input.to_string();
                         }
                         Err(e) => {
