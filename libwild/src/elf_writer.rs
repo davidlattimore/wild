@@ -1080,13 +1080,6 @@ struct SymbolTableWriter<'layout, 'out> {
     is_dynamic: bool,
 }
 
-/// Returns true if a symbol should be treated as local in the symbol table.
-/// This includes both originally-local symbols and symbols downgraded by version scripts.
-#[inline]
-fn is_symtab_local(sym: &crate::elf::Symbol, flags: ValueFlags) -> bool {
-    sym.is_local() || flags.is_downgraded_to_local()
-}
-
 impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn new(
         start_string_offset: u32,
@@ -1160,7 +1153,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         flags: ValueFlags,
     ) -> Result<&mut SymtabEntry> {
         let e = LittleEndian;
-        let is_local = is_symtab_local(sym, flags);
+        let is_local = flags.is_symtab_local(sym);
         let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.st_info = sym.st_info();
@@ -1179,7 +1172,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         flags: ValueFlags,
     ) -> Result<&mut SymtabEntry> {
         let e = LittleEndian;
-        let is_local = is_symtab_local(sym, flags);
+        let is_local = flags.is_symtab_local(sym);
         let value = sym.st_value(e);
         let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, object::elf::SHN_ABS, value, size, name)?;
