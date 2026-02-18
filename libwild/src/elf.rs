@@ -1970,8 +1970,8 @@ pub(crate) struct SectionAttributes {
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
     SectionFlags::from_u32(!object::elf::SHF_GROUP);
 
-impl SectionAttributes {
-    pub(crate) fn merge(&mut self, rhs: Self) {
+impl platform::SectionAttributes for SectionAttributes {
+    fn merge(&mut self, rhs: Self) {
         self.flags |= rhs.flags;
 
         // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
@@ -1985,7 +1985,7 @@ impl SectionAttributes {
         }
     }
 
-    pub(crate) fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
+    fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
         info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
@@ -2099,6 +2099,7 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
     Ok(version_names)
 }
 
+#[derive(Debug)]
 pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data>,
     pub(crate) string_table_index: object::SectionIndex,
@@ -2119,6 +2120,7 @@ pub(crate) struct DynamicLayoutState<'data> {
     non_addressable_indexes: NonAddressableIndexes,
 }
 
+#[derive(Debug)]
 pub(crate) struct DynamicLayout<'data> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
     pub(crate) version_mapping: Vec<u16>,

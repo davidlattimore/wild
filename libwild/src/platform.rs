@@ -6,6 +6,8 @@ use crate::input_data::InputRef;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
@@ -20,7 +22,7 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 /// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform<'data> {
+pub(crate) trait Platform<'data>: 'data {
     type Relaxation: Relaxation;
     type File: ObjectFile<'data>;
 
@@ -92,7 +94,7 @@ pub(crate) trait Platform<'data> {
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: linker_utils::elf::SectionFlags,
+        section_flags: <<Self::File as ObjectFile<'data>>::SectionHeader as SectionHeader>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
@@ -124,12 +126,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues: DynamicTagValues<'data>;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
-    type RelocationList;
-    type DynamicEntry;
+    type RelocationList: Send + Sync + 'data;
+    type DynamicEntry: Send + Sync + 'data;
     type VerneedTable: VerneedTable<'data>;
-    type DynamicLayoutState: Default;
     type EpilogueLayout: Send + Sync + 'static;
-    type DynamicLayout;
+    type DynamicLayoutState: Default + Send + Sync + 'data;
+    type DynamicLayout: std::fmt::Debug + Send + Sync + 'data;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'data;
     type NonAddressableCounts: Default + Send + Sync + 'data;
 
@@ -160,7 +162,20 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     fn symbols(&self) -> &'data [Self::Symbol];
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol>;
+    fn enumerate_symbols(
+        &self,
+    ) -> impl Iterator<Item = (object::SymbolIndex, &'data Self::Symbol)> {
+        self.symbols()
+            .iter()
+            .enumerate()
+            .map(|(i, sym)| (object::SymbolIndex(i), sym))
+    }
+
+    // TODO: Remove implementations of this as this default should be fine. Perhaps first check if
+    // all platforms can get a slice of symbols.
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
+        self.symbols().iter()
+    }
 
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
 
@@ -329,7 +344,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
     type SectionFlags: SectionFlags;
     type SectionType: SectionType;
-    type Attributes;
+    type Attributes: SectionAttributes;
 
     fn flags(&self) -> Self::SectionFlags;
 
@@ -418,7 +433,7 @@ pub(crate) struct CommonSymbol {
     pub(crate) part_id: PartId,
 }
 
-pub(crate) trait Relocation: Copy + 'static {
+pub(crate) trait Relocation: Send + Sync + Copy + 'static {
     type Sequence<'data>: RelocationSequence<'data>;
 
     fn symbol(&self) -> Option<object::SymbolIndex>;
@@ -438,7 +453,7 @@ pub(crate) trait RelocationSequence<'data> {
     fn num_relocations(&self) -> usize;
 }
 
-pub(crate) trait RawSymbolName<'data> {
+pub(crate) trait RawSymbolName<'data>: Send + Sync + 'data {
     fn parse(bytes: &'data [u8]) -> Self;
 
     fn name(&self) -> &'data [u8];
@@ -448,14 +463,20 @@ pub(crate) trait RawSymbolName<'data> {
     fn is_default(&self) -> bool;
 }
 
-pub(crate) trait VerneedTable<'data> {
+pub(crate) trait VerneedTable<'data>: Send + Sync + 'data {
     fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]>;
 }
 
-pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync {
+pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync + 'data {
     fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8];
 }
 
 pub(crate) trait NonAddressableIndexes {
     fn new<'data, O: ObjectFile<'data>>(symbol_db: &SymbolDb<'data, O>) -> Self;
+}
+
+pub(crate) trait SectionAttributes: std::fmt::Debug + Send + Sync + 'static {
+    fn merge(&mut self, rhs: Self);
+
+    fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId);
 }

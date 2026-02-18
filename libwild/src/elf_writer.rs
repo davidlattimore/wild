@@ -72,6 +72,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionFlags as _;
 use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
@@ -2814,7 +2815,7 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<u64> {
-    if !section_info.section_flags.contains(shf::ALLOC) {
+    if !section_info.section_flags.is_alloc() {
         resolution.value_with_addend(
             addend,
             symbol_index,

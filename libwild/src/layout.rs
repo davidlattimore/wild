@@ -58,6 +58,7 @@ use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
@@ -4626,7 +4627,7 @@ impl<'data> ObjectLayoutState<'data> {
         export_all_dynamic: bool,
         scope: &Scope<'scope>,
     ) -> Result {
-        for (sym_index, sym) in self.object.symbols.enumerate() {
+        for (sym_index, sym) in self.object.enumerate_symbols() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
             if !can_export_symbol(sym, symbol_id, resources, export_all_dynamic) {
@@ -5355,7 +5356,7 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
                             .filter_map(|(i, slot)| {
                                 if let SectionSlot::Loaded(_) = slot
                                     && let Ok(header) = obj.object.section(SectionIndex(i))
-                                    && SectionFlags::from_header(header).contains(shf::EXECINSTR)
+                                    && header.flags().is_executable()
                                 {
                                     Some(i)
                                 } else {
@@ -5896,8 +5897,7 @@ impl<'data> DynamicLayoutState<'data> {
 
         for (local_symbol, &flags) in self
             .object
-            .symbols
-            .iter()
+            .symbols_iter()
             .zip(resources.per_symbol_flags.raw_range(self.symbol_id_range()))
         {
             let flags = flags.get();
