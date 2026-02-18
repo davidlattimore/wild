@@ -28,6 +28,8 @@ jobs:
           - 'rust:1.92-alpine'
         test-qemu:
           - false
+        test-plugins:
+          - false
         include:
           - runs-on: ubuntu-24.04
             container: 'ubuntu:25.10'
@@ -35,6 +37,7 @@ jobs:
           - runs-on: ubuntu-24.04-arm
             container: 'ubuntu:25.10'
             test-qemu: false
+            test-plugins: true
           - runs-on: ubuntu-24.04
             container: 'ubuntu:26.04'
             test-qemu: true
@@ -79,6 +82,8 @@ jobs:
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
+      - run: cargo test --profile ci --features plugins
+        if: ${{ matrix.test-plugins }}
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   minimal-versions:

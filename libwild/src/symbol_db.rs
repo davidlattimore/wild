@@ -1429,8 +1429,8 @@ fn read_symbols_for_group<'data, O: ObjectFile<'data>>(
 }
 
 #[cfg(feature = "plugins")]
-fn load_lto_symbols<'data>(
-    symbols_out: &mut SymbolWriterShard<'_, '_, 'data>,
+fn load_lto_symbols<'data, O: ObjectFile<'data>>(
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
     outputs: &mut SymbolLoadOutputs<'data>,
     obj: &crate::linker_plugins::LtoInput<'data>,
 ) {

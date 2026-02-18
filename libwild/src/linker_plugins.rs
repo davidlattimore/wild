@@ -13,6 +13,7 @@ use crate::Args;
 use crate::args::Input;
 use crate::args::Modifiers;
 use crate::bail;
+use crate::elf::RawSymbolName;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -23,12 +24,12 @@ use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
+use crate::platform::RawSymbolName as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::Resolver;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
-use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -170,7 +171,7 @@ impl<'data> LinkerPlugin<'data> {
     /// additional object files that it will then pass to us for processing.
     pub(crate) fn all_symbols_read(
         &mut self,
-        symbol_db: &mut SymbolDb<'data>,
+        symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
         resolver: &mut Resolver<'data>,
         file_loader: &mut FileLoader<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
@@ -846,9 +847,9 @@ extern "C" fn get_symbols_v3(
     })
 }
 
-fn get_symbol_resolution(
+fn get_symbol_resolution<'data>(
     sym: &mut RawPluginSymbol,
-    symbol_db: &SymbolDb,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     symbol_id_range: SymbolIdRange,
 ) -> PluginSymbolResolution {
     // It'd be nice if we didn't have to do hashmap lookups for all the symbols again, since we
@@ -1044,7 +1045,7 @@ impl ClaimContext<'_> {
 }
 
 struct AllSymbolsReadContext<'data> {
-    symbol_db: &'data SymbolDb<'data>,
+    symbol_db: &'data SymbolDb<'data, crate::elf::File<'data>>,
     resolved_groups: &'data [ResolvedGroup<'data>],
 }
 

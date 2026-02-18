@@ -47,7 +47,7 @@ pub(crate) enum SequencedInput<'db, 'data, O: ObjectFile<'data>> {
     LinkerScript(&'db SequencedLinkerScript<'data>),
     SyntheticSymbols(&'db SyntheticSymbols),
     #[cfg(feature = "plugins")]
-    LtoInput(&'data crate::linker_plugins::LtoInput<'data>),
+    LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
 }
 
 impl<'data, O: ObjectFile<'data>> Group<'data, O> {
