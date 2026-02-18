@@ -37,7 +37,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::platform::SectionFlags;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
@@ -276,8 +276,8 @@ pub(crate) fn merge_strings<'data>(
 }
 
 impl<'data> StringMergeInputs<'data> {
-    pub(crate) fn new(
-        resolved: &mut [ResolvedGroup<'data>],
+    pub(crate) fn new<O: ObjectFile<'data>>(
+        resolved: &mut [ResolvedGroup<'data, O>],
         output_sections: &OutputSections,
     ) -> Result<Self> {
         Ok(Self {
@@ -292,8 +292,8 @@ impl<'data> StringMergeInputs<'data> {
 // Gather up all the string-merge sections, grouping them by their output section ID. We return a
 // reference to the `MergeStringsFileSection` rather than copying it because it appears to be
 // faster.
-fn group_merge_string_sections_by_output<'data>(
-    resolved: &mut [ResolvedGroup<'data>],
+fn group_merge_string_sections_by_output<'data, O: ObjectFile<'data>>(
+    resolved: &mut [ResolvedGroup<'data, O>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
     verbose_timing_phase!("Find merge sectionns");

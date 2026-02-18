@@ -24,6 +24,7 @@ use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
+use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -169,10 +170,10 @@ impl<'data> LinkerPlugin<'data> {
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build
     /// additional object files that it will then pass to us for processing.
-    pub(crate) fn all_symbols_read(
+    pub(crate) fn all_symbols_read<O: ObjectFile<'data>>(
         &mut self,
-        symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
-        resolver: &mut Resolver<'data>,
+        symbol_db: &mut SymbolDb<'data, O>,
+        resolver: &mut Resolver<'data, O>,
         file_loader: &mut FileLoader<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
         output_sections: &mut OutputSections<'data>,
@@ -287,7 +288,9 @@ impl<'data> LinkerPlugin<'data> {
     }
 }
 
-fn has_loaded_lto_input(resolved_groups: &[ResolvedGroup]) -> bool {
+fn has_loaded_lto_input<'data, O: ObjectFile<'data>>(
+    resolved_groups: &[ResolvedGroup<'data, O>],
+) -> bool {
     resolved_groups.iter().any(|group| {
         group
             .files
@@ -1044,13 +1047,15 @@ impl ClaimContext<'_> {
     }
 }
 
-struct AllSymbolsReadContext<'data> {
-    symbol_db: &'data SymbolDb<'data, crate::elf::File<'data>>,
-    resolved_groups: &'data [ResolvedGroup<'data>],
+struct AllSymbolsReadContext<'scope, 'data, O: ObjectFile<'data>> {
+    symbol_db: &'scope SymbolDb<'data, O>,
+    resolved_groups: &'scope [ResolvedGroup<'data, O>],
 }
 
-impl AllSymbolsReadContext<'_> {
-    fn with_current(cb: impl FnOnce(&mut AllSymbolsReadContext) -> Status) -> Status {
+impl<'scope, 'data, O: ObjectFile<'data>> AllSymbolsReadContext<'scope, 'data, O> {
+    fn with_current(
+        cb: impl FnOnce(&mut AllSymbolsReadContext<'scope, 'data, O>) -> Status,
+    ) -> Status {
         let ptr = ALL_SYMBOLS_READ_CONTEXT.get();
         if ptr.is_null() {
             ERROR_MESSAGE.set(Some(
@@ -1058,12 +1063,13 @@ impl AllSymbolsReadContext<'_> {
             ));
             return Status::Err;
         };
-        let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext) };
+        let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext<'scope, 'data, O>) };
         cb(ctx)
     }
 
     fn set_current_while<R>(&self, cb: impl FnOnce() -> R) -> R {
-        ALL_SYMBOLS_READ_CONTEXT.set(self as *const AllSymbolsReadContext as *const libc::c_void);
+        ALL_SYMBOLS_READ_CONTEXT
+            .set(self as *const AllSymbolsReadContext<'scope, 'data, O> as *const libc::c_void);
         let r = cb();
         ALL_SYMBOLS_READ_CONTEXT.take();
         r

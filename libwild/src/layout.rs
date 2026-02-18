@@ -142,7 +142,7 @@ use zerocopy::FromBytes;
 pub fn compute<'data, P: ElfPlatform<'data>>(
     symbol_db: SymbolDb<'data, crate::elf::File<'data>>,
     mut per_symbol_flags: PerSymbolFlags,
-    mut groups: Vec<ResolvedGroup<'data>>,
+    mut groups: Vec<ResolvedGroup<'data, crate::elf::File<'data>>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
 ) -> Result<Layout<'data>> {
@@ -2173,7 +2173,7 @@ struct GcOutputs<'data> {
 }
 
 struct GroupActivationInputs<'data> {
-    resolved: ResolvedGroup<'data>,
+    resolved: ResolvedGroup<'data, crate::elf::File<'data>>,
     num_symbols: usize,
     group_index: usize,
 }
@@ -2238,7 +2238,7 @@ impl<'data> GroupActivationInputs<'data> {
 }
 
 fn find_required_sections<'data, P: ElfPlatform<'data>>(
-    groups_in: Vec<resolution::ResolvedGroup<'data>>,
+    groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
     symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
@@ -2318,7 +2318,7 @@ fn find_required_sections<'data, P: ElfPlatform<'data>>(
 }
 
 fn queue_initial_group_processing<'data, 'scope, P: ElfPlatform<'data>>(
-    groups_in: Vec<resolution::ResolvedGroup<'data>>,
+    groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
     symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
     resources: &'scope GraphResources<'data, '_>,
     scope: &Scope<'scope>,
@@ -4217,7 +4217,9 @@ impl HeaderInfo {
 
 /// Construct a new inactive instance, which means we don't yet load non-GC sections and only
 /// load them later if a symbol from this object is referenced.
-fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayoutState {
+fn new_object_layout_state<'data>(
+    input_state: resolution::ResolvedObject<'data, crate::elf::File<'data>>,
+) -> FileLayoutState<'data> {
     // Note, this function is called for all objects from a single thread, so don't be tempted to do
     // significant work here. Do work when activate is called instead. Doing it there also means
     // that we don't do the work unless the object is actually needed.
@@ -4239,7 +4241,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
 }
 
 fn new_dynamic_object_layout_state<'data>(
-    input_state: &resolution::ResolvedDynamic<'data>,
+    input_state: &resolution::ResolvedDynamic<'data, crate::elf::File<'data>>,
 ) -> FileLayoutState<'data> {
     FileLayoutState::Dynamic(DynamicLayoutState {
         file_id: input_state.common.file_id,
@@ -5367,7 +5369,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     plt_address
 }
 
-impl<'data> resolution::ResolvedFile<'data> {
+impl<'data> resolution::ResolvedFile<'data, crate::elf::File<'data>> {
     fn create_layout_state(self) -> FileLayoutState<'data> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),

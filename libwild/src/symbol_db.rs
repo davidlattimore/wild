@@ -843,7 +843,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
     pub(crate) fn symbol_strength(
         &self,
         symbol_id: SymbolId,
-        resolved: &[ResolvedGroup],
+        resolved: &[ResolvedGroup<'data, O>],
     ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         match &resolved[file_id.group()].files[file_id.file()] {
@@ -873,7 +873,11 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
     }
 
     /// Returns whether the specified symbol is defined in a section with the SHF_GROUP flag set.
-    fn is_in_comdat_group(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> bool {
+    fn is_in_comdat_group(
+        &self,
+        symbol_id: SymbolId,
+        resolved: &[ResolvedGroup<'data, O>],
+    ) -> bool {
         let file_id = self.file_id_for_symbol(symbol_id);
         let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] else {
             return false;
@@ -1116,7 +1120,7 @@ impl<'data> SymbolBucket<'data> {
 pub(crate) fn resolve_alternative_symbol_definitions<'data, O: ObjectFile<'data>>(
     symbol_db: &mut SymbolDb<'data, O>,
     per_symbol_flags: &mut PerSymbolFlags,
-    resolved: &[ResolvedGroup],
+    resolved: &[ResolvedGroup<'data, O>],
 ) -> Result {
     timing_phase!("Resolve alternative symbol definitions");
 
@@ -1187,7 +1191,7 @@ fn process_alternatives<'data, O: ObjectFile<'data>>(
     error_queue: &SegQueue<Error>,
     symbol_db: &AtomicSymbolDb<'data, '_, O>,
     per_symbol_flags: &AtomicPerSymbolFlags,
-    resolved: &[ResolvedGroup],
+    resolved: &[ResolvedGroup<'data, O>],
 ) {
     for (first, alternatives) in std::mem::take(alternative_definitions) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
@@ -1243,7 +1247,7 @@ fn select_symbol<'data, O: ObjectFile<'data>>(
     per_symbol_flags: &AtomicPerSymbolFlags,
     first_id: SymbolId,
     alternatives: &[SymbolId],
-    resolved: &[ResolvedGroup],
+    resolved: &[ResolvedGroup<'data, O>],
 ) -> Result<SymbolId> {
     let mut max_common = None;
     let mut strong_symbol = None;
@@ -2058,11 +2062,19 @@ impl<'data, 'db, O: ObjectFile<'data>> AtomicSymbolDb<'data, 'db, O> {
         self.definitions[to_update.as_usize()].store(new_definition);
     }
 
-    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
+    fn symbol_strength(
+        &self,
+        symbol_id: SymbolId,
+        resolved: &[ResolvedGroup<'data, O>],
+    ) -> SymbolStrength {
         self.db.symbol_strength(symbol_id, resolved)
     }
 
-    fn is_in_comdat_group(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> bool {
+    fn is_in_comdat_group(
+        &self,
+        symbol_id: SymbolId,
+        resolved: &[ResolvedGroup<'data, O>],
+    ) -> bool {
         self.db.is_in_comdat_group(symbol_id, resolved)
     }
 

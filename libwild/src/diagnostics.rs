@@ -30,11 +30,11 @@ impl<'data, O: ObjectFile<'data>> Drop for SymbolInfoPrinter<'data, O> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
-    pub(crate) fn new(
+    pub(crate) fn new<'data2, O2: ObjectFile<'data2>>(
         symbol_db: &'data SymbolDb<'data, O>,
         name: &'data str,
         flags: &'data AtomicPerSymbolFlags<'data>,
-        groups: &[ResolvedGroup],
+        groups: &[ResolvedGroup<'data2, O2>],
     ) -> Self {
         let loaded_file_ids = groups
             .iter()

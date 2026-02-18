@@ -49,7 +49,7 @@ impl<'data> LinkerPlugin<'data> {
     pub(crate) fn all_symbols_read(
         &mut self,
         _symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
-        _resolver: &mut Resolver<'data>,
+        _resolver: &mut Resolver<'data, crate::elf::File<'data>>,
         _file_loader: &mut FileLoader<'data>,
         _per_symbol_flags: &mut PerSymbolFlags,
         _output_sections: &mut OutputSections<'data>,
