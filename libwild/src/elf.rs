@@ -17,6 +17,7 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
@@ -214,6 +215,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type DynamicEntry = DynamicEntry;
     type RelocationList = RelocationList<'data>;
     type RelocationSections = RelocationSections;
+    type VersionNames = VersionNames<'data>;
+    type RawSymbolName = RawSymbolName<'data>;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -499,6 +502,75 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn section_iter(&self) -> Self::SectionIterator {
         self.sections.iter()
     }
+
+    fn get_version_names(&self) -> Result<Self::VersionNames> {
+        let endian = LittleEndian;
+
+        let mut version_names = vec![None; self.verdefnum as usize + 1];
+
+        // See https://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA.junk/symversion.html
+        // for information about symbol versioning.
+
+        if let Some((verdefs, string_table_index)) = &self.verdef {
+            let strings = self
+                .sections
+                .strings(endian, self.data, *string_table_index)?;
+
+            for r in verdefs.clone() {
+                let (verdef, mut aux_iterator) = r?;
+                // Every VERDEF entry should have at least one AUX entry. We currently only care
+                // about the first one.
+                let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                let version_index = verdef.vd_ndx.get(endian);
+                let name = aux.name(endian, strings)?;
+
+                *version_names
+                    .get_mut(usize::from(version_index))
+                    .with_context(|| format!("Invalid version index {version_index}"))? =
+                    Some(name);
+            }
+        }
+
+        Ok(VersionNames {
+            names: version_names,
+        })
+    }
+
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &crate::elf::Symbol,
+        local_index: usize,
+        version_names: &VersionNames<'data>,
+    ) -> Result<Self::RawSymbolName> {
+        let name_bytes = self.symbol_name(symbol)?;
+
+        let is_default;
+        let version_name;
+
+        if let Some(versym) = self.versym.get(local_index) {
+            let versym = versym.0.get(LittleEndian);
+            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+            let version_index = versym & object::elf::VERSYM_VERSION;
+            version_name = version_names
+                .names
+                .get(usize::from(version_index))
+                .copied()
+                .flatten();
+        } else {
+            is_default = true;
+            version_name = None;
+        };
+
+        Ok(RawSymbolName {
+            name: name_bytes,
+            version_name,
+            is_default,
+        })
+    }
+
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
+        self.symbols.iter()
+    }
 }
 
 impl platform::SectionHeader for SectionHeader {
@@ -594,6 +666,26 @@ impl platform::Symbol for Symbol {
 
     fn debug_string(&self) -> String {
         SymDebug(self).to_string()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.st_type() == object::elf::STT_TLS
+    }
+
+    fn is_interposable(&self) -> bool {
+        self.st_visibility() == object::elf::STV_DEFAULT
+    }
+
+    fn is_func(&self) -> bool {
+        self.st_type() == object::elf::STT_FUNC
+    }
+
+    fn is_ifunc(&self) -> bool {
+        self.st_type() == object::elf::STT_GNU_IFUNC
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.st_visibility() == object::elf::STV_HIDDEN
     }
 }
 
@@ -819,7 +911,7 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 }
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
-    symbol.st_visibility() == object::elf::STV_HIDDEN
+    symbol.is_hidden()
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -1406,5 +1498,57 @@ impl SectionAttributes {
         info.entsize = self.entsize;
 
         info.ty = info.ty.max(self.ty);
+    }
+}
+
+pub(crate) struct VersionNames<'data> {
+    pub(crate) names: Vec<Option<&'data [u8]>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RawSymbolName<'data> {
+    pub(crate) name: &'data [u8],
+
+    pub(crate) version_name: Option<&'data [u8]>,
+
+    /// Whether the symbol can be referred to without a version.
+    pub(crate) is_default: bool,
+}
+
+impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
+    fn parse(mut name_bytes: &'data [u8]) -> Self {
+        let mut version_name = None;
+        let mut is_default = true;
+
+        // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
+        // with double-at specifies that it's the default version.
+        if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
+            if name_bytes[at_offset..].starts_with(b"@@") {
+                version_name = Some(&name_bytes[at_offset + 2..]);
+            } else {
+                version_name = Some(&name_bytes[at_offset + 1..]);
+                is_default = false;
+            }
+
+            name_bytes = &name_bytes[..at_offset];
+        }
+
+        RawSymbolName {
+            name: name_bytes,
+            version_name,
+            is_default,
+        }
+    }
+
+    fn name(&self) -> &'data [u8] {
+        self.name
+    }
+
+    fn version_name(&self) -> Option<&'data [u8]> {
+        self.version_name
+    }
+
+    fn is_default(&self) -> bool {
+        self.is_default
     }
 }

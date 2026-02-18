@@ -103,6 +103,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     type RelocationList;
     type DynamicEntry;
 
+    /// The name of a symbol, possibly with a version.
+    type RawSymbolName: RawSymbolName<'data>;
+
+    /// For platforms that don't support symbol versioning, this can just be the unit type.
+    type VersionNames;
+
     fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> Result<Self>;
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
@@ -112,6 +118,8 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     fn is_dynamic(&self) -> bool;
 
     fn num_symbols(&self) -> usize;
+
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol>;
 
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
 
@@ -172,6 +180,15 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
 
     fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues>;
+
+    fn get_version_names(&self) -> Result<Self::VersionNames>;
+
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &Self::Symbol,
+        local_index: usize,
+        version_names: &Self::VersionNames,
+    ) -> Result<Self::RawSymbolName>;
 }
 
 pub(crate) trait SectionHeader {
@@ -215,6 +232,19 @@ pub(crate) trait Symbol {
     fn has_name(&self) -> bool;
 
     fn debug_string(&self) -> String;
+
+    /// Returns whether this symbol has been declared as a TLS variable.
+    fn is_tls(&self) -> bool;
+
+    /// Returns whether this symbol can be interposed (overridden) at runtime by DSOs earlier in the
+    /// load order.
+    fn is_interposable(&self) -> bool;
+
+    fn is_func(&self) -> bool;
+
+    fn is_ifunc(&self) -> bool;
+
+    fn is_hidden(&self) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -241,4 +271,14 @@ pub(crate) trait RelocationSequence<'data> {
     fn rel_iter(&self) -> impl Iterator<Item = Self::Rel>;
     fn subsequence(&self, range: Range<usize>) -> Self;
     fn num_relocations(&self) -> usize;
+}
+
+pub(crate) trait RawSymbolName<'data> {
+    fn parse(bytes: &'data [u8]) -> Self;
+
+    fn name(&self) -> &'data [u8];
+
+    fn version_name(&self) -> Option<&'data [u8]>;
+
+    fn is_default(&self) -> bool;
 }

@@ -6,6 +6,7 @@ use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
 use crate::bail;
+use crate::elf::RawSymbolName;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -32,7 +33,9 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
-use crate::platform::ObjectFile as _;
+use crate::platform;
+use crate::platform::ObjectFile;
+use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -56,7 +59,6 @@ use hashbrown::hash_map;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
-use object::LittleEndian;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
@@ -1550,7 +1552,7 @@ impl<'out, 'group, 'data> SymbolWriterShard<'out, 'group, 'data> {
     }
 }
 
-trait SymbolLoader<'data> {
+trait SymbolLoader<'data, O: ObjectFile<'data>> {
     fn load_symbols(
         &self,
         file_id: FileId,
@@ -1559,7 +1561,7 @@ trait SymbolLoader<'data> {
     ) -> Result {
         let base_symbol_id = symbols_out.next;
 
-        for symbol in self.object().symbols.iter() {
+        for symbol in self.object().symbols_iter() {
             let symbol_id = symbols_out.next;
             let mut flags = self.compute_value_flags(symbol);
 
@@ -1579,7 +1581,7 @@ trait SymbolLoader<'data> {
 
             let info = self.get_symbol_name_and_version(symbol, local_index)?;
 
-            let name = UnversionedSymbolName::prehashed(info.name);
+            let name = UnversionedSymbolName::prehashed(info.name());
 
             if self.should_downgrade_to_local(&name) {
                 flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
@@ -1587,17 +1589,17 @@ trait SymbolLoader<'data> {
                 // objects should never bypass the GOT for TLS variables. However, if we're
                 // downgrading all symbols by default, that'd add the flag to all symbols, so we
                 // have to do this later.
-                if !self.downgrades_all() && symbol.st_type() != object::elf::STT_TLS {
+                if !self.downgrades_all() && !symbol.is_tls() {
                     flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
 
-            if info.is_default {
+            if info.is_default() {
                 let pending = PendingSymbol::from_prehashed(symbol_id, name);
                 outputs.add_non_versioned(pending);
             }
 
-            if let Some(version) = info.version_name {
+            if let Some(version) = info.version_name() {
                 let pending = PendingVersionedSymbol::from_prehashed(symbol_id, name, version);
                 outputs.add_versioned(pending);
             }
@@ -1608,9 +1610,9 @@ trait SymbolLoader<'data> {
         Ok(())
     }
 
-    fn object(&self) -> &crate::elf::File<'data>;
+    fn object(&self) -> &O;
 
-    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags;
+    fn compute_value_flags(&self, symbol: &O::Symbol) -> ValueFlags;
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
@@ -1623,29 +1625,19 @@ trait SymbolLoader<'data> {
     }
 
     /// Returns whether the supplied symbol should be ignore.
-    fn should_ignore_symbol(&self, _symbol: &crate::elf::Symbol) -> bool {
+    fn should_ignore_symbol(&self, _symbol: &O::Symbol) -> bool {
         false
     }
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &crate::elf::Symbol,
+        symbol: &O::Symbol,
         local_index: usize,
-    ) -> Result<RawSymbolName<'data>>;
+    ) -> Result<O::RawSymbolName>;
 }
 
-#[derive(Debug)]
-pub(crate) struct RawSymbolName<'data> {
-    pub(crate) name: &'data [u8],
-
-    pub(crate) version_name: Option<&'data [u8]>,
-
-    /// Whether the symbol can be referred to without a version.
-    pub(crate) is_default: bool,
-}
-
-struct RegularObjectSymbolLoader<'a, 'data> {
-    object: &'a crate::elf::File<'data>,
+struct RegularObjectSymbolLoader<'a, 'data, O: ObjectFile<'data>> {
+    object: &'a O,
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
@@ -1654,40 +1646,14 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     output_kind: OutputKind,
 }
 
-struct DynamicObjectSymbolLoader<'a, 'data> {
-    object: &'a crate::elf::File<'data>,
-    version_names: Vec<Option<&'data [u8]>>,
+struct DynamicObjectSymbolLoader<'a, 'data, O: ObjectFile<'data>> {
+    object: &'a O,
+    version_names: O::VersionNames,
 }
 
-impl<'a, 'data> DynamicObjectSymbolLoader<'a, 'data> {
-    fn new(object: &'a crate::elf::File<'data>) -> Result<Self> {
-        let endian = LittleEndian;
-
-        let mut version_names = vec![None; object.verdefnum as usize + 1];
-
-        // See https://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA.junk/symversion.html
-        // for information about symbol versioning.
-
-        if let Some((verdefs, string_table_index)) = &object.verdef {
-            let strings = object
-                .sections
-                .strings(endian, object.data, *string_table_index)?;
-
-            for r in verdefs.clone() {
-                let (verdef, mut aux_iterator) = r?;
-                // Every VERDEF entry should have at least one AUX entry. We currently only care
-                // about the first one.
-                let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
-                let version_index = verdef.vd_ndx.get(endian);
-                let name = aux.name(endian, strings)?;
-
-                *version_names
-                    .get_mut(usize::from(version_index))
-                    .with_context(|| format!("Invalid version index {version_index}"))? =
-                    Some(name);
-            }
-        }
-
+impl<'a, 'data, O: ObjectFile<'data>> DynamicObjectSymbolLoader<'a, 'data, O> {
+    fn new(object: &'a O) -> Result<Self> {
+        let version_names = object.get_version_names()?;
         Ok(Self {
             object,
             version_names,
@@ -1695,8 +1661,10 @@ impl<'a, 'data> DynamicObjectSymbolLoader<'a, 'data> {
     }
 }
 
-impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
-    fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
+impl<'data, O: ObjectFile<'data>> SymbolLoader<'data, O>
+    for RegularObjectSymbolLoader<'_, 'data, O>
+{
+    fn compute_value_flags(&self, sym: &O::Symbol) -> ValueFlags {
         let is_undefined = sym.is_undefined();
 
         let symbol_is_exported = || {
@@ -1708,7 +1676,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
             }
             true
         };
-        let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
+        let non_interposable = !sym.is_interposable()
             || sym.is_local()
             || self.output_kind.is_static_executable()
             // Symbols defined in an executable cannot be interposed since the executable is always the
@@ -1721,18 +1689,18 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
                     // `-Bsymbolic-functions`
                     || (
                         self.args.b_symbolic == args::BSymbolicKind::Functions
-                        && sym.st_type() == object::elf::STT_FUNC
+                        && sym.is_func()
                     )
                     // `-Bsymbolic-non-weak`
                     || (
                         self.args.b_symbolic == args::BSymbolicKind::NonWeak
-                        && sym.st_bind() != object::elf::STB_WEAK
+                        && !sym.is_weak()
                     )
                     // `-Bsymbolic-non-weak-functions`
                     || (
                         self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
-                        && (sym.st_type() == object::elf::STT_FUNC
-                        && sym.st_bind() != object::elf::STB_WEAK)
+                        && (sym.is_func()
+                        && !sym.is_weak())
                     )
                 )
                 // Bsymbolic does not affect symbols that are exported
@@ -1741,7 +1709,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
 
         let mut flags: ValueFlags = if sym.is_absolute() {
             ValueFlags::ABSOLUTE
-        } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
+        } else if sym.is_ifunc() {
             ValueFlags::IFUNC
         } else if is_undefined {
             // For undefined symbols, we tweak some of the flags later on in
@@ -1773,48 +1741,25 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &crate::elf::Symbol,
+        symbol: &O::Symbol,
         _local_index: usize,
-    ) -> Result<RawSymbolName<'data>> {
-        Ok(RawSymbolName::parse(self.object.symbol_name(symbol)?))
+    ) -> Result<O::RawSymbolName> {
+        Ok(<O::RawSymbolName as platform::RawSymbolName>::parse(
+            self.object.symbol_name(symbol)?,
+        ))
     }
 
-    fn object(&self) -> &crate::elf::File<'data> {
+    fn object(&self) -> &O {
         self.object
     }
 }
 
-impl<'data> RawSymbolName<'data> {
-    pub(crate) fn parse(mut name_bytes: &'data [u8]) -> Self {
-        let mut version_name = None;
-        let mut is_default = true;
-
-        // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
-        // with double-at specifies that it's the default version.
-        if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
-            if name_bytes[at_offset..].starts_with(b"@@") {
-                version_name = Some(&name_bytes[at_offset + 2..]);
-            } else {
-                version_name = Some(&name_bytes[at_offset + 1..]);
-                is_default = false;
-            }
-
-            name_bytes = &name_bytes[..at_offset];
-        }
-
-        RawSymbolName {
-            name: name_bytes,
-            version_name,
-            is_default,
-        }
-    }
-}
-
-impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
-    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
+impl<'data, O: ObjectFile<'data>> SymbolLoader<'data, O>
+    for DynamicObjectSymbolLoader<'_, 'data, O>
+{
+    fn compute_value_flags(&self, symbol: &O::Symbol) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
-        let st_type = symbol.st_type();
-        if st_type == object::elf::STT_FUNC || st_type == object::elf::STT_GNU_IFUNC {
+        if symbol.is_func() || symbol.is_ifunc() {
             flags |= ValueFlags::FUNCTION;
         }
         if symbol.is_undefined() {
@@ -1825,42 +1770,20 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &crate::elf::Symbol,
+        symbol: &O::Symbol,
         local_index: usize,
-    ) -> Result<RawSymbolName<'data>> {
-        let name_bytes = self.object.symbol_name(symbol)?;
-
-        let is_default;
-        let version_name;
-
-        if let Some(versym) = self.object.versym.get(local_index) {
-            let versym = versym.0.get(LittleEndian);
-            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-            let version_index = versym & object::elf::VERSYM_VERSION;
-            version_name = self
-                .version_names
-                .get(usize::from(version_index))
-                .copied()
-                .flatten();
-        } else {
-            is_default = true;
-            version_name = None;
-        };
-
-        Ok(RawSymbolName {
-            name: name_bytes,
-            version_name,
-            is_default,
-        })
+    ) -> Result<O::RawSymbolName> {
+        self.object
+            .get_symbol_name_and_version(symbol, local_index, &self.version_names)
     }
 
-    fn object(&self) -> &crate::elf::File<'data> {
+    fn object(&self) -> &O {
         self.object
     }
 
-    fn should_ignore_symbol(&self, symbol: &crate::elf::Symbol) -> bool {
+    fn should_ignore_symbol(&self, symbol: &O::Symbol) -> bool {
         // Shared objects shouldn't export hidden symbols. If for some reason they do, ignore them.
-        crate::elf::is_hidden_symbol(symbol)
+        symbol.is_hidden()
     }
 }
 

@@ -1,12 +1,13 @@
+use crate::elf::RawSymbolName;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::platform::ObjectFile as _;
+use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::symbol::PreHashedSymbolName;
-use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
