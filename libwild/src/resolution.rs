@@ -10,7 +10,6 @@ use crate::debug_assert_bail;
 use crate::elf::File;
 use crate::elf::RawSymbolName;
 use crate::elf::SectionHeader;
-use crate::elf::Versym;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -31,9 +30,10 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol as _;
+use crate::platform::VerneedTable as _;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
@@ -57,7 +57,6 @@ use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
-use object::LittleEndian;
 use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
@@ -1300,7 +1299,7 @@ fn resolve_symbols<'data, 'scope>(
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
-    let verneed = VerneedTable::new(&obj.parsed.object)?;
+    let verneed = obj.parsed.object.verneed_table()?;
 
     obj.parsed.object.symbols.symbols()[start_symbol_offset..]
         .iter()
@@ -1507,55 +1506,6 @@ impl ResolvedFile<'_> {
             ResolvedFile::LtoInput(s) => s.symbol_id_range,
         }
     }
-}
-
-struct VerneedTable<'data> {
-    versym: &'data [Versym],
-    version_names_by_index: Vec<Option<&'data [u8]>>,
-}
-
-impl<'data> VerneedTable<'data> {
-    fn new(file: &File<'data>) -> Result<Self> {
-        Ok(Self {
-            versym: file.versym,
-            version_names_by_index: verneed_names_by_index(file)?,
-        })
-    }
-
-    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
-        let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
-        self.version_names_by_index
-            .get(usize::from(version_index))
-            .copied()
-            .flatten()
-    }
-}
-
-fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data [u8]>>> {
-    let mut version_names = Vec::new();
-    let endian = LittleEndian;
-
-    if let Some((verneeds, string_table_index)) = &file.verneed {
-        let strings = file
-            .sections
-            .strings(endian, file.data, *string_table_index)?;
-
-        for r in verneeds.clone() {
-            let (_verneed, aux_iterator) = r?;
-            for aux in aux_iterator {
-                let aux = aux?;
-                let version_index = usize::from(aux.vna_other.get(endian));
-                let name = aux.name(endian, strings)?;
-
-                if version_names.len() <= version_index {
-                    version_names.resize_with(version_index + 1, || None);
-                }
-                version_names[version_index] = Some(name);
-            }
-        }
-    }
-
-    Ok(version_names)
 }
 
 impl ResolvedPrelude<'_> {

@@ -221,6 +221,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type RelocationSections = RelocationSections;
     type VersionNames = VersionNames<'data>;
     type RawSymbolName = RawSymbolName<'data>;
+    type VerneedTable = VerneedTable<'data>;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -574,6 +575,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
         self.symbols.iter()
+    }
+
+    fn verneed_table(&self) -> Result<Self::VerneedTable> {
+        VerneedTable::new(self)
     }
 }
 
@@ -1555,4 +1560,55 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     fn is_default(&self) -> bool {
         self.is_default
     }
+}
+
+pub(crate) struct VerneedTable<'data> {
+    versym: &'data [Versym],
+    version_names_by_index: Vec<Option<&'data [u8]>>,
+}
+
+impl<'data> VerneedTable<'data> {
+    fn new(file: &File<'data>) -> Result<Self> {
+        Ok(Self {
+            versym: file.versym,
+            version_names_by_index: verneed_names_by_index(file)?,
+        })
+    }
+}
+
+impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
+    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+        let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
+        self.version_names_by_index
+            .get(usize::from(version_index))
+            .copied()
+            .flatten()
+    }
+}
+
+fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+    let mut version_names = Vec::new();
+    let endian = LittleEndian;
+
+    if let Some((verneeds, string_table_index)) = &file.verneed {
+        let strings = file
+            .sections
+            .strings(endian, file.data, *string_table_index)?;
+
+        for r in verneeds.clone() {
+            let (_verneed, aux_iterator) = r?;
+            for aux in aux_iterator {
+                let aux = aux?;
+                let version_index = usize::from(aux.vna_other.get(endian));
+                let name = aux.name(endian, strings)?;
+
+                if version_names.len() <= version_index {
+                    version_names.resize_with(version_index + 1, || None);
+                }
+                version_names[version_index] = Some(name);
+            }
+        }
+    }
+
+    Ok(version_names)
 }

@@ -102,6 +102,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     type RelocationSections;
     type RelocationList;
     type DynamicEntry;
+    type VerneedTable: VerneedTable<'data>;
 
     /// The name of a symbol, possibly with a version.
     type RawSymbolName: RawSymbolName<'data>;
@@ -189,6 +190,8 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
         local_index: usize,
         version_names: &Self::VersionNames,
     ) -> Result<Self::RawSymbolName>;
+
+    fn verneed_table(&self) -> Result<Self::VerneedTable>;
 }
 
 pub(crate) trait SectionHeader {
@@ -281,4 +284,8 @@ pub(crate) trait RawSymbolName<'data> {
     fn version_name(&self) -> Option<&'data [u8]>;
 
     fn is_default(&self) -> bool;
+}
+
+pub(crate) trait VerneedTable<'data> {
+    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]>;
 }
