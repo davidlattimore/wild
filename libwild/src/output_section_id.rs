@@ -756,6 +756,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        end_symbol_name: Some("_etext"),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -776,6 +777,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::WRITE),
         // TODO: define the symbol only on RISC-V target
         start_symbol_name: Some(GLOBAL_POINTER_SYMBOL_NAME),
+        end_symbol_name: Some("_edata"),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

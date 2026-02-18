@@ -3578,7 +3578,8 @@ fn integration_test(
         "new-dtags.c",
         "riscv-attr-conflict.s",
         "riscv-call-relaxation.s",
-        "riscv-cross-object-call-relaxation.s"
+        "riscv-cross-object-call-relaxation.s",
+        "segment-end-syms.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

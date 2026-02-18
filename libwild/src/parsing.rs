@@ -292,6 +292,11 @@ impl<'data> Prelude<'data> {
         }));
 
         symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::TEXT),
+            b"__etext",
+        ));
+
+        symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
         ));
