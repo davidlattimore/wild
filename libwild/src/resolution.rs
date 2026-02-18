@@ -30,8 +30,12 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
+use crate::platform::DynamicTagValues as _;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
+use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader as _;
+use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::string_merging::StringMergeSectionExtra;
@@ -52,11 +56,7 @@ use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
-use linker_utils::elf::shf;
-use linker_utils::elf::sht::NOTE;
 use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
@@ -656,7 +656,8 @@ pub(crate) struct ResolvedObject<'data> {
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: object::read::elf::RelocationSections,
 
-    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
+    pub(crate) string_merge_extras:
+        Vec<StringMergeSectionExtra<'data, linker_utils::elf::SectionFlags>>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
@@ -1080,7 +1081,7 @@ impl<'data> ResolvedCommon<'data> {
             SymbolStrength::Weak
         } else if obj_symbol.is_common() {
             SymbolStrength::Common(obj_symbol.size())
-        } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
+        } else if obj_symbol.is_gnu_unique() {
             SymbolStrength::GnuUnique
         } else {
             SymbolStrength::Strong
@@ -1149,8 +1150,8 @@ fn resolve_sections_for_object<'data>(
     // Note, we build up the collection with push rather than collect because at the time of
     // writing, object's `SectionTable::enumerate` isn't an exact-size iterator, so using collect
     // would result in resizing.
-    let mut sections = Vec::with_capacity(obj.common.object.sections.len());
-    for (input_section_index, input_section) in obj.common.object.sections.enumerate() {
+    let mut sections = Vec::with_capacity(obj.common.object.num_sections());
+    for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
         sections.push(resolve_section(
             input_section_index,
             input_section,
@@ -1187,15 +1188,15 @@ fn resolve_section<'data>(
         return Err(symbol_db::linker_plugin_disabled_error());
     }
 
-    let section_flags = SectionFlags::from_header(input_section);
+    let section_flags = input_section.flags();
     let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
     let should_merge_sections = part_id::should_merge_sections(section_flags, raw_alignment, args);
 
     let mut unloaded_section;
     let mut is_debug_info = false;
-    let section_type = SectionType::from_header(input_section);
-    let mut must_load = section_flags.should_retain() || section_type == NOTE;
+    let section_type = input_section.section_type();
+    let mut must_load = section_flags.should_retain() || section_type.is_note();
 
     match rules.lookup(section_name, section_flags, section_type) {
         SectionRuleOutcome::Section(output_info) => {
@@ -1236,11 +1237,11 @@ fn resolve_section<'data>(
             return Ok(SectionSlot::NoteGnuProperty(input_section_index));
         }
         SectionRuleOutcome::Debug => {
-            if args.strip_debug() && !section_flags.contains(shf::ALLOC) {
+            if args.strip_debug() && !section_flags.is_alloc() {
                 return Ok(SectionSlot::Discard);
             }
 
-            is_debug_info = !section_flags.contains(shf::ALLOC);
+            is_debug_info = !section_flags.is_alloc();
 
             unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
         }
@@ -1268,7 +1269,7 @@ fn resolve_section<'data>(
             obj.common
                 .object
                 .section_data(input_section, allocator, loaded_metrics)?;
-        let section_flags = SectionFlags::from_header(input_section);
+        let section_flags = input_section.flags();
 
         if section_data.is_empty() {
             SectionSlot::Discard
@@ -1301,7 +1302,7 @@ fn resolve_symbols<'data, 'scope>(
 ) -> Result {
     let verneed = obj.parsed.object.verneed_table()?;
 
-    obj.parsed.object.symbols.symbols()[start_symbol_offset..]
+    obj.parsed.object.symbols()[start_symbol_offset..]
         .iter()
         .enumerate()
         .zip(definitions_out)
@@ -1313,7 +1314,7 @@ fn resolve_symbols<'data, 'scope>(
                 // resolving them as well.
                 if !definition.is_undefined()
                     || start_symbol_offset + local_symbol_index == 0
-                    || (obj.is_dynamic() && crate::elf::is_hidden_symbol(local_symbol))
+                    || (obj.is_dynamic() && local_symbol.is_hidden())
                 {
                     return Ok(());
                 }
@@ -1335,7 +1336,7 @@ fn resolve_symbols<'data, 'scope>(
                 let symbol_attributes = SymbolAttributes {
                     name_info,
                     is_local: local_symbol.is_local(),
-                    default_visibility: local_symbol.st_visibility() == object::elf::STV_DEFAULT,
+                    default_visibility: local_symbol.is_interposable(),
                     is_weak: local_symbol.is_weak(),
                 };
 

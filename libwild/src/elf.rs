@@ -17,7 +17,6 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
-use crate::platform::Symbol as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
@@ -508,6 +507,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections.iter()
     }
 
+    fn enumerate_sections(
+        &self,
+    ) -> impl Iterator<Item = (object::SectionIndex, &'data Self::SectionHeader)> {
+        self.sections.enumerate()
+    }
+
     fn get_version_names(&self) -> Result<Self::VersionNames> {
         let endian = LittleEndian;
 
@@ -573,6 +578,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
+    fn symbols(&self) -> &'data [Self::Symbol] {
+        self.symbols.symbols()
+    }
+
     fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
         self.symbols.iter()
     }
@@ -580,11 +589,16 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn verneed_table(&self) -> Result<Self::VerneedTable> {
         VerneedTable::new(self)
     }
+
+    fn num_sections(&self) -> usize {
+        self.sections.len()
+    }
 }
 
 impl platform::SectionHeader for SectionHeader {
     type SectionFlags = SectionFlags;
     type Attributes = SectionAttributes;
+    type SectionType = SectionType;
 
     fn flags(&self) -> Self::SectionFlags {
         SectionFlags::from_header(self)
@@ -597,6 +611,24 @@ impl platform::SectionHeader for SectionHeader {
             entsize: self.sh_entsize.get(LittleEndian),
         }
     }
+
+    fn section_type(&self) -> Self::SectionType {
+        SectionType::from_header(self)
+    }
+}
+
+impl platform::SectionType for SectionType {
+    fn is_note(self) -> bool {
+        self == sht::NOTE
+    }
+
+    fn is_prog_bits(self) -> bool {
+        self == sht::PROGBITS
+    }
+
+    fn is_no_bits(self) -> bool {
+        self == sht::NOBITS
+    }
 }
 
 impl platform::SectionFlags for SectionFlags {
@@ -606,6 +638,34 @@ impl platform::SectionFlags for SectionFlags {
 
     fn is_writable(self) -> bool {
         self.contains(shf::WRITE)
+    }
+
+    fn is_executable(self) -> bool {
+        self.contains(shf::EXECINSTR)
+    }
+
+    fn is_merge_section(self) -> bool {
+        self.contains(shf::MERGE)
+    }
+
+    fn is_strings(self) -> bool {
+        self.contains(shf::STRINGS)
+    }
+
+    fn should_retain(self) -> bool {
+        self.contains(shf::GNU_RETAIN)
+    }
+
+    fn should_exclude(&self) -> bool {
+        self.contains(shf::EXCLUDE)
+    }
+
+    fn is_group(self) -> bool {
+        self.contains(shf::GROUP)
+    }
+
+    fn is_tls(self) -> bool {
+        self.contains(shf::TLS)
     }
 }
 
@@ -695,6 +755,10 @@ impl platform::Symbol for Symbol {
 
     fn is_hidden(&self) -> bool {
         self.st_visibility() == object::elf::STV_HIDDEN
+    }
+
+    fn is_gnu_unique(&self) -> bool {
+        self.st_bind() == object::elf::STB_GNU_UNIQUE
     }
 }
 
@@ -919,10 +983,6 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
         .0
 }
 
-pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
-    symbol.is_hidden()
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     pub(crate) verdefnum: u64,
@@ -954,8 +1014,10 @@ impl<'data> DynamicTagValues<'data> {
         }
         values
     }
+}
 
-    pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
+impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
+    fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
         self.soname.unwrap_or_else(|| input.lib_name())
     }
 }

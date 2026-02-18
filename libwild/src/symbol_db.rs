@@ -36,6 +36,8 @@ use crate::parsing::SyntheticSymbols;
 use crate::platform;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
+use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader;
 use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -57,8 +59,6 @@ use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use hashbrown::hash_map;
 use itertools::Itertools;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::shf;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
@@ -889,9 +889,9 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
             return false;
         };
 
-        let flags = SectionFlags::from_header(header);
+        let flags = header.flags();
 
-        flags.contains(shf::GROUP)
+        flags.is_group()
     }
 
     pub(crate) fn entry_symbol_name(&self) -> &[u8] {

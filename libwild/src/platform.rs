@@ -3,6 +3,7 @@ use crate::OutputKind;
 use crate::Result;
 use crate::arch::Architecture;
 use crate::input_data::InputBytes;
+use crate::input_data::InputRef;
 use crate::layout::Layout;
 use crate::part_id::PartId;
 use crate::resolution::LoadedMetrics;
@@ -95,11 +96,11 @@ pub(crate) struct RelaxSymbolInfo {
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
-    type Symbol: Symbol + 'static;
-    type SectionHeader: SectionHeader + 'static;
+    type Symbol: Symbol;
+    type SectionHeader: SectionHeader;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
-    type DynamicTagValues;
-    type RelocationSections;
+    type DynamicTagValues: DynamicTagValues<'data>;
+    type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type RelocationList;
     type DynamicEntry;
     type VerneedTable: VerneedTable<'data>;
@@ -120,6 +121,8 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
 
     fn num_symbols(&self) -> usize;
 
+    fn symbols(&self) -> &'data [Self::Symbol];
+
     fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol>;
 
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
@@ -128,7 +131,13 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
 
     fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]>;
 
+    fn num_sections(&self) -> usize;
+
     fn section_iter(&self) -> Self::SectionIterator;
+
+    fn enumerate_sections(
+        &self,
+    ) -> impl Iterator<Item = (object::SectionIndex, &'data Self::SectionHeader)>;
 
     fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader>;
 
@@ -194,20 +203,48 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     fn verneed_table(&self) -> Result<Self::VerneedTable>;
 }
 
-pub(crate) trait SectionHeader {
+pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
     type SectionFlags: SectionFlags;
+    type SectionType: SectionType;
     type Attributes;
 
     fn flags(&self) -> Self::SectionFlags;
+
     fn attributes(&self) -> Self::Attributes;
+
+    fn section_type(&self) -> Self::SectionType;
 }
 
-pub(crate) trait SectionFlags: Copy {
+pub(crate) trait SectionType: Copy {
+    fn is_note(self) -> bool;
+
+    fn is_prog_bits(self) -> bool;
+
+    /// Returns whether the section has no contents in the file (zero initialised).
+    fn is_no_bits(self) -> bool;
+}
+
+pub(crate) trait SectionFlags: Copy + std::fmt::Debug + Send + Sync + 'static {
     fn is_alloc(self) -> bool;
+
     fn is_writable(self) -> bool;
+
+    fn is_executable(self) -> bool;
+
+    fn is_tls(self) -> bool;
+
+    fn is_merge_section(self) -> bool;
+
+    fn is_strings(self) -> bool;
+
+    fn should_retain(self) -> bool;
+
+    fn should_exclude(&self) -> bool;
+
+    fn is_group(self) -> bool;
 }
 
-pub(crate) trait Symbol {
+pub(crate) trait Symbol: std::fmt::Debug + Send + Sync + 'static {
     /// Returns information about the symbol if it's a common symbol. Platforms that don't have
     /// common symbols can just return None.
     fn as_common(&self) -> Option<CommonSymbol>;
@@ -248,6 +285,8 @@ pub(crate) trait Symbol {
     fn is_ifunc(&self) -> bool;
 
     fn is_hidden(&self) -> bool;
+
+    fn is_gnu_unique(&self) -> bool;
 }
 
 #[derive(Clone, Copy)]
@@ -288,4 +327,8 @@ pub(crate) trait RawSymbolName<'data> {
 
 pub(crate) trait VerneedTable<'data> {
     fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]>;
+}
+
+pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync {
+    fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8];
 }

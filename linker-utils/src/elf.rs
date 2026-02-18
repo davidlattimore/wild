@@ -627,11 +627,6 @@ impl SectionFlags {
     }
 
     #[must_use]
-    pub fn should_retain(&self) -> bool {
-        self.contains(shf::GNU_RETAIN)
-    }
-
-    #[must_use]
     pub fn should_exclude(&self) -> bool {
         self.contains(shf::EXCLUDE)
     }

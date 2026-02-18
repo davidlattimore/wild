@@ -38,6 +38,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::platform::ObjectFile as _;
+use crate::platform::SectionFlags;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -48,8 +49,6 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
-use linker_utils::elf;
-use linker_utils::elf::shf;
 use rayon::Scope;
 use sharded_offset_map::OffsetMap;
 use sharded_offset_map::ShardedWriter;
@@ -107,10 +106,10 @@ impl StringMergeSectionSlot {
 /// Extra stuff that we don't want to put in `StringMergeSectionSlot` because like all section
 /// slots, we want to keep it as small as possible.
 #[derive(Debug)]
-pub(crate) struct StringMergeSectionExtra<'data> {
+pub(crate) struct StringMergeSectionExtra<'data, S: SectionFlags> {
     pub(crate) index: object::SectionIndex,
     pub(crate) section_data: &'data [u8],
-    pub(crate) section_flags: elf::SectionFlags,
+    pub(crate) section_flags: S,
 }
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
@@ -322,7 +321,7 @@ fn group_merge_string_sections_by_output<'data>(
                     .push(StringMergeInputSection {
                         section_data: extra.section_data,
                         start_input_offset: *starting_offset,
-                        is_string: extra.section_flags.contains(shf::STRINGS),
+                        is_string: extra.section_flags.is_strings(),
                     });
 
                 *starting_offset = *starting_offset

@@ -55,6 +55,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::DynamicTagValues as _;
 use crate::platform::ObjectFile as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;

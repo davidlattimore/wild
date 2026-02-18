@@ -16,12 +16,10 @@ use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
+use crate::platform::SectionFlags;
+use crate::platform::SectionType;
 use hashbrown::HashTable;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
-use linker_utils::elf::shf;
-use linker_utils::elf::sht;
 use std::mem::replace;
 
 pub(crate) struct LayoutRules<'data> {
@@ -423,8 +421,8 @@ impl<'data> SectionRules<'data> {
     pub(crate) fn lookup(
         &self,
         section_name: &[u8],
-        section_flags: SectionFlags,
-        sh_type: SectionType,
+        section_flags: impl SectionFlags,
+        sh_type: impl SectionType,
     ) -> SectionRuleOutcome {
         if section_flags.should_exclude() {
             return SectionRuleOutcome::Discard;
@@ -452,21 +450,24 @@ fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
-fn unnamed_section_output(section_flags: SectionFlags, sh_type: SectionType) -> SectionRuleOutcome {
-    if !section_flags.contains(shf::ALLOC) {
+fn unnamed_section_output(
+    section_flags: impl SectionFlags,
+    sh_type: impl SectionType,
+) -> SectionRuleOutcome {
+    if !section_flags.is_alloc() {
         SectionRuleOutcome::Discard
-    } else if sh_type == sht::PROGBITS {
-        if section_flags.contains(shf::EXECINSTR) {
+    } else if sh_type.is_prog_bits() {
+        if section_flags.is_executable() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TEXT))
-        } else if section_flags.contains(shf::TLS) {
+        } else if section_flags.is_tls() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TDATA))
-        } else if section_flags.contains(shf::WRITE) {
+        } else if section_flags.is_writable() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::DATA))
         } else {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA))
         }
-    } else if sh_type == sht::NOBITS {
-        if section_flags.contains(shf::TLS) {
+    } else if sh_type.is_no_bits() {
+        if section_flags.is_tls() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TBSS))
         } else {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS))
@@ -482,8 +483,8 @@ fn test_section_mapping() {
     let lookup_name = |name: &str| {
         rules.lookup(
             name.as_bytes(),
-            SectionFlags::empty(),
-            SectionType::from_u32(0),
+            linker_utils::elf::SectionFlags::empty(),
+            linker_utils::elf::SectionType::from_u32(0),
         )
     };
 
