@@ -66,7 +66,8 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
-use crate::platform::ObjectFile as _;
+use crate::platform;
+use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
@@ -136,6 +137,8 @@ use uuid::Uuid;
 use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
 
+type ElfLayout<'data> = Layout<'data, elf::File<'data>>;
+
 /// A cache for managing ELF relocations and optimization of relocation entries.
 #[derive(Debug)]
 struct RelocationCache<R> {
@@ -148,7 +151,7 @@ struct RelocationCache<R> {
 
 pub(crate) fn write<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     sized_output: &mut SizedOutput,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     write_file_contents::<P>(sized_output, layout)?;
     if layout.args().validate_output {
@@ -170,7 +173,7 @@ pub(crate) fn write<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
 fn write_gnu_build_id_note(
     sized_output: &mut SizedOutput,
     build_id_option: &BuildIdOption,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     let hash_placeholder;
     let uuid_placeholder;
@@ -213,7 +216,7 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
 
 fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     sized_output: &mut SizedOutput,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
@@ -274,7 +277,7 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     });
 }
 
-fn write_sframe_section(sframe_buffer: &mut [u8], layout: &Layout) -> Result {
+fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
     if sframe_buffer.is_empty() {
         return Ok(());
     }
@@ -306,7 +309,10 @@ fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     entries.par_sort_by_key(|e| e.frame_ptr);
 }
 
-fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
+fn write_program_headers(
+    program_headers_out: &mut ProgramHeaderWriter,
+    layout: &ElfLayout,
+) -> Result {
     for segment_layout in &layout.segment_layouts.segments {
         let segment_sizes = &segment_layout.sizes;
         let segment_id = segment_layout.id;
@@ -348,7 +354,7 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
 }
 
 fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    layout: &Layout,
+    layout: &ElfLayout,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
 ) -> Result {
@@ -398,10 +404,10 @@ fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>
 }
 
 fn write_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    file: &FileLayout<'data>,
+    file: &FileLayout<'data, crate::elf::File<'data>>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
     trace: &TraceOutput,
 ) -> Result {
     match file {
@@ -542,7 +548,7 @@ struct TableWriter<'layout, 'out> {
 
 impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn from_layout(
-        layout: &'layout Layout,
+        layout: &'layout ElfLayout,
         dynstr_start_offset: u32,
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
@@ -601,7 +607,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn process_resolution<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
-        layout: Option<&Layout<'data>>,
+        layout: Option<&ElfLayout<'data>>,
         res: &Resolution,
     ) -> Result {
         let Some(got_address) = res.got_address else {
@@ -685,7 +691,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_offset<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         res: &Resolution,
-        layout: &Layout<'data>,
+        layout: &ElfLayout<'data>,
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
@@ -1281,10 +1287,10 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
 }
 
 fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &ObjectLayout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
     trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
@@ -1348,8 +1354,8 @@ fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
 }
 
 fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &ObjectLayout<'data>,
-    layout: &Layout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout<'data>,
     section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
@@ -1399,8 +1405,8 @@ fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>
 }
 
 fn write_section_reversed<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &ObjectLayout<'data>,
-    layout: &Layout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout<'data>,
     section: &Section,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
@@ -1470,8 +1476,8 @@ fn write_section_reversed<'data, P: Platform<'data, File = crate::elf::File<'dat
 }
 
 fn write_debug_section<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &ObjectLayout<'data>,
-    layout: &Layout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout<'data>,
     section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
@@ -1499,9 +1505,9 @@ fn write_debug_section<'data, P: Platform<'data, File = crate::elf::File<'data>>
     Ok(())
 }
 
-fn write_section_raw<'out>(
-    object: &ObjectLayout,
-    layout: &Layout,
+fn write_section_raw<'out, 'data>(
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout,
     sec: &Section,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
@@ -1569,10 +1575,10 @@ fn write_section_raw<'out>(
 }
 
 /// Writes debug symbols.
-fn write_symbols(
-    object: &ObjectLayout,
+fn write_symbols<'data>(
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
     symbol_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     for ((sym_index, sym), flags) in object
         .object
@@ -1663,11 +1669,11 @@ fn apply_relocations<
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
-    object: &ObjectLayout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
     out: &mut [u8],
     section: &Section,
     mut relocations: I,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
@@ -1744,11 +1750,11 @@ fn apply_debug_relocations<
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
-    object: &ObjectLayout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
     out: &mut [u8],
     section: &Section,
     relocations: I,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     let object_section = object.object.section(section.index)?;
     let section_name = object.object.section_name(object_section)?;
@@ -1798,9 +1804,9 @@ fn apply_debug_relocations<
 }
 
 fn write_eh_frame_data<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &ObjectLayout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
     eh_frame_section_index: object::SectionIndex,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
@@ -1830,8 +1836,8 @@ fn write_eh_frame_relocations<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object: &ObjectLayout<'data>,
-    layout: &Layout<'data>,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter<'_, '_>,
     trace: &TraceOutput,
     eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
@@ -2005,9 +2011,9 @@ fn display_relocation<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object: &'a ObjectLayout<'data>,
+    object: &'a ObjectLayout<'data, crate::elf::File<'data>>,
     rel: &'a R,
-    layout: &'a Layout<'data>,
+    layout: &'a ElfLayout<'data>,
 ) -> DisplayRelocation<'a, 'data, P, R> {
     DisplayRelocation::<'a, 'data, P, R> {
         rel,
@@ -2027,7 +2033,7 @@ struct DisplayRelocation<
     rel: &'a R,
     symbol_db: &'a SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &'a PerSymbolFlags,
-    object: &'a ObjectLayout<'data>,
+    object: &'a ObjectLayout<'data, crate::elf::File<'data>>,
     phantom: PhantomData<P>,
 }
 
@@ -2057,16 +2063,16 @@ impl<'a, 'data, P: Platform<'data, File = crate::elf::File<'data>>, R: Relocatio
 }
 
 #[derive(Clone, Copy)]
-struct SectionInfo {
+struct SectionInfo<S: platform::SectionFlags> {
     section_address: u64,
     is_writable: bool,
-    section_flags: SectionFlags,
+    section_flags: S,
 }
 
-fn get_resolution<R: Relocation>(
+fn get_resolution<'data, R: Relocation>(
     rel: &R,
-    object_layout: &ObjectLayout,
-    layout: &Layout,
+    object_layout: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout,
 ) -> Result<(Resolution, SymbolIndex, SymbolId)> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
@@ -2090,7 +2096,7 @@ fn get_resolution<R: Relocation>(
 }
 
 fn write_got_plt_syms(
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_writer: &mut SymbolTableWriter<'_, '_>,
     symbol_id: SymbolId,
 ) -> Result {
@@ -2191,9 +2197,9 @@ fn get_pair_subtraction_relocation_value<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object_layout: &ObjectLayout,
+    object_layout: &ObjectLayout<'data, crate::elf::File<'data>>,
     rel: &R,
-    layout: &Layout,
+    layout: &ElfLayout,
     resolution: Resolution,
     symbol_index: SymbolIndex,
     addend: i64,
@@ -2239,11 +2245,11 @@ fn apply_relocation<
     R: Relocation,
     I: Iterator<Item = object::Result<R>> + Clone,
 >(
-    object_layout: &ObjectLayout,
+    object_layout: &ObjectLayout<'data, crate::elf::File<'data>>,
     mut offset_in_section: u64,
     rel: &R,
-    section_info: SectionInfo,
-    layout: &Layout<'data>,
+    section_info: SectionInfo<linker_utils::elf::SectionFlags>,
+    layout: &ElfLayout<'data>,
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
@@ -2697,10 +2703,10 @@ fn apply_debug_relocation<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object_layout: &ObjectLayout,
+    object_layout: &ObjectLayout<'data, crate::elf::File<'data>>,
     offset_in_section: u64,
     rel: &R,
-    layout: &Layout,
+    layout: &ElfLayout,
     section_tombstone_value: u64,
     out: &mut [u8],
     relocation_cache: &RelocationCache<R>,
@@ -2810,10 +2816,10 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
     resolution: Resolution,
     place: u64,
     addend: i64,
-    section_info: SectionInfo,
+    section_info: SectionInfo<<P::File as ObjectFile<'data>>::SectionFlags>,
     symbol_index: object::SymbolIndex,
-    object_layout: &ObjectLayout,
-    layout: &Layout,
+    object_layout: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout,
 ) -> Result<u64> {
     if !section_info.section_flags.is_alloc() {
         resolution.value_with_addend(
@@ -2872,7 +2878,7 @@ fn write_prelude<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
@@ -2935,7 +2941,7 @@ fn write_interp(prelude: &PreludeLayout, buffers: &mut OutputSectionPartMap<&mut
 fn write_merged_strings(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) {
     layout.merged_strings.for_each(|section_id, merged| {
         if merged.len() > 0 {
@@ -2968,7 +2974,7 @@ fn write_merged_strings(
 
 fn write_plt_got_entries<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     prelude: &PreludeLayout,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter,
 ) -> Result {
     // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
@@ -3014,7 +3020,7 @@ fn write_plt_got_entries<'data, P: Platform<'data, File = crate::elf::File<'data
 fn write_symbol_table_entries(
     prelude: &PreludeLayout,
     symbol_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
     symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
@@ -3110,7 +3116,7 @@ fn write_verdef(
 }
 
 fn write_epilogue_dynamic_entries(
-    layout: &Layout,
+    layout: &ElfLayout,
     table_writer: &mut TableWriter,
     epilogue_offsets: &mut EpilogueOffsets,
 ) -> Result {
@@ -3174,7 +3180,7 @@ pub(crate) struct EpilogueOffsets {
 fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     script: &LinkerScriptLayoutState,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write linker script state");
 
@@ -3192,7 +3198,7 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
 fn write_synthetic_symbols<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     syn: &SyntheticSymbolsLayout,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
 
@@ -3210,10 +3216,10 @@ fn write_synthetic_symbols<'data, P: Platform<'data, File = crate::elf::File<'da
 }
 
 fn write_epilogue<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    epilogue: &EpilogueLayout,
+    epilogue: &EpilogueLayout<'data, crate::elf::File<'data>>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
 
@@ -3263,7 +3269,7 @@ fn write_epilogue<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
 }
 
 fn write_gnu_property_notes(
-    layout: &Layout,
+    layout: &ElfLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let e = LittleEndian;
@@ -3294,7 +3300,7 @@ fn write_gnu_property_notes(
 }
 
 fn write_riscv_attributes(
-    layout: &Layout,
+    layout: &ElfLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
@@ -3347,9 +3353,9 @@ fn write_riscv_attributes(
     Ok(())
 }
 
-fn write_sysv_hash_table(
-    layout: &Layout,
-    epilogue: &EpilogueLayout,
+fn write_sysv_hash_table<'data>(
+    layout: &ElfLayout,
+    epilogue: &EpilogueLayout<'data, crate::elf::File<'data>>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let Some(sysv_hash_layout) = epilogue.format_specific.sysv_hash_layout.as_ref() else {
@@ -3418,9 +3424,9 @@ fn write_sysv_hash_table(
     Ok(())
 }
 
-fn write_gnu_hash_tables(
-    layout: &Layout,
-    epilogue: &EpilogueLayout,
+fn write_gnu_hash_tables<'data>(
+    layout: &ElfLayout,
+    epilogue: &EpilogueLayout<'data, crate::elf::File<'data>>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let Some(gnu_hash_layout) = epilogue.format_specific.gnu_hash_layout.as_ref() else {
@@ -3488,7 +3494,7 @@ fn write_gnu_hash_tables(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Layout) -> Result {
+fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &ElfLayout) -> Result {
     let chunk_size =
         10.max(layout.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
 
@@ -3571,7 +3577,7 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Lay
 /// Writes a symbol that was produced by a linker script.
 fn write_linker_script_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_id: SymbolId,
     script: &LinkerScriptLayoutState,
 ) -> Result {
@@ -3617,7 +3623,7 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &Layout, symbol_id: SymbolId) -> Result<(u16, u8)> {
+fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16, u8)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     let file = layout.symbol_db.file(file_id);
 
@@ -3680,7 +3686,7 @@ fn get_symbol_attributes(layout: &Layout, symbol_id: SymbolId) -> Result<(u16, u
 
 fn write_prelude_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_id: SymbolId,
     prelude: &PreludeLayout,
 ) -> Result {
@@ -3697,7 +3703,7 @@ fn write_prelude_dynsym(
 /// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
 fn write_defsym_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_id: SymbolId,
     def_info: &crate::parsing::InternalSymDefInfo,
 ) -> Result {
@@ -3749,10 +3755,10 @@ fn write_defsym_dynsym(
     Ok(())
 }
 
-fn write_copy_relocation_dynamic_symbol_definition(
+fn write_copy_relocation_dynamic_symbol_definition<'data>(
     sym_def: &crate::layout::DynamicSymbolDefinition,
-    object: &DynamicLayout,
-    layout: &Layout,
+    object: &DynamicLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
 ) -> Result {
     debug_assert_bail!(
@@ -3782,10 +3788,10 @@ fn write_copy_relocation_dynamic_symbol_definition(
     Ok(())
 }
 
-fn write_regular_object_dynamic_symbol_definition(
+fn write_regular_object_dynamic_symbol_definition<'data>(
     sym_def: &crate::layout::DynamicSymbolDefinition,
-    object: &ObjectLayout,
-    layout: &Layout,
+    object: &ObjectLayout<'data, crate::elf::File<'data>>,
+    layout: &ElfLayout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
 ) -> Result {
     let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
@@ -3872,7 +3878,7 @@ fn write_regular_object_dynamic_symbol_definition(
 
 fn write_internal_symbols(
     internal_symbols: &InternalSymbols,
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_writer: &mut SymbolTableWriter<'_, '_>,
 ) -> Result {
     for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
@@ -3970,7 +3976,7 @@ fn write_internal_symbols(
     Ok(())
 }
 
-fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout) -> Result {
+fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &ElfLayout) -> Result {
     let header = table_writer.take_eh_frame_hdr();
     header.version = 1;
 
@@ -3984,7 +3990,7 @@ fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout) -> Result
     Ok(())
 }
 
-fn eh_frame_hdr_entry_count(layout: &Layout) -> Result<u32> {
+fn eh_frame_hdr_entry_count(layout: &ElfLayout) -> Result<u32> {
     let hdr_sec = layout.section_layouts.get(output_section_id::EH_FRAME_HDR);
     u32::try_from(
         (hdr_sec.mem_size - size_of::<elf::EhFrameHdr>() as u64)
@@ -3995,7 +4001,7 @@ fn eh_frame_hdr_entry_count(layout: &Layout) -> Result<u32> {
 
 /// Returns the address of .eh_frame relative to the location in .eh_frame_hdr where the frame
 /// pointer is stored.
-fn eh_frame_ptr(layout: &Layout) -> Result<i32> {
+fn eh_frame_ptr(layout: &ElfLayout) -> Result<i32> {
     let eh_frame_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME);
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
     i32::try_from(
@@ -4361,7 +4367,7 @@ impl<'out> DynamicEntriesWriter<'out> {
     }
 }
 
-fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
+fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
     let entries: &mut [SectionHeader] = slice_from_all_bytes_mut(out);
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
@@ -4455,7 +4461,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
 }
 
 /// Computes the value of the info field for all the section headers.
-fn compute_info_values(layout: &Layout) -> OutputSectionMap<u32> {
+fn compute_info_values(layout: &ElfLayout) -> OutputSectionMap<u32> {
     let mut infos = layout.output_sections.new_section_map();
 
     // .rela.plt contains relocations for .got, so should link to it.
@@ -4527,7 +4533,7 @@ fn write_internal_symbols_plt_got_entries<
 >(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     for i in 0..internal_symbols.symbol_definitions.len() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
@@ -4550,9 +4556,9 @@ fn write_internal_symbols_plt_got_entries<
 }
 
 fn write_dynamic_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &DynamicLayout,
+    object: &DynamicLayout<'data, crate::elf::File<'data>>,
     table_writer: &mut TableWriter,
-    layout: &Layout<'data>,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write dynamic");
 
@@ -4695,7 +4701,10 @@ fn write_dynamic_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>
 }
 
 /// Write dynamic entry to indicate name of shared object to load.
-fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Result {
+fn write_so_name<'data>(
+    object: &DynamicLayout<'data, crate::elf::File<'data>>,
+    table_writer: &mut TableWriter,
+) -> Result {
     let needed_offset = table_writer
         .dynsym_writer
         .strtab_writer
@@ -4707,9 +4716,9 @@ fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Resu
 }
 
 fn write_copy_relocations<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &DynamicLayout,
+    object: &DynamicLayout<'data, crate::elf::File<'data>>,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     for &symbol_id in &object.copy_relocation_symbols {
         write_copy_relocation_for_symbol::<P>(symbol_id, table_writer, layout).with_context(
@@ -4728,7 +4737,7 @@ fn write_copy_relocations<'data, P: Platform<'data, File = crate::elf::File<'dat
 fn write_copy_relocation_for_symbol<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     symbol_id: SymbolId,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
 ) -> Result {
     let res = layout
         .local_symbol_resolution(symbol_id)

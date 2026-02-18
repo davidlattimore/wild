@@ -995,10 +995,10 @@ impl<'data> MergeString<'data> {
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
 /// address in the output.
 #[inline(always)]
-pub(crate) fn get_merged_string_output_address(
+pub(crate) fn get_merged_string_output_address<'data, O: ObjectFile<'data>>(
     symbol_index: object::SymbolIndex,
     addend: i64,
-    object: &crate::elf::File,
+    object: &O,
     sections: &[SectionSlot],
     merged_strings: &OutputSectionMap<MergedStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,

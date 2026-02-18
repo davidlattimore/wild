@@ -89,7 +89,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         false
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<'data, crate::elf::File<'data>>) -> u64 {
         layout.tls_end_address()
     }
 

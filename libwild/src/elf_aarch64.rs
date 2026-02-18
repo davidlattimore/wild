@@ -1,3 +1,4 @@
+use crate::elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::ensure;
@@ -97,7 +98,7 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         false
     }
 
-    fn tp_offset_start(layout: &Layout<'_>) -> u64 {
+    fn tp_offset_start(layout: &Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 

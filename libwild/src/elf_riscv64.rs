@@ -1,3 +1,4 @@
+use crate::elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::RelocationList;
 use crate::ensure;
@@ -97,7 +98,7 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         true
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address()
     }
 

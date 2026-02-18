@@ -30,7 +30,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 /// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform<'data>: 'data {
+pub(crate) trait Platform<'data>: Send + Sync + 'data {
     type Relaxation: Relaxation;
     type File: ObjectFile<'data>;
 
@@ -60,7 +60,7 @@ pub(crate) trait Platform<'data>: 'data {
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start(layout: &Layout<'data>) -> u64;
+    fn tp_offset_start(layout: &Layout<'data, Self::File>) -> u64;
 
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -89,8 +89,7 @@ pub(crate) trait Platform<'data>: 'data {
     fn collect_relaxation_deltas(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        // TODO: Change to be non-ELF specific.
-        _relocations: crate::elf::RelocationList<'data>,
+        _relocations: <Self::File as ObjectFile<'data>>::RelocationList,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
@@ -125,7 +124,7 @@ pub(crate) trait Platform<'data>: 'data {
     }
 }
 
-pub(crate) trait Relaxation {
+pub(crate) trait Relaxation: Send + Sync + 'static {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64);
 
     fn rel_info(&self) -> RelocationKindInfo;
@@ -167,13 +166,13 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
 
     /// An index into the local object's symbol versions.
-    type SymbolVersionIndex: Copy;
+    type SymbolVersionIndex: Send + Sync + Copy;
 
     /// Format-specific per-file state used during the layout phase.
-    type FileLayoutState: 'data;
+    type FileLayoutState: Default + Send + Sync + 'data;
 
     /// Format-specific properties produced by the layout phase.
-    type LayoutProperties: 'static;
+    type LayoutProperties: Send + Sync + 'static;
 
     /// The name of a symbol, possibly with a version.
     type RawSymbolName: RawSymbolName<'data>;
@@ -298,7 +297,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut crate::elf::EpilogueLayout,
+        state: &mut Self::EpilogueLayout,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
@@ -308,7 +307,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         epilogue_state: &mut Self::EpilogueLayout,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &crate::elf::ElfLayoutProperties,
+        common_state: &Self::LayoutProperties,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result;
@@ -379,10 +378,10 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         'data: 'states;
 
     fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
-        object: &mut ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        object: &mut ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         eh_frame_section_index: object::SectionIndex,
-        resources: &'scope layout::GraphResources<'data, '_>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         queue: &mut layout::LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result;
@@ -390,33 +389,33 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
     fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         unloaded: UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope>,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
         scope: &Scope<'scope>,
     ) -> Result;
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
 
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
-    fn finalise_find_required_sections(groups: &[layout::GroupState]);
+    fn finalise_find_required_sections(groups: &[layout::GroupState<'data, Self>]);
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args);
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState<'data, Self>, args: &Args);
 
     fn finalise_object_sizes(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState,
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
     );
 
     fn finalise_object_layout(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &layout::ObjectLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 
     fn compute_object_addresses(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &layout::ObjectLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 
@@ -425,26 +424,27 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Returns whether we should check for undefined symbols in `self`. Only called for dynamic
     /// objects.
-    fn should_enforce_undefined(&self, resources: &layout::GraphResources) -> bool;
+    fn should_enforce_undefined(&self, resources: &layout::GraphResources<'data, '_, Self>)
+    -> bool;
 
     fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
-        state: &layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result;
 
     /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
     fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
-        state: &layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result;
@@ -578,7 +578,7 @@ pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync + 'data 
     fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8];
 }
 
-pub(crate) trait NonAddressableIndexes {
+pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
     fn new<'data, O: ObjectFile<'data>>(symbol_db: &SymbolDb<'data, O>) -> Self;
 }
 
