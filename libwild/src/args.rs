@@ -392,6 +392,7 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
+    "use-android-relr-tags",
     "x", // alias for --discard-all
 ];
 
@@ -402,6 +403,7 @@ const DEFAULT_FLAGS: &[&str] = &[
     "no-add-needed",
     "discard-locals",
     "no-fatal-warnings",
+    "no-use-android-relr-tags",
 ];
 const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X",  // alias for --discard-locals
@@ -1700,6 +1702,17 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
+        .declare_with_param()
+        .long("pack-dyn-relocs")
+        .help("Specify dynamic relocation packing format")
+        .execute(|_args, _modifier_stack, value| {
+            if value != "none" {
+                warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
+            }
+            Ok(())
+        });
+
+    parser
         .declare()
         .long("help")
         .help("Show this help message")
@@ -2748,6 +2761,8 @@ mod tests {
         "--no-add-needed",
         "--no-copy-dt-needed-entries",
         "--discard-locals",
+        "--use-android-relr-tags",
+        "--pack-dyn-relocs=relr",
         "-X",
         "-EL",
         "-O",
