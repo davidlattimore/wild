@@ -95,7 +95,7 @@ pub(crate) struct RelaxSymbolInfo {
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
-pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
+pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
     type Symbol: Symbol;
     type SectionHeader: SectionHeader;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
@@ -104,6 +104,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     type RelocationList;
     type DynamicEntry;
     type VerneedTable: VerneedTable<'data>;
+
+    /// Format-specific per-file state used during the layout phase.
+    type FileLayoutState: 'static;
+
+    /// Format-specific properties produced by the layout phase.
+    type LayoutProperties: 'static;
 
     /// The name of a symbol, possibly with a version.
     type RawSymbolName: RawSymbolName<'data>;
@@ -201,6 +207,20 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug {
     ) -> Result<Self::RawSymbolName>;
 
     fn verneed_table(&self) -> Result<Self::VerneedTable>;
+
+    fn process_gnu_note_section(
+        &self,
+        state: &mut Self::FileLayoutState,
+        section_index: object::SectionIndex,
+    ) -> Result;
+
+    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+        args: &Args,
+        objects: impl Iterator<Item = &'files Self>,
+        states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
+    ) -> Result<Self::LayoutProperties>
+    where
+        'data: 'files;
 }
 
 pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {

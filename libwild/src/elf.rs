@@ -3,6 +3,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
+use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -221,6 +222,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type VersionNames = VersionNames<'data>;
     type RawSymbolName = RawSymbolName<'data>;
     type VerneedTable = VerneedTable<'data>;
+    type FileLayoutState = ElfObjectLayoutState;
+    type LayoutProperties = ElfLayoutProperties;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -592,6 +595,53 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn num_sections(&self) -> usize {
         self.sections.len()
+    }
+
+    fn process_gnu_note_section(
+        &self,
+        state: &mut Self::FileLayoutState,
+        section_index: object::SectionIndex,
+    ) -> Result {
+        let section = self.section(section_index)?;
+        let e = LittleEndian;
+
+        let Some(notes) = object::read::elf::SectionHeader::notes(section, e, self.data)? else {
+            return Ok(());
+        };
+
+        for note in notes {
+            for gnu_property in note?
+                .gnu_properties(e)
+                .ok_or(error!("Invalid type of .note.gnu.property"))?
+            {
+                let gnu_property = gnu_property?;
+
+                // Right now, skip all properties other than those with size equal to 4.
+                // There are existing properties, but unused right now:
+                // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
+                // TODO: support in the future
+                if gnu_property.pr_data().len() != 4 {
+                    continue;
+                }
+                state.gnu_property_notes.push(crate::elf::GnuProperty {
+                    ptype: gnu_property.pr_type(),
+                    data: gnu_property.data_u32(e)?,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+        args: &Args,
+        objects: impl Iterator<Item = &'files Self>,
+        states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
+    ) -> Result<Self::LayoutProperties>
+    where
+        'data: 'files,
+    {
+        ElfLayoutProperties::new::<P>(objects, states, args)
     }
 }
 

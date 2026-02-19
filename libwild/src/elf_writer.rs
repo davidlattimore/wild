@@ -374,7 +374,9 @@ fn populate_file_header<'data, P: ElfPlatform<'data>>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
     );
-    header.e_flags.set(e, header_info.eflags.0);
+    header
+        .e_flags
+        .set(e, layout.properties_and_attributes.eflags.0);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
     header

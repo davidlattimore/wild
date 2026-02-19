@@ -19,7 +19,6 @@ use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::ElfLayoutProperties;
-use crate::elf::ElfObjectLayoutState;
 use crate::elf::ElfPlatform;
 use crate::elf::File;
 use crate::elf::FileHeader;
@@ -56,7 +55,8 @@ use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::DynamicTagValues as _;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
@@ -139,7 +139,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use zerocopy::FromBytes;
 
-pub fn compute<'data, P: ElfPlatform<'data>>(
+pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     symbol_db: SymbolDb<'data, crate::elf::File<'data>>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, crate::elf::File<'data>>>,
@@ -196,10 +196,10 @@ pub fn compute<'data, P: ElfPlatform<'data>>(
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     let (dynamic_symbol_definitions, gnu_hash_layout) =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    let properties_and_attributes = ElfLayoutProperties::new::<P>(
+    let properties_and_attributes = crate::elf::File::create_layout_properties::<P>(
+        symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
-        symbol_db.args,
     )?;
 
     let finalise_sizes_resources = FinaliseSizesResources {
@@ -369,7 +369,7 @@ struct FinaliseSizesResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
-    properties_and_attributes: &'scope ElfLayoutProperties,
+    properties_and_attributes: &'scope <File<'data> as ObjectFile<'data>>::LayoutProperties,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -644,7 +644,7 @@ pub struct Layout<'data> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    pub(crate) properties_and_attributes: ElfLayoutProperties,
+    pub(crate) properties_and_attributes: <File<'data> as ObjectFile<'data>>::LayoutProperties,
 }
 
 #[derive(Debug)]
@@ -1348,7 +1348,7 @@ struct ObjectLayoutState<'data> {
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
 
-    format_specific_layout_state: ElfObjectLayoutState,
+    format_specific_layout_state: <File<'data> as ObjectFile<'data>>::FileLayoutState,
 
     /// Indexed by `FrameIndex`.
     exception_frames: ExceptionFrames<'data>,
@@ -3633,7 +3633,6 @@ impl<'data> PreludeLayoutState<'data> {
                 .expect("output section count must fit in a u16"),
 
             active_segment_ids,
-            eflags: resources.properties_and_attributes.eflags,
         };
 
         // Allocate space for headers based on segment and section counts.
@@ -4202,7 +4201,6 @@ impl EpilogueLayoutState {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
-    pub(crate) eflags: crate::elf::Eflags,
 }
 
 impl HeaderInfo {
@@ -4333,8 +4331,9 @@ impl<'data> ObjectLayoutState<'data> {
             self.eh_frame_section = Some(eh_frame_section);
         }
 
-        if let Some(note_gnu_property_index) = note_gnu_property_section {
-            process_gnu_property_note(self, note_gnu_property_index)?;
+        if let Some(section_index) = note_gnu_property_section {
+            self.object
+                .process_gnu_note_section(&mut self.format_specific_layout_state, section_index)?;
         }
 
         if let Some(riscv_attributes_index) = riscv_attributes_section {
@@ -5240,45 +5239,6 @@ fn process_eh_frame_relocations<'data, 'scope, P: ElfPlatform<'data>, R: Relocat
     object.eh_frame_size += (data.len() - offset) as u64;
 
     Ok(exception_frames)
-}
-
-fn process_gnu_property_note(
-    object: &mut ObjectLayoutState,
-    note_section_index: object::SectionIndex,
-) -> Result {
-    let section = object.object.section(note_section_index)?;
-    let e = LittleEndian;
-
-    let Some(notes) = object::read::elf::SectionHeader::notes(section, e, object.object.data)?
-    else {
-        return Ok(());
-    };
-
-    for note in notes {
-        for gnu_property in note?
-            .gnu_properties(e)
-            .ok_or(error!("Invalid type of .note.gnu.property"))?
-        {
-            let gnu_property = gnu_property?;
-
-            // Right now, skip all properties other than those with size equal to 4.
-            // There are existing properties, but unused right now:
-            // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
-            // TODO: support in the future
-            if gnu_property.pr_data().len() != 4 {
-                continue;
-            }
-            object
-                .format_specific_layout_state
-                .gnu_property_notes
-                .push(crate::elf::GnuProperty {
-                    ptype: gnu_property.pr_type(),
-                    data: gnu_property.data_u32(e)?,
-                });
-        }
-    }
-
-    Ok(())
 }
 
 /// A "common information entry". This is part of the .eh_frame data in ELF.
@@ -6677,7 +6637,6 @@ fn test_no_disallowed_overlaps() {
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),
-        eflags: elf::Eflags(0),
     };
 
     let mut section_index = 0;

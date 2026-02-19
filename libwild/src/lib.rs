@@ -69,12 +69,12 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 
 use crate::args::ActivatedArgs;
-use crate::elf::ElfPlatform;
 use crate::error::Context;
 use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
+use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 pub use args::Args;
@@ -205,7 +205,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'data, P: ElfPlatform<'data>>(
+    fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
@@ -233,7 +233,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: ElfPlatform<'data>>(
+    fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,
