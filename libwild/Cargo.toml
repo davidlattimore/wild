@@ -17,7 +17,6 @@ bytesize = { workspace = true }
 derive_more = { workspace = true }
 colored = { workspace = true }
 colosseum = { workspace = true }
-crossbeam-channel = { workspace = true }
 crossbeam-queue = { workspace = true }
 crossbeam-utils = { workspace = true }
 flate2 = { workspace = true }
