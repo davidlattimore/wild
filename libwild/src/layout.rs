@@ -120,6 +120,7 @@ use object::read::elf::VerdefIterator;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
@@ -137,6 +138,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::Relaxed;
 use zerocopy::FromBytes;
 
 pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
@@ -5495,17 +5497,23 @@ impl SymbolOutputInfos {
     }
 }
 
-/// Compute the output address of every loaded input section across all object files.
-fn compute_object_section_addresses(
+/// Compute the output address of every loaded input section and every symbol in a single parallel
+/// pass over groups.
+fn compute_section_and_symbol_addresses<'data>(
     group_states: &[GroupState],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-) -> Vec<Vec<Vec<u64>>> {
-    timing_phase!("Compute object section addresses");
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
+    timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
-    group_states
-        .iter()
+    let symbol_addresses: Vec<AtomicU64> = (0..symbol_db.num_symbols())
+        .map(|_| AtomicU64::new(0))
+        .collect();
+
+    let section_addresses: Vec<Vec<Vec<u64>>> = group_states
+        .par_iter()
         .enumerate()
         .map(|(group_idx, group)| {
             let mut offsets = starting_offsets[group_idx].clone();
@@ -5531,58 +5539,51 @@ fn compute_object_section_addresses(
                             }
                         }
                         offsets.increment(part_id::EH_FRAME, obj.eh_frame_size);
+
+                        // While we have the section addresses, also resolve symbol
+                        // output addresses for this file's canonical definitions.
+                        for sym_offset in 0..obj.symbol_id_range.len() {
+                            let sym_input_idx = object::SymbolIndex(sym_offset);
+                            let Ok(sym) = obj.object.symbol(sym_input_idx) else {
+                                continue;
+                            };
+                            let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
+                            let def_id = symbol_db.definition(sym_id);
+                            // Only record the address for the canonical definition.
+                            if def_id != sym_id {
+                                continue;
+                            }
+
+                            match obj.object.symbol_section(sym, sym_input_idx) {
+                                Ok(Some(section)) => {
+                                    let sec_addr = addresses.get(section.0).copied().unwrap_or(0);
+                                    if sec_addr == 0 {
+                                        continue;
+                                    }
+                                    symbol_addresses[sym_id.as_usize()]
+                                        .store(sec_addr + sym.value(), Relaxed);
+                                }
+                                Ok(None) if sym.is_absolute() && sym.value() != 0 => {
+                                    symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
+                                }
+                                _ => continue,
+                            }
+                        }
+
                         addresses
                     }
                     _ => vec![],
                 })
                 .collect()
         })
-        .collect()
-}
+        .collect();
 
-fn build_symbol_output_infos<'data>(
-    group_states: &[GroupState],
-    section_addresses: &[Vec<Vec<u64>>],
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
-) -> SymbolOutputInfos {
-    let mut addresses = vec![0u64; symbol_db.num_symbols()];
+    let addresses = symbol_addresses
+        .into_iter()
+        .map(|a| a.into_inner())
+        .collect();
 
-    for (group_idx, group) in group_states.iter().enumerate() {
-        for (file_idx, file) in group.files.iter().enumerate() {
-            let FileLayoutState::Object(obj) = file else {
-                continue;
-            };
-            let file_section_addrs = &section_addresses[group_idx][file_idx];
-
-            for sym_offset in 0..obj.symbol_id_range.len() {
-                let sym_input_idx = object::SymbolIndex(sym_offset);
-                let Ok(sym) = obj.object.symbol(sym_input_idx) else {
-                    continue;
-                };
-                let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
-                let def_id = symbol_db.definition(sym_id);
-                // Only record the address for the canonical definition.
-                if def_id != sym_id {
-                    continue;
-                }
-                match obj.object.symbol_section(sym, sym_input_idx) {
-                    Ok(Some(section)) => {
-                        let sec_addr = file_section_addrs.get(section.0).copied().unwrap_or(0);
-                        if sec_addr == 0 {
-                            continue;
-                        }
-                        addresses[sym_id.as_usize()] = sec_addr + sym.value();
-                    }
-                    Ok(None) if sym.is_absolute() && sym.value() != 0 => {
-                        addresses[sym_id.as_usize()] = sym.value();
-                    }
-                    _ => continue,
-                }
-            }
-        }
-    }
-
-    SymbolOutputInfos { addresses }
+    (section_addresses, SymbolOutputInfos { addresses })
 }
 
 /// Run one pass of the relaxation scan across all groups/objects. Returns the total number of bytes
@@ -5598,11 +5599,9 @@ fn relaxation_scan_pass<'data>(
 
     let arch = symbol_db.args.arch;
 
-    // Compute per-section output addresses from the current layout.
-    let section_addresses = compute_object_section_addresses(group_states, section_part_layouts);
-
-    // Build a flat symbol to output-address table.
-    let symbol_infos = build_symbol_output_infos(group_states, &section_addresses, symbol_db);
+    // Compute per-section output addresses and per-symbol output addresses in one parallel pass.
+    let (section_addresses, symbol_infos) =
+        compute_section_and_symbol_addresses(group_states, section_part_layouts, symbol_db);
 
     // Scan each group.
     let group_reductions: Vec<OutputSectionPartMap<u64>> = group_states
