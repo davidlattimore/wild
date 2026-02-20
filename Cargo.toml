@@ -87,7 +87,7 @@ symbolic-demangle = { version = "12.0.0", default-features = false, features = [
 tabled = "0.20.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
-toml = "1.0.3+spec-1.1.0"
+toml = "1.0.3"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.16", default-features = false, features = [
     "env-filter",
