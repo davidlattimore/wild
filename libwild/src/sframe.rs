@@ -37,6 +37,14 @@ struct Entry {
     fre_bytes: Vec<u8>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum SframeError {
+    #[error("Unsupported SFrame version {0}")]
+    UnsupportedVersion(u8),
+    #[error("Invalid SFrame magic 0x{0:x}")]
+    BadMagicBytes(u16),
+}
+
 struct Header {
     magic: u16,
     version: u8,
@@ -53,22 +61,18 @@ struct Header {
 }
 
 impl Header {
-    fn parse(data: &[u8]) -> Result<Self> {
+    fn parse(data: &[u8]) -> Result<Self, SframeError> {
         let magic = read_u16(data, 0);
         if magic != SFRAME_MAGIC {
-            bail!("Invalid SFrame magic 0x{:x}", magic);
+            return Err(SframeError::BadMagicBytes(magic));
         }
 
         let version = data[VERSION_FIELD];
         if version != SFRAME_VERSION_2 {
-            bail!(
-                "Unsupported SFrame version {} (expected {})",
-                version,
-                SFRAME_VERSION_2
-            );
+            return Err(SframeError::UnsupportedVersion(version));
         }
 
-        Ok(Self {
+        Ok(Header {
             magic,
             version,
             flags: data[FLAGS_FIELD],
@@ -153,6 +157,10 @@ pub(crate) fn sort_sframe_section(
 
         let header = match Header::parse(&section[offset..offset + HEADER_SIZE]) {
             Ok(h) => h,
+            Err(e @ SframeError::UnsupportedVersion(_)) => {
+                crate::error::warning(&format!("{e}, disabling SFrame sorting"));
+                return Ok(());
+            }
             Err(e) => bail!(
                 "Failed to parse SFrame header at offset {}: {:?}",
                 offset,
