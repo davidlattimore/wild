@@ -187,6 +187,7 @@ impl crate::platform::Relaxation for Relaxation {
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
+        relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self>
     where
         Self: std::marker::Sized,
@@ -229,6 +230,18 @@ impl crate::platform::Relaxation for Relaxation {
                     })
                 };
             }
+            object::elf::R_RISCV_HI20 => {
+                if let Some(deltas) = relax_deltas {
+                    let input_offset = deltas.output_to_input_offset(offset_in_section);
+                    if deltas.has_delta_at(input_offset + 2) {
+                        return Some(Relaxation {
+                            kind: RelaxationKind::Hi20ToCLui,
+                            rel_info: RelaxationKind::clui_rel_info(),
+                            mandatory: false,
+                        });
+                    }
+                }
+            }
 
             _ => (),
         }
@@ -264,17 +277,26 @@ impl crate::platform::Relaxation for Relaxation {
 /// returns the output address and interposability of a symbol.
 pub(crate) fn collect_relaxation_deltas<R: Relocation>(
     section_output_address: u64,
+    section_bytes: &[u8],
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
 ) -> Vec<(u64, u32)> {
     let mut raw_deltas = Vec::new();
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
+    let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
 
     for rel in relocations {
         match rel.raw_type() {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
                 prev_call = rel.symbol().map(|sym_idx| (rel.offset(), sym_idx));
+                prev_hi20 = None;
+            }
+            object::elf::R_RISCV_HI20 => {
+                prev_hi20 = rel
+                    .symbol()
+                    .map(|sym_idx| (rel.offset(), sym_idx, rel.addend()));
+                prev_call = None;
             }
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
@@ -290,11 +312,33 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
                 {
                     // Delete the jalr instruction (4 bytes at call_offset + 4).
                     raw_deltas.push((call_offset + 4, 4));
+                } else if let Some((hi20_offset, sym_idx, addend)) = prev_hi20
+                    && rel.offset() == hi20_offset
+                    // Skip if already relaxed.
+                    && !existing_deltas.is_some_and(|d| d.has_delta_at(hi20_offset + 2))
+                    && let Some(info) = resolve_symbol(sym_idx)
+                    && !info.is_interposable
+                {
+                    let off = hi20_offset as usize;
+                    if off + 4 <= section_bytes.len() {
+                        let lui_word =
+                            u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
+                        let rd = (lui_word >> 7) & 0x1f;
+                        let value = (info.output_address as i64 + addend) as u64;
+                        if RelaxationKind::rd_valid_for_clui(rd)
+                            && RelaxationKind::hi20_fits_clui(value)
+                        {
+                            // Delete the last 2 bytes of the 4-byte lui instruction.
+                            raw_deltas.push((hi20_offset + 2, 2));
+                        }
+                    }
                 }
                 prev_call = None;
+                prev_hi20 = None;
             }
             _ => {
                 prev_call = None;
+                prev_hi20 = None;
             }
         }
     }

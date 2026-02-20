@@ -144,6 +144,7 @@ impl crate::platform::Relaxation for Relaxation {
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
     ) -> Option<Self>
     where
         Self: std::marker::Sized,

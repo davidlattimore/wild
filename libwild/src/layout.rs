@@ -3021,6 +3021,7 @@ fn process_relocation<'data, 'scope, P: ElfPlatform<'data>, R: Relocation>(
             symbol_db.output_kind,
             section_flags,
             true,
+            None,
         )
         .filter(|relaxation| args.relax || relaxation.is_mandatory())
         {
@@ -5499,6 +5500,7 @@ fn compute_object_section_addresses(
     group_states: &[GroupState],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
 ) -> Vec<Vec<Vec<u64>>> {
+    timing_phase!("Compute object section addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
@@ -5557,20 +5559,25 @@ fn build_symbol_output_infos<'data>(
                 let Ok(sym) = obj.object.symbol(sym_input_idx) else {
                     continue;
                 };
-                let Ok(Some(section)) = obj.object.symbol_section(sym, sym_input_idx) else {
-                    continue;
-                };
                 let sym_id = obj.symbol_id_range.input_to_id(sym_input_idx);
                 let def_id = symbol_db.definition(sym_id);
                 // Only record the address for the canonical definition.
                 if def_id != sym_id {
                     continue;
                 }
-                let sec_addr = file_section_addrs.get(section.0).copied().unwrap_or(0);
-                if sec_addr == 0 {
-                    continue;
+                match obj.object.symbol_section(sym, sym_input_idx) {
+                    Ok(Some(section)) => {
+                        let sec_addr = file_section_addrs.get(section.0).copied().unwrap_or(0);
+                        if sec_addr == 0 {
+                            continue;
+                        }
+                        addresses[sym_id.as_usize()] = sec_addr + sym.value();
+                    }
+                    Ok(None) if sym.is_absolute() && sym.value() != 0 => {
+                        addresses[sym_id.as_usize()] = sym.value();
+                    }
+                    _ => continue,
                 }
-                addresses[sym_id.as_usize()] = sec_addr + sym.value();
             }
         }
     }
@@ -5650,11 +5657,21 @@ fn relaxation_scan_pass<'data>(
                             symbol_infos.resolve(def_id, per_symbol_flags)
                         };
 
+                    let section_header = match obj.object.section(section_index) {
+                        Ok(h) => h,
+                        Err(_) => continue,
+                    };
+                    let section_bytes = match obj.object.raw_section_data(section_header) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
+
                     let raw_deltas = match arch {
                         Architecture::RISCV64 => match relocs {
                             RelocationList::Rela(rela_list) => {
                                 elf_riscv64::collect_relaxation_deltas(
                                     sec_output_addr,
+                                    section_bytes,
                                     rela_list.rel_iter(),
                                     existing_deltas,
                                     &mut resolve_symbol,
@@ -5663,6 +5680,7 @@ fn relaxation_scan_pass<'data>(
                             RelocationList::Crel(crel_iter) => {
                                 elf_riscv64::collect_relaxation_deltas(
                                     sec_output_addr,
+                                    section_bytes,
                                     crel_iter.flatten(),
                                     existing_deltas,
                                     &mut resolve_symbol,

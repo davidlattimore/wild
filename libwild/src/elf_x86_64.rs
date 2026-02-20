@@ -138,6 +138,7 @@ impl crate::platform::Relaxation for Relaxation {
         output_kind: OutputKind,
         section_flags: SectionFlags,
         _non_zero_address: bool,
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
     ) -> Option<Self> {
         let is_known_address = flags.is_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
@@ -477,6 +478,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
+            None,
         ) {
             r.apply(&mut out, &mut offset, &mut 0);
 
@@ -493,6 +495,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
+            None,
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0);

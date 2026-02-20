@@ -11,6 +11,7 @@ use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::relaxation::SectionRelaxDeltas;
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -72,6 +73,7 @@ pub(crate) trait Relaxation {
         output_kind: OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
+        relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self>
     where
         Self: std::marker::Sized;

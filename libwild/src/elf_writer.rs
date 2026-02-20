@@ -2269,6 +2269,7 @@ fn apply_relocation<
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
+        relax_deltas,
     )
     .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
 

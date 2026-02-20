@@ -3579,6 +3579,7 @@ fn integration_test(
         "riscv-attr-conflict.s",
         "riscv-call-relaxation.s",
         "riscv-cross-object-call-relaxation.s",
+        "riscv-hi20-relaxation.s",
         "segment-end-syms.c"
     )]
     program_name: &'static str,
