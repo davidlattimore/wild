@@ -51,7 +51,7 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
-indexmap = "2.9.0"
+indexmap = "2.11.4"
 indicatif = "0.18.3"
 itertools = "0.14.0"
 jobserver = "0.1.30"
@@ -76,14 +76,14 @@ postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.5.1"
 regex = { version = "1.12.0", features = ["std"] }
 rstest = "0.26.1"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.225", features = ["derive"] }
 serde-keyvalue = "0.1.0"
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
 symbolic-common = "12.0.0"
-symbolic-demangle = {version = "12.0.0", default-features = false, features = ["cpp", "rust"]}
+symbolic-demangle = { version = "12.0.0", default-features = false, features = ["cpp", "rust"] }
 tabled = "0.20.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
@@ -98,7 +98,7 @@ uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
 which = "8.0.0"
-winnow = { version = "0.7.10", features = ["simd"] }
+winnow = { version = "0.7.13", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
 zstd = "0.13.0"
 
