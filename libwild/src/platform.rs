@@ -5,6 +5,9 @@ use crate::arch::Architecture;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout::Layout;
+use crate::layout::OutputRecordLayout;
+use crate::output_section_map::OutputSectionMap;
+use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::resolution::LoadedMetrics;
 use crate::value_flags::ValueFlags;
@@ -106,6 +109,13 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type RelocationList;
     type DynamicEntry;
     type VerneedTable: VerneedTable<'data>;
+    type DynamicLayoutState: Default;
+    type DynamicLayout;
+    type NonAddressableIndexes;
+    type NonAddressableCounts: Default;
+
+    /// An index into the local object's symbol versions.
+    type SymbolVersionIndex: Copy;
 
     /// Format-specific per-file state used during the layout phase.
     type FileLayoutState: 'static;
@@ -159,6 +169,39 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         symbol: &Self::Symbol,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
+
+    fn symbol_versions(&self) -> &[Self::SymbolVersionIndex];
+
+    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
+    /// of `state`.
+    fn activate_dynamic(&self, state: &mut Self::DynamicLayoutState);
+
+    fn dynamic_symbol_used(
+        &self,
+        symbol_index: object::SymbolIndex,
+        state: &mut Self::DynamicLayoutState,
+    ) -> Result;
+
+    fn finalise_sizes_dynamic(
+        &self,
+        lib_name: &[u8],
+        state: &mut Self::DynamicLayoutState,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+    ) -> Result;
+
+    fn apply_non_addressable_indexes_dynamic(
+        &self,
+        indexes: &mut Self::NonAddressableIndexes,
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut Self::DynamicLayoutState,
+    ) -> Result;
+
+    fn finalise_layout_dynamic(
+        &self,
+        state: Self::DynamicLayoutState,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Self::DynamicLayout;
 
     fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]>;
 
