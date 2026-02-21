@@ -281,8 +281,9 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-) -> Vec<(u64, u32)> {
+) -> (Vec<(u64, u32)>, bool) {
     let mut raw_deltas = Vec::new();
+    let mut has_unrelaxed_candidates = false;
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
     let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
 
@@ -301,20 +302,24 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
                     && rel.offset() == call_offset
-                    // Skip calls that were already relaxed in a previous pass.
                     && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
-                    && let Some(info) = resolve_symbol(sym_idx)
-                    && !info.is_interposable
-                    && distance_fits_jal(
-                        info.output_address as i64
-                            - (section_output_address + call_offset) as i64,
-                    )
                 {
-                    // Delete the jalr instruction (4 bytes at call_offset + 4).
-                    raw_deltas.push((call_offset + 4, 4));
+                    if let Some(info) = resolve_symbol(sym_idx)
+                        && !info.is_interposable
+                    {
+                        if distance_fits_jal(
+                            info.output_address as i64
+                                - (section_output_address + call_offset) as i64,
+                        ) {
+                            // Delete the jalr instruction (4 bytes at call_offset + 4).
+                            raw_deltas.push((call_offset + 4, 4));
+                        } else {
+                            // Distance might shrink on a later iteration.
+                            has_unrelaxed_candidates = true;
+                        }
+                    }
                 } else if let Some((hi20_offset, sym_idx, addend)) = prev_hi20
                     && rel.offset() == hi20_offset
-                    // Skip if already relaxed.
                     && !existing_deltas.is_some_and(|d| d.has_delta_at(hi20_offset + 2))
                     && let Some(info) = resolve_symbol(sym_idx)
                     && !info.is_interposable
@@ -324,12 +329,15 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
                         let lui_word =
                             u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
                         let rd = (lui_word >> 7) & 0x1f;
-                        let value = (info.output_address as i64 + addend) as u64;
-                        if RelaxationKind::rd_valid_for_clui(rd)
-                            && RelaxationKind::hi20_fits_clui(value)
-                        {
-                            // Delete the last 2 bytes of the 4-byte lui instruction.
-                            raw_deltas.push((hi20_offset + 2, 2));
+                        if RelaxationKind::rd_valid_for_clui(rd) {
+                            let value = (info.output_address as i64 + addend) as u64;
+                            if RelaxationKind::hi20_fits_clui(value) {
+                                // Delete the last 2 bytes of the 4-byte lui instruction.
+                                raw_deltas.push((hi20_offset + 2, 2));
+                            } else {
+                                // Value might change on a later iteration.
+                                has_unrelaxed_candidates = true;
+                            }
                         }
                     }
                 }
@@ -342,5 +350,5 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
             }
         }
     }
-    raw_deltas
+    (raw_deltas, has_unrelaxed_candidates)
 }

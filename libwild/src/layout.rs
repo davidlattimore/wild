@@ -5586,54 +5586,69 @@ fn compute_section_and_symbol_addresses<'data>(
     (section_addresses, SymbolOutputInfos { addresses })
 }
 
-/// Run one pass of the relaxation scan across all groups/objects. Returns the total number of bytes
-/// newly deleted in this pass.
+/// Per-file list of section indices to rescan on subsequent relaxation iterations. Indexed as
+/// `[group_idx][file_idx]`.  Files that are not objects get an empty entry.
+type RescanSections = Vec<Vec<SmallVec<[usize; 16]>>>;
+
+/// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
+/// bytes newly deleted in this pass together with the set of sections that should be rescanned on
+/// the next iteration.
 fn relaxation_scan_pass<'data>(
     group_states: &mut [GroupState],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
-) -> u64 {
+    prev_rescan: Option<&RescanSections>,
+) -> (u64, RescanSections) {
     timing_phase!("Relaxation scan pass");
 
     let arch = symbol_db.args.arch;
 
-    // Compute per-section output addresses and per-symbol output addresses in one parallel pass.
     let (section_addresses, symbol_infos) =
         compute_section_and_symbol_addresses(group_states, section_part_layouts, symbol_db);
 
     // Scan each group.
-    let group_reductions: Vec<OutputSectionPartMap<u64>> = group_states
+    #[expect(clippy::type_complexity)]
+    let group_results: Vec<(OutputSectionPartMap<u64>, Vec<SmallVec<[usize; 16]>>)> = group_states
         .par_iter_mut()
         .enumerate()
         .map(|(group_idx, group)| {
             let mut reductions = OutputSectionPartMap::with_size(section_part_sizes.num_parts());
+            let mut file_rescans: Vec<SmallVec<[usize; 16]>> =
+                Vec::with_capacity(group.files.len());
 
             for (file_idx, file) in group.files.iter_mut().enumerate() {
                 let FileLayoutState::Object(obj) = file else {
+                    file_rescans.push(SmallVec::new());
                     continue;
                 };
 
                 let file_section_addrs = &section_addresses[group_idx][file_idx];
 
-                let exec_sections: SmallVec<[usize; 16]> = obj
-                    .sections
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, slot)| {
-                        if let SectionSlot::Loaded(_) = slot
-                            && let Ok(header) = obj.object.section(SectionIndex(i))
-                            && SectionFlags::from_header(header).contains(shf::EXECINSTR)
-                        {
-                            Some(i)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let sections_to_scan: SmallVec<[usize; 16]> = match prev_rescan {
+                    Some(rescan) => rescan[group_idx][file_idx].clone(),
+                    None => obj
+                        .sections
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, slot)| {
+                            if let SectionSlot::Loaded(_) = slot
+                                && let Ok(header) = obj.object.section(SectionIndex(i))
+                                && SectionFlags::from_header(header).contains(shf::EXECINSTR)
+                            {
+                                Some(i)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                };
 
-                for sec_idx in exec_sections {
+                let mut next_rescan: SmallVec<[usize; 16]> = SmallVec::new();
+
+                for sec_idx in &sections_to_scan {
+                    let sec_idx = *sec_idx;
                     let section_index = SectionIndex(sec_idx);
                     let relocs = match obj.object.relocations(section_index, &obj.relocations) {
                         Ok(r) => r,
@@ -5665,7 +5680,7 @@ fn relaxation_scan_pass<'data>(
                         Err(_) => continue,
                     };
 
-                    let raw_deltas = match arch {
+                    let (raw_deltas, has_unrelaxed) = match arch {
                         Architecture::RISCV64 => match relocs {
                             RelocationList::Rela(rela_list) => {
                                 elf_riscv64::collect_relaxation_deltas(
@@ -5688,6 +5703,10 @@ fn relaxation_scan_pass<'data>(
                         },
                         _ => continue,
                     };
+
+                    if has_unrelaxed {
+                        next_rescan.push(sec_idx);
+                    }
 
                     if raw_deltas.is_empty() {
                         continue;
@@ -5719,16 +5738,17 @@ fn relaxation_scan_pass<'data>(
                             .insert_sorted(sec_idx, SectionRelaxDeltas::new(raw_deltas));
                     }
                 }
+
+                file_rescans.push(next_rescan);
             }
 
-            reductions
+            (reductions, file_rescans)
         })
         .collect();
 
-    // Aggregate the per-group reductions into section_part_sizes and compute the total bytes
-    // deleted.
     let mut total_deleted = 0u64;
-    for reduction in &group_reductions {
+    let mut next_rescan_sections: RescanSections = Vec::with_capacity(group_results.len());
+    for (reduction, file_rescans) in group_results {
         for (idx, &amount) in reduction.parts.iter().enumerate() {
             if amount > 0 {
                 let part_id = PartId::from_usize(idx);
@@ -5736,9 +5756,10 @@ fn relaxation_scan_pass<'data>(
                 total_deleted += amount;
             }
         }
+        next_rescan_sections.push(file_rescans);
     }
 
-    total_deleted
+    (total_deleted, next_rescan_sections)
 }
 
 fn perform_iterative_relaxation<'data>(
@@ -5753,18 +5774,23 @@ fn perform_iterative_relaxation<'data>(
 ) {
     timing_phase!("Iterative relaxation");
 
+    let mut rescan_sections: Option<RescanSections> = None;
+
     for _iteration in 0..MAX_RELAXATION_ITERATIONS {
-        let deleted = relaxation_scan_pass(
+        let (deleted, next_rescan) = relaxation_scan_pass(
             group_states,
             section_part_layouts,
             symbol_db,
             per_symbol_flags,
             section_part_sizes,
+            rescan_sections.as_ref(),
         );
 
         if deleted == 0 {
             break;
         }
+
+        rescan_sections = Some(next_rescan);
 
         *section_part_layouts = layout_section_parts(
             section_part_sizes,
