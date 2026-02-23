@@ -510,6 +510,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
         start_symbol_name: Some("__ehdr_start"),
+        start_symbol_mode: DefinitionMode::ProvideHidden,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },

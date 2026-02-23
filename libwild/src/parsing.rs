@@ -353,7 +353,7 @@ impl<'data> Prelude<'data> {
             InternalSymDefInfo::notype(placement, name.as_bytes(), false)
         }));
 
-        symbol_definitions.push(InternalSymDefInfo::notype(
+        symbol_definitions.push(InternalSymDefInfo::hidden(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
             true,
@@ -365,7 +365,7 @@ impl<'data> Prelude<'data> {
             b"etext",
             true,
         ));
-        symbol_definitions.push(InternalSymDefInfo::notype(
+        symbol_definitions.push(InternalSymDefInfo::hidden(
             SymbolPlacement::SectionEnd(output_section_id::RODATA),
             b"__etext",
             true,
@@ -382,6 +382,11 @@ impl<'data> Prelude<'data> {
         symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::SectionEnd(output_section_id::BSS),
             b"end",
+            true,
+        ));
+        symbol_definitions.push(InternalSymDefInfo::hidden(
+            SymbolPlacement::SectionEnd(output_section_id::BSS),
+            b"__end",
             true,
         ));
 

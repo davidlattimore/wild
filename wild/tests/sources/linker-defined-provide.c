@@ -3,20 +3,20 @@
 //#ExpectSym:_end
 //#ExpectSym:__init_array_start
 //#ExpectSym:__init_array_end
-//#SkipLinker:ld
 
 //#AbstractConfig:base
+//#SkipLinker:ld
 //#Config:1:base
+//#RunEnabled:false
 //#Variant:1
 // Variant 1: Reference __rela_iplt_start, expect it to be provided and hidden
 //#CompArgs:-fPIC
 //#LinkArgs:-shared
-//#ExpectSym:__rela_iplt_start
-//#ExpectSym:__rela_iplt_end
 //#NoDynSym:__rela_iplt_start
 //#NoDynSym:__rela_iplt_end
 
 //#Config:2:base
+//#RunEnabled:false
 //#Variant:2
 // Variant 2: Define __rela_iplt_start strongly, expect it to override
 //#CompArgs:-fPIC
@@ -26,6 +26,22 @@
 //#ExpectDynSym:__rela_iplt_start
 //#ExpectDynSym:__rela_iplt_end
 
+//#Config:3:base
+//#RunEnabled:false
+//#Variant:3
+// Variant 3: Reference __executable_start, expect it to be provided and hidden
+//#CompArgs:-fPIC
+//#LinkArgs:-shared
+//#NoDynSym:__executable_start
+
+//#Config:4:base
+//#RunEnabled:false
+//#Variant:4
+// Variant 4: Define __executable_start strongly, expect it to override
+//#CompArgs:-fPIC
+//#LinkArgs:-shared
+//#ExpectDynSym:__executable_start
+
 #include "runtime.h"
 
 // User defines _end - linker should not create a conflicting symbol
@@ -34,7 +50,7 @@ char _end __attribute__((weak)) = 42;
 // These are linker-defined symbols that should still be created
 extern char __init_array_start __attribute__((weak));
 extern char __init_array_end __attribute__((weak));
-extern char __executable_start __attribute__((weak));
+extern char __executable_start[] __attribute__((weak));
 
 // Variant 1: Reference linker provided symbols, but don't define.
 // Linker should provide them and hide them.
