@@ -69,10 +69,6 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub(crate) trait ElfPlatform<'data>: Platform<'data> {}
-
-impl<'data, P: Platform<'data, File = crate::elf::File<'data>>> ElfPlatform<'data> for P {}
-
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
 /// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
 /// because picking a distinctive non-zero values makes it more obvious what's happening if we mix

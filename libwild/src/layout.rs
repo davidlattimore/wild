@@ -18,7 +18,6 @@ use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::ElfLayoutProperties;
-use crate::elf::ElfPlatform;
 use crate::elf::File;
 use crate::elf::RawSymbolName;
 use crate::elf::Rela;
@@ -918,7 +917,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         Ok(())
     }
 
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -1045,7 +1044,7 @@ impl HandlerData for ObjectLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -1091,7 +1090,7 @@ impl HandlerData for DynamicLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
@@ -1138,7 +1137,7 @@ impl HandlerData for PreludeLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState<'data> {
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         _common: &mut CommonGroupState,
         _symbol_id: SymbolId,
@@ -1161,7 +1160,7 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         _common: &mut CommonGroupState<'data>,
         _symbol_id: SymbolId,
@@ -1184,7 +1183,7 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
-    fn load_symbol<'scope, P: ElfPlatform<'data>>(
+    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
@@ -2119,7 +2118,7 @@ struct GroupActivationInputs<'data> {
 }
 
 impl<'data> GroupActivationInputs<'data> {
-    fn activate_group<'scope, P: ElfPlatform<'data>>(
+    fn activate_group<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         self,
         resources: &'scope GraphResources<'data, '_>,
         scope: &Scope<'scope>,
@@ -2177,7 +2176,7 @@ impl<'data> GroupActivationInputs<'data> {
     }
 }
 
-fn find_required_sections<'data, P: ElfPlatform<'data>>(
+fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
     symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
@@ -2257,7 +2256,11 @@ fn find_required_sections<'data, P: ElfPlatform<'data>>(
     })
 }
 
-fn queue_initial_group_processing<'data, 'scope, P: ElfPlatform<'data>>(
+fn queue_initial_group_processing<
+    'data,
+    'scope,
+    P: Platform<'data, File = crate::elf::File<'data>>,
+>(
     groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
     symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
     resources: &'scope GraphResources<'data, '_>,
@@ -2296,7 +2299,7 @@ fn unwrap_worker_states<'data>(
 impl<'data> GroupState<'data> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, P: ElfPlatform<'data>>(
+    fn do_pending_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         mut self,
         resources: &'scope GraphResources<'data, '_>,
         scope: &Scope<'scope>,
@@ -2380,7 +2383,7 @@ impl<'data> GroupState<'data> {
     }
 }
 
-fn activate<'data, 'scope, P: ElfPlatform<'data>>(
+fn activate<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
     common: &mut CommonGroupState<'data>,
     file: &mut FileLayoutState<'data>,
     queue: &mut LocalWorkQueue,
@@ -2401,7 +2404,7 @@ fn activate<'data, 'scope, P: ElfPlatform<'data>>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data, 'scope, P: ElfPlatform<'data>>(
+    fn send_work<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         resources: &'scope GraphResources<'data, '_>,
         file_id: FileId,
@@ -2423,7 +2426,7 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, P: ElfPlatform<'data>>(
+    fn send_symbol_request<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_>,
@@ -2439,7 +2442,11 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<'data, 'scope, P: ElfPlatform<'data>>(
+    fn send_copy_relocation_request<
+        'data,
+        'scope,
+        P: Platform<'data, File = crate::elf::File<'data>>,
+    >(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_>,
@@ -2464,7 +2471,7 @@ impl<'data> GraphResources<'data, '_> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work<'scope, P: ElfPlatform<'data>>(
+    fn send_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &self,
         file_id: FileId,
         work: WorkItem,
@@ -2550,7 +2557,7 @@ impl<'data> FileLayoutState<'data> {
         Ok(())
     }
 
-    fn do_work<'scope, P: ElfPlatform<'data>>(
+    fn do_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         work_item: WorkItem,
@@ -2601,7 +2608,7 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    fn handle_symbol_request<'scope, P: ElfPlatform<'data>>(
+    fn handle_symbol_request<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -2901,7 +2908,12 @@ impl Section {
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, P: ElfPlatform<'data>, R: Relocation>(
+fn process_relocation<
+    'data,
+    'scope,
+    P: Platform<'data, File = crate::elf::File<'data>>,
+    R: Relocation,
+>(
     object: &ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &R,
@@ -3132,7 +3144,7 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate<'scope, P: ElfPlatform<'data>>(
+    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState,
         resources: &'scope GraphResources<'data, '_>,
@@ -3185,7 +3197,7 @@ impl<'data> PreludeLayoutState<'data> {
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, P: ElfPlatform<'data>>(
+    fn mark_defsyms_as_used<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
@@ -3238,7 +3250,7 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point<'scope, P: ElfPlatform<'data>>(
+    fn load_entry_point<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
@@ -4165,7 +4177,7 @@ fn new_dynamic_object_layout_state<'data>(
 
 impl<'data> ObjectLayoutState<'data> {
     #[inline(always)]
-    fn activate<'scope, P: ElfPlatform<'data>>(
+    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4269,7 +4281,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, P: ElfPlatform<'data>>(
+    fn handle_section_load_request<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4316,7 +4328,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section<'scope, P: ElfPlatform<'data>>(
+    fn load_section<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4397,7 +4409,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section_relocations<'scope, P: ElfPlatform<'data>, R: Relocation>(
+    fn load_section_relocations<
+        'scope,
+        P: Platform<'data, File = crate::elf::File<'data>>,
+        R: Relocation,
+    >(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4434,7 +4450,11 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<'scope, P: ElfPlatform<'data>, R: Relocation>(
+    fn process_section_exception_frames<
+        'scope,
+        P: Platform<'data, File = crate::elf::File<'data>>,
+        R: Relocation,
+    >(
         &self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
@@ -4479,7 +4499,7 @@ impl<'data> ObjectLayoutState<'data> {
         })
     }
 
-    fn load_debug_section<'scope, P: ElfPlatform<'data>>(
+    fn load_debug_section<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4519,7 +4539,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_relocations<'scope, P: ElfPlatform<'data>, R: Relocation>(
+    fn load_debug_relocations<
+        'scope,
+        P: Platform<'data, File = crate::elf::File<'data>>,
+        R: Relocation,
+    >(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -4809,7 +4833,7 @@ impl<'data> ObjectLayoutState<'data> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, P: ElfPlatform<'data>>(
+    fn load_non_hidden_symbols<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, 'scope>,
@@ -4840,7 +4864,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, P: ElfPlatform<'data>>(
+    fn export_dynamic<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -4974,7 +4998,7 @@ fn can_export_symbol(
     true
 }
 
-fn process_eh_frame_data<'data, 'scope, P: ElfPlatform<'data>>(
+fn process_eh_frame_data<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5019,7 +5043,12 @@ fn process_eh_frame_data<'data, 'scope, P: ElfPlatform<'data>>(
     Ok(())
 }
 
-fn process_eh_frame_relocations<'data, 'scope, P: ElfPlatform<'data>, R: Relocation>(
+fn process_eh_frame_relocations<
+    'data,
+    'scope,
+    P: Platform<'data, File = crate::elf::File<'data>>,
+    R: Relocation,
+>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
@@ -5865,7 +5894,7 @@ fn compute_segment_alignments(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate<'scope, P: ElfPlatform<'data>>(
+    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &'scope GraphResources<'data, '_>,
@@ -5885,7 +5914,7 @@ impl<'data> DynamicLayoutState<'data> {
         self.request_all_undefined_symbols::<P>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols<'scope, P: ElfPlatform<'data>>(
+    fn request_all_undefined_symbols<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
         &self,
         resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
