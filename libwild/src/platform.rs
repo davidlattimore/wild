@@ -64,6 +64,24 @@ pub(crate) trait Platform<'data> {
     // A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];
 
+    /// Whether the platform supports relaxations that reduce the sizes of function.
+    fn supports_size_reduction_relaxations() -> bool {
+        false
+    }
+
+    fn collect_relaxation_deltas(
+        _section_output_address: u64,
+        _section_bytes: &[u8],
+        // TODO: Change to be non-ELF specific.
+        _relocations: crate::elf::RelocationList<'data>,
+        _existing_deltas: Option<&SectionRelaxDeltas>,
+        _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+    ) -> (Vec<(u64, u32)>, Option<u64>) {
+        // This function should not be called unless `supports_size_reduction_relaxations` returns
+        // true in which case this function should be implemented.
+        unreachable!();
+    }
+
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
     fn new_relaxation(

@@ -1,9 +1,11 @@
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf::RelocationList;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
+use crate::platform::RelocationSequence as _;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -222,6 +224,35 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
 
         None
     }
+
+    fn supports_size_reduction_relaxations() -> bool {
+        true
+    }
+
+    fn collect_relaxation_deltas(
+        section_output_address: u64,
+        section_bytes: &[u8],
+        relocations: RelocationList,
+        existing_deltas: Option<&SectionRelaxDeltas>,
+        mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
+    ) -> (Vec<(u64, u32)>, Option<u64>) {
+        match relocations {
+            RelocationList::Rela(rela_list) => collect_relaxation_deltas(
+                section_output_address,
+                section_bytes,
+                rela_list.rel_iter(),
+                existing_deltas,
+                &mut resolve_symbol,
+            ),
+            RelocationList::Crel(crel_iter) => collect_relaxation_deltas(
+                section_output_address,
+                section_bytes,
+                crel_iter.flatten(),
+                existing_deltas,
+                &mut resolve_symbol,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -275,7 +306,7 @@ impl crate::platform::Relaxation for Relaxation {
 /// `section_output_address` is the output address of the section being scanned. `existing_deltas`,
 /// if present, is used to skip calls that were already relaxed in a previous pass. `resolve_symbol`
 /// returns the output address and interposability of a symbol.
-pub(crate) fn collect_relaxation_deltas<R: Relocation>(
+fn collect_relaxation_deltas<R: Relocation>(
     section_output_address: u64,
     section_bytes: &[u8],
     relocations: impl Iterator<Item = R>,

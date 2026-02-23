@@ -8,7 +8,6 @@ use self::elf::Symbol;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::arch::Architecture;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::Strip;
@@ -24,7 +23,6 @@ use crate::elf::Rela;
 use crate::elf::RelocationList;
 use crate::elf::SectionAttributes;
 use crate::elf::Versym;
-use crate::elf_riscv64;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -248,8 +246,8 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         symbol_db.args,
     );
 
-    if symbol_db.args.relax && matches!(symbol_db.args.arch, Architecture::RISCV64) {
-        perform_iterative_relaxation(
+    if symbol_db.args.relax && P::supports_size_reduction_relaxations() {
+        perform_iterative_relaxation::<P>(
             &mut group_states,
             &mut section_part_sizes,
             &mut section_part_layouts,
@@ -5429,10 +5427,10 @@ impl SymbolOutputInfos {
 
 /// Compute the output address of every loaded input section and every symbol in a single parallel
 /// pass over groups.
-fn compute_section_and_symbol_addresses<'data>(
+fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
     group_states: &[GroupState],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, O>,
 ) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
     timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
@@ -5528,17 +5526,15 @@ type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
-fn relaxation_scan_pass<'data>(
-    group_states: &mut [GroupState],
+fn relaxation_scan_pass<'data, P: Platform<'data>>(
+    group_states: &mut [GroupState<'data>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, P::File>,
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
-
-    let arch = symbol_db.args.arch;
 
     let (section_addresses, symbol_infos) =
         compute_section_and_symbol_addresses(group_states, section_part_layouts, symbol_db);
@@ -5617,29 +5613,13 @@ fn relaxation_scan_pass<'data>(
                             Err(_) => continue,
                         };
 
-                        let (raw_deltas, min_margin) = match arch {
-                            Architecture::RISCV64 => match relocs {
-                                RelocationList::Rela(rela_list) => {
-                                    elf_riscv64::collect_relaxation_deltas(
-                                        sec_output_addr,
-                                        section_bytes,
-                                        rela_list.rel_iter(),
-                                        existing_deltas,
-                                        &mut resolve_symbol,
-                                    )
-                                }
-                                RelocationList::Crel(crel_iter) => {
-                                    elf_riscv64::collect_relaxation_deltas(
-                                        sec_output_addr,
-                                        section_bytes,
-                                        crel_iter.flatten(),
-                                        existing_deltas,
-                                        &mut resolve_symbol,
-                                    )
-                                }
-                            },
-                            _ => continue,
-                        };
+                        let (raw_deltas, min_margin) = P::collect_relaxation_deltas(
+                            sec_output_addr,
+                            section_bytes,
+                            relocs,
+                            existing_deltas,
+                            &mut resolve_symbol,
+                        );
 
                         if let Some(margin) = min_margin {
                             next_rescan.push((sec_idx, margin));
@@ -5699,14 +5679,14 @@ fn relaxation_scan_pass<'data>(
     (total_deleted, next_rescan_candidates)
 }
 
-fn perform_iterative_relaxation<'data>(
-    group_states: &mut [GroupState],
+fn perform_iterative_relaxation<'data, P: Platform<'data>>(
+    group_states: &mut [GroupState<'data>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
     program_segments: &ProgramSegments,
     output_order: &OutputOrder,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, P::File>,
     per_symbol_flags: &PerSymbolFlags,
 ) {
     timing_phase!("Iterative relaxation");
@@ -5722,7 +5702,7 @@ fn perform_iterative_relaxation<'data>(
             break;
         }
 
-        let (deleted, next_candidates) = relaxation_scan_pass(
+        let (deleted, next_candidates) = relaxation_scan_pass::<P>(
             group_states,
             section_part_layouts,
             symbol_db,
