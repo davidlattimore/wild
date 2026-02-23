@@ -27,6 +27,7 @@ use crate::elf::Verdaux;
 use crate::elf::Verdef;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
+use crate::elf::VersionDef;
 use crate::elf::Versym;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::write_relocation_to_buffer;
@@ -54,7 +55,6 @@ use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
-use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
@@ -600,7 +600,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn process_resolution<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
-        layout: Option<&Layout>,
+        layout: Option<&Layout<'data>>,
         res: &Resolution,
     ) -> Result {
         let Some(got_address) = res.got_address else {
@@ -684,7 +684,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_offset<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &mut self,
         res: &Resolution,
-        layout: &Layout,
+        layout: &Layout<'data>,
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
@@ -2242,7 +2242,7 @@ fn apply_relocation<
     mut offset_in_section: u64,
     rel: &R,
     section_info: SectionInfo,
-    layout: &Layout,
+    layout: &Layout<'data>,
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
@@ -2871,7 +2871,7 @@ fn write_prelude<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     prelude: &PreludeLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
@@ -2967,7 +2967,7 @@ fn write_merged_strings(
 
 fn write_plt_got_entries<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     prelude: &PreludeLayout,
-    layout: &Layout,
+    layout: &Layout<'data>,
     table_writer: &mut TableWriter,
 ) -> Result {
     // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
@@ -3173,7 +3173,7 @@ pub(crate) struct EpilogueOffsets {
 fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     script: &LinkerScriptLayoutState,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write linker script state");
 
@@ -3191,7 +3191,7 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
 fn write_synthetic_symbols<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     syn: &SyntheticSymbolsLayout,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
 
@@ -3242,7 +3242,7 @@ fn write_epilogue<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         write_riscv_attributes(epilogue, layout, buffers)?;
     }
 
-    if let Some(verdefs) = &epilogue.verdefs {
+    if let Some(verdefs) = &epilogue.format_specific.verdefs {
         write_verdef(
             verdefs,
             table_writer,
@@ -3350,7 +3350,7 @@ fn write_sysv_hash_table(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let Some(sysv_hash_layout) = epilogue.sysv_hash_layout.as_ref() else {
+    let Some(sysv_hash_layout) = epilogue.format_specific.sysv_hash_layout.as_ref() else {
         return Ok(());
     };
 
@@ -3421,7 +3421,7 @@ fn write_gnu_hash_tables(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let Some(gnu_hash_layout) = epilogue.gnu_hash_layout.as_ref() else {
+    let Some(gnu_hash_layout) = epilogue.format_specific.gnu_hash_layout.as_ref() else {
         return Ok(());
     };
 
@@ -4525,7 +4525,7 @@ fn write_internal_symbols_plt_got_entries<
 >(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     for i in 0..internal_symbols.symbol_definitions.len() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
@@ -4550,7 +4550,7 @@ fn write_internal_symbols_plt_got_entries<
 fn write_dynamic_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     object: &DynamicLayout,
     table_writer: &mut TableWriter,
-    layout: &Layout,
+    layout: &Layout<'data>,
 ) -> Result {
     verbose_timing_phase!("Write dynamic");
 

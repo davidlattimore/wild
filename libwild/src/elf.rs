@@ -9,7 +9,9 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
+use crate::layout::DynamicSymbolDefinition;
 use crate::layout::OutputRecordLayout;
+use crate::output_kind::OutputKind;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -18,13 +20,15 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::platform;
 use crate::platform::CommonSymbol;
-use crate::platform::ObjectFile as _;
+use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::resolution::LoadedMetrics;
+use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
+use crate::version_script::VersionScript;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
@@ -229,6 +233,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type DynamicLayout = DynamicLayout<'data>;
     type NonAddressableCounts = NonAddressableCounts;
     type NonAddressableIndexes = NonAddressableIndexes;
+    type EpilogueLayout = EpilogueLayout;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -805,6 +810,173 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
         Ok(())
     }
+
+    fn apply_non_addressable_indexes_epilogue(
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut Self::EpilogueLayout,
+    ) {
+        counts.verdef_count += state
+            .verdefs
+            .as_ref()
+            .map(|v| v.len() as u16)
+            .unwrap_or_default();
+    }
+
+    fn finalise_sizes_epilogue(
+        state: &mut Self::EpilogueLayout,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        properties: &Self::LayoutProperties,
+        symbol_db: &SymbolDb<'data, Self>,
+    ) {
+        mem_sizes.increment(
+            part_id::NOTE_GNU_PROPERTY,
+            gnu_property_notes_section_size(&properties.gnu_property_notes),
+        );
+
+        mem_sizes.increment(
+            part_id::RISCV_ATTRIBUTES,
+            properties.riscv_attributes.section_size,
+        );
+
+        if let Some(gnu_hash_layout) = state.gnu_hash_layout {
+            gnu_hash_layout.allocate(mem_sizes);
+        }
+
+        let version_count = symbol_db.version_script.version_count();
+        if version_count > 0 {
+            // If soname is not provided, allocate space for file name as the base version
+            let base_version_name = if symbol_db.args.soname.is_none() {
+                let file_name = symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .expect("File name should be present at this point")
+                    .to_string_lossy()
+                    .to_string();
+                mem_sizes.increment(part_id::DYNSTR, file_name.len() as u64 + 1);
+                file_name
+            } else {
+                String::new()
+            };
+
+            let mut verdefs = Vec::with_capacity(version_count.into());
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_version_name.into_bytes(),
+                parent_index: None,
+            });
+
+            match &symbol_db.version_script {
+                VersionScript::Regular(version_script) => {
+                    // Take all but the base version
+                    for version in version_script.version_iter().skip(1) {
+                        verdefs.push(VersionDef {
+                            name: version.name.to_vec(),
+                            parent_index: version.parent_index,
+                        });
+                        mem_sizes.increment(part_id::DYNSTR, version.name.len() as u64 + 1);
+                    }
+                }
+                VersionScript::Rust(_) => {}
+            }
+
+            let dependencies_count = symbol_db.version_script.parent_count();
+            mem_sizes.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() as u16 * version_count
+                    + size_of::<crate::elf::Verdaux>() as u16
+                        * (version_count + dependencies_count))
+                    .into(),
+            );
+            state.verdefs.replace(verdefs);
+        }
+    }
+
+    fn finalise_layout_epilogue(
+        epilogue_state: &mut Self::EpilogueLayout,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+        common_state: &ElfLayoutProperties,
+        dynsym_start_index: u32,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result {
+        if let Some(gnu_hash_layout) = epilogue_state.gnu_hash_layout.as_mut() {
+            gnu_hash_layout.symbol_base = dynsym_start_index;
+        }
+
+        memory_offsets.increment(
+            part_id::NOTE_GNU_PROPERTY,
+            crate::elf::gnu_property_notes_section_size(&common_state.gnu_property_notes),
+        );
+
+        memory_offsets.increment(
+            part_id::RISCV_ATTRIBUTES,
+            common_state.riscv_attributes.section_size,
+        );
+
+        if let Some(sysv_hash_layout) = epilogue_state.sysv_hash_layout.as_mut() {
+            let additional = dynamic_symbol_defs.len() as u32;
+            sysv_hash_layout.chain_count = dynsym_start_index
+                .checked_add(additional)
+                .context("Too many dynamic symbols for .hash")?;
+        }
+
+        if let Some(sysv_hash_layout) = &epilogue_state.sysv_hash_layout {
+            memory_offsets.increment(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+        }
+
+        if let Some(verdefs) = &epilogue_state.verdefs {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() * verdefs.len()
+                    + size_of::<crate::elf::Verdaux>()
+                        * (verdefs.len() + symbol_db.version_script.parent_count() as usize))
+                    as u64,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn apply_late_size_adjustments_epilogue(
+        state: &mut crate::elf::EpilogueLayout,
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result {
+        allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)
+    }
+}
+
+fn allocate_sysv_hash(
+    state: &mut EpilogueLayout,
+    current_sizes: &OutputSectionPartMap<u64>,
+    extra_sizes: &mut OutputSectionPartMap<u64>,
+    dynamic_symbol_defs: &[DynamicSymbolDefinition],
+) -> Result {
+    let num_defs = dynamic_symbol_defs.len();
+    if num_defs == 0 {
+        return Ok(());
+    }
+
+    let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
+    // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
+    // symbols, which also includes undefined dynamic symbols.
+    let num_dynsym = *current_sizes.get(part_id::DYNSYM) / SYMTAB_ENTRY_SIZE;
+    let chain_count = num_dynsym
+        .try_into()
+        .context("Too many dynamic symbols for .hash")?;
+
+    let sysv_hash_layout = SysvHashLayout {
+        bucket_count,
+        chain_count,
+    };
+
+    extra_sizes.increment(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+    state.sysv_hash_layout = Some(sysv_hash_layout);
+
+    Ok(())
 }
 
 /// Computes a mapping from input versions to output versions.
@@ -1937,8 +2109,11 @@ pub(crate) struct DynamicLayout<'data> {
 pub(crate) struct NonAddressableIndexes {
     gnu_version_r_index: u16,
 }
-impl NonAddressableIndexes {
-    pub(crate) fn new<'data>(symbol_db: &crate::symbol_db::SymbolDb<'data, File<'data>>) -> Self {
+
+impl platform::NonAddressableIndexes for NonAddressableIndexes {
+    fn new<'data, O: platform::ObjectFile<'data>>(
+        symbol_db: &crate::symbol_db::SymbolDb<'data, O>,
+    ) -> Self {
         Self {
             // Allocate version indexes starting from after the local and global indexes and any
             // versions defined by a version script.
@@ -1954,4 +2129,109 @@ pub(crate) struct NonAddressableCounts {
     pub(crate) verneed_count: u64,
     /// The number of verdef records provided in version script.
     pub(crate) verdef_count: u16,
+}
+
+#[derive(Debug)]
+pub(crate) struct EpilogueLayout {
+    pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
+    pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
+    pub(crate) verdefs: Option<Vec<VersionDef>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GnuHashLayout {
+    pub(crate) num_defs: u32,
+    pub(crate) bucket_count: u32,
+    pub(crate) bloom_shift: u32,
+    pub(crate) bloom_count: u32,
+    pub(crate) symbol_base: u32,
+}
+
+fn create_gnu_hash_layout(
+    args: &Args,
+    output_kind: OutputKind,
+    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+) -> Option<GnuHashLayout> {
+    if !args.hash_style.includes_gnu() || !output_kind.needs_dynamic() {
+        return None;
+    }
+
+    // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
+    // symbols per bucket, but then we round up to a power of two.
+    let num_defs = dynamic_symbol_definitions.len();
+    let gnu_hash_layout = GnuHashLayout {
+        num_defs: dynamic_symbol_definitions.len() as u32,
+        bucket_count: (num_defs / 2).next_power_of_two() as u32,
+        bloom_shift: 6,
+        bloom_count: 1,
+        // `symbol_base` is set later in `finalise_layout`.
+        symbol_base: 0,
+    };
+
+    // If we're going to emit .gnu.hash, then we need to stort the dynamic symbols by bucket.
+    // Tie-break by name for determinism. We can use an unstable sort because names should be
+    // unique. We use a parallel sort because we're processing symbols from potentially many
+    // input objects, so there can be a lot.
+    dynamic_symbol_definitions
+        .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+
+    Some(gnu_hash_layout)
+}
+
+impl GnuHashLayout {
+    /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
+    /// bucket as required by .gnu.hash.
+    fn allocate(&self, mem_sizes: &mut OutputSectionPartMap<u64>) {
+        let num_blume = 1;
+        mem_sizes.increment(
+            part_id::GNU_HASH,
+            (size_of::<GnuHashHeader>()
+                + size_of::<u64>() * num_blume
+                + size_of::<u32>() * self.bucket_count as usize
+                + size_of::<u32>() * self.num_defs as usize) as u64,
+        );
+    }
+
+    pub(crate) fn bucket_for_hash(&self, hash: u32) -> u32 {
+        hash % self.bucket_count
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SysvHashLayout {
+    pub(crate) bucket_count: u32,
+    pub(crate) chain_count: u32,
+}
+
+#[derive(derive_more::Debug)]
+pub(crate) struct VersionDef {
+    #[debug("{}", String::from_utf8_lossy(name))]
+    pub(crate) name: Vec<u8>,
+    pub(crate) parent_index: Option<u16>,
+}
+
+impl SysvHashLayout {
+    fn byte_size(self) -> Result<u64> {
+        let words = 2u64
+            .checked_add(u64::from(self.bucket_count))
+            .and_then(|v| v.checked_add(u64::from(self.chain_count)))
+            .context("Too many dynamic symbols for .hash")?;
+        Ok(words * size_of::<u32>() as u64)
+    }
+}
+
+impl EpilogueLayout {
+    pub(crate) fn new(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self {
+        let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
+
+        Self {
+            sysv_hash_layout: Default::default(),
+            gnu_hash_layout,
+            verdefs: Default::default(),
+        }
+    }
 }

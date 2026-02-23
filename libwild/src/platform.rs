@@ -4,12 +4,14 @@ use crate::Result;
 use crate::arch::Architecture;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
+use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::resolution::LoadedMetrics;
+use crate::symbol_db::SymbolDb;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -52,7 +54,7 @@ pub(crate) trait Platform<'data> {
     // Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     // a different place based on the following article:
     // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start(layout: &Layout) -> u64;
+    fn tp_offset_start(layout: &Layout<'data>) -> u64;
 
     // Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -126,9 +128,10 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type DynamicEntry;
     type VerneedTable: VerneedTable<'data>;
     type DynamicLayoutState: Default;
+    type EpilogueLayout: Send + Sync + 'static;
     type DynamicLayout;
-    type NonAddressableIndexes;
-    type NonAddressableCounts: Default;
+    type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'data;
+    type NonAddressableCounts: Default + Send + Sync + 'data;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Copy;
@@ -218,6 +221,34 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
     ) -> Self::DynamicLayout;
+
+    fn apply_non_addressable_indexes_epilogue(
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut Self::EpilogueLayout,
+    );
+
+    fn finalise_sizes_epilogue(
+        state: &mut Self::EpilogueLayout,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        properties: &Self::LayoutProperties,
+        symbol_db: &SymbolDb<'data, Self>,
+    );
+
+    fn apply_late_size_adjustments_epilogue(
+        state: &mut crate::elf::EpilogueLayout,
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result;
+
+    fn finalise_layout_epilogue(
+        epilogue_state: &mut Self::EpilogueLayout,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+        common_state: &crate::elf::ElfLayoutProperties,
+        dynsym_start_index: u32,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result;
 
     fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]>;
 
@@ -412,4 +443,8 @@ pub(crate) trait VerneedTable<'data> {
 
 pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync {
     fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8];
+}
+
+pub(crate) trait NonAddressableIndexes {
+    fn new<'data, O: ObjectFile<'data>>(symbol_db: &SymbolDb<'data, O>) -> Self;
 }
