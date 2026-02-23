@@ -15,6 +15,7 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
+use linker_utils::riscv64::JAL_RANGE;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::distance_fits_jal;
 use linker_utils::riscv64::relocation_type_from_raw;
@@ -281,9 +282,9 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-) -> (Vec<(u64, u32)>, bool) {
+) -> (Vec<(u64, u32)>, Option<u64>) {
     let mut raw_deltas = Vec::new();
-    let mut has_unrelaxed_candidates = false;
+    let mut min_unrelaxed_margin: Option<u64> = None;
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
     let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
 
@@ -307,15 +308,19 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
                     if let Some(info) = resolve_symbol(sym_idx)
                         && !info.is_interposable
                     {
-                        if distance_fits_jal(
-                            info.output_address as i64
-                                - (section_output_address + call_offset) as i64,
-                        ) {
+                        let distance = info.output_address as i64
+                            - (section_output_address + call_offset) as i64;
+                        if distance_fits_jal(distance) {
                             // Delete the jalr instruction (4 bytes at call_offset + 4).
                             raw_deltas.push((call_offset + 4, 4));
                         } else {
-                            // Distance might shrink on a later iteration.
-                            has_unrelaxed_candidates = true;
+                            // Record how far this candidate is from the JAL range boundary so the
+                            // caller can decide whether a rescan is worthwhile given the total
+                            // bytes deleted so far.
+                            let jal_max = JAL_RANGE.end().unsigned_abs();
+                            let margin = distance.unsigned_abs() - jal_max;
+                            min_unrelaxed_margin =
+                                Some(min_unrelaxed_margin.map_or(margin, |m| m.min(margin)));
                         }
                     }
                 } else if let Some((hi20_offset, sym_idx, addend)) = prev_hi20
@@ -335,8 +340,23 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
                                 // Delete the last 2 bytes of the 4-byte lui instruction.
                                 raw_deltas.push((hi20_offset + 2, 2));
                             } else {
-                                // Value might change on a later iteration.
-                                has_unrelaxed_candidates = true;
+                                // Compute how far the hi20 value is from the c.lui immediate range
+                                // ([-32, -1] ∪ [1, 31]). The hi20 field changes by 1 for every
+                                // 0x1000 change in value.
+                                let hi20 = value.wrapping_add(0x800) >> 12;
+                                let hi20_signed = hi20 as i64;
+                                let margin = if hi20_signed > 31 {
+                                    ((hi20_signed - 31) as u64) * 0x1000
+                                } else if hi20_signed < -32 {
+                                    // Address decreases from relaxation push hi20 further negative.
+                                    // This can never be fixed.
+                                    u64::MAX
+                                } else {
+                                    // hi20 == 0: need to cross one page boundary.
+                                    0x1000u64
+                                };
+                                min_unrelaxed_margin =
+                                    Some(min_unrelaxed_margin.map_or(margin, |m| m.min(margin)));
                             }
                         }
                     }
@@ -350,5 +370,6 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
             }
         }
     }
-    (raw_deltas, has_unrelaxed_candidates)
+
+    (raw_deltas, min_unrelaxed_margin)
 }

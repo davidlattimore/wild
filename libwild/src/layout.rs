@@ -5590,6 +5590,11 @@ fn compute_section_and_symbol_addresses<'data>(
 /// `[group_idx][file_idx]`.  Files that are not objects get an empty entry.
 type RescanSections = Vec<Vec<SmallVec<[usize; 16]>>>;
 
+/// Like `RescanSections` but each entry also carries the minimum margin (in bytes) among the
+/// section's unrelaxed candidates.  This is returned by `relaxation_scan_pass` and then filtered
+/// by `total_deleted` to produce a `RescanSections` for the next iteration.
+type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
+
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
@@ -5600,7 +5605,7 @@ fn relaxation_scan_pass<'data>(
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
-) -> (u64, RescanSections) {
+) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
     let arch = symbol_db.args.arch;
@@ -5610,144 +5615,146 @@ fn relaxation_scan_pass<'data>(
 
     // Scan each group.
     #[expect(clippy::type_complexity)]
-    let group_results: Vec<(OutputSectionPartMap<u64>, Vec<SmallVec<[usize; 16]>>)> = group_states
-        .par_iter_mut()
-        .enumerate()
-        .map(|(group_idx, group)| {
-            let mut reductions = OutputSectionPartMap::with_size(section_part_sizes.num_parts());
-            let mut file_rescans: Vec<SmallVec<[usize; 16]>> =
-                Vec::with_capacity(group.files.len());
+    let group_results: Vec<(OutputSectionPartMap<u64>, Vec<SmallVec<[(usize, u64); 16]>>)> =
+        group_states
+            .par_iter_mut()
+            .enumerate()
+            .map(|(group_idx, group)| {
+                let mut reductions =
+                    OutputSectionPartMap::with_size(section_part_sizes.num_parts());
+                let mut file_rescans: Vec<SmallVec<[(usize, u64); 16]>> =
+                    Vec::with_capacity(group.files.len());
 
-            for (file_idx, file) in group.files.iter_mut().enumerate() {
-                let FileLayoutState::Object(obj) = file else {
-                    file_rescans.push(SmallVec::new());
-                    continue;
-                };
-
-                let file_section_addrs = &section_addresses[group_idx][file_idx];
-
-                let sections_to_scan: SmallVec<[usize; 16]> = match prev_rescan {
-                    Some(rescan) => rescan[group_idx][file_idx].clone(),
-                    None => obj
-                        .sections
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(i, slot)| {
-                            if let SectionSlot::Loaded(_) = slot
-                                && let Ok(header) = obj.object.section(SectionIndex(i))
-                                && SectionFlags::from_header(header).contains(shf::EXECINSTR)
-                            {
-                                Some(i)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect(),
-                };
-
-                let mut next_rescan: SmallVec<[usize; 16]> = SmallVec::new();
-
-                for sec_idx in &sections_to_scan {
-                    let sec_idx = *sec_idx;
-                    let section_index = SectionIndex(sec_idx);
-                    let relocs = match obj.object.relocations(section_index, &obj.relocations) {
-                        Ok(r) => r,
-                        Err(_) => continue,
+                for (file_idx, file) in group.files.iter_mut().enumerate() {
+                    let FileLayoutState::Object(obj) = file else {
+                        file_rescans.push(SmallVec::new());
+                        continue;
                     };
 
-                    let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
-                    if sec_output_addr == 0 {
-                        continue;
-                    }
+                    let file_section_addrs = &section_addresses[group_idx][file_idx];
 
-                    let existing_deltas = obj.section_relax_deltas.get(sec_idx);
+                    let sections_to_scan: SmallVec<[usize; 16]> = match prev_rescan {
+                        Some(rescan) => rescan[group_idx][file_idx].clone(),
+                        None => obj
+                            .sections
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, slot)| {
+                                if let SectionSlot::Loaded(_) = slot
+                                    && let Ok(header) = obj.object.section(SectionIndex(i))
+                                    && SectionFlags::from_header(header).contains(shf::EXECINSTR)
+                                {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect(),
+                    };
 
-                    // Symbol resolver: look up the canonical definition's output
-                    // address via the precomputed table.
-                    let mut resolve_symbol =
-                        |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
-                            let local_id = obj.symbol_id_range.input_to_id(sym_idx);
-                            let def_id = symbol_db.definition(local_id);
-                            symbol_infos.resolve(def_id, per_symbol_flags)
+                    let mut next_rescan: SmallVec<[(usize, u64); 16]> = SmallVec::new();
+
+                    for sec_idx in &sections_to_scan {
+                        let sec_idx = *sec_idx;
+                        let section_index = SectionIndex(sec_idx);
+                        let relocs = match obj.object.relocations(section_index, &obj.relocations) {
+                            Ok(r) => r,
+                            Err(_) => continue,
                         };
 
-                    let section_header = match obj.object.section(section_index) {
-                        Ok(h) => h,
-                        Err(_) => continue,
-                    };
-                    let section_bytes = match obj.object.raw_section_data(section_header) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
+                        let sec_output_addr = file_section_addrs.get(sec_idx).copied().unwrap_or(0);
+                        if sec_output_addr == 0 {
+                            continue;
+                        }
 
-                    let (raw_deltas, has_unrelaxed) = match arch {
-                        Architecture::RISCV64 => match relocs {
-                            RelocationList::Rela(rela_list) => {
-                                elf_riscv64::collect_relaxation_deltas(
-                                    sec_output_addr,
-                                    section_bytes,
-                                    rela_list.rel_iter(),
-                                    existing_deltas,
-                                    &mut resolve_symbol,
-                                )
+                        let existing_deltas = obj.section_relax_deltas.get(sec_idx);
+
+                        // Symbol resolver: look up the canonical definition's output
+                        // address via the precomputed table.
+                        let mut resolve_symbol =
+                            |sym_idx: object::SymbolIndex| -> Option<RelaxSymbolInfo> {
+                                let local_id = obj.symbol_id_range.input_to_id(sym_idx);
+                                let def_id = symbol_db.definition(local_id);
+                                symbol_infos.resolve(def_id, per_symbol_flags)
+                            };
+
+                        let section_header = match obj.object.section(section_index) {
+                            Ok(h) => h,
+                            Err(_) => continue,
+                        };
+                        let section_bytes = match obj.object.raw_section_data(section_header) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+
+                        let (raw_deltas, min_margin) = match arch {
+                            Architecture::RISCV64 => match relocs {
+                                RelocationList::Rela(rela_list) => {
+                                    elf_riscv64::collect_relaxation_deltas(
+                                        sec_output_addr,
+                                        section_bytes,
+                                        rela_list.rel_iter(),
+                                        existing_deltas,
+                                        &mut resolve_symbol,
+                                    )
+                                }
+                                RelocationList::Crel(crel_iter) => {
+                                    elf_riscv64::collect_relaxation_deltas(
+                                        sec_output_addr,
+                                        section_bytes,
+                                        crel_iter.flatten(),
+                                        existing_deltas,
+                                        &mut resolve_symbol,
+                                    )
+                                }
+                            },
+                            _ => continue,
+                        };
+
+                        if let Some(margin) = min_margin {
+                            next_rescan.push((sec_idx, margin));
+                        }
+
+                        if raw_deltas.is_empty() {
+                            continue;
+                        }
+
+                        let new_total_deleted: u64 =
+                            raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
+
+                        if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
+                            let old_capacity = sec.capacity();
+                            sec.size -= new_total_deleted;
+                            let new_capacity = sec.capacity();
+                            debug_assert!(old_capacity >= new_capacity);
+                            let capacity_reduction = old_capacity - new_capacity;
+                            if capacity_reduction > 0 {
+                                let part_id = sec.part_id;
+                                group
+                                    .common
+                                    .mem_sizes
+                                    .decrement(part_id, capacity_reduction);
+                                *reductions.get_mut(part_id) += capacity_reduction;
                             }
-                            RelocationList::Crel(crel_iter) => {
-                                elf_riscv64::collect_relaxation_deltas(
-                                    sec_output_addr,
-                                    section_bytes,
-                                    crel_iter.flatten(),
-                                    existing_deltas,
-                                    &mut resolve_symbol,
-                                )
-                            }
-                        },
-                        _ => continue,
-                    };
+                        }
 
-                    if has_unrelaxed {
-                        next_rescan.push(sec_idx);
-                    }
-
-                    if raw_deltas.is_empty() {
-                        continue;
-                    }
-
-                    let new_total_deleted: u64 =
-                        raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
-
-                    if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
-                        let old_capacity = sec.capacity();
-                        sec.size -= new_total_deleted;
-                        let new_capacity = sec.capacity();
-                        debug_assert!(old_capacity >= new_capacity);
-                        let capacity_reduction = old_capacity - new_capacity;
-                        if capacity_reduction > 0 {
-                            let part_id = sec.part_id;
-                            group
-                                .common
-                                .mem_sizes
-                                .decrement(part_id, capacity_reduction);
-                            *reductions.get_mut(part_id) += capacity_reduction;
+                        if let Some(existing) = obj.section_relax_deltas.get_mut(sec_idx) {
+                            existing.merge_additional(raw_deltas);
+                        } else {
+                            obj.section_relax_deltas
+                                .insert_sorted(sec_idx, SectionRelaxDeltas::new(raw_deltas));
                         }
                     }
 
-                    if let Some(existing) = obj.section_relax_deltas.get_mut(sec_idx) {
-                        existing.merge_additional(raw_deltas);
-                    } else {
-                        obj.section_relax_deltas
-                            .insert_sorted(sec_idx, SectionRelaxDeltas::new(raw_deltas));
-                    }
+                    file_rescans.push(next_rescan);
                 }
 
-                file_rescans.push(next_rescan);
-            }
-
-            (reductions, file_rescans)
-        })
-        .collect();
+                (reductions, file_rescans)
+            })
+            .collect();
 
     let mut total_deleted = 0u64;
-    let mut next_rescan_sections: RescanSections = Vec::with_capacity(group_results.len());
+    let mut next_rescan_candidates: RescanCandidates = Vec::with_capacity(group_results.len());
     for (reduction, file_rescans) in group_results {
         for (idx, &amount) in reduction.parts.iter().enumerate() {
             if amount > 0 {
@@ -5756,10 +5763,10 @@ fn relaxation_scan_pass<'data>(
                 total_deleted += amount;
             }
         }
-        next_rescan_sections.push(file_rescans);
+        next_rescan_candidates.push(file_rescans);
     }
 
-    (total_deleted, next_rescan_sections)
+    (total_deleted, next_rescan_candidates)
 }
 
 fn perform_iterative_relaxation<'data>(
@@ -5777,7 +5784,15 @@ fn perform_iterative_relaxation<'data>(
     let mut rescan_sections: Option<RescanSections> = None;
 
     for _iteration in 0..MAX_RELAXATION_ITERATIONS {
-        let (deleted, next_rescan) = relaxation_scan_pass(
+        if let Some(ref rescan) = rescan_sections
+            && rescan
+                .iter()
+                .all(|files| files.iter().all(|secs| secs.is_empty()))
+        {
+            break;
+        }
+
+        let (deleted, next_candidates) = relaxation_scan_pass(
             group_states,
             section_part_layouts,
             symbol_db,
@@ -5790,7 +5805,26 @@ fn perform_iterative_relaxation<'data>(
             break;
         }
 
-        rescan_sections = Some(next_rescan);
+        // Filter the rescan candidates: only keep sections whose closest
+        // unrelaxed candidate is within `deleted` bytes of the relaxation
+        // boundary.  Candidates further away cannot possibly succeed because
+        // addresses shift by at most `deleted` bytes per iteration.
+        rescan_sections = Some(
+            next_candidates
+                .into_iter()
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|secs| {
+                            secs.into_iter()
+                                .filter(|&(_, margin)| margin <= deleted)
+                                .map(|(idx, _)| idx)
+                                .collect()
+                        })
+                        .collect()
+                })
+                .collect(),
+        );
 
         *section_part_layouts = layout_section_parts(
             section_part_sizes,
