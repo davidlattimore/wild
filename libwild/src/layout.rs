@@ -5,7 +5,6 @@
 use self::elf::GNU_NOTE_NAME;
 use self::elf::NoteHeader;
 use self::elf::Symbol;
-use self::output_section_id::InfoInputs;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -1754,14 +1753,6 @@ impl<'data> Layout<'data> {
             .get(part_id::GNU_VERSION)
             .file_size
             > 0
-    }
-
-    pub(crate) fn info_inputs(&self) -> InfoInputs<'_> {
-        InfoInputs {
-            section_part_layouts: &self.section_part_layouts,
-            non_addressable_counts: &self.non_addressable_counts,
-            output_section_indexes: &self.output_sections.output_section_indexes,
-        }
     }
 }
 

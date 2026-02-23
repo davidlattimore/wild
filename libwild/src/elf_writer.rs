@@ -4330,7 +4330,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
     let mut name_offset = 0;
-    let info_inputs = layout.info_inputs();
+    let info_values = compute_info_values(layout);
 
     let mut order = layout.output_order.into_iter().peekable();
 
@@ -4404,7 +4404,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
         entry.sh_link.set(e, link.into());
-        entry.sh_info.set(e, section_id.info(&info_inputs));
+        entry.sh_info.set(e, *info_values.get(section_id));
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
 
@@ -4416,6 +4416,38 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
     );
 
     Ok(())
+}
+
+/// Computes the value of the info field for all the section headers.
+fn compute_info_values(layout: &Layout) -> OutputSectionMap<u32> {
+    let mut infos = layout.output_sections.new_section_map();
+
+    // .rela.plt contains relocations for .got, so should link to it.
+    *infos.get_mut(output_section_id::RELA_PLT) = u32::from(
+        layout
+            .output_sections
+            .output_index_of_section(output_section_id::GOT)
+            .unwrap_or(0),
+    );
+
+    // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
+    *infos.get_mut(output_section_id::DYNSYM) = 1;
+
+    *infos.get_mut(output_section_id::GNU_VERSION_D) =
+        layout.non_addressable_counts.verdef_count.into();
+
+    *infos.get_mut(output_section_id::GNU_VERSION_R) =
+        layout.non_addressable_counts.verneed_count as u32;
+
+    // For SYMTAB, the info field holds the index of the first non-local symbol.
+    *infos.get_mut(output_section_id::SYMTAB_LOCAL) = (layout
+        .section_part_layouts
+        .get(part_id::SYMTAB_LOCAL)
+        .file_size
+        / size_of::<elf::SymtabEntry>())
+        as u32;
+
+    infos
 }
 
 fn write_section_header_strings(
