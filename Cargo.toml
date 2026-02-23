@@ -38,7 +38,7 @@ colosseum = "0.2.2"
 crossbeam-queue = "0.3.10"
 crossbeam-utils = "0.8.18"
 crossbeam-channel = "0.5.15"
-derive_more = { version = "2.0.1", features = ["debug"] }
+derive_more = { version = "2.0.1", features = ["debug", "display"] }
 dhat = { version = "0.3.3" }
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 foldhash = "0.2.0"
@@ -95,7 +95,6 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
     "fmt",
     "registry",
 ] }
-thiserror = "2.0.18"
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"

@@ -37,11 +37,11 @@ struct Entry {
     fre_bytes: Vec<u8>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, derive_more::Display)]
 pub enum SframeError {
-    #[error("Unsupported SFrame version {0}")]
+    #[display("Unsupported SFrame version {_0}")]
     UnsupportedVersion(u8),
-    #[error("Invalid SFrame magic 0x{0:x}")]
+    #[display("Invalid SFrame magic 0x{_0:x}")]
     BadMagicBytes(u16),
 }
 
@@ -161,11 +161,7 @@ pub(crate) fn sort_sframe_section(
                 crate::error::warning(&format!("{e}, disabling SFrame sorting"));
                 return Ok(());
             }
-            Err(e) => bail!(
-                "Failed to parse SFrame header at offset {}: {:?}",
-                offset,
-                e
-            ),
+            Err(e) => bail!("Failed to parse SFrame header at offset {}: {}", offset, e),
         };
 
         let pc_rel = header.flags & FLAG_FUNC_START_PCREL != 0;
