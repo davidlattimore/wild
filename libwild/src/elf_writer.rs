@@ -2261,7 +2261,7 @@ fn apply_relocation<
     let rel_info;
     let output_kind = layout.symbol_db.output_kind;
 
-    let relaxation = P::Relaxation::new(
+    let relaxation = P::new_relaxation(
         r_type,
         out,
         offset_in_section,

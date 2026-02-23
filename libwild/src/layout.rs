@@ -2923,7 +2923,7 @@ fn process_relocation<'data, 'scope, P: ElfPlatform<'data>, R: Relocation>(
         let r_type = rel.raw_type();
         let section_flags = SectionFlags::from_header(section);
 
-        let rel_info = if let Some(relaxation) = P::Relaxation::new(
+        let rel_info = if let Some(relaxation) = P::new_relaxation(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,

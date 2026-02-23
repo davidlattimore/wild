@@ -63,12 +63,10 @@ pub(crate) trait Platform<'data> {
 
     // A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];
-}
 
-pub(crate) trait Relaxation {
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -77,10 +75,10 @@ pub(crate) trait Relaxation {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
-    ) -> Option<Self>
-    where
-        Self: std::marker::Sized;
+    ) -> Option<Self::Relaxation>;
+}
 
+pub(crate) trait Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64);
 
     fn rel_info(&self) -> RelocationKindInfo;

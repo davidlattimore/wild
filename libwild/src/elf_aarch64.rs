@@ -4,7 +4,6 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::platform::Platform;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
@@ -30,6 +29,12 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
     type Relaxation = Relaxation;
@@ -111,32 +116,9 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
     fn high_part_relocations() -> &'static [u32] {
         &[]
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-const TLSDESC_ADR_PAGE21_INSN_SEQUENCE: &[u8] = &[
-    0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
-];
-
-const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
-    0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
-];
-
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl crate::platform::Relaxation for Relaxation {
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -145,7 +127,7 @@ impl crate::platform::Relaxation for Relaxation {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
-    ) -> Option<Self>
+    ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
     {
@@ -303,7 +285,24 @@ impl crate::platform::Relaxation for Relaxation {
 
         None
     }
+}
 
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+const TLSDESC_ADR_PAGE21_INSN_SEQUENCE: &[u8] = &[
+    0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
+];
+
+const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
+    0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
+];
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }

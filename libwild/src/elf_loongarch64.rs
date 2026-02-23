@@ -1,7 +1,6 @@
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
-use crate::platform::Platform;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -27,6 +26,12 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     type Relaxation = Relaxation;
@@ -100,25 +105,10 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     fn high_part_relocations() -> &'static [u32] {
         &[]
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl crate::platform::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -127,7 +117,7 @@ impl crate::platform::Relaxation for Relaxation {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
-    ) -> Option<Self>
+    ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
     {
@@ -166,7 +156,16 @@ impl crate::platform::Relaxation for Relaxation {
 
         None
     }
+}
 
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }

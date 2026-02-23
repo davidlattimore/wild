@@ -40,6 +40,12 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_from_raw($r_type).unwrap() }
+    };
+}
+
 impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
@@ -113,24 +119,9 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
     fn high_part_relocations() -> &'static [u32] {
         &[]
     }
-}
 
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_from_raw($r_type).unwrap() }
-    };
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-impl crate::platform::Relaxation for Relaxation {
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -139,7 +130,7 @@ impl crate::platform::Relaxation for Relaxation {
         section_flags: SectionFlags,
         _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
-    ) -> Option<Self> {
+    ) -> Option<Self::Relaxation> {
         let is_known_address = flags.is_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
@@ -409,7 +400,16 @@ impl crate::platform::Relaxation for Relaxation {
         };
         None
     }
+}
 
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
@@ -464,13 +464,14 @@ impl TlsGdForm {
 #[test]
 fn test_relaxation() {
     use crate::args::RelocationModel;
+    use crate::platform::Platform as _;
     use crate::platform::Relaxation as _;
 
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let mut offset = bytes_in.len() as u64;
-        if let Some(r) = Relaxation::new(
+        if let Some(r) = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,
@@ -487,7 +488,7 @@ fn test_relaxation() {
                 "resolved: Expected {address:x?}, got {out:x?}"
             );
         }
-        if let Some(r) = Relaxation::new(
+        if let Some(r) = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,

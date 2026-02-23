@@ -2,7 +2,6 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
-use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
 use itertools::Itertools;
@@ -34,6 +33,12 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
     type Relaxation = Relaxation;
@@ -144,42 +149,10 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
             object::elf::R_RISCV_TPREL_HI20,
         ]
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
-/// by a size-changing relaxation.
-fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
-    if offset + 8 > section_bytes.len() {
-        return true;
-    }
-
-    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
-    let auipc_rd = (auipc_word >> 7) & 0x1f;
-    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
-    // jalr opcode = 0x67; rs1 in bits [19:15]
-    let is_jalr_with_matching_rs1 =
-        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
-
-    !is_jalr_with_matching_rs1
-}
-
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl crate::platform::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -188,7 +161,7 @@ impl crate::platform::Relaxation for Relaxation {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
-    ) -> Option<Self>
+    ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
     {
@@ -248,7 +221,33 @@ impl crate::platform::Relaxation for Relaxation {
 
         None
     }
+}
 
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
+/// by a size-changing relaxation.
+fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
+    if offset + 8 > section_bytes.len() {
+        return true;
+    }
+
+    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
+    let auipc_rd = (auipc_word >> 7) & 0x1f;
+    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
+    // jalr opcode = 0x67; rs1 in bits [19:15]
+    let is_jalr_with_matching_rs1 =
+        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
+
+    !is_jalr_with_matching_rs1
+}
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
