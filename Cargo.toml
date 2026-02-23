@@ -37,7 +37,6 @@ colored = "3.0.0"
 colosseum = "0.2.2"
 crossbeam-queue = "0.3.10"
 crossbeam-utils = "0.8.18"
-crossbeam-channel = "0.5.15"
 derive_more = { version = "2.0.1", features = ["debug", "display"] }
 dhat = { version = "0.3.3" }
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
@@ -52,13 +51,13 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
-indexmap = "2.9.0"
+indexmap = "2.11.4"
 indicatif = "0.18.3"
 itertools = "0.14.0"
 jobserver = "0.1.30"
 leb128 = "0.2.5"
 libc = "0.2.171"
-libloading = "0.8.6"
+libloading = "0.9.0"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
@@ -77,7 +76,7 @@ postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.5.1"
 regex = { version = "1.12.0", features = ["std"] }
 rstest = "0.26.1"
-serde = { version = "1.0.219", features = ["derive"] }
+serde = { version = "1.0.225", features = ["derive"] }
 serde-keyvalue = "0.1.0"
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.4.0"
@@ -88,7 +87,7 @@ symbolic-demangle = { version = "12.0.0", default-features = false, features = [
 tabled = "0.20.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
-toml = "0.9.0"
+toml = "1.0.3"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.16", default-features = false, features = [
     "env-filter",
@@ -99,7 +98,7 @@ uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
 which = "8.0.0"
-winnow = { version = "0.7.10", features = ["simd"] }
+winnow = { version = "0.7.13", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
 zstd = "0.13.0"
 

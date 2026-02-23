@@ -23,8 +23,6 @@ use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::Versym;
-use crate::layout::NonAddressableCounts;
-use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
 use crate::output_section_map::OutputSectionMap;
@@ -465,7 +463,6 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) group_end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
-    info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
     pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
@@ -482,7 +479,6 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     end_symbol_name: None,
     group_end_symbol_name: None,
     min_alignment: alignment::MIN,
-    info_fn: None,
     keep_if_empty: false,
     mark_zero_sized_input_as_content: true,
     element_size: 0,
@@ -552,7 +548,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
         end_symbol_name: Some("__rela_iplt_end"),
-        info_fn: Some(rela_plt_info),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -614,7 +609,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<elf::SymtabEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::SYMTAB_ENTRY,
-        info_fn: Some(dynsym_info),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -644,7 +638,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(GNU_VERSION_D_SECTION_NAME)),
         ty: sht::GNU_VERDEF,
         section_flags: shf::ALLOC,
-        info_fn: Some(version_d_info),
         min_alignment: alignment::VERSION_D,
         link: &[DYNSTR],
         ..DEFAULT_DEFS
@@ -653,7 +646,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(GNU_VERSION_R_SECTION_NAME)),
         ty: sht::GNU_VERNEED,
         section_flags: shf::ALLOC,
-        info_fn: Some(version_r_info),
         min_alignment: alignment::VERSION_R,
         link: &[DYNSTR],
         ..DEFAULT_DEFS
@@ -680,7 +672,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<elf::SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
         link: &[STRTAB],
-        info_fn: Some(symtab_info),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -916,22 +907,9 @@ impl OutputSectionId {
         }
     }
 
-    pub(crate) fn info(self, inputs: &InfoInputs) -> u32 {
-        self.opt_built_in_details()
-            .and_then(|d| d.info_fn)
-            .map_or(0, |info_fn| (info_fn)(inputs))
-    }
-
     pub(crate) fn element_size(self) -> u64 {
         self.opt_built_in_details().map_or(0, |d| d.element_size)
     }
-}
-
-/// The bits of `Layout` that are needed for computing info fields.
-pub(crate) struct InfoInputs<'layout> {
-    pub(crate) section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
-    pub(crate) non_addressable_counts: &'layout NonAddressableCounts,
-    pub(crate) output_section_indexes: &'layout [Option<u16>],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1284,33 +1262,6 @@ impl Display for SectionName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", String::from_utf8_lossy(self.0))
     }
-}
-
-fn symtab_info(info: &InfoInputs) -> u32 {
-    // For SYMTAB, the info field holds the index of the first non-local symbol.
-    (info
-        .section_part_layouts
-        .get(part_id::SYMTAB_LOCAL)
-        .file_size
-        / size_of::<elf::SymtabEntry>()) as u32
-}
-
-fn version_d_info(info: &InfoInputs) -> u32 {
-    info.non_addressable_counts.verdef_count.into()
-}
-
-fn version_r_info(info: &InfoInputs) -> u32 {
-    info.non_addressable_counts.verneed_count as u32
-}
-
-fn dynsym_info(_info: &InfoInputs) -> u32 {
-    // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
-    1
-}
-
-fn rela_plt_info(info: &InfoInputs) -> u32 {
-    // .rela.plt contains relocations for .got, so should link to it.
-    u32::from(info.output_section_indexes[GOT.0 as usize].unwrap_or(0))
 }
 
 impl std::fmt::Display for OutputSectionId {

@@ -2,7 +2,6 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
-use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
 use itertools::Itertools;
@@ -15,6 +14,7 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
+use linker_utils::riscv64::JAL_RANGE;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::distance_fits_jal;
 use linker_utils::riscv64::relocation_type_from_raw;
@@ -34,6 +34,12 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
     type Relaxation = Relaxation;
@@ -144,42 +150,10 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
             object::elf::R_RISCV_TPREL_HI20,
         ]
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
-/// by a size-changing relaxation.
-fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
-    if offset + 8 > section_bytes.len() {
-        return true;
-    }
-
-    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
-    let auipc_rd = (auipc_word >> 7) & 0x1f;
-    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
-    // jalr opcode = 0x67; rs1 in bits [19:15]
-    let is_jalr_with_matching_rs1 =
-        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
-
-    !is_jalr_with_matching_rs1
-}
-
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl crate::platform::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -188,7 +162,7 @@ impl crate::platform::Relaxation for Relaxation {
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
-    ) -> Option<Self>
+    ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
     {
@@ -248,7 +222,33 @@ impl crate::platform::Relaxation for Relaxation {
 
         None
     }
+}
 
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+/// Checks whether the paired `jalr` instruction following an `auipc` at `offset` has been removed
+/// by a size-changing relaxation.
+fn is_jalr_deleted(section_bytes: &[u8], offset: usize) -> bool {
+    if offset + 8 > section_bytes.len() {
+        return true;
+    }
+
+    let auipc_word = u32::from_le_bytes(section_bytes[offset..offset + 4].try_into().unwrap());
+    let auipc_rd = (auipc_word >> 7) & 0x1f;
+    let next_word = u32::from_le_bytes(section_bytes[offset + 4..offset + 8].try_into().unwrap());
+    // jalr opcode = 0x67; rs1 in bits [19:15]
+    let is_jalr_with_matching_rs1 =
+        (next_word & 0x7f) == 0x67 && ((next_word >> 15) & 0x1f) == auipc_rd;
+
+    !is_jalr_with_matching_rs1
+}
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
@@ -281,8 +281,9 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-) -> Vec<(u64, u32)> {
+) -> (Vec<(u64, u32)>, Option<u64>) {
     let mut raw_deltas = Vec::new();
+    let mut min_unrelaxed_margin: Option<u64> = None;
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
     let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
 
@@ -301,20 +302,28 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
             object::elf::R_RISCV_RELAX => {
                 if let Some((call_offset, sym_idx)) = prev_call
                     && rel.offset() == call_offset
-                    // Skip calls that were already relaxed in a previous pass.
                     && !existing_deltas.is_some_and(|d| d.has_delta_at(call_offset + 4))
-                    && let Some(info) = resolve_symbol(sym_idx)
-                    && !info.is_interposable
-                    && distance_fits_jal(
-                        info.output_address as i64
-                            - (section_output_address + call_offset) as i64,
-                    )
                 {
-                    // Delete the jalr instruction (4 bytes at call_offset + 4).
-                    raw_deltas.push((call_offset + 4, 4));
+                    if let Some(info) = resolve_symbol(sym_idx)
+                        && !info.is_interposable
+                    {
+                        let distance = info.output_address as i64
+                            - (section_output_address + call_offset) as i64;
+                        if distance_fits_jal(distance) {
+                            // Delete the jalr instruction (4 bytes at call_offset + 4).
+                            raw_deltas.push((call_offset + 4, 4));
+                        } else {
+                            // Record how far this candidate is from the JAL range boundary so the
+                            // caller can decide whether a rescan is worthwhile given the total
+                            // bytes deleted so far.
+                            let jal_max = JAL_RANGE.end().unsigned_abs();
+                            let margin = distance.unsigned_abs() - jal_max;
+                            min_unrelaxed_margin =
+                                Some(min_unrelaxed_margin.map_or(margin, |m| m.min(margin)));
+                        }
+                    }
                 } else if let Some((hi20_offset, sym_idx, addend)) = prev_hi20
                     && rel.offset() == hi20_offset
-                    // Skip if already relaxed.
                     && !existing_deltas.is_some_and(|d| d.has_delta_at(hi20_offset + 2))
                     && let Some(info) = resolve_symbol(sym_idx)
                     && !info.is_interposable
@@ -324,12 +333,30 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
                         let lui_word =
                             u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
                         let rd = (lui_word >> 7) & 0x1f;
-                        let value = (info.output_address as i64 + addend) as u64;
-                        if RelaxationKind::rd_valid_for_clui(rd)
-                            && RelaxationKind::hi20_fits_clui(value)
-                        {
-                            // Delete the last 2 bytes of the 4-byte lui instruction.
-                            raw_deltas.push((hi20_offset + 2, 2));
+                        if RelaxationKind::rd_valid_for_clui(rd) {
+                            let value = (info.output_address as i64 + addend) as u64;
+                            if RelaxationKind::hi20_fits_clui(value) {
+                                // Delete the last 2 bytes of the 4-byte lui instruction.
+                                raw_deltas.push((hi20_offset + 2, 2));
+                            } else {
+                                // Compute how far the hi20 value is from the c.lui immediate range
+                                // ([-32, -1] ∪ [1, 31]). The hi20 field changes by 1 for every
+                                // 0x1000 change in value.
+                                let hi20 = value.wrapping_add(0x800) >> 12;
+                                let hi20_signed = hi20 as i64;
+                                let margin = if hi20_signed > 31 {
+                                    ((hi20_signed - 31) as u64) * 0x1000
+                                } else if hi20_signed < -32 {
+                                    // Address decreases from relaxation push hi20 further negative.
+                                    // This can never be fixed.
+                                    u64::MAX
+                                } else {
+                                    // hi20 == 0: need to cross one page boundary.
+                                    0x1000u64
+                                };
+                                min_unrelaxed_margin =
+                                    Some(min_unrelaxed_margin.map_or(margin, |m| m.min(margin)));
+                            }
                         }
                     }
                 }
@@ -342,5 +369,6 @@ pub(crate) fn collect_relaxation_deltas<R: Relocation>(
             }
         }
     }
-    raw_deltas
+
+    (raw_deltas, min_unrelaxed_margin)
 }
