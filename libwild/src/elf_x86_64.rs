@@ -50,8 +50,6 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
 
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::X86_64;
-
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_X86_64
     }

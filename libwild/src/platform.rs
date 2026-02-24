@@ -1,7 +1,6 @@
 use crate::Args;
 use crate::OutputKind;
 use crate::Result;
-use crate::arch::Architecture;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout::DynamicSymbolDefinition;
@@ -24,9 +23,6 @@ use std::ops::Range;
 pub(crate) trait Platform<'data> {
     type Relaxation: Relaxation;
     type File: ObjectFile<'data>;
-
-    // Architecture identifier
-    const KIND: Architecture;
 
     // Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
@@ -82,6 +78,10 @@ pub(crate) trait Platform<'data> {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.
         unreachable!();
+    }
+
+    fn is_symbol_variant_pcs(_object: &Self::File, _symbol_index: object::SymbolIndex) -> bool {
+        false
     }
 
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the

@@ -3,6 +3,7 @@ use crate::elf::RelocationList;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::platform::ObjectFile as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
@@ -46,8 +47,6 @@ macro_rules! rel_info_from_type {
 impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
-
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::RISCV64;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_RISCV
@@ -151,6 +150,12 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
             object::elf::R_RISCV_TLS_GD_HI20,
             object::elf::R_RISCV_TPREL_HI20,
         ]
+    }
+
+    fn is_symbol_variant_pcs(object: &Self::File, symbol_index: object::SymbolIndex) -> bool {
+        object
+            .symbol(symbol_index)
+            .is_ok_and(|sym| (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0)
     }
 
     #[allow(unused_variables)]

@@ -4,6 +4,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::platform::ObjectFile as _;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
@@ -39,8 +40,6 @@ macro_rules! rel_info_from_type {
 impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
-
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::AArch64;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_AARCH64
@@ -284,6 +283,12 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         }
 
         None
+    }
+
+    fn is_symbol_variant_pcs(object: &Self::File, symbol_index: object::SymbolIndex) -> bool {
+        object
+            .symbol(symbol_index)
+            .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
     }
 }
 

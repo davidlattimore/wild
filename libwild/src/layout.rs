@@ -1057,21 +1057,8 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         self.object
             .dynamic_symbol_used(local_index, &mut self.format_specific_state)?;
 
-        // Check for VARIANT_PCS flag in AArch64 symbols
-        if P::KIND == crate::arch::Architecture::AArch64
-            && let Ok(sym) = self.object.symbols.symbol(local_index)
-            && (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0
-        {
-            resources
-                .has_variant_pcs
-                .store(true, atomic::Ordering::Relaxed);
-        }
-
-        // Check for VARIANT_CC flag in RISC-V symbols
-        if P::KIND == crate::arch::Architecture::RISCV64
-            && let Ok(sym) = self.object.symbols.symbol(local_index)
-            && (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0
-        {
+        // Check for arch-specific VARIANT_PCS flags.
+        if P::is_symbol_variant_pcs(self.object, local_index) {
             resources
                 .has_variant_pcs
                 .store(true, atomic::Ordering::Relaxed);

@@ -37,8 +37,6 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
 
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::LoongArch64;
-
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_LOONGARCH
     }
