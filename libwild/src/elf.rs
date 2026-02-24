@@ -822,6 +822,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .unwrap_or_default();
     }
 
+    fn apply_non_addressable_indexes<'groups>(
+        symbol_db: &SymbolDb<'data, Self>,
+        counts: &Self::NonAddressableCounts,
+        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
+    ) {
+        // If we were going to output symbol versions, but we didn't actually use any, then we drop
+        // all versym allocations. This is partly to avoid wasting unnecessary space in the output
+        // file, but mostly in order match what GNU ld does.
+        if (counts.verneed_count == 0 && counts.verdef_count == 0)
+            && symbol_db.output_kind.should_output_symbol_versions()
+        {
+            for mem_sizes in mem_sizes_iter {
+                *mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
+            }
+        }
+    }
+
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
@@ -946,6 +963,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result {
         allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)
+    }
+
+    fn finalise_sizes_all(
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+    ) {
+        finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 }
 
@@ -2233,5 +2257,21 @@ impl EpilogueLayout {
             gnu_hash_layout,
             verdefs: Default::default(),
         }
+    }
+}
+
+fn finalise_gnu_version_size<'data>(
+    mem_sizes: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+) {
+    if symbol_db.output_kind.should_output_symbol_versions() {
+        let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+        // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
+        // multiple files in our group, we'll update this same value multiple times, each time
+        // with a possibly revised dynamic symbol count. The important thing is that when we're
+        // done finalising the group sizes, the GNU_VERSION size should be consistent with the
+        // DYNSYM size.
+        *mem_sizes.get_mut(part_id::GNU_VERSION) =
+            num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
     }
 }

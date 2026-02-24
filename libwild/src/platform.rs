@@ -227,10 +227,21 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         state: &mut Self::EpilogueLayout,
     );
 
+    fn apply_non_addressable_indexes<'groups>(
+        symbol_db: &SymbolDb<'data, Self>,
+        counts: &Self::NonAddressableCounts,
+        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
+    );
+
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         properties: &Self::LayoutProperties,
+        symbol_db: &SymbolDb<'data, Self>,
+    );
+
+    fn finalise_sizes_all(
+        mem_sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
     );
 

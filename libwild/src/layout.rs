@@ -2029,16 +2029,12 @@ fn apply_non_addressable_indexes<'data>(
         }
     }
 
-    // If we were going to output symbol versions, but we didn't actually use any, then we drop all
-    // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
-    // mostly in order match what GNU ld does.
-    if (counts.verneed_count == 0 && counts.verdef_count == 0)
-        && symbol_db.output_kind.should_output_symbol_versions()
-    {
-        for g in group_states {
-            *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
-        }
-    }
+    <crate::elf::File<'data> as ObjectFile<'data>>::apply_non_addressable_indexes(
+        symbol_db,
+        &counts,
+        group_states.iter_mut().map(|g| &mut g.common.mem_sizes),
+    );
+
     Ok(counts)
 }
 
@@ -2506,7 +2502,10 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::NotLoaded(_) => {}
         }
 
-        finalise_gnu_version_size(common, resources.symbol_db);
+        <crate::elf::File<'data> as ObjectFile<'data>>::finalise_sizes_all(
+            &mut common.mem_sizes,
+            resources.symbol_db,
+        );
 
         Ok(())
     }
@@ -2640,23 +2639,6 @@ impl<'data> FileLayoutState<'data> {
             }
         };
         Ok(file_layout)
-    }
-}
-
-fn finalise_gnu_version_size<'data>(
-    common: &mut CommonGroupState,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
-) {
-    if symbol_db.output_kind.should_output_symbol_versions() {
-        let num_dynamic_symbols =
-            common.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
-        // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
-        // multiple files in our group, we'll update this same value multiple times, each time
-        // with a possibly revised dynamic symbol count. The important thing is that when we're
-        // done finalising the group sizes, the GNU_VERSION size should be consistent with the
-        // DYNSYM size.
-        *common.mem_sizes.get_mut(part_id::GNU_VERSION) =
-            num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
     }
 }
 
