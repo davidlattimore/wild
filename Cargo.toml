@@ -70,7 +70,8 @@ object = { version = "0.38.1", default-features = false, features = [
 ] }
 os_info = "3.0.0"
 paste = "1.0.15"
-perf-event = "0.4.8"
+# 0.4.9 contains breaking changes.
+perf-event = "=0.4.8"
 perfetto-recorder = "0.3.0"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.5.1"
