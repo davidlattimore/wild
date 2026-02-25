@@ -6182,7 +6182,10 @@ impl std::fmt::Debug for FileLayoutState<'_> {
     }
 }
 
-fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex) -> SectionDebug {
+fn section_debug(
+    object: &crate::elf::File,
+    section_index: object::SectionIndex,
+) -> impl std::fmt::Display {
     let name = object
         .section(section_index)
         .and_then(|section| object.section_name(section))
@@ -6190,17 +6193,7 @@ fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex)
             |_| "??".to_owned(),
             |name| String::from_utf8_lossy(name).into_owned(),
         );
-    SectionDebug { name }
-}
-
-struct SectionDebug {
-    name: String,
-}
-
-impl Display for SectionDebug {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}`", self.name)
-    }
+    std::fmt::from_fn(move |f| write!(f, "`{name}`"))
 }
 
 impl<'data> DynamicSymbolDefinition<'data> {

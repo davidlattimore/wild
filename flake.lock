@@ -2,11 +2,11 @@
   "nodes": {
     "crane": {
       "locked": {
-        "lastModified": 1769287525,
-        "narHash": "sha256-gABuYA6BzoRMLuPaeO5p7SLrpd4qExgkwEmYaYQY4bM=",
+        "lastModified": 1771796463,
+        "narHash": "sha256-9bCDuUzpwJXcHMQYMS1yNuzYMmKO/CCwCexpjWOl62I=",
         "owner": "ipetkov",
         "repo": "crane",
-        "rev": "0314e365877a85c9e5758f9ea77a9972afbb4c21",
+        "rev": "3d3de3313e263e04894f284ac18177bd26169bad",
         "type": "github"
       },
       "original": {
@@ -17,11 +17,11 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1769170682,
-        "narHash": "sha256-nlVMTH3lSEtF+jygHr2bRqCxEcceCz3UzA9wsyO+RB4=",
-        "rev": "c5296fdd05cfa2c187990dd909864da9658df755",
+        "lastModified": 1771848320,
+        "narHash": "sha256-2j5NAPU1sTVgnrj1FLxkBABP63q2DiRU2eIfEG56kPk=",
+        "rev": "2fc6539b481e1d2569f25f8799236694180c0993",
         "type": "tarball",
-        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.05pre933481.c5296fdd05cf/nixexprs.tar.xz"
+        "url": "https://releases.nixos.org/nixos/unstable/nixos-26.05pre953160.2fc6539b481e/nixexprs.tar.xz"
       },
       "original": {
         "type": "tarball",

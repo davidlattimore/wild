@@ -176,7 +176,15 @@ pub(crate) fn create_groups<'data, O: ObjectFile<'data>>(
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
 
-    tracing::trace!("GROUPS:\n{}", GroupsDisplay(&symbol_db.groups));
+    tracing::trace!(
+        "GROUPS:\n{}",
+        std::fmt::from_fn(|f| {
+            for (i, group) in symbol_db.groups.iter().enumerate() {
+                writeln!(f, "{i}: {group}")?;
+            }
+            Ok(())
+        })
+    );
 }
 
 /// Decides after how many symbols, we should start a new group.
@@ -222,8 +230,6 @@ fn count_symbols<'data, O: ObjectFile<'data>>(
 
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()
 }
-
-struct GroupsDisplay<'a, 'data, O: ObjectFile<'data>>(&'a [Group<'data, O>]);
 
 impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
     pub(crate) fn symbol_name(
@@ -286,15 +292,6 @@ impl<'db, 'data, O: ObjectFile<'data>> SequencedInput<'db, 'data, O> {
         } else {
             false
         }
-    }
-}
-
-impl<'data, O: ObjectFile<'data>> Display for GroupsDisplay<'_, 'data, O> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, group) in self.0.iter().enumerate() {
-            writeln!(f, "{i}: {group}")?;
-        }
-        Ok(())
     }
 }
 
