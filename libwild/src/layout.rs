@@ -1169,6 +1169,9 @@ struct CommonGroupState<'data> {
 
     exception_frame_relocations: usize,
     exception_frame_count: usize,
+
+    /// Number of input `.debug_info` sections loaded. Used to compute `.gdb_index` size.
+    debug_info_section_count: usize,
 }
 
 impl CommonGroupState<'_> {
@@ -1179,6 +1182,7 @@ impl CommonGroupState<'_> {
             dynamic_symbol_definitions: Default::default(),
             exception_frame_count: 0,
             exception_frame_relocations: 0,
+            debug_info_section_count: 0,
         }
     }
 
@@ -2175,6 +2179,11 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
+    let total_debug_info_section_count: usize = group_states
+        .iter()
+        .map(|g| g.common.debug_info_section_count)
+        .sum();
+
     let prelude_group = &mut group_states[0];
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
@@ -2184,6 +2193,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         &resources.uses_tlsld,
         resources.symbol_db.args,
         resources.symbol_db.output_kind,
+        total_debug_info_section_count,
     );
 
     Ok(GcOutputs {
@@ -3046,6 +3056,34 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     }
 }
 
+/// Compute the `.gdb_index` section size based on the number of compilation units (CUs).
+///
+/// The `.gdb_index` v7 layout is:
+///   Header:        24 bytes (version + 5 area offsets)
+///   CU list:       cu_count * 16 bytes (u64 offset + u64 length per CU)
+///   TU list:       0 bytes (empty — type units not yet supported)
+///   Address area:  addr_count * 20 bytes (u64 low + u64 high + u32 cu_index)
+///   Symbol table:  symbol_slots * 8 bytes (hash table, kept empty for now)
+///   Constant pool: 0 bytes (empty)
+fn compute_gdb_index_size(cu_count: usize) -> u64 {
+    const HEADER_SIZE: u64 = 6 * 4; // 24 bytes
+    const CU_ENTRY_SIZE: u64 = 16;
+    const ADDR_ENTRY_SIZE: u64 = 20;
+    // Minimum symbol table slot count. Each slot is 8 bytes (2 × u32).
+    // We keep the symbol table empty (all zeros) for now, so the minimum suffices.
+    const MIN_SYMBOL_TABLE_SLOTS: u64 = 1024;
+
+    let cu_count = cu_count as u64;
+
+    // One address entry covering `.text` if there are any CUs, otherwise none.
+    let addr_count = if cu_count > 0 { 1u64 } else { 0 };
+
+    HEADER_SIZE
+        + cu_count * CU_ENTRY_SIZE
+        + addr_count * ADDR_ENTRY_SIZE
+        + MIN_SYMBOL_TABLE_SLOTS * 8
+}
+
 impl<'data> PreludeLayoutState<'data> {
     fn new(input_state: resolution::ResolvedPrelude<'data>) -> Self {
         Self {
@@ -3211,6 +3249,7 @@ impl<'data> PreludeLayoutState<'data> {
         uses_tlsld: &AtomicBool,
         args: &Args,
         output_kind: OutputKind,
+        total_debug_info_section_count: usize,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
@@ -3228,15 +3267,9 @@ impl<'data> PreludeLayoutState<'data> {
         }
 
         if args.gdb_index {
-            // Minimal `.gdb_index` (GDB index) support.
-            //
-            // We currently emit a v7 header + a single CU entry + a single address-range entry +
-            // an empty symbol table. This matches the section size produced by LLD for the
-            // small `hello.c` test in `test_gdb_index`.
-            //
-            // Full symbol/type indexing can be implemented later.
-            const MIN_GDB_INDEX_SIZE: u64 = 0x203c;
-            common.allocate(part_id::GDB_INDEX, MIN_GDB_INDEX_SIZE);
+            let gdb_index_size =
+                compute_gdb_index_size(total_debug_info_section_count);
+            common.allocate(part_id::GDB_INDEX, gdb_index_size);
         }
     }
 
@@ -4328,6 +4361,16 @@ impl<'data> ObjectLayoutState<'data> {
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
+
+        // Track .debug_info sections for .gdb_index CU list generation.
+        if self
+            .object
+            .section_name(header)
+            .is_ok_and(|name| name == b".debug_info")
+        {
+            common.debug_info_section_count += 1;
+        }
+
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())

@@ -3993,13 +3993,6 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         return Ok(());
     }
 
-    // Minimal v7 `.gdb_index` generator.
-    //
-    // This is intentionally conservative: it emits a correct header, a single CU
-    // entry describing the entire `.debug_info` section, a single address-range
-    // entry covering `.text`, and an empty symbol table. This makes the section
-    // non-empty and structurally valid, while keeping implementation complexity
-    // low.
     let allocated_len = table_writer.gdb_index.len();
     if allocated_len == 0 {
         return Ok(());
@@ -4007,29 +4000,72 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
 
     // LLD (and GNU ld) use `.gdb_index` version 7.
     const VERSION: u32 = 7;
-    const HEADER_SIZE: usize = 6 * 4;
+    const HEADER_SIZE: usize = 6 * 4; // 24 bytes
     const CU_ENTRY_SIZE: usize = 16; // (u64 cu_offset, u64 cu_length)
     const ADDR_ENTRY_SIZE: usize = 20; // (u64 low, u64 high, u32 cu_index)
 
-    // Leave the constant pool empty for now. The remaining bytes after the
-    // address area become an all-zero symbol table.
-    let cu_list_offset = HEADER_SIZE;
-    let cu_list_size = CU_ENTRY_SIZE;
-    let tu_list_offset = cu_list_offset + cu_list_size;
-    let address_area_offset = tu_list_offset;
-    let address_area_size = ADDR_ENTRY_SIZE;
-    let symbol_table_offset = address_area_offset + address_area_size;
+    // Collect per-CU entries by iterating all objects and finding their `.debug_info`
+    // contributions. Each input `.debug_info` section corresponds to one CU in the output.
+    let debug_info_section_id = layout
+        .output_sections
+        .custom_name_to_id(SectionName(b".debug_info"));
 
-    if allocated_len < symbol_table_offset {
-        bail!(".gdb_index allocation too small ({allocated_len} bytes)");
+    let debug_info_start: u64 = debug_info_section_id
+        .map(|id| layout.section_layouts.get(id).mem_offset)
+        .unwrap_or(0);
+
+    let mut cu_entries: Vec<(u64, u64)> = Vec::new(); // (offset_in_debug_info, length)
+
+    if let Some(di_section_id) = debug_info_section_id {
+        for group in &layout.group_layouts {
+            for file in &group.files {
+                if let FileLayout::Object(object) = file {
+                    for (slot, resolution) in object
+                        .sections
+                        .iter()
+                        .zip(object.section_resolutions.iter())
+                    {
+                        if let SectionSlot::LoadedDebugInfo(section) = slot {
+                            if section.output_section_id() == di_section_id {
+                                if let Some(address) = resolution.address() {
+                                    let cu_offset = address - debug_info_start;
+                                    let cu_length = section.capacity();
+                                    cu_entries.push((cu_offset, cu_length));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
+    let cu_count = cu_entries.len();
+    // One address entry for `.text` if there are CUs, otherwise none.
+    let addr_count = if cu_count > 0 { 1 } else { 0 };
+
+    let cu_list_offset = HEADER_SIZE;
+    let cu_list_size = cu_count * CU_ENTRY_SIZE;
+    let tu_list_offset = cu_list_offset + cu_list_size;
+    // TU list is empty.
+    let address_area_offset = tu_list_offset;
+    let address_area_size = addr_count * ADDR_ENTRY_SIZE;
+    let symbol_table_offset = address_area_offset + address_area_size;
+    // All remaining bytes after the symbol table offset form the (empty) symbol hash table.
+    // The constant pool starts right after the allocated buffer (i.e. empty).
     let constant_pool_offset = allocated_len;
 
-    let buf = table_writer.take_gdb_index_data(allocated_len)?;
-    buf.fill(0);
+    if allocated_len < symbol_table_offset {
+        bail!(
+            ".gdb_index allocation too small ({allocated_len} bytes, need at least \
+             {symbol_table_offset} for {cu_count} CU(s))"
+        );
+    }
 
-    // Header.
+    let buf = table_writer.take_gdb_index_data(allocated_len)?;
+    buf.fill(0); // Zero-fill: empty symbol table = all-zero hash slots.
+
+    // -- Header (version + 5 area offsets) --
     buf[0x00..0x04].copy_from_slice(&VERSION.to_le_bytes());
     buf[0x04..0x08].copy_from_slice(&(cu_list_offset as u32).to_le_bytes());
     buf[0x08..0x0c].copy_from_slice(&(tu_list_offset as u32).to_le_bytes());
@@ -4037,23 +4073,25 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     buf[0x10..0x14].copy_from_slice(&(symbol_table_offset as u32).to_le_bytes());
     buf[0x14..0x18].copy_from_slice(&(constant_pool_offset as u32).to_le_bytes());
 
-    // CU list: a single entry describing the entire output `.debug_info`.
-    let debug_info_size: u64 = layout
-        .output_sections
-        .custom_name_to_id(SectionName(b".debug_info"))
-        .map(|id| layout.section_layouts.get(id).file_size as u64)
-        .unwrap_or(0);
-    buf[cu_list_offset..cu_list_offset + 8].copy_from_slice(&0u64.to_le_bytes());
-    buf[cu_list_offset + 8..cu_list_offset + 16].copy_from_slice(&debug_info_size.to_le_bytes());
+    // -- CU list: one entry per input `.debug_info` section --
+    for (i, &(cu_offset, cu_length)) in cu_entries.iter().enumerate() {
+        let off = cu_list_offset + i * CU_ENTRY_SIZE;
+        buf[off..off + 8].copy_from_slice(&cu_offset.to_le_bytes());
+        buf[off + 8..off + 16].copy_from_slice(&cu_length.to_le_bytes());
+    }
 
-    // Address area: a single range for `.text`, pointing at CU 0.
-    let text_layout = layout.section_layouts.get(output_section_id::TEXT);
-    let text_low: u64 = text_layout.mem_offset;
-    let text_high: u64 = text_layout.mem_offset + text_layout.mem_size;
-    let addr_off = address_area_offset;
-    buf[addr_off..addr_off + 8].copy_from_slice(&text_low.to_le_bytes());
-    buf[addr_off + 8..addr_off + 16].copy_from_slice(&text_high.to_le_bytes());
-    buf[addr_off + 16..addr_off + 20].copy_from_slice(&0u32.to_le_bytes());
+    // -- Address area: one range covering `.text`, pointing at CU 0 --
+    if addr_count > 0 {
+        let text_layout = layout.section_layouts.get(output_section_id::TEXT);
+        let text_low: u64 = text_layout.mem_offset;
+        let text_high: u64 = text_layout.mem_offset + text_layout.mem_size;
+        let off = address_area_offset;
+        buf[off..off + 8].copy_from_slice(&text_low.to_le_bytes());
+        buf[off + 8..off + 16].copy_from_slice(&text_high.to_le_bytes());
+        buf[off + 16..off + 20].copy_from_slice(&0u32.to_le_bytes()); // cu_index = 0
+    }
+
+    // Symbol table and constant pool are left as all-zero (empty).
 
     Ok(())
 }
