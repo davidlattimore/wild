@@ -230,7 +230,7 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
                 group.dynstr_start_offset,
                 group.strtab_start_offset,
                 &mut buffers,
-                group.eh_frame_start_address,
+                group.format_specific.eh_frame_start_address,
             );
 
             for file in &group.files {
@@ -1299,7 +1299,7 @@ fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
             SectionSlot::LoadedDebugInfo(sec) => {
                 write_debug_section::<P>(object, layout, sec, buffers)?;
             }
-            SectionSlot::EhFrameData(section_index) => {
+            SectionSlot::FrameData(section_index) => {
                 write_eh_frame_data::<P>(object, *section_index, layout, table_writer, trace)?;
             }
             _ => (),
@@ -1601,7 +1601,7 @@ fn write_symbols(
                     match &object.sections[section_index.0] {
                         SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
-                        SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
+                        SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!(
                             "Tried to copy a symbol in a section we didn't load. {}",
                             layout.symbol_debug(symbol_id)

@@ -29,6 +29,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform::DynamicTagValues as _;
+use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
 use crate::platform::SectionFlags as _;
@@ -60,7 +61,6 @@ use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
-use std::num::NonZeroU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -587,8 +587,8 @@ pub(crate) enum SectionSlot {
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
 
-    /// The section contains .eh_frame data.
-    EhFrameData(object::SectionIndex),
+    /// The section contains frame data, e.g. .eh_frame or equivalent.
+    FrameData(object::SectionIndex),
 
     /// The section is a string-merge section.
     MergeStrings(StringMergeSectionSlot),
@@ -627,10 +627,6 @@ impl UnloadedSection {
         }
     }
 }
-
-/// An index into the exception frames for an object.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct FrameIndex(NonZeroU32);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedPrelude<'data> {
@@ -1229,7 +1225,7 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
         }
         SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
         SectionRuleOutcome::EhFrame => {
-            return Ok(SectionSlot::EhFrameData(input_section_index));
+            return Ok(SectionSlot::FrameData(input_section_index));
         }
         SectionRuleOutcome::NoteGnuProperty => {
             return Ok(SectionSlot::NoteGnuProperty(input_section_index));
@@ -1464,11 +1460,11 @@ impl SectionSlot {
             SectionSlot::Unloaded(section) => section.part_id = part_id,
             SectionSlot::MustLoad(section) => section.part_id = part_id,
             SectionSlot::Loaded(section) => section.part_id = part_id,
-            SectionSlot::EhFrameData(_) => todo!(),
             SectionSlot::MergeStrings(section) => section.part_id = part_id,
             SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
             SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
             SectionSlot::Discard
+            | SectionSlot::FrameData(_)
             | SectionSlot::NoteGnuProperty(_)
             | SectionSlot::RiscvVAttributes(_) => {}
         }
@@ -1479,16 +1475,6 @@ impl SectionSlot {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => Some(unloaded),
             _ => None,
         }
-    }
-}
-
-impl FrameIndex {
-    pub(crate) fn from_usize(raw: usize) -> Self {
-        Self(NonZeroU32::new(raw as u32 + 1).unwrap())
-    }
-
-    pub(crate) fn as_usize(self) -> usize {
-        self.0.get() as usize - 1
     }
 }
 

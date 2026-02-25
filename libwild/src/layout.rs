@@ -15,7 +15,6 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::EhFrameHdrEntry;
 use crate::elf::ElfLayoutProperties;
 use crate::elf::File;
 use crate::elf::RawSymbolName;
@@ -65,7 +64,6 @@ use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution;
-use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ResolvedLinkerScript;
@@ -133,7 +131,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
-use zerocopy::FromBytes;
 
 pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     symbol_db: SymbolDb<'data, crate::elf::File<'data>>,
@@ -1156,7 +1153,7 @@ impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
 }
 
 #[derive(Debug)]
-struct CommonGroupState<'data> {
+pub(crate) struct CommonGroupState<'data> {
     mem_sizes: OutputSectionPartMap<u64>,
 
     section_attributes: OutputSectionMap<Option<SectionAttributes>>,
@@ -1167,8 +1164,7 @@ struct CommonGroupState<'data> {
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 
-    exception_frame_relocations: usize,
-    exception_frame_count: usize,
+    pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::CommonGroupStateExt,
 }
 
 impl CommonGroupState<'_> {
@@ -1177,8 +1173,7 @@ impl CommonGroupState<'_> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
-            exception_frame_count: 0,
-            exception_frame_relocations: 0,
+            format_specific: Default::default(),
         }
     }
 
@@ -1224,7 +1219,7 @@ impl CommonGroupState<'_> {
         strtab_offset_start
     }
 
-    fn allocate(&mut self, part_id: PartId, size: u64) {
+    pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
         self.mem_sizes.increment(part_id, size);
     }
 
@@ -1256,52 +1251,27 @@ impl CommonGroupState<'_> {
     }
 }
 
-struct ObjectLayoutState<'data> {
+pub(crate) struct ObjectLayoutState<'data> {
     input: InputRef<'data>,
     file_id: FileId,
-    symbol_id_range: SymbolIdRange,
-    object: &'data File<'data>,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) object: &'data File<'data>,
 
     /// Info about each of our sections. Indexed the same as the sections in the input object.
-    sections: Vec<SectionSlot>,
+    pub(crate) sections: Vec<SectionSlot>,
 
     /// Mapping from sections to their corresponding relocation section.
     relocations: object::read::elf::RelocationSections,
 
-    cies: SmallVec<[CieAtOffset<'data>; 2]>,
-
-    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
-    eh_frame_size: u64,
-
-    format_specific_layout_state: <File<'data> as ObjectFile<'data>>::FileLayoutState,
-
-    /// Indexed by `FrameIndex`.
-    exception_frames: ExceptionFrames<'data>,
+    pub(crate) format_specific_layout_state: <File<'data> as ObjectFile<'data>>::FileLayoutState,
 
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
     section_relax_deltas: RelaxDeltaMap,
 }
 
-enum ExceptionFrames<'data> {
-    Rela(Vec<ExceptionFrame<'data, Rela>>),
-    Crel(Vec<ExceptionFrame<'data, Crel>>),
-}
-
-#[derive(Default)]
-struct ExceptionFrame<'data, R: Relocation> {
-    /// The relocations that need to be processed if we load this frame.
-    relocations: R::Sequence<'data>,
-
-    /// Number of bytes required to store this frame.
-    frame_size: u32,
-
-    /// The index of the previous frame that is for the same section.
-    previous_frame_for_section: Option<FrameIndex>,
-}
-
 #[derive(Debug, Default)]
-struct LocalWorkQueue {
+pub(crate) struct LocalWorkQueue {
     /// The index of the worker that owns this queue.
     index: usize,
 
@@ -1362,17 +1332,17 @@ pub(crate) struct GroupLayout<'data> {
     /// The offset in .strtab at which we'll start writing.
     pub(crate) strtab_start_offset: u32,
 
-    pub(crate) eh_frame_start_address: u64,
-
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
+
+    pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::GroupLayoutExt,
 }
 
 #[derive(Debug)]
-struct GroupState<'data> {
+pub(crate) struct GroupState<'data> {
     queue: LocalWorkQueue,
     files: Vec<FileLayoutState<'data>>,
-    common: CommonGroupState<'data>,
+    pub(crate) common: CommonGroupState<'data>,
     num_symbols: usize,
 }
 
@@ -1390,8 +1360,8 @@ pub(crate) struct OutputRecordLayout {
     pub(crate) mem_offset: u64,
 }
 
-struct GraphResources<'data, 'scope> {
-    symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
+pub(crate) struct GraphResources<'data, 'scope> {
+    pub(crate) symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
 
     output_sections: &'scope OutputSections<'data>,
 
@@ -2163,15 +2133,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
-    tracing::debug!(target: "metrics", total = group_states
-        .iter()
-        .map(|g| g.common.exception_frame_count)
-        .sum::<usize>(), "exception frames");
-
-    tracing::debug!(target: "metrics", section = "`.eh_frame`", relocations = group_states
-        .iter()
-        .map(|g| g.common.exception_frame_relocations)
-        .sum::<usize>(), "resolved relocations");
+    <File<'data> as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2293,7 +2255,8 @@ impl<'data> GroupState<'data> {
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<GroupLayout<'data>> {
-        let eh_frame_start_address = *memory_offsets.get(part_id::EH_FRAME);
+        let format_specific =
+            <crate::elf::File<'data> as ObjectFile<'data>>::finalise_group_layout(memory_offsets);
         let files = self
             .files
             .into_iter()
@@ -2316,7 +2279,7 @@ impl<'data> GroupState<'data> {
             dynstr_start_offset,
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
-            eh_frame_start_address,
+            format_specific,
         })
     }
 }
@@ -2832,7 +2795,7 @@ impl Section {
 }
 
 #[inline(always)]
-fn process_relocation<
+pub(crate) fn process_relocation<
     'data,
     'scope,
     P: Platform<'data, File = crate::elf::File<'data>>,
@@ -3223,9 +3186,7 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        if args.should_write_eh_frame_hdr {
-            common.allocate(part_id::EH_FRAME_HDR, size_of::<elf::EhFrameHdr>() as u64);
-        }
+        <File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
     }
 
     fn finalise_sizes(
@@ -3932,13 +3893,9 @@ fn new_object_layout_state<'data>(
         symbol_id_range: input_state.common.symbol_id_range,
         input: input_state.common.input,
         object: input_state.common.object,
-        eh_frame_section: None,
-        eh_frame_size: 0,
         sections: input_state.sections,
         relocations: input_state.relocations,
-        cies: Default::default(),
         format_specific_layout_state: Default::default(),
-        exception_frames: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
     })
 }
@@ -3966,7 +3923,7 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        let mut eh_frame_section = None;
+        let mut frame_section_index = None;
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
 
@@ -4002,8 +3959,8 @@ impl<'data> ObjectLayoutState<'data> {
                             });
                     }
                 }
-                SectionSlot::EhFrameData(index) => {
-                    eh_frame_section = Some(*index);
+                SectionSlot::FrameData(index) => {
+                    frame_section_index = Some(*index);
                 }
                 SectionSlot::NoteGnuProperty(index) => {
                     note_gnu_property_section = Some(*index);
@@ -4015,18 +3972,15 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        if let Some(eh_frame_section_index) = eh_frame_section {
-            process_eh_frame_data::<P>(
+        if let Some(frame_data_section_index) = frame_section_index {
+            <P::File as ObjectFile<'data>>::load_exception_frame_data::<P>(
                 self,
                 common,
-                self.symbol_id_range(),
-                eh_frame_section_index,
+                frame_data_section_index,
                 resources,
                 queue,
                 scope,
             )?;
-            let eh_frame_section = self.object.section(eh_frame_section_index)?;
-            self.eh_frame_section = Some(eh_frame_section);
         }
 
         if let Some(section_index) = note_gnu_property_section {
@@ -4094,7 +4048,7 @@ impl<'data> ObjectLayoutState<'data> {
                 );
             }
             SectionSlot::Loaded(_)
-            | SectionSlot::EhFrameData(..)
+            | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
             | SectionSlot::RiscvVAttributes(..) => {}
@@ -4153,35 +4107,9 @@ impl<'data> ObjectLayoutState<'data> {
         let section_id = section.output_section_id();
 
         if section.size > 0 {
-            let sizes = match &self.exception_frames {
-                ExceptionFrames::Rela(exception_frames) => self
-                    .process_section_exception_frames::<P, Rela>(
-                        unloaded.last_frame_index,
-                        common,
-                        resources,
-                        queue,
-                        scope,
-                        exception_frames,
-                    )?,
-                ExceptionFrames::Crel(exception_frames) => self
-                    .process_section_exception_frames::<P, Crel>(
-                        unloaded.last_frame_index,
-                        common,
-                        resources,
-                        queue,
-                        scope,
-                        exception_frames,
-                    )?,
-            };
-
-            self.eh_frame_size += sizes.eh_frame_size;
-
-            if resources.symbol_db.args.should_write_eh_frame_hdr {
-                common.allocate(
-                    part_id::EH_FRAME_HDR,
-                    size_of::<EhFrameHdrEntry>() as u64 * sizes.num_frames,
-                );
-            }
+            <File<'data> as ObjectFile<'data>>::non_empty_section_loaded::<P>(
+                self, common, queue, unloaded, resources, scope,
+            )?;
         } else if section_id.marks_zero_sized_inputs_as_content() {
             resources.keep_section(section_id);
         }
@@ -4229,56 +4157,6 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         Ok(())
-    }
-
-    /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<
-        'scope,
-        P: Platform<'data, File = crate::elf::File<'data>>,
-        R: Relocation,
-    >(
-        &self,
-        frame_index: Option<FrameIndex>,
-        common: &mut CommonGroupState<'data>,
-        resources: &'scope GraphResources<'data, '_>,
-        queue: &mut LocalWorkQueue,
-        scope: &Scope<'scope>,
-        exception_frames: &[ExceptionFrame<'data, R>],
-    ) -> Result<EhFrameSizes> {
-        let mut num_frames = 0;
-        let mut eh_frame_size = 0;
-        let mut next_frame_index = frame_index;
-        while let Some(frame_index) = next_frame_index {
-            let frame_data = &exception_frames[frame_index.as_usize()];
-            next_frame_index = frame_data.previous_frame_for_section;
-
-            eh_frame_size += u64::from(frame_data.frame_size);
-
-            num_frames += 1;
-
-            // Request loading of any sections/symbols referenced by the FDEs for our
-            // section.
-            if let Some(eh_frame_section) = self.eh_frame_section {
-                for rel in frame_data.relocations.rel_iter() {
-                    process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
-                        self,
-                        common,
-                        &rel,
-                        eh_frame_section,
-                        resources,
-                        queue,
-                        false,
-                        scope,
-                    )?;
-                }
-                common.exception_frame_relocations += frame_data.relocations.num_relocations();
-            }
-        }
-
-        Ok(EhFrameSizes {
-            num_frames,
-            eh_frame_size,
-        })
     }
 
     fn load_debug_section<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
@@ -4378,12 +4256,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
-        // that we "won".
-        for cie in &self.cies {
-            self.eh_frame_size += cie.cie.bytes.len() as u64;
-        }
-        common.allocate(part_id::EH_FRAME, self.eh_frame_size);
+        <File<'data> as ObjectFile<'data>>::finalise_object_sizes(self, common);
     }
 
     fn allocate_symtab_space(
@@ -4468,11 +4341,9 @@ impl<'data> ObjectLayoutState<'data> {
                     *memory_offsets.get_mut(sec.part_id) += sec.capacity();
                     SectionResolution { address }
                 }
-                SectionSlot::EhFrameData(..) => {
-                    // References to symbols defined in .eh_frame are a bit weird, since it's a
-                    // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
-                    // order to find the start and end of the whole .eh_frame section.
-                    let address = *memory_offsets.get(part_id::EH_FRAME);
+                SectionSlot::FrameData(..) => {
+                    let address =
+                        <File<'data> as ObjectFile<'data>>::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
                 _ => SectionResolution::none(),
@@ -4497,7 +4368,7 @@ impl<'data> ObjectLayoutState<'data> {
             )?;
         }
 
-        memory_offsets.increment(part_id::EH_FRAME, self.eh_frame_size);
+        <File<'data> as ObjectFile<'data>>::finalise_object_layout(&self, memory_offsets);
 
         Ok(ObjectLayout {
             input: self.input,
@@ -4683,7 +4554,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -4778,198 +4649,6 @@ fn can_export_symbol(
     }
 
     true
-}
-
-fn process_eh_frame_data<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
-    object: &mut ObjectLayoutState<'data>,
-    common: &mut CommonGroupState<'data>,
-    file_symbol_id_range: SymbolIdRange,
-    eh_frame_section_index: object::SectionIndex,
-    resources: &'scope GraphResources<'data, '_>,
-    queue: &mut LocalWorkQueue,
-    scope: &Scope<'scope>,
-) -> Result {
-    let eh_frame_section = object.object.section(eh_frame_section_index)?;
-    let data = object.object.raw_section_data(eh_frame_section)?;
-    let exception_frames = match object.relocations(eh_frame_section_index)? {
-        RelocationList::Rela(relocations) => {
-            ExceptionFrames::Rela(process_eh_frame_relocations::<P, Rela>(
-                object,
-                common,
-                file_symbol_id_range,
-                resources,
-                queue,
-                eh_frame_section,
-                data,
-                &relocations,
-                scope,
-            )?)
-        }
-        RelocationList::Crel(crel_iterator) => {
-            ExceptionFrames::Crel(process_eh_frame_relocations::<P, Crel>(
-                object,
-                common,
-                file_symbol_id_range,
-                resources,
-                queue,
-                eh_frame_section,
-                data,
-                &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
-                scope,
-            )?)
-        }
-    };
-
-    object.exception_frames = exception_frames;
-
-    Ok(())
-}
-
-fn process_eh_frame_relocations<
-    'data,
-    'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
-    R: Relocation,
->(
-    object: &mut ObjectLayoutState<'data>,
-    common: &mut CommonGroupState<'data>,
-    file_symbol_id_range: SymbolIdRange,
-    resources: &'scope GraphResources<'data, '_>,
-    queue: &mut LocalWorkQueue,
-    eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
-    data: &'data [u8],
-    relocations: &R::Sequence<'data>,
-    scope: &Scope<'scope>,
-) -> Result<Vec<ExceptionFrame<'data, R>>> {
-    const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-
-    let mut rel_iter = relocations.rel_iter().enumerate().peekable();
-    let mut offset = 0;
-    let mut exception_frames = Vec::new();
-
-    while offset + PREFIX_LEN <= data.len() {
-        // Although the section data will be aligned within the object file, there's
-        // no guarantee that the object is aligned within the archive to any more
-        // than 2 bytes, so we can't rely on alignment here. Archives are annoying!
-        // See https://www.airs.com/blog/archives/170
-        let prefix =
-            elf::EhFrameEntryPrefix::read_from_bytes(&data[offset..offset + PREFIX_LEN]).unwrap();
-        let size = size_of_val(&prefix.length) + prefix.length as usize;
-        let next_offset = offset + size;
-
-        if next_offset > data.len() {
-            bail!("Invalid .eh_frame data");
-        }
-
-        if prefix.cie_id == 0 {
-            // This is a CIE
-            let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
-            // When deduplicating CIEs, we take into consideration the bytes of the CIE and all the
-            // symbols it references. If however, it references something other than a symbol, then,
-            // because we're not taking that into consideration, we disallow deduplication.
-            let mut eligible_for_deduplication = true;
-            while let Some((_, rel)) = rel_iter.peek() {
-                let rel_offset = rel.offset();
-                if rel_offset >= next_offset as u64 {
-                    // This relocation belongs to the next entry.
-                    break;
-                }
-
-                // We currently always load all CIEs, so any relocations found in CIEs always need
-                // to be processed.
-                process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
-                    object,
-                    common,
-                    rel,
-                    eh_frame_section,
-                    resources,
-                    queue,
-                    false,
-                    scope,
-                )?;
-
-                if let Some(local_sym_index) = rel.symbol() {
-                    let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
-                    let definition = resources.symbol_db.definition(local_symbol_id);
-                    referenced_symbols.push(definition);
-                } else {
-                    eligible_for_deduplication = false;
-                }
-                rel_iter.next();
-            }
-
-            object.cies.push(CieAtOffset {
-                offset: offset as u32,
-                cie: Cie {
-                    bytes: &data[offset..next_offset],
-                    eligible_for_deduplication,
-                    referenced_symbols,
-                },
-            });
-        } else {
-            // This is an FDE
-            let mut section_index = None;
-            let rel_start_index = rel_iter.peek().map_or(0, |(i, _)| *i);
-            let mut rel_end_index = 0;
-
-            while let Some((rel_index, rel)) = rel_iter.peek() {
-                let rel_offset = rel.offset();
-                if rel_offset < next_offset as u64 {
-                    let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
-
-                    if is_pc_begin && let Some(index) = rel.symbol() {
-                        let elf_symbol = object.object.symbol(index)?;
-                        section_index = object.object.symbol_section(elf_symbol, index)?;
-                    }
-                    rel_end_index = rel_index + 1;
-                    rel_iter.next();
-                } else {
-                    break;
-                }
-            }
-
-            if let Some(section_index) = section_index
-                && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
-            {
-                let frame_index = FrameIndex::from_usize(exception_frames.len());
-
-                // Update our unloaded section to point to our new frame. Our frame will then in
-                // turn point to whatever the section pointed to before.
-                let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
-
-                exception_frames.push(ExceptionFrame {
-                    relocations: relocations.subsequence(rel_start_index..rel_end_index),
-                    frame_size: size as u32,
-                    previous_frame_for_section,
-                });
-            }
-        }
-        offset = next_offset;
-    }
-
-    common.exception_frame_count += object.exception_frames.len();
-
-    // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
-    // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
-    object.eh_frame_size += (data.len() - offset) as u64;
-
-    Ok(exception_frames)
-}
-
-/// A "common information entry". This is part of the .eh_frame data in ELF.
-#[derive(PartialEq, Eq, Hash)]
-struct Cie<'data> {
-    bytes: &'data [u8],
-    eligible_for_deduplication: bool,
-    referenced_symbols: SmallVec<[SymbolId; 1]>,
-}
-
-struct CieAtOffset<'data> {
-    // TODO: Use or remove. I think we need this when we implement deduplication of CIEs.
-    /// Offset within .eh_frame
-    #[allow(dead_code)]
-    offset: u32,
-    cie: Cie<'data>,
 }
 
 struct ResolutionWriter<'writer, 'out> {
@@ -5212,7 +4891,7 @@ impl SymbolOutputInfos {
 /// Compute the output address of every loaded input section and every symbol in a single parallel
 /// pass over groups.
 fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
-    group_states: &[GroupState],
+    group_states: &[GroupState<'data>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, O>,
 ) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
@@ -5250,7 +4929,11 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
                                 _ => {}
                             }
                         }
-                        offsets.increment(part_id::EH_FRAME, obj.eh_frame_size);
+
+                        <File<'data> as ObjectFile<'data>>::compute_object_addresses(
+                            obj,
+                            &mut offsets,
+                        );
 
                         // While we have the section addresses, also resolve symbol
                         // output addresses for this file's canonical definitions.
@@ -6431,26 +6114,6 @@ impl OutputRecordLayout {
         self.file_size += other.file_size;
         if other.mem_size > 0 {
             self.alignment = self.alignment.max(other.alignment);
-        }
-    }
-}
-
-struct EhFrameSizes {
-    num_frames: u64,
-    eh_frame_size: u64,
-}
-
-impl<'data> Default for ExceptionFrames<'data> {
-    fn default() -> Self {
-        ExceptionFrames::Rela(Vec::new())
-    }
-}
-
-impl<'data> ExceptionFrames<'data> {
-    pub(crate) fn len(&self) -> usize {
-        match self {
-            ExceptionFrames::Rela(f) => f.len(),
-            ExceptionFrames::Crel(f) => f.len(),
         }
     }
 }
