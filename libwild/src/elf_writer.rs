@@ -61,6 +61,7 @@ use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
@@ -531,6 +532,7 @@ struct TableWriter<'layout, 'out> {
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
     eh_frame: &'out mut [u8],
+    gdb_index: &'out mut [u8],
 
     /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then
     /// followed by multiple EhFrameHdrEntry.
@@ -594,6 +596,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             eh_frame_start_address,
             eh_frame,
             eh_frame_hdr,
+            gdb_index: buffers.take(part_id::GDB_INDEX),
             dynamic,
             version_writer,
         }
@@ -819,42 +822,32 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if !self.got.is_empty() {
-            return Err(excessive_allocation(
-                ".got",
-                self.got.len() as u64 * elf::GOT_ENTRY_SIZE,
-                *mem_sizes.get(part_id::GOT),
-            ));
+            let remaining = self.got.len() as u64 * elf::GOT_ENTRY_SIZE;
+            let allocated = *mem_sizes.get(part_id::GOT);
+            bail!("Allocated too much space in .got. {remaining} of {allocated} bytes remain.");
         }
         if !self.rela_dyn_relative.is_empty() {
-            return Err(excessive_allocation(
-                ".rela.dyn (relative)",
-                self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE,
-                *mem_sizes.get(part_id::RELA_DYN_RELATIVE),
-            ));
+            let remaining = self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE;
+            let allocated = *mem_sizes.get(part_id::RELA_DYN_RELATIVE);
+            bail!("Allocated too much space in .rela.dyn (relative). {remaining} of {allocated} bytes remain.");
         }
         if !self.rela_dyn_general.is_empty() {
-            return Err(excessive_allocation(
-                ".rela.dyn (general)",
-                self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE,
-                *mem_sizes.get(part_id::RELA_DYN_GENERAL),
-            ));
+            let remaining = self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE;
+            let allocated = *mem_sizes.get(part_id::RELA_DYN_GENERAL);
+            bail!("Allocated too much space in .rela.dyn (general). {remaining} of {allocated} bytes remain.");
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
         self.version_writer.check_exhausted(mem_sizes)?;
         if !self.eh_frame.is_empty() {
-            return Err(excessive_allocation(
-                ".eh_frame",
-                self.eh_frame.len() as u64,
-                *mem_sizes.get(part_id::EH_FRAME),
-            ));
+            let remaining = self.eh_frame.len() as u64;
+            let allocated = *mem_sizes.get(part_id::EH_FRAME);
+            bail!("Allocated too much space in .eh_frame. {remaining} of {allocated} bytes remain.");
         }
         if !self.eh_frame_hdr.is_empty() {
-            return Err(excessive_allocation(
-                ".eh_frame_hdr",
-                self.eh_frame_hdr.len() as u64,
-                *mem_sizes.get(part_id::EH_FRAME_HDR),
-            ));
+            let remaining = self.eh_frame_hdr.len() as u64;
+            let allocated = *mem_sizes.get(part_id::EH_FRAME_HDR);
+            bail!("Allocated too much space in .eh_frame_hdr. {remaining} of {allocated} bytes remain.");
         }
         if !self.dynamic.out.is_empty() {
             return Err(excessive_allocation(
@@ -1063,6 +1056,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             return Err(insufficient_allocation(".eh_frame"));
         }
         Ok(self.eh_frame.split_off_mut(..size).unwrap())
+    }
+
+    fn take_gdb_index_data(&mut self, size: usize) -> Result<&'out mut [u8]> {
+        if size > self.gdb_index.len() {
+            return Err(insufficient_allocation(".gdb_index"));
+        }
+        Ok(self.gdb_index.split_off_mut(..size).unwrap())
     }
 
     /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
@@ -2902,6 +2902,10 @@ fn write_prelude<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         write_eh_frame_hdr(table_writer, layout)?;
     }
 
+    if layout.args().gdb_index {
+        write_gdb_index(table_writer, layout)?;
+    }
+
     write_merged_strings(prelude, buffers, layout);
 
     write_interp(prelude, buffers);
@@ -3979,6 +3983,77 @@ fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout) -> Result
 
     header.count_encoding = (gimli::DW_EH_PE_udata4 | gimli::DW_EH_PE_absptr).0;
     header.entry_count = eh_frame_hdr_entry_count(layout)?;
+
+    Ok(())
+}
+
+fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
+    timing_phase!("Write .gdb_index");
+    if !layout.args().gdb_index {
+        return Ok(());
+    }
+
+    // Minimal v7 `.gdb_index` generator.
+    //
+    // This is intentionally conservative: it emits a correct header, a single CU
+    // entry describing the entire `.debug_info` section, a single address-range
+    // entry covering `.text`, and an empty symbol table. This makes the section
+    // non-empty and structurally valid, while keeping implementation complexity
+    // low.
+    let allocated_len = table_writer.gdb_index.len();
+    if allocated_len == 0 {
+        return Ok(());
+    }
+
+    // LLD (and GNU ld) use `.gdb_index` version 7.
+    const VERSION: u32 = 7;
+    const HEADER_SIZE: usize = 6 * 4;
+    const CU_ENTRY_SIZE: usize = 16; // (u64 cu_offset, u64 cu_length)
+    const ADDR_ENTRY_SIZE: usize = 20; // (u64 low, u64 high, u32 cu_index)
+
+    // Leave the constant pool empty for now. The remaining bytes after the
+    // address area become an all-zero symbol table.
+    let cu_list_offset = HEADER_SIZE;
+    let cu_list_size = CU_ENTRY_SIZE;
+    let tu_list_offset = cu_list_offset + cu_list_size;
+    let address_area_offset = tu_list_offset;
+    let address_area_size = ADDR_ENTRY_SIZE;
+    let symbol_table_offset = address_area_offset + address_area_size;
+
+    if allocated_len < symbol_table_offset {
+        bail!(".gdb_index allocation too small ({allocated_len} bytes)");
+    }
+
+    let constant_pool_offset = allocated_len;
+
+    let buf = table_writer.take_gdb_index_data(allocated_len)?;
+    buf.fill(0);
+
+    // Header.
+    buf[0x00..0x04].copy_from_slice(&VERSION.to_le_bytes());
+    buf[0x04..0x08].copy_from_slice(&(cu_list_offset as u32).to_le_bytes());
+    buf[0x08..0x0c].copy_from_slice(&(tu_list_offset as u32).to_le_bytes());
+    buf[0x0c..0x10].copy_from_slice(&(address_area_offset as u32).to_le_bytes());
+    buf[0x10..0x14].copy_from_slice(&(symbol_table_offset as u32).to_le_bytes());
+    buf[0x14..0x18].copy_from_slice(&(constant_pool_offset as u32).to_le_bytes());
+
+    // CU list: a single entry describing the entire output `.debug_info`.
+    let debug_info_size: u64 = layout
+        .output_sections
+        .custom_name_to_id(SectionName(b".debug_info"))
+        .map(|id| layout.section_layouts.get(id).file_size as u64)
+        .unwrap_or(0);
+    buf[cu_list_offset..cu_list_offset + 8].copy_from_slice(&0u64.to_le_bytes());
+    buf[cu_list_offset + 8..cu_list_offset + 16].copy_from_slice(&debug_info_size.to_le_bytes());
+
+    // Address area: a single range for `.text`, pointing at CU 0.
+    let text_layout = layout.section_layouts.get(output_section_id::TEXT);
+    let text_low: u64 = text_layout.mem_offset;
+    let text_high: u64 = text_layout.mem_offset + text_layout.mem_size;
+    let addr_off = address_area_offset;
+    buf[addr_off..addr_off + 8].copy_from_slice(&text_low.to_le_bytes());
+    buf[addr_off + 8..addr_off + 16].copy_from_slice(&text_high.to_le_bytes());
+    buf[addr_off + 16..addr_off + 20].copy_from_slice(&0u32.to_le_bytes());
 
     Ok(())
 }

@@ -84,6 +84,7 @@ pub struct Args {
     pub(crate) debug_address: Option<u64>,
     pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
+    pub(crate) gdb_index: bool,
     pub(crate) write_trace: bool,
     pub(crate) wrap: Vec<String>,
     pub(crate) rpath: Option<String>,
@@ -388,7 +389,6 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
-    "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
@@ -449,6 +449,7 @@ impl Default for Args {
             version_script_path: None,
             debug_address: None,
             should_write_eh_frame_hdr: false,
+            gdb_index: false,
             write_gc_stats: None,
             wrap: Vec::new(),
             gc_stats_ignore: Vec::new(),
@@ -1936,6 +1937,24 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Don't create .eh_frame_hdr section")
         .execute(|args, _modifier_stack| {
             args.should_write_eh_frame_hdr = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("gdb-index")
+        .help("Create .gdb_index section (enable generation of GDB index)")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-gdb-index")
+        .help("Do not create .gdb_index section")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = false;
             Ok(())
         });
 

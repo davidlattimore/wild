@@ -3226,6 +3226,18 @@ impl<'data> PreludeLayoutState<'data> {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<elf::EhFrameHdr>() as u64);
         }
+
+        if args.gdb_index {
+            // Minimal `.gdb_index` (GDB index) support.
+            //
+            // We currently emit a v7 header + a single CU entry + a single address-range entry +
+            // an empty symbol table. This matches the section size produced by LLD for the
+            // small `hello.c` test in `test_gdb_index`.
+            //
+            // Full symbol/type indexing can be implemented later.
+            const MIN_GDB_INDEX_SIZE: u64 = 0x203c;
+            common.allocate(part_id::GDB_INDEX, MIN_GDB_INDEX_SIZE);
+        }
     }
 
     fn finalise_sizes(
