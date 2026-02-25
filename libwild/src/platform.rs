@@ -20,6 +20,7 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use std::borrow::Cow;
 use std::ops::Range;
+use std::path::PathBuf;
 
 /// Represents a supported object file format + architecture combination.
 pub(crate) trait Platform<'data>: 'data {
@@ -68,6 +69,15 @@ pub(crate) trait Platform<'data>: 'data {
     fn supports_size_reduction_relaxations() -> bool {
         false
     }
+
+    /// Uses debug info, if available, to get information about where in the source code a
+    /// particular offset in a particular section came from.
+    fn get_source_info(
+        object: &Self::File,
+        relocations: &<Self::File as ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File as ObjectFile<'data>>::SectionHeader,
+        offset_in_section: u64,
+    ) -> Result<SourceInfo>;
 
     fn collect_relaxation_deltas(
         _section_output_address: u64,
@@ -479,4 +489,12 @@ pub(crate) trait SectionAttributes: std::fmt::Debug + Send + Sync + 'static {
     fn merge(&mut self, rhs: Self);
 
     fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId);
+}
+
+pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);
+
+#[derive(Debug)]
+pub(crate) struct SourceInfoDetails {
+    pub(crate) path: PathBuf,
+    pub(crate) line: u64,
 }

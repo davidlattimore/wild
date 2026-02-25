@@ -398,6 +398,20 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         };
         None
     }
+
+    fn get_source_info(
+        object: &Self::File,
+        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+        offset_in_section: u64,
+    ) -> Result<crate::platform::SourceInfo> {
+        crate::dwarf_address_info::get_source_info::<Self>(
+            object,
+            relocations,
+            section,
+            offset_in_section,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

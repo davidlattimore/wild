@@ -2838,7 +2838,7 @@ fn process_relocation<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object: &ObjectLayoutState,
+    object: &ObjectLayoutState<'data>,
     common: &mut CommonGroupState,
     rel: &R,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -2970,13 +2970,9 @@ fn process_relocation<
                 symbol_db.output_kind,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                let source_info = crate::dwarf_address_info::get_source_info::<P>(
-                    object.object,
-                    &object.relocations,
-                    section,
-                    rel_offset,
-                )
-                .context("Failed to get source info")?;
+                let source_info =
+                    P::get_source_info(object.object, &object.relocations, section, rel_offset)
+                        .context("Failed to get source info")?;
 
                 if args.error_unresolved_symbols {
                     resources.report_error(error!(

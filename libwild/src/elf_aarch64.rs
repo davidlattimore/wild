@@ -290,6 +290,20 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
             .symbol(symbol_index)
             .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
     }
+
+    fn get_source_info(
+        object: &Self::File,
+        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+        offset_in_section: u64,
+    ) -> Result<crate::platform::SourceInfo> {
+        crate::dwarf_address_info::get_source_info::<Self>(
+            object,
+            relocations,
+            section,
+            offset_in_section,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -8,6 +8,8 @@ use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
+use crate::platform::SourceInfo;
+use crate::platform::SourceInfoDetails;
 use anyhow::Context;
 use object::LittleEndian;
 use object::read::elf::Crel;
@@ -18,14 +20,6 @@ use std::fmt::Display;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
-
-pub(crate) struct SourceInfo(Option<SourceInfoDetails>);
-
-#[derive(Debug)]
-pub(crate) struct SourceInfoDetails {
-    path: PathBuf,
-    line: u64,
-}
 
 /// The address at which we'll pretend that we loaded the section we're interested in. This value is
 /// arbitrary, but should be larger than the largest input section we expect to encounter and small
