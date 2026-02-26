@@ -1155,7 +1155,6 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         size: u64,
         name: &[u8],
     ) -> Result<&mut SymtabEntry> {
-        let entry_size = size_of::<SymtabEntry>();
         let entry = if is_local {
             self.local_entries.split_off_first_mut().with_context(|| {
                 format!(

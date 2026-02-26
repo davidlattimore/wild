@@ -22,3 +22,5 @@ fakes-debug/sde-cet-checker-out.txt
 ##
 *.pftrace
 *.bench-results
+.DS_Store
+*.rcgu.o

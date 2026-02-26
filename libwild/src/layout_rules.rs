@@ -114,18 +114,16 @@ impl<'data> LayoutRulesBuilder<'data> {
 
                 let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
                 symbol_defs.push(if provide.hidden {
-                    crate::parsing::InternalSymDefInfo::hidden(placement, provide.name, true)
+                    crate::parsing::InternalSymDefInfo::hidden(placement, provide.name)
                 } else {
-                    crate::parsing::InternalSymDefInfo::notype(placement, provide.name, true)
+                    crate::parsing::InternalSymDefInfo::notype(placement, provide.name)
                 });
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
                 let value_str = std::str::from_utf8(value)
                     .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
 
                 let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
-                symbol_defs.push(crate::parsing::InternalSymDefInfo::notype(
-                    placement, name, false,
-                ));
+                symbol_defs.push(crate::parsing::InternalSymDefInfo::notype(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
@@ -186,13 +184,11 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             InternalSymDefInfo::notype(
                                                 SymbolPlacement::SectionEnd(id),
                                                 assignment.name,
-                                                false,
                                             )
                                         } else {
                                             InternalSymDefInfo::notype(
                                                 SymbolPlacement::SectionStart(primary_section_id),
                                                 assignment.name,
-                                                false,
                                             )
                                         });
                                     }
@@ -205,17 +201,9 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         };
 
                                         symbol_defs.push(if provide.hidden {
-                                            InternalSymDefInfo::hidden(
-                                                placement,
-                                                provide.name,
-                                                true,
-                                            )
+                                            InternalSymDefInfo::hidden(placement, provide.name)
                                         } else {
-                                            InternalSymDefInfo::notype(
-                                                placement,
-                                                provide.name,
-                                                true,
-                                            )
+                                            InternalSymDefInfo::notype(placement, provide.name)
                                         });
                                     }
                                 }

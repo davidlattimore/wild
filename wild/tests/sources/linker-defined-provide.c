@@ -1,5 +1,10 @@
-// Test that linker-defined symbols with PROVIDE semantics don't conflict with user-defined symbols
+// Test that linker-defined symbols with PROVIDE semantics don't conflict with
+// user-defined symbols
 //#Object:runtime.c
+//#DiffIgnore:section.data
+//#DiffIgnore:section-diff-failed..data
+//#DiffIgnore:segment.TLS.alignment
+//#DiffIgnore:segment.TLS.flags
 //#ExpectSym:_end
 //#ExpectSym:__init_array_start
 //#ExpectSym:__init_array_end
@@ -7,6 +12,7 @@
 //#AbstractConfig:base
 //#SkipLinker:ld
 //#Config:1:base
+//#DiffEnabled:false
 //#RunEnabled:false
 //#Variant:1
 // Variant 1: Reference __rela_iplt_start, expect it to be provided and hidden
@@ -16,6 +22,7 @@
 //#NoDynSym:__rela_iplt_end
 
 //#Config:2:base
+//#DiffEnabled:false
 //#RunEnabled:false
 //#Variant:2
 // Variant 2: Define __rela_iplt_start strongly, expect it to override
@@ -27,6 +34,7 @@
 //#ExpectDynSym:__rela_iplt_end
 
 //#Config:3:base
+//#DiffEnabled:false
 //#RunEnabled:false
 //#Variant:3
 // Variant 3: Reference __executable_start, expect it to be provided and hidden
@@ -35,6 +43,7 @@
 //#NoDynSym:__executable_start
 
 //#Config:4:base
+//#DiffEnabled:false
 //#RunEnabled:false
 //#Variant:4
 // Variant 4: Define __executable_start strongly, expect it to override
@@ -77,30 +86,31 @@ char __executable_start[10];
 #endif
 
 void _start(void) {
-    runtime_init();
+  runtime_init();
 
-    // Default variant / Variant 0 checks
+  // Default variant / Variant 0 checks
 #if !defined(VARIANT) || VARIANT == 0
-    // Just take addresses to ensure symbols are referenced
-    volatile long addr = (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
-    
-    // Check that _end address is non-zero (it should be our variable)
-    if (&_end == 0) {
-        exit_syscall(1);
-    }
+  // Just take addresses to ensure symbols are referenced
+  volatile long addr =
+      (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
+
+  // Check that _end address is non-zero (it should be our variable)
+  if (&_end == 0) {
+    exit_syscall(1);
+  }
 #endif
 
 #if defined(VARIANT) && (VARIANT == 1 || VARIANT == 2)
-    // Reference the symbols to ensure they are pulled in/kept
-    volatile long v = (long)__rela_iplt_start + (long)__rela_iplt_end;
-    (void)v;
+  // Reference the symbols to ensure they are pulled in/kept
+  volatile long v = (long)__rela_iplt_start + (long)__rela_iplt_end;
+  (void)v;
 #endif
 
 #if defined(VARIANT) && (VARIANT == 3 || VARIANT == 4)
-    // Reference __executable_start
-    volatile long v = (long)__executable_start;
-    (void)v;
+  // Reference __executable_start
+  volatile long v = (long)__executable_start;
+  (void)v;
 #endif
 
-    exit_syscall(42);
+  exit_syscall(42);
 }

@@ -3639,9 +3639,9 @@ impl<'data> PreludeLayoutState<'data> {
                     .fetch_or(true, atomic::Ordering::Relaxed);
             }
 
-            // Only export symbols that are intended to be user-visible (e.g. _end,
-            // __rela_iplt_start if it was Provide).
-            if def_info.is_hidden || !def_info.use_provide {
+            // Only export symbols that are intended to be user-visible.
+            // Symbols with hidden visibility are not exported dynamically.
+            if def_info.is_hidden {
                 continue;
             }
 
