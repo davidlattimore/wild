@@ -1,5 +1,7 @@
 //#Object:runtime.c
 //#EnableLinker:lld
+//#ExpectSym:_start section=".text"
+//#TestUpdateInPlace:true
 
 #include <stddef.h>
 

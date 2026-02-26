@@ -23,6 +23,7 @@
 //#LinkArgs:-z now --export-dynamic-symbol bar --export-dynamic-symbol=baz
 //#ExpectDynSym:bar
 //#ExpectDynSym:baz
+//#NoDynSym:foo
 //#Shared:empty.c
 //#Mode:dynamic
 //#RunEnabled:false
@@ -34,6 +35,7 @@
 //#LinkArgs:-z now --export-dynamic-symbol-list ./export-dynamic.def
 //#ExpectDynSym:foo
 //#ExpectDynSym:baz
+//#NoDynSym:bar
 //#Shared:empty.c
 //#Mode:dynamic
 //#RunEnabled:false

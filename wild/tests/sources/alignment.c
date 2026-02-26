@@ -1,4 +1,7 @@
 //#Object:runtime.c
+//#EnableLinker:lld
+//#ExpectSym:object section=".bss"
+//#TestUpdateInPlace:true
 
 #include "runtime.h"
 

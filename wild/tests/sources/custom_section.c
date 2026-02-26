@@ -1,5 +1,11 @@
 //#AbstractConfig:default
 //#Object:runtime.c
+//#ExpectSym: dot1 section=".dot"
+//#ExpectSym: dot2 section=".dot.2"
+//#ExpectSym:__start_foo
+//#ExpectSym:__stop_foo
+//#ExpectSym:__start_bar
+//#ExpectSym:__stop_bar
 
 //#Config:archive:default
 //#Archive:custom_section0.c
@@ -96,6 +102,3 @@ void _start(void) {
 
   exit_syscall(value);
 }
-
-//#ExpectSym: dot1 section=".dot"
-//#ExpectSym: dot2 section=".dot.2"

@@ -14,6 +14,8 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#ExpectDynSym:foo
+//#ExpectDynSym:call_bar1
 
 //#Config:symbolic:default
 //#LinkArgs:-shared -z now -Bsymbolic
@@ -22,6 +24,7 @@
 //#DiffIgnore:section.got
 //#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PLT32
 //#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.invalid-shared-object
+//#ExpectDynamic:DT_FLAGS
 
 //#Config:symbolic-functions:default
 //#LinkArgs:-shared -z now -Bsymbolic-functions
