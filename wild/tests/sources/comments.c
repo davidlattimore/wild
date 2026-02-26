@@ -1,7 +1,6 @@
 //#Object:comments0.c
 //#Object:comments1.c
 //#Object:runtime.c
-//#EnableLinker:lld
 //#TestUpdateInPlace:true
 
 #include "runtime.h"
