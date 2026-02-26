@@ -1,3 +1,1 @@
-int startup_code(void) {
-    return 10;
-}
+int startup_code(void) { return 10; }

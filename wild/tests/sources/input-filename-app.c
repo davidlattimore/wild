@@ -1,3 +1,1 @@
-int app_code(void) {
-    return 32;
-}
+int app_code(void) { return 32; }

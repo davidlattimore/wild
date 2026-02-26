@@ -584,8 +584,8 @@ fn test_glob_match_bytes() {
     assert!(!glob_match_bytes(b"*crtbegin*.o", b"foo.o"));
 
     // Question mark
-    assert!(glob_match_bytes(b"to?.o", b"too.o"));
-    assert!(!glob_match_bytes(b"to?.o", b"tooo.o"));
+    assert!(glob_match_bytes(b"ba?.o", b"bar.o"));
+    assert!(!glob_match_bytes(b"ba?.o", b"baar.o"));
 
     // Empty
     assert!(glob_match_bytes(b"", b""));
