@@ -261,12 +261,9 @@ impl<'data> SectionRule<'data> {
     ) -> Result<Self> {
         let compiled_file_pattern = input_file_pattern
             .map(|p| {
-                let s = std::str::from_utf8(p).map_err(|_| {
-                    crate::error!("Invalid UTF-8 in input file pattern")
-                })?;
-                Pattern::new(s).map_err(|_| {
-                    crate::error!("Invalid glob pattern '{}'", s)
-                })
+                let s = std::str::from_utf8(p)
+                    .map_err(|_| crate::error!("Invalid UTF-8 in input file pattern"))?;
+                Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))
             })
             .transpose()?;
 
