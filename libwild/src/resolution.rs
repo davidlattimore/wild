@@ -1196,13 +1196,18 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
     let section_type = input_section.section_type();
     let mut must_load = section_flags.should_retain() || section_type.is_note();
 
-    let file_name = obj
-        .common
-        .input
-        .file
-        .filename
-        .file_name()
-        .map(|n| n.as_encoded_bytes());
+    let file_name = if let Some(entry) = &obj.common.input.entry {
+        // For archive members, match against the member name (e.g., "app.o"),
+        // not the archive filename (e.g., "libfoo.a").
+        Some(entry.identifier.as_slice())
+    } else {
+        obj.common
+            .input
+            .file
+            .filename
+            .file_name()
+            .map(|n| n.as_encoded_bytes())
+    };
 
     match rules.lookup(section_name, file_name, section_flags, section_type) {
         SectionRuleOutcome::Section(output_info) => {

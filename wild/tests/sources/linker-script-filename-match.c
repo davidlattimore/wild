@@ -1,6 +1,6 @@
-//#LinkerScript:input-filename.ld
-//#Object:input-filename-startup.c
-//#Object:input-filename-app.c
+//#LinkerScript:linker-script-filename-match.ld
+//#Object:linker-script-filename-match-startup.c
+//#Object:linker-script-filename-match-app.c
 //#Object:runtime.c
 //#DiffIgnore:segment.LOAD.RW.alignment
 //#SkipArch:riscv64

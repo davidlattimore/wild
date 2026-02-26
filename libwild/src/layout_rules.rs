@@ -18,6 +18,7 @@ use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
 use crate::platform::SectionFlags;
 use crate::platform::SectionType;
+use glob::Pattern;
 use hashbrown::HashTable;
 use linker_utils::elf::secnames;
 use std::mem::replace;
@@ -48,7 +49,7 @@ pub(crate) struct SectionRules<'data> {
 }
 
 /// A rule for determining what should be done with some input sections.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct SectionRule<'data> {
     /// The name that the section needs to have in order for this rule to match, or if `is_prefix`
     /// is true, then the prefix of the section name required.
@@ -57,9 +58,9 @@ pub(crate) struct SectionRule<'data> {
     /// Whether the section name is allowed to extend beyond what's in `name`.
     is_prefix: bool,
 
-    /// Optional glob pattern for matching input filenames. `None` means the rule matches all
+    /// Pre-compiled glob pattern for matching input filenames. `None` means the rule matches all
     /// files.
-    input_file_pattern: Option<&'data [u8]>,
+    input_file_pattern: Option<Pattern>,
 
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
@@ -258,11 +259,22 @@ impl<'data> SectionRule<'data> {
         input_file_pattern: Option<&'data [u8]>,
         outcome: SectionRuleOutcome,
     ) -> Result<Self> {
+        let compiled_file_pattern = input_file_pattern
+            .map(|p| {
+                let s = std::str::from_utf8(p).map_err(|_| {
+                    crate::error!("Invalid UTF-8 in input file pattern")
+                })?;
+                Pattern::new(s).map_err(|_| {
+                    crate::error!("Invalid glob pattern '{}'", s)
+                })
+            })
+            .transpose()?;
+
         if let Some(prefix) = pattern.strip_suffix(b"*") {
             Ok(Self {
                 name: prefix,
                 is_prefix: true,
-                input_file_pattern,
+                input_file_pattern: compiled_file_pattern,
                 outcome,
             })
         } else {
@@ -275,7 +287,7 @@ impl<'data> SectionRule<'data> {
             Ok(Self {
                 name: pattern,
                 is_prefix: false,
-                input_file_pattern,
+                input_file_pattern: compiled_file_pattern,
                 outcome,
             })
         }
@@ -294,7 +306,7 @@ impl<'data> SectionRule<'data> {
         }
 
         // If the rule has no file pattern, it matches all files.
-        let Some(pattern) = self.input_file_pattern else {
+        let Some(pattern) = &self.input_file_pattern else {
             return true;
         };
 
@@ -303,7 +315,12 @@ impl<'data> SectionRule<'data> {
             return false;
         };
 
-        glob_match_bytes(pattern, name)
+        // Convert the filename bytes to a string for glob matching.
+        let Ok(name_str) = std::str::from_utf8(name) else {
+            return false;
+        };
+
+        pattern.matches(name_str)
     }
 
     const fn exact_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
@@ -438,7 +455,7 @@ impl<'data> SectionRules<'data> {
             let hash = section_name_prefix_hash(rule.name)
                 .expect("Prefixes of length less than 4 not yet supported");
 
-            map.rules.insert_unique(hash, *rule, |existing| {
+            map.rules.insert_unique(hash, rule.clone(), |existing| {
                 section_name_prefix_hash(existing.name).unwrap_or(0)
             });
         }
@@ -479,38 +496,6 @@ impl<'data> SectionRules<'data> {
 #[inline(always)]
 fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
     Some(hash_bytes(name.get(..4)?))
-}
-
-/// Performs glob-style matching of `pattern` against `text`. Supports `*` (matches any sequence of
-/// characters) and `?` (matches any single character).
-fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
-    let mut p = 0;
-    let mut t = 0;
-    let mut star_p = None;
-    let mut star_t = 0;
-
-    while t < text.len() {
-        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == text[t]) {
-            p += 1;
-            t += 1;
-        } else if p < pattern.len() && pattern[p] == b'*' {
-            star_p = Some(p);
-            star_t = t;
-            p += 1;
-        } else if let Some(sp) = star_p {
-            p = sp + 1;
-            star_t += 1;
-            t = star_t;
-        } else {
-            return false;
-        }
-    }
-
-    while p < pattern.len() && pattern[p] == b'*' {
-        p += 1;
-    }
-
-    p == pattern.len()
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
@@ -560,36 +545,4 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
-}
-
-#[test]
-fn test_glob_match_bytes() {
-    // Exact match
-    assert!(glob_match_bytes(b"foo.o", b"foo.o"));
-    assert!(!glob_match_bytes(b"foo.o", b"bar.o"));
-
-    // Star at end
-    assert!(glob_match_bytes(b"foo*", b"foo.o"));
-    assert!(glob_match_bytes(b"foo*", b"foobar"));
-    assert!(!glob_match_bytes(b"foo*", b"bar.o"));
-
-    // Star at start
-    assert!(glob_match_bytes(b"*.o", b"foo.o"));
-    assert!(glob_match_bytes(b"*.o", b"crtbegin.o"));
-    assert!(!glob_match_bytes(b"*.o", b"foo.so"));
-
-    // Star in the middle
-    assert!(glob_match_bytes(b"*crtbegin*.o", b"crtbegin.o"));
-    assert!(glob_match_bytes(b"*crtbegin*.o", b"some_crtbegin_thing.o"));
-    assert!(!glob_match_bytes(b"*crtbegin*.o", b"foo.o"));
-
-    // Question mark
-    assert!(glob_match_bytes(b"ba?.o", b"bar.o"));
-    assert!(!glob_match_bytes(b"ba?.o", b"baar.o"));
-
-    // Empty
-    assert!(glob_match_bytes(b"", b""));
-    assert!(!glob_match_bytes(b"", b"foo"));
-    assert!(glob_match_bytes(b"*", b""));
-    assert!(glob_match_bytes(b"*", b"anything"));
 }

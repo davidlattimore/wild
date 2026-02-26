@@ -3581,7 +3581,7 @@ fn integration_test(
         "riscv-cross-object-call-relaxation.s",
         "riscv-hi20-relaxation.s",
         "segment-end-syms.c",
-        "input-filename.c"
+        "linker-script-filename-match.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
