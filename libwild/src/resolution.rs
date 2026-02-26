@@ -1196,7 +1196,15 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
     let section_type = input_section.section_type();
     let mut must_load = section_flags.should_retain() || section_type.is_note();
 
-    match rules.lookup(section_name, section_flags, section_type) {
+    let file_name = obj
+        .common
+        .input
+        .file
+        .filename
+        .file_name()
+        .map(|n| n.as_encoded_bytes());
+
+    match rules.lookup(section_name, file_name, section_flags, section_type) {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)

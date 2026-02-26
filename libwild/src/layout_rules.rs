@@ -57,6 +57,10 @@ pub(crate) struct SectionRule<'data> {
     /// Whether the section name is allowed to extend beyond what's in `name`.
     is_prefix: bool,
 
+    /// Optional glob pattern for matching input filenames. `None` means the rule matches all
+    /// files.
+    input_file_pattern: Option<&'data [u8]>,
+
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
 }
@@ -166,6 +170,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         for pattern in &matcher.input_section_name_patterns {
                                             self.add_section_rule(SectionRule::new(
                                                 pattern,
+                                                matcher.input_file_pattern,
                                                 crate::layout_rules::SectionRuleOutcome::Section(
                                                     SectionOutputInfo {
                                                         section_id,
@@ -248,11 +253,16 @@ impl<'data> LayoutRulesBuilder<'data> {
 }
 
 impl<'data> SectionRule<'data> {
-    pub(crate) fn new(pattern: &'data [u8], outcome: SectionRuleOutcome) -> Result<Self> {
+    pub(crate) fn new(
+        pattern: &'data [u8],
+        input_file_pattern: Option<&'data [u8]>,
+        outcome: SectionRuleOutcome,
+    ) -> Result<Self> {
         if let Some(prefix) = pattern.strip_suffix(b"*") {
             Ok(Self {
                 name: prefix,
                 is_prefix: true,
+                input_file_pattern,
                 outcome,
             })
         } else {
@@ -265,18 +275,35 @@ impl<'data> SectionRule<'data> {
             Ok(Self {
                 name: pattern,
                 is_prefix: false,
+                input_file_pattern,
                 outcome,
             })
         }
     }
 
     #[inline(always)]
-    fn matches(&self, section_name: &[u8]) -> bool {
-        if self.is_prefix {
+    fn matches(&self, section_name: &[u8], file_name: Option<&[u8]>) -> bool {
+        let section_matches = if self.is_prefix {
             section_name.starts_with(self.name)
         } else {
             section_name == self.name
+        };
+
+        if !section_matches {
+            return false;
         }
+
+        // If the rule has no file pattern, it matches all files.
+        let Some(pattern) = self.input_file_pattern else {
+            return true;
+        };
+
+        // If the caller didn't provide a filename, only match rules with no file filter.
+        let Some(name) = file_name else {
+            return false;
+        };
+
+        glob_match_bytes(pattern, name)
     }
 
     const fn exact_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
@@ -317,6 +344,7 @@ impl<'data> SectionRule<'data> {
         SectionRule {
             name,
             is_prefix: false,
+            input_file_pattern: None,
             outcome,
         }
     }
@@ -325,6 +353,7 @@ impl<'data> SectionRule<'data> {
         SectionRule {
             name,
             is_prefix: true,
+            input_file_pattern: None,
             outcome,
         }
     }
@@ -421,6 +450,7 @@ impl<'data> SectionRules<'data> {
     pub(crate) fn lookup(
         &self,
         section_name: &[u8],
+        file_name: Option<&[u8]>,
         section_flags: impl SectionFlags,
         sh_type: impl SectionType,
     ) -> SectionRuleOutcome {
@@ -429,7 +459,9 @@ impl<'data> SectionRules<'data> {
         }
 
         if let Some(hash) = section_name_prefix_hash(section_name)
-            && let Some(rule) = self.rules.find(hash, |rule| rule.matches(section_name))
+            && let Some(rule) = self
+                .rules
+                .find(hash, |rule| rule.matches(section_name, file_name))
         {
             return rule.outcome;
         }
@@ -447,6 +479,38 @@ impl<'data> SectionRules<'data> {
 #[inline(always)]
 fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
     Some(hash_bytes(name.get(..4)?))
+}
+
+/// Performs glob-style matching of `pattern` against `text`. Supports `*` (matches any sequence of
+/// characters) and `?` (matches any single character).
+fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
+    let mut p = 0;
+    let mut t = 0;
+    let mut star_p = None;
+    let mut star_t = 0;
+
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            star_p = Some(p);
+            star_t = t;
+            p += 1;
+        } else if let Some(sp) = star_p {
+            p = sp + 1;
+            star_t += 1;
+            t = star_t;
+        } else {
+            return false;
+        }
+    }
+
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+
+    p == pattern.len()
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
@@ -483,6 +547,7 @@ fn test_section_mapping() {
     let lookup_name = |name: &str| {
         rules.lookup(
             name.as_bytes(),
+            None,
             linker_utils::elf::SectionFlags::empty(),
             linker_utils::elf::SectionType::from_u32(0),
         )
@@ -495,4 +560,36 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_glob_match_bytes() {
+    // Exact match
+    assert!(glob_match_bytes(b"foo.o", b"foo.o"));
+    assert!(!glob_match_bytes(b"foo.o", b"bar.o"));
+
+    // Star at end
+    assert!(glob_match_bytes(b"foo*", b"foo.o"));
+    assert!(glob_match_bytes(b"foo*", b"foobar"));
+    assert!(!glob_match_bytes(b"foo*", b"bar.o"));
+
+    // Star at start
+    assert!(glob_match_bytes(b"*.o", b"foo.o"));
+    assert!(glob_match_bytes(b"*.o", b"crtbegin.o"));
+    assert!(!glob_match_bytes(b"*.o", b"foo.so"));
+
+    // Star in the middle
+    assert!(glob_match_bytes(b"*crtbegin*.o", b"crtbegin.o"));
+    assert!(glob_match_bytes(b"*crtbegin*.o", b"some_crtbegin_thing.o"));
+    assert!(!glob_match_bytes(b"*crtbegin*.o", b"foo.o"));
+
+    // Question mark
+    assert!(glob_match_bytes(b"to?.o", b"too.o"));
+    assert!(!glob_match_bytes(b"to?.o", b"tooo.o"));
+
+    // Empty
+    assert!(glob_match_bytes(b"", b""));
+    assert!(!glob_match_bytes(b"", b"foo"));
+    assert!(glob_match_bytes(b"*", b""));
+    assert!(glob_match_bytes(b"*", b"anything"));
 }
