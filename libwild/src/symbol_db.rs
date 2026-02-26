@@ -1093,22 +1093,52 @@ impl<'data> SymbolBucket<'data> {
     }
 
     /// Returns the selected non-dynamic alternative to the supplied symbol, if any.
+    /// Among non-dynamic alternatives, selects the best one based on symbol binding:
+    /// strong > common (largest) > weak/gnu_unique.
     fn get_non_dynamic<O: ObjectFile<'data>>(
         &self,
         symbol_id: SymbolId,
         symbol_db: &SymbolDb<'data, O>,
     ) -> Option<SymbolId> {
-        self.alternative_definitions
-            .get(&symbol_id)?
-            .iter()
-            .find(|alt| {
-                // For now, we just get the first definition that isn't from a shared object. We
-                // should actually take symbol binding into account, but don't yet.
-                // TODO: Fix this.
-                let file_id = symbol_db.file_id_for_symbol(**alt);
-                !symbol_db.file(file_id).is_dynamic()
-            })
-            .copied()
+        let alternatives = self.alternative_definitions.get(&symbol_id)?;
+
+        let mut max_common: Option<(u64, SymbolId)> = None;
+        let mut first_weak: Option<SymbolId> = None;
+
+        for &alt in alternatives {
+            let file_id = symbol_db.file_id_for_symbol(alt);
+            let file = symbol_db.file(file_id);
+            if file.is_dynamic() {
+                continue;
+            }
+            let strength = file.symbol_strength(alt);
+            match strength {
+                SymbolStrength::Strong => {
+                    return Some(alt);
+                }
+                SymbolStrength::Weak | SymbolStrength::GnuUnique => {
+                    if first_weak.is_none() {
+                        first_weak = Some(alt);
+                    }
+                }
+                SymbolStrength::Common(size) => {
+                    if let Some((prev_size, _)) = max_common {
+                        if size > prev_size {
+                            max_common = Some((size, alt));
+                        }
+                    } else {
+                        max_common = Some((size, alt));
+                    }
+                }
+                SymbolStrength::Undefined => {}
+            }
+        }
+
+        if let Some((_, id)) = max_common {
+            return Some(id);
+        }
+
+        first_weak
     }
 }
 

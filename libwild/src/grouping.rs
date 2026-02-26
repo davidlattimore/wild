@@ -7,11 +7,13 @@ use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
 use crate::platform::ObjectFile;
+use crate::platform::Symbol as _;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::SymbolStrength;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use std::fmt::Display;
@@ -265,6 +267,22 @@ impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
     pub(crate) fn is_dynamic(&self) -> bool {
         self.parsed.object.is_dynamic()
     }
+
+    pub(crate) fn symbol_strength(&self, symbol_id: crate::symbol_db::SymbolId) -> SymbolStrength {
+        let local_index = symbol_id.to_input(self.symbol_id_range);
+        let Ok(obj_symbol) = self.parsed.object.symbol(local_index) else {
+            return SymbolStrength::Undefined;
+        };
+        if obj_symbol.is_weak() {
+            SymbolStrength::Weak
+        } else if obj_symbol.is_common() {
+            SymbolStrength::Common(obj_symbol.size())
+        } else if obj_symbol.is_gnu_unique() {
+            SymbolStrength::GnuUnique
+        } else {
+            SymbolStrength::Strong
+        }
+    }
 }
 
 impl<'data> SequencedLinkerScript<'data> {
@@ -291,6 +309,14 @@ impl<'db, 'data, O: ObjectFile<'data>> SequencedInput<'db, 'data, O> {
             o.is_dynamic()
         } else {
             false
+        }
+    }
+
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        if let SequencedInput::Object(o) = self {
+            o.symbol_strength(symbol_id)
+        } else {
+            SymbolStrength::Undefined
         }
     }
 }
