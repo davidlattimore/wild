@@ -4016,8 +4016,8 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         .output_sections
         .custom_name_to_id(SectionName(b".debug_info"));
 
-    let debug_info_start: u64 = debug_info_section_id
-        .map_or(0, |id| layout.section_layouts.get(id).mem_offset);
+    let debug_info_start: u64 =
+        debug_info_section_id.map_or(0, |id| layout.section_layouts.get(id).mem_offset);
 
     let mut cu_entries: Vec<(u64, u64)> = Vec::new();
 

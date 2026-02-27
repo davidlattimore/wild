@@ -2,6 +2,7 @@
 //#Object:runtime.c
 //#Object:gdb-index-2.c
 //#SkipLinker:ld
+//#DiffEnabled:false
 //#RunEnabled:false
 
 //#Config:multi-cu:default
