@@ -829,12 +829,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if !self.rela_dyn_relative.is_empty() {
             let remaining = self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE;
             let allocated = *mem_sizes.get(part_id::RELA_DYN_RELATIVE);
-            bail!("Allocated too much space in .rela.dyn (relative). {remaining} of {allocated} bytes remain.");
+            bail!(
+                "Allocated too much space in .rela.dyn (relative). {remaining} of {allocated} bytes remain."
+            );
         }
         if !self.rela_dyn_general.is_empty() {
             let remaining = self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE;
             let allocated = *mem_sizes.get(part_id::RELA_DYN_GENERAL);
-            bail!("Allocated too much space in .rela.dyn (general). {remaining} of {allocated} bytes remain.");
+            bail!(
+                "Allocated too much space in .rela.dyn (general). {remaining} of {allocated} bytes remain."
+            );
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
@@ -842,12 +846,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if !self.eh_frame.is_empty() {
             let remaining = self.eh_frame.len() as u64;
             let allocated = *mem_sizes.get(part_id::EH_FRAME);
-            bail!("Allocated too much space in .eh_frame. {remaining} of {allocated} bytes remain.");
+            bail!(
+                "Allocated too much space in .eh_frame. {remaining} of {allocated} bytes remain."
+            );
         }
         if !self.eh_frame_hdr.is_empty() {
             let remaining = self.eh_frame_hdr.len() as u64;
             let allocated = *mem_sizes.get(part_id::EH_FRAME_HDR);
-            bail!("Allocated too much space in .eh_frame_hdr. {remaining} of {allocated} bytes remain.");
+            bail!(
+                "Allocated too much space in .eh_frame_hdr. {remaining} of {allocated} bytes remain."
+            );
         }
         if !self.dynamic.out.is_empty() {
             return Err(excessive_allocation(
@@ -4009,8 +4017,7 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         .custom_name_to_id(SectionName(b".debug_info"));
 
     let debug_info_start: u64 = debug_info_section_id
-        .map(|id| layout.section_layouts.get(id).mem_offset)
-        .unwrap_or(0);
+        .map_or(0, |id| layout.section_layouts.get(id).mem_offset);
 
     let mut cu_entries: Vec<(u64, u64)> = Vec::new();
 
@@ -4023,14 +4030,13 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
                         .iter()
                         .zip(object.section_resolutions.iter())
                     {
-                        if let SectionSlot::LoadedDebugInfo(section) = slot {
-                            if section.output_section_id() == di_section_id {
-                                if let Some(address) = resolution.address() {
-                                    let cu_offset = address - debug_info_start;
-                                    let cu_length = section.capacity();
-                                    cu_entries.push((cu_offset, cu_length));
-                                }
-                            }
+                        if let SectionSlot::LoadedDebugInfo(section) = slot
+                            && section.output_section_id() == di_section_id
+                            && let Some(address) = resolution.address()
+                        {
+                            let cu_offset = address - debug_info_start;
+                            let cu_length = section.capacity();
+                            cu_entries.push((cu_offset, cu_length));
                         }
                     }
                 }

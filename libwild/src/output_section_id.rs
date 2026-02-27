@@ -577,7 +577,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b".gdb_index")),
+        kind: SectionKind::Primary(SectionName(GDB_INDEX_SECTION_NAME)),
         ty: sht::PROGBITS,
         keep_if_empty: true,
         ..DEFAULT_DEFS
@@ -1367,6 +1367,7 @@ fn test_constant_ids() {
         (EH_FRAME, EH_FRAME_SECTION_NAME),
         (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
         (SFRAME, SFRAME_SECTION_NAME),
+        (GDB_INDEX, GDB_INDEX_SECTION_NAME),
         (SHSTRTAB, SHSTRTAB_SECTION_NAME),
         (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
         (SYMTAB_GLOBAL, &[]),
