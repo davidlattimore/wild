@@ -2693,6 +2693,5 @@ pub(crate) struct GroupLayoutExt {
 pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_relocations: usize,
     pub(crate) exception_frame_count: usize,
-    /// Number of input `.debug_info` sections loaded. Used to compute `.gdb_index` size.
     pub(crate) debug_info_section_count: usize,
 }

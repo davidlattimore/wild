@@ -1163,7 +1163,7 @@ pub(crate) struct CommonGroupState<'data> {
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 
-pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::CommonGroupStateExt,
+    pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::CommonGroupStateExt,
 }
 
 impl CommonGroupState<'_> {
@@ -1172,7 +1172,7 @@ impl CommonGroupState<'_> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
-format_specific: Default::default(),
+            format_specific: Default::default(),
         }
     }
 
@@ -3014,26 +3014,13 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     }
 }
 
-/// Compute the `.gdb_index` section size based on the number of compilation units (CUs).
-///
-/// The `.gdb_index` v7 layout is:
-///   Header:        24 bytes (version + 5 area offsets)
-///   CU list:       cu_count * 16 bytes (u64 offset + u64 length per CU)
-///   TU list:       0 bytes (empty — type units not yet supported)
-///   Address area:  addr_count * 20 bytes (u64 low + u64 high + u32 cu_index)
-///   Symbol table:  symbol_slots * 8 bytes (hash table, kept empty for now)
-///   Constant pool: 0 bytes (empty)
 fn compute_gdb_index_size(cu_count: usize) -> u64 {
-    const HEADER_SIZE: u64 = 6 * 4; // 24 bytes
+    const HEADER_SIZE: u64 = 6 * 4;
     const CU_ENTRY_SIZE: u64 = 16;
     const ADDR_ENTRY_SIZE: u64 = 20;
-    // Minimum symbol table slot count. Each slot is 8 bytes (2 × u32).
-    // We keep the symbol table empty (all zeros) for now, so the minimum suffices.
     const MIN_SYMBOL_TABLE_SLOTS: u64 = 1024;
 
     let cu_count = cu_count as u64;
-
-    // One address entry covering `.text` if there are any CUs, otherwise none.
     let addr_count = if cu_count > 0 { 1u64 } else { 0 };
 
     HEADER_SIZE
@@ -3220,7 +3207,7 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-<File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
+        <File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
 
         if args.gdb_index {
             let gdb_index_size =
@@ -4233,7 +4220,6 @@ impl<'data> ObjectLayoutState<'data> {
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
 
-        // Track .debug_info sections for .gdb_index CU list generation.
         if self
             .object
             .section_name(header)

@@ -1943,7 +1943,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("gdb-index")
-        .help("Create .gdb_index section (enable generation of GDB index)")
+        .help("Create .gdb_index section")
         .execute(|args, _modifier_stack| {
             args.gdb_index = true;
             Ok(())
@@ -1952,7 +1952,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("no-gdb-index")
-        .help("Do not create .gdb_index section")
+        .help("Don't create .gdb_index section")
         .execute(|args, _modifier_stack| {
             args.gdb_index = false;
             Ok(())

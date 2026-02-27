@@ -3999,14 +3999,11 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         return Ok(());
     }
 
-    // LLD (and GNU ld) use `.gdb_index` version 7.
     const VERSION: u32 = 7;
-    const HEADER_SIZE: usize = 6 * 4; // 24 bytes
-    const CU_ENTRY_SIZE: usize = 16; // (u64 cu_offset, u64 cu_length)
-    const ADDR_ENTRY_SIZE: usize = 20; // (u64 low, u64 high, u32 cu_index)
+    const HEADER_SIZE: usize = 6 * 4;
+    const CU_ENTRY_SIZE: usize = 16;
+    const ADDR_ENTRY_SIZE: usize = 20;
 
-    // Collect per-CU entries by iterating all objects and finding their `.debug_info`
-    // contributions. Each input `.debug_info` section corresponds to one CU in the output.
     let debug_info_section_id = layout
         .output_sections
         .custom_name_to_id(SectionName(b".debug_info"));
@@ -4015,7 +4012,7 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         .map(|id| layout.section_layouts.get(id).mem_offset)
         .unwrap_or(0);
 
-    let mut cu_entries: Vec<(u64, u64)> = Vec::new(); // (offset_in_debug_info, length)
+    let mut cu_entries: Vec<(u64, u64)> = Vec::new();
 
     if let Some(di_section_id) = debug_info_section_id {
         for group in &layout.group_layouts {
@@ -4042,18 +4039,14 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     }
 
     let cu_count = cu_entries.len();
-    // One address entry for `.text` if there are CUs, otherwise none.
     let addr_count = if cu_count > 0 { 1 } else { 0 };
 
     let cu_list_offset = HEADER_SIZE;
     let cu_list_size = cu_count * CU_ENTRY_SIZE;
     let tu_list_offset = cu_list_offset + cu_list_size;
-    // TU list is empty.
     let address_area_offset = tu_list_offset;
     let address_area_size = addr_count * ADDR_ENTRY_SIZE;
     let symbol_table_offset = address_area_offset + address_area_size;
-    // All remaining bytes after the symbol table offset form the (empty) symbol hash table.
-    // The constant pool starts right after the allocated buffer (i.e. empty).
     let constant_pool_offset = allocated_len;
 
     if allocated_len < symbol_table_offset {
@@ -4064,9 +4057,8 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     }
 
     let buf = table_writer.take_gdb_index_data(allocated_len)?;
-    buf.fill(0); // Zero-fill: empty symbol table = all-zero hash slots.
+    buf.fill(0);
 
-    // -- Header (version + 5 area offsets) --
     buf[0x00..0x04].copy_from_slice(&VERSION.to_le_bytes());
     buf[0x04..0x08].copy_from_slice(&(cu_list_offset as u32).to_le_bytes());
     buf[0x08..0x0c].copy_from_slice(&(tu_list_offset as u32).to_le_bytes());
@@ -4074,14 +4066,12 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     buf[0x10..0x14].copy_from_slice(&(symbol_table_offset as u32).to_le_bytes());
     buf[0x14..0x18].copy_from_slice(&(constant_pool_offset as u32).to_le_bytes());
 
-    // -- CU list: one entry per input `.debug_info` section --
     for (i, &(cu_offset, cu_length)) in cu_entries.iter().enumerate() {
         let off = cu_list_offset + i * CU_ENTRY_SIZE;
         buf[off..off + 8].copy_from_slice(&cu_offset.to_le_bytes());
         buf[off + 8..off + 16].copy_from_slice(&cu_length.to_le_bytes());
     }
 
-    // -- Address area: one range covering `.text`, pointing at CU 0 --
     if addr_count > 0 {
         let text_layout = layout.section_layouts.get(output_section_id::TEXT);
         let text_low: u64 = text_layout.mem_offset;
@@ -4089,10 +4079,8 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         let off = address_area_offset;
         buf[off..off + 8].copy_from_slice(&text_low.to_le_bytes());
         buf[off + 8..off + 16].copy_from_slice(&text_high.to_le_bytes());
-        buf[off + 16..off + 20].copy_from_slice(&0u32.to_le_bytes()); // cu_index = 0
+        buf[off + 16..off + 20].copy_from_slice(&0u32.to_le_bytes());
     }
-
-    // Symbol table and constant pool are left as all-zero (empty).
 
     Ok(())
 }
