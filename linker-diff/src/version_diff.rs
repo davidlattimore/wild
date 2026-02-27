@@ -120,9 +120,10 @@ fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
         let version_index = version_index_raw & VERSYM_VERSION;
         let hidden = version_index_raw & VERSYM_HIDDEN == VERSYM_HIDDEN;
 
-        // TODO: Currently Wild doesn't differentiate between local and global symbols.
-        let version_name = if version_index <= 1 {
-            b"local or global"
+        let version_name = if version_index == 0 {
+            b"local" as &[u8]
+        } else if version_index == 1 {
+            b"global" as &[u8]
         } else {
             versions
                 .version(VersionIndex(version_index))?
