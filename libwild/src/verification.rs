@@ -99,6 +99,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
     const IGNORED: &[PartId] = &[
         part_id::RELA_PLT,
         part_id::EH_FRAME_HDR,
+        part_id::GDB_INDEX,
         part_id::RELA_DYN_GENERAL,
         part_id::RELA_DYN_RELATIVE,
         part_id::GNU_VERSION,

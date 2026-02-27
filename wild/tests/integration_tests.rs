@@ -58,6 +58,10 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
+//! ExpectSection:{section-name} Checks that the specified section exists in the output binary.
+//!
+//! NoSection:{section-name} Checks that the specified section does not exist in the output binary.
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -873,6 +877,8 @@ struct Assertions {
     expected_load_alignment: Option<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
+    expected_sections: Vec<String>,
+    absent_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1125,6 +1131,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "NoDynamic" => config
                     .assertions
                     .absent_dynamic_entries
+                    .push(arg.trim().to_owned()),
+                "ExpectSection" => config
+                    .assertions
+                    .expected_sections
+                    .push(arg.trim().to_owned()),
+                "NoSection" => config
+                    .assertions
+                    .absent_sections
                     .push(arg.trim().to_owned()),
                 "ExpectLoadAlignment" => {
                     let alignment_str = arg.trim();
@@ -2697,6 +2711,7 @@ impl Assertions {
         self.verify_strings(&bytes)?;
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
+        self.verify_sections(&obj)?;
         Ok(())
     }
 
@@ -2850,6 +2865,20 @@ impl Assertions {
             }
         }
 
+        Ok(())
+    }
+
+    fn verify_sections(&self, obj: &ElfFile64) -> Result {
+        for expected in &self.expected_sections {
+            if obj.section_by_name(expected).is_none() {
+                bail!("Expected section `{expected}` not found in output binary");
+            }
+        }
+        for absent in &self.absent_sections {
+            if obj.section_by_name(absent).is_some() {
+                bail!("Section `{absent}` should be absent but was found in output binary");
+            }
+        }
         Ok(())
     }
 }
@@ -3581,7 +3610,8 @@ fn integration_test(
         "riscv-cross-object-call-relaxation.s",
         "riscv-hi20-relaxation.s",
         "segment-end-syms.c",
-        "linker-script-filename-match.c"
+        "linker-script-filename-match.c",
+        "gdb-index.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
