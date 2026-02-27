@@ -649,12 +649,7 @@ pub(crate) struct ResolvedObject<'data, O: ObjectFile<'data>> {
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: O::RelocationSections,
 
-    pub(crate) string_merge_extras: Vec<
-        StringMergeSectionExtra<
-            'data,
-            <O::SectionHeader as crate::platform::SectionHeader>::SectionFlags,
-        >,
-    >,
+    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data, O::SectionFlags>>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,

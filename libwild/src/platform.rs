@@ -109,7 +109,7 @@ pub(crate) trait Platform<'data>: 'data {
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <<Self::File as ObjectFile<'data>>::SectionHeader as SectionHeader>::SectionFlags,
+        section_flags: <Self::File as ObjectFile<'data>>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
@@ -137,7 +137,10 @@ pub(crate) struct RelaxSymbolInfo {
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
     type Symbol: Symbol;
-    type SectionHeader: SectionHeader;
+    type SectionHeader: SectionHeader<'data, Self>;
+    type SectionFlags: SectionFlags;
+    type SectionType: SectionType;
+    type SectionAttributes: SectionAttributes;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues: DynamicTagValues<'data>;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
@@ -410,16 +413,14 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
 }
 
-pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
-    type SectionFlags: SectionFlags;
-    type SectionType: SectionType;
-    type Attributes: SectionAttributes;
+pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
+    std::fmt::Debug + Send + Sync + 'data
+{
+    fn flags(&self) -> O::SectionFlags;
 
-    fn flags(&self) -> Self::SectionFlags;
+    fn attributes(&self) -> O::SectionAttributes;
 
-    fn attributes(&self) -> Self::Attributes;
-
-    fn section_type(&self) -> Self::SectionType;
+    fn section_type(&self) -> O::SectionType;
 }
 
 pub(crate) trait SectionType: Copy {

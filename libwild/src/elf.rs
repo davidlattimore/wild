@@ -225,6 +225,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Symbol = Symbol;
     type SectionHeader = SectionHeader;
     type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
+    type SectionFlags = SectionFlags;
+    type SectionAttributes = SectionAttributes;
+    type SectionType = SectionType;
     type DynamicTagValues = crate::elf::DynamicTagValues<'data>;
     type DynamicEntry = DynamicEntry;
     type RelocationList = RelocationList<'data>;
@@ -1381,24 +1384,20 @@ fn compute_version_mapping(
     out
 }
 
-impl platform::SectionHeader for SectionHeader {
-    type SectionFlags = SectionFlags;
-    type Attributes = SectionAttributes;
-    type SectionType = SectionType;
-
-    fn flags(&self) -> Self::SectionFlags {
+impl<'data> platform::SectionHeader<'data, File<'data>> for SectionHeader {
+    fn flags(&self) -> SectionFlags {
         SectionFlags::from_header(self)
     }
 
-    fn attributes(&self) -> Self::Attributes {
-        Self::Attributes {
+    fn attributes(&self) -> SectionAttributes {
+        SectionAttributes {
             flags: SectionFlags::from_header(self),
             ty: SectionType::from_header(self),
             entsize: self.sh_entsize.get(LittleEndian),
         }
     }
 
-    fn section_type(&self) -> Self::SectionType {
+    fn section_type(&self) -> SectionType {
         SectionType::from_header(self)
     }
 }
