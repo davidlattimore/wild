@@ -3735,7 +3735,7 @@ impl EpilogueLayoutState {
         };
 
         EpilogueLayoutState {
-            format_specific: crate::elf::EpilogueLayout::new(
+            format_specific: <File as ObjectFile>::new_epilogue_layout(
                 args,
                 output_kind,
                 dynamic_symbol_definitions,

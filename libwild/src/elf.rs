@@ -820,6 +820,20 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
+    fn new_epilogue_layout(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self::EpilogueLayout {
+        let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
+
+        EpilogueLayout {
+            sysv_hash_layout: Default::default(),
+            gnu_hash_layout,
+            verdefs: Default::default(),
+        }
+    }
+
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
         state: &mut Self::EpilogueLayout,
@@ -2599,22 +2613,6 @@ impl SysvHashLayout {
             .and_then(|v| v.checked_add(u64::from(self.chain_count)))
             .context("Too many dynamic symbols for .hash")?;
         Ok(words * size_of::<u32>() as u64)
-    }
-}
-
-impl EpilogueLayout {
-    pub(crate) fn new(
-        args: &Args,
-        output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
-    ) -> Self {
-        let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
-
-        Self {
-            sysv_hash_layout: Default::default(),
-            gnu_hash_layout,
-            verdefs: Default::default(),
-        }
     }
 }
 

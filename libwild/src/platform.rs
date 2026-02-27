@@ -254,6 +254,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
     ) -> Self::DynamicLayout;
 
+    fn new_epilogue_layout(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self::EpilogueLayout;
+
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
         state: &mut Self::EpilogueLayout,
