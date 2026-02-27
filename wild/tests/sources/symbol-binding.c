@@ -1,16 +1,20 @@
 //#Object:runtime.c
+//#DiffEnabled:false
+//#Mode:unspecified
+//#LinkArgs:-z now -as-needed
+//#Shared:symbol-binding-dyn.c
 //#Object:symbol-binding-weak.c
 //#Object:symbol-binding-strong.c
 
 #include "runtime.h"
 
-// Test that when multiple regular object files define the same symbol, the
-// strong definition is chosen over the weak one, regardless of link order.
-// symbol-binding-weak.c is listed before symbol-binding-strong.c, but the
-// strong definition should still win.
+// Test that get_non_dynamic correctly selects the strong definition over the
+// weak one when the primary definition is from a shared object. The hidden
+// visibility forces allow_dynamic=false in symbol lookup, which triggers the
+// get_non_dynamic code path.
 
-int foo(void);
-int bar(void);
+__attribute__((visibility("hidden"))) int foo(void);
+__attribute__((visibility("hidden"))) int bar(void);
 
 void _start(void) {
   runtime_init();

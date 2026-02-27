@@ -1101,44 +1101,16 @@ impl<'data> SymbolBucket<'data> {
         symbol_db: &SymbolDb<'data, O>,
     ) -> Option<SymbolId> {
         let alternatives = self.alternative_definitions.get(&symbol_id)?;
-
-        let mut max_common: Option<(u64, SymbolId)> = None;
-        let mut first_weak: Option<SymbolId> = None;
-
+        let mut selector = SymbolPrioritySelector::new();
         for &alt in alternatives {
             let file_id = symbol_db.file_id_for_symbol(alt);
             let file = symbol_db.file(file_id);
             if file.is_dynamic() {
                 continue;
             }
-            let strength = file.symbol_strength(alt);
-            match strength {
-                SymbolStrength::Strong => {
-                    return Some(alt);
-                }
-                SymbolStrength::Weak | SymbolStrength::GnuUnique => {
-                    if first_weak.is_none() {
-                        first_weak = Some(alt);
-                    }
-                }
-                SymbolStrength::Common(size) => {
-                    if let Some((prev_size, _)) = max_common {
-                        if size > prev_size {
-                            max_common = Some((size, alt));
-                        }
-                    } else {
-                        max_common = Some((size, alt));
-                    }
-                }
-                SymbolStrength::Undefined => {}
-            }
+            selector.consider(alt, file.symbol_strength(alt));
         }
-
-        if let Some((_, id)) = max_common {
-            return Some(id);
-        }
-
-        first_weak
+        selector.best()
     }
 }
 
@@ -1279,9 +1251,7 @@ fn select_symbol<'data, O: ObjectFile<'data>>(
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup<'data, O>],
 ) -> Result<SymbolId> {
-    let mut max_common = None;
-    let mut strong_symbol = None;
-    let mut first_weak = None;
+    let mut selector = SymbolPrioritySelector::new();
 
     for id in std::iter::once(first_id).chain(alternatives.iter().copied()) {
         let flags = per_symbol_flags.flags_for_symbol(id);
@@ -1293,54 +1263,32 @@ fn select_symbol<'data, O: ObjectFile<'data>>(
         }
 
         let strength = symbol_db.symbol_strength(id, resolved);
-        match strength {
-            SymbolStrength::Strong => {
-                if let Some(existing) = strong_symbol {
-                    // We don't implement full COMDAT logic, however if we encounter duplicate
-                    // strong definitions, then we don't emit errors if all the strong definitions
-                    // are defined in COMDAT group sections.
-                    if (!symbol_db.is_in_comdat_group(existing, resolved)
-                        || !symbol_db.is_in_comdat_group(id, resolved))
-                        && !symbol_db.db.args.allow_multiple_definitions
-                    {
-                        bail!(
-                            "{}, defined in {} and {}",
-                            symbol_db.symbol_name_for_display(first_id),
-                            symbol_db.file(symbol_db.file_id_for_symbol(existing)),
-                            symbol_db.file(symbol_db.file_id_for_symbol(id)),
-                        );
-                    }
-                } else {
-                    strong_symbol = Some(id);
-                }
+
+        // Check for duplicate strong definitions (COMDAT handling).
+        if matches!(strength, SymbolStrength::Strong)
+            && let Some(existing) = selector.first_strong
+        {
+            // We don't implement full COMDAT logic, however if we encounter duplicate
+            // strong definitions, then we don't emit errors if all the strong definitions
+            // are defined in COMDAT group sections.
+            if (!symbol_db.is_in_comdat_group(existing, resolved)
+                || !symbol_db.is_in_comdat_group(id, resolved))
+                && !symbol_db.db.args.allow_multiple_definitions
+            {
+                bail!(
+                    "{}, defined in {} and {}",
+                    symbol_db.symbol_name_for_display(first_id),
+                    symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                    symbol_db.file(symbol_db.file_id_for_symbol(id)),
+                );
             }
-            SymbolStrength::Weak | SymbolStrength::GnuUnique => {
-                if first_weak.is_none() {
-                    first_weak = Some(id);
-                }
-            }
-            SymbolStrength::Common(size) => {
-                if let Some((previous_size, _)) = max_common
-                    && size <= previous_size
-                {
-                    continue;
-                }
-                max_common = Some((size, id));
-            }
-            SymbolStrength::Undefined => {}
         }
+
+        selector.consider(id, strength);
     }
 
-    if let Some(strong_symbol) = strong_symbol {
-        return Ok(strong_symbol);
-    }
-
-    if let Some((_, alt)) = max_common {
-        return Ok(alt);
-    }
-
-    if let Some(id) = first_weak {
-        return Ok(id);
+    if let Some(best) = selector.best() {
+        return Ok(best);
     }
 
     // If we've made it this far, then the symbol is only defined in shared objects. Pick the first
@@ -1373,6 +1321,69 @@ pub(crate) enum SymbolStrength {
     /// The symbol is a "common" symbol with the specified size. The definition with the largest
     /// size will be selected.
     Common(u64),
+}
+
+impl SymbolStrength {
+    /// Computes the binding strength of a symbol from its attributes.
+    pub(crate) fn of(symbol: &impl Symbol) -> Self {
+        if symbol.is_weak() {
+            SymbolStrength::Weak
+        } else if symbol.is_common() {
+            SymbolStrength::Common(symbol.size())
+        } else if symbol.is_gnu_unique() {
+            SymbolStrength::GnuUnique
+        } else {
+            SymbolStrength::Strong
+        }
+    }
+}
+
+/// Accumulates symbol candidates and selects the best one based on binding priority:
+/// strong > common (largest) > weak/gnu_unique.
+pub(crate) struct SymbolPrioritySelector {
+    pub(crate) first_strong: Option<SymbolId>,
+    max_common: Option<(u64, SymbolId)>,
+    first_weak: Option<SymbolId>,
+}
+
+impl SymbolPrioritySelector {
+    pub(crate) fn new() -> Self {
+        Self {
+            first_strong: None,
+            max_common: None,
+            first_weak: None,
+        }
+    }
+
+    /// Consider a candidate symbol with the given strength.
+    pub(crate) fn consider(&mut self, id: SymbolId, strength: SymbolStrength) {
+        match strength {
+            SymbolStrength::Strong => {
+                if self.first_strong.is_none() {
+                    self.first_strong = Some(id);
+                }
+            }
+            SymbolStrength::Weak | SymbolStrength::GnuUnique => {
+                if self.first_weak.is_none() {
+                    self.first_weak = Some(id);
+                }
+            }
+            SymbolStrength::Common(size) => {
+                match self.max_common {
+                    Some((prev_size, _)) if size <= prev_size => {}
+                    _ => self.max_common = Some((size, id)),
+                }
+            }
+            SymbolStrength::Undefined => {}
+        }
+    }
+
+    /// Returns the best symbol based on priority: strong > common (largest) > weak.
+    pub(crate) fn best(self) -> Option<SymbolId> {
+        self.first_strong
+            .or(self.max_common.map(|(_, id)| id))
+            .or(self.first_weak)
+    }
 }
 
 /// Returns whether the supplied symbol name is for a [mapping

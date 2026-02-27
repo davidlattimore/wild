@@ -7,7 +7,6 @@ use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
 use crate::platform::ObjectFile;
-use crate::platform::Symbol as _;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -273,15 +272,7 @@ impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
         let Ok(obj_symbol) = self.parsed.object.symbol(local_index) else {
             return SymbolStrength::Undefined;
         };
-        if obj_symbol.is_weak() {
-            SymbolStrength::Weak
-        } else if obj_symbol.is_common() {
-            SymbolStrength::Common(obj_symbol.size())
-        } else if obj_symbol.is_gnu_unique() {
-            SymbolStrength::GnuUnique
-        } else {
-            SymbolStrength::Strong
-        }
+        SymbolStrength::of(obj_symbol)
     }
 }
 
