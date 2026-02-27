@@ -750,7 +750,6 @@ pub(crate) struct SyntheticSymbolsLayout<'data> {
 pub(crate) struct EpilogueLayout {
     pub(crate) format_specific: crate::elf::EpilogueLayout,
     pub(crate) dynsym_start_index: u32,
-    pub(crate) riscv_attributes_length: u32,
 }
 
 #[derive(Debug)]
@@ -3858,7 +3857,6 @@ impl EpilogueLayoutState {
         Ok(EpilogueLayout {
             format_specific: self.format_specific,
             dynsym_start_index,
-            riscv_attributes_length: resources.format_specific.riscv_attributes.section_size as u32,
         })
     }
 }
@@ -3989,13 +3987,12 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if let Some(riscv_attributes_index) = riscv_attributes_section {
-            ensure!(
-                P::elf_header_arch_magic() == object::elf::EM_RISCV,
-                ".riscv.attribute section is supported only for riscv64 target"
-            );
-            self.format_specific_layout_state.riscv_attributes =
-                crate::elf::process_riscv_attributes(self.object, riscv_attributes_index)
-                    .context("Cannot parse .riscv.attributes section")?;
+            P::process_riscv_attributes(
+                self.object,
+                &mut self.format_specific_layout_state,
+                riscv_attributes_index,
+            )
+            .context("Cannot parse .riscv.attributes section")?;
         }
 
         let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject

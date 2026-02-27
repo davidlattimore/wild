@@ -3240,7 +3240,7 @@ fn write_epilogue<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         .section_size
         != 0
     {
-        write_riscv_attributes(epilogue, layout, buffers)?;
+        write_riscv_attributes(layout, buffers)?;
     }
 
     if let Some(verdefs) = &epilogue.format_specific.verdefs {
@@ -3294,22 +3294,23 @@ fn write_gnu_property_notes(
 }
 
 fn write_riscv_attributes(
-    epilogue: &EpilogueLayout,
     layout: &Layout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
     let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
     writer.write_all(b"A")?;
-    writer.write_all(
-        (epilogue.riscv_attributes_length - 1)
-            .to_le_bytes()
-            .as_slice(),
-    )?;
+
+    let riscv_attributes_length = layout
+        .properties_and_attributes
+        .riscv_attributes
+        .section_size as u32;
+
+    writer.write_all((riscv_attributes_length - 1).to_le_bytes().as_slice())?;
     writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
     writer.write_all(b"\0")?;
     leb128::write::unsigned(&mut writer, TAG_RISCV_WHOLE_FILE)?;
     writer.write_all(
-        (epilogue.riscv_attributes_length - 1 - 4 - RISCV_ATTRIBUTE_VENDOR_NAME.len() as u32 - 1)
+        (riscv_attributes_length - 1 - 4 - RISCV_ATTRIBUTE_VENDOR_NAME.len() as u32 - 1)
             .to_le_bytes()
             .as_slice(),
     )?;

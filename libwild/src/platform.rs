@@ -1,6 +1,7 @@
 use crate::Args;
 use crate::OutputKind;
 use crate::Result;
+use crate::bail;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -113,6 +114,14 @@ pub(crate) trait Platform<'data>: 'data {
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
+
+    fn process_riscv_attributes(
+        _object: &Self::File,
+        _format_specific: &mut <Self::File as ObjectFile<'data>>::FileLayoutState,
+        _riscv_attributes_section_index: object::SectionIndex,
+    ) -> Result {
+        bail!(".riscv.attribute section is supported only for riscv64 target");
+    }
 }
 
 pub(crate) trait Relaxation {
