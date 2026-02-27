@@ -2952,6 +2952,13 @@ fn process_relocation<
             flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
         }
 
+        // Track whether there are any non-weak references to this symbol. This is used
+        // when writing dynamic symbols to determine the correct binding (STB_GLOBAL vs
+        // STB_WEAK).
+        if !object.object.symbol(local_sym_index)?.is_weak() {
+            flags_to_add |= ValueFlags::NON_WEAK_REF;
+        }
+
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
 

@@ -4585,10 +4585,15 @@ fn write_dynamic_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>
                     .dynsym_writer
                     .define_symbol(false, 0, 0, 0, name)?;
 
-                // Note, we copy st_info, but not st_other since we don't want to copy the
-                // visibility. We want to emit the symbol with default visibility, otherwise the
-                // runtime loader may ignore dynamic relocations that reference the symbol.
-                entry.st_info = symbol.st_info();
+                // Use the reference binding rather than the definition binding. If any
+                // non-weak reference exists from a regular object, use STB_GLOBAL;
+                // otherwise use STB_WEAK. This matches GNU ld's behaviour.
+                let st_bind = if res.flags.contains(ValueFlags::NON_WEAK_REF) {
+                    object::elf::STB_GLOBAL
+                } else {
+                    object::elf::STB_WEAK
+                };
+                entry.set_st_info(st_bind, symbol.st_type());
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     copy_symbol_version(

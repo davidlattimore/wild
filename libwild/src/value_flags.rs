@@ -99,6 +99,11 @@ bitflags! {
         /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
         /// entry which will be resolved to the actual function address at runtime.
         const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
+
+        /// Set when a non-weak reference to this symbol exists from a regular (non-dynamic)
+        /// object. Used to determine the correct binding (STB_GLOBAL vs STB_WEAK) when emitting
+        /// dynamic symbols. If this flag is set, the dynamic symbol should use STB_GLOBAL.
+        const NON_WEAK_REF = 1 << 15;
     }
 }
 
