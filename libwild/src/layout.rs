@@ -41,6 +41,7 @@ use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -3015,17 +3016,18 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
 }
 
 fn compute_gdb_index_size(cu_count: usize) -> u64 {
-    const HEADER_SIZE: u64 = 6 * 4;
-    const CU_ENTRY_SIZE: u64 = 16;
-    const ADDR_ENTRY_SIZE: u64 = 20;
     const MIN_SYMBOL_TABLE_SLOTS: u64 = 1024;
 
     let cu_count = cu_count as u64;
-    let addr_count = if cu_count > 0 { 1u64 } else { 0 };
+    let has_addresses = cu_count > 0;
 
-    HEADER_SIZE
-        + cu_count * CU_ENTRY_SIZE
-        + addr_count * ADDR_ENTRY_SIZE
+    size_of::<elf::GdbIndexHeader>() as u64
+        + cu_count * size_of::<elf::GdbIndexCuEntry>() as u64
+        + if has_addresses {
+            size_of::<elf::GdbIndexAddressEntry>() as u64
+        } else {
+            0
+        }
         + MIN_SYMBOL_TABLE_SLOTS * 8
 }
 
@@ -4219,10 +4221,10 @@ impl<'data> ObjectLayoutState<'data> {
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
 
-        if self
-            .object
-            .section_name(header)
-            .is_ok_and(|name| name == b".debug_info")
+        if resources
+            .output_sections
+            .custom_name_to_id(SectionName(b".debug_info"))
+            .is_some_and(|id| part_id.output_section_id() == id)
         {
             common.format_specific.debug_info_section_count += 1;
         }

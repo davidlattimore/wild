@@ -1675,6 +1675,36 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_padding: u32,
 }
 
+/// Header for the .gdb_index section (version 7).
+/// See https://sourceware.org/gdb/current/onlinedocs/gdb.html/Index-Section-Format.html
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
+#[repr(C, packed)]
+pub(crate) struct GdbIndexHeader {
+    pub(crate) version: u32,
+    pub(crate) cu_list_offset: u32,
+    pub(crate) tu_list_offset: u32,
+    pub(crate) address_area_offset: u32,
+    pub(crate) symbol_table_offset: u32,
+    pub(crate) constant_pool_offset: u32,
+}
+
+/// An entry in the CU list of the .gdb_index section.
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
+#[repr(C, packed)]
+pub(crate) struct GdbIndexCuEntry {
+    pub(crate) cu_offset: u64,
+    pub(crate) cu_length: u64,
+}
+
+/// An entry in the address area of the .gdb_index section.
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
+#[repr(C, packed)]
+pub(crate) struct GdbIndexAddressEntry {
+    pub(crate) low_address: u64,
+    pub(crate) high_address: u64,
+    pub(crate) cu_index: u32,
+}
+
 pub(crate) struct PageMaskValue {
     pub(crate) symbol_plus_addend: u64,
     pub(crate) got_entry: u64,

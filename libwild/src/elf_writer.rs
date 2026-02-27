@@ -822,40 +822,42 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if !self.got.is_empty() {
-            let remaining = self.got.len() as u64 * elf::GOT_ENTRY_SIZE;
-            let allocated = *mem_sizes.get(part_id::GOT);
-            bail!("Allocated too much space in .got. {remaining} of {allocated} bytes remain.");
+            return Err(excessive_allocation(
+                ".got",
+                self.got.len() as u64 * elf::GOT_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GOT),
+            ));
         }
         if !self.rela_dyn_relative.is_empty() {
-            let remaining = self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE;
-            let allocated = *mem_sizes.get(part_id::RELA_DYN_RELATIVE);
-            bail!(
-                "Allocated too much space in .rela.dyn (relative). {remaining} of {allocated} bytes remain."
-            );
+            return Err(excessive_allocation(
+                ".rela.dyn (relative)",
+                self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELA_DYN_RELATIVE),
+            ));
         }
         if !self.rela_dyn_general.is_empty() {
-            let remaining = self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE;
-            let allocated = *mem_sizes.get(part_id::RELA_DYN_GENERAL);
-            bail!(
-                "Allocated too much space in .rela.dyn (general). {remaining} of {allocated} bytes remain."
-            );
+            return Err(excessive_allocation(
+                ".rela.dyn (general)",
+                self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELA_DYN_GENERAL),
+            ));
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
         self.version_writer.check_exhausted(mem_sizes)?;
         if !self.eh_frame.is_empty() {
-            let remaining = self.eh_frame.len() as u64;
-            let allocated = *mem_sizes.get(part_id::EH_FRAME);
-            bail!(
-                "Allocated too much space in .eh_frame. {remaining} of {allocated} bytes remain."
-            );
+            return Err(excessive_allocation(
+                ".eh_frame",
+                self.eh_frame.len() as u64,
+                *mem_sizes.get(part_id::EH_FRAME),
+            ));
         }
         if !self.eh_frame_hdr.is_empty() {
-            let remaining = self.eh_frame_hdr.len() as u64;
-            let allocated = *mem_sizes.get(part_id::EH_FRAME_HDR);
-            bail!(
-                "Allocated too much space in .eh_frame_hdr. {remaining} of {allocated} bytes remain."
-            );
+            return Err(excessive_allocation(
+                ".eh_frame_hdr",
+                self.eh_frame_hdr.len() as u64,
+                *mem_sizes.get(part_id::EH_FRAME_HDR),
+            ));
         }
         if !self.dynamic.out.is_empty() {
             return Err(excessive_allocation(
@@ -4007,11 +4009,6 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         return Ok(());
     }
 
-    const VERSION: u32 = 7;
-    const HEADER_SIZE: usize = 6 * 4;
-    const CU_ENTRY_SIZE: usize = 16;
-    const ADDR_ENTRY_SIZE: usize = 20;
-
     let debug_info_section_id = layout
         .output_sections
         .custom_name_to_id(SectionName(b".debug_info"));
@@ -4019,7 +4016,7 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let debug_info_start: u64 =
         debug_info_section_id.map_or(0, |id| layout.section_layouts.get(id).mem_offset);
 
-    let mut cu_entries: Vec<(u64, u64)> = Vec::new();
+    let mut cu_entries: Vec<elf::GdbIndexCuEntry> = Vec::new();
 
     if let Some(di_section_id) = debug_info_section_id {
         for group in &layout.group_layouts {
@@ -4034,9 +4031,10 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
                             && section.output_section_id() == di_section_id
                             && let Some(address) = resolution.address()
                         {
-                            let cu_offset = address - debug_info_start;
-                            let cu_length = section.capacity();
-                            cu_entries.push((cu_offset, cu_length));
+                            cu_entries.push(elf::GdbIndexCuEntry {
+                                cu_offset: address - debug_info_start,
+                                cu_length: section.capacity(),
+                            });
                         }
                     }
                 }
@@ -4045,13 +4043,17 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     }
 
     let cu_count = cu_entries.len();
-    let addr_count = if cu_count > 0 { 1 } else { 0 };
+    let has_addresses = cu_count > 0;
 
-    let cu_list_offset = HEADER_SIZE;
-    let cu_list_size = cu_count * CU_ENTRY_SIZE;
+    let cu_list_offset = size_of::<elf::GdbIndexHeader>();
+    let cu_list_size = cu_count * size_of::<elf::GdbIndexCuEntry>();
     let tu_list_offset = cu_list_offset + cu_list_size;
     let address_area_offset = tu_list_offset;
-    let address_area_size = addr_count * ADDR_ENTRY_SIZE;
+    let address_area_size = if has_addresses {
+        size_of::<elf::GdbIndexAddressEntry>()
+    } else {
+        0
+    };
     let symbol_table_offset = address_area_offset + address_area_size;
     let constant_pool_offset = allocated_len;
 
@@ -4065,27 +4067,26 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let buf = table_writer.take_gdb_index_data(allocated_len)?;
     buf.fill(0);
 
-    buf[0x00..0x04].copy_from_slice(&VERSION.to_le_bytes());
-    buf[0x04..0x08].copy_from_slice(&(cu_list_offset as u32).to_le_bytes());
-    buf[0x08..0x0c].copy_from_slice(&(tu_list_offset as u32).to_le_bytes());
-    buf[0x0c..0x10].copy_from_slice(&(address_area_offset as u32).to_le_bytes());
-    buf[0x10..0x14].copy_from_slice(&(symbol_table_offset as u32).to_le_bytes());
-    buf[0x14..0x18].copy_from_slice(&(constant_pool_offset as u32).to_le_bytes());
+    let (header, rest) = elf::GdbIndexHeader::mut_from_prefix(buf).unwrap();
+    header.version = 7;
+    header.cu_list_offset = cu_list_offset as u32;
+    header.tu_list_offset = tu_list_offset as u32;
+    header.address_area_offset = address_area_offset as u32;
+    header.symbol_table_offset = symbol_table_offset as u32;
+    header.constant_pool_offset = constant_pool_offset as u32;
 
-    for (i, &(cu_offset, cu_length)) in cu_entries.iter().enumerate() {
-        let off = cu_list_offset + i * CU_ENTRY_SIZE;
-        buf[off..off + 8].copy_from_slice(&cu_offset.to_le_bytes());
-        buf[off + 8..off + 16].copy_from_slice(&cu_length.to_le_bytes());
+    let (cu_list, rest) =
+        <[elf::GdbIndexCuEntry]>::mut_from_prefix_with_elems(rest, cu_count).unwrap();
+    for (out, entry) in cu_list.iter_mut().zip(cu_entries.iter()) {
+        *out = *entry;
     }
 
-    if addr_count > 0 {
+    if has_addresses {
+        let (addr_entry, _rest) = elf::GdbIndexAddressEntry::mut_from_prefix(rest).unwrap();
         let text_layout = layout.section_layouts.get(output_section_id::TEXT);
-        let text_low: u64 = text_layout.mem_offset;
-        let text_high: u64 = text_layout.mem_offset + text_layout.mem_size;
-        let off = address_area_offset;
-        buf[off..off + 8].copy_from_slice(&text_low.to_le_bytes());
-        buf[off + 8..off + 16].copy_from_slice(&text_high.to_le_bytes());
-        buf[off + 16..off + 20].copy_from_slice(&0u32.to_le_bytes());
+        addr_entry.low_address = text_layout.mem_offset;
+        addr_entry.high_address = text_layout.mem_offset + text_layout.mem_size;
+        addr_entry.cu_index = 0;
     }
 
     Ok(())
