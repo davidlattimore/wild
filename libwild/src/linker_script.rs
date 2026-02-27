@@ -69,6 +69,11 @@ pub(crate) enum Command<'a> {
         value: &'a [u8],
     },
     Provide(ProvideSymbolDefinition<'a>),
+    Assert {
+        /// ASSERT(expression, "message") — parsed but not yet evaluated.
+        expression: &'a [u8],
+        message: &'a [u8],
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +86,11 @@ pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
     SetLocation(Location),
     Align(Alignment),
+    Assert {
+        /// ASSERT(expression, "message") — parsed but not yet evaluated
+        expression: &'a [u8],
+        message: &'a [u8],
+    },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -206,6 +216,13 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"VERSION" => Command::Version(parse_version(input)?),
         b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
+        b"ASSERT" => {
+            let (expression, message) = parse_assert(input)?;
+            Command::Assert {
+                expression,
+                message,
+            }
+        }
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -249,6 +266,30 @@ fn parse_provide<'input>(
         value,
         hidden,
     })
+}
+
+fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<(&'input [u8], &'input [u8])> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse expression (everything until comma)
+    let expression = take_while(1.., |b| b != b',').parse_next(input)?;
+    let expression = expression.trim_ascii_end();
+
+    skip_comments_and_whitespace(input)?;
+    ','.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse message (quoted string)
+    let message = parse_token(input)?;
+
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok((expression, message))
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
@@ -320,6 +361,15 @@ fn parse_section_command<'input>(
     let name = parse_token(input)?;
 
     skip_comments_and_whitespace(input)?;
+
+    // Handle ASSERT command
+    if name == b"ASSERT" {
+        let (expression, message) = parse_assert(input)?;
+        return Ok(SectionCommand::Assert {
+            expression,
+            message,
+        });
+    }
 
     if name == b"." {
         '='.parse_next(input)?;
@@ -888,5 +938,85 @@ mod tests {
                 alignment: None,
             }),
         );
+    }
+
+    #[test]
+    fn test_assert_command() {
+        check_linker_script(
+            r#"
+            SECTIONS {
+                .text : { *(.text) }
+            }
+            ASSERT(. < 0x10000, "Output too large");
+            "#,
+            &LinkerScript {
+                commands: vec![
+                    Command::Sections(Sections {
+                        commands: vec![SectionCommand::Section(Section {
+                            output_section_name: ".text".as_bytes(),
+                            commands: vec![ContentsCommand::Matcher(Matcher {
+                                must_keep: false,
+                                input_file_pattern: None,
+                                input_section_name_patterns: vec![".text".as_bytes()],
+                            })],
+                            alignment: None,
+                        })],
+                    }),
+                    Command::Assert {
+                        expression: ". < 0x10000".as_bytes(),
+                        message: "Output too large".as_bytes(),
+                    },
+                ],
+            },
+        );
+    }
+
+    #[test]
+    fn test_assert_in_sections() {
+        check_linker_script(
+            r#"
+            SECTIONS {
+                .text : { *(.text) }
+                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large");
+            }
+            "#,
+            &LinkerScript {
+                commands: vec![Command::Sections(Sections {
+                    commands: vec![
+                        SectionCommand::Section(Section {
+                            output_section_name: ".text".as_bytes(),
+                            commands: vec![ContentsCommand::Matcher(Matcher {
+                                must_keep: false,
+                                input_file_pattern: None,
+                                input_section_name_patterns: vec![".text".as_bytes()],
+                            })],
+                            alignment: None,
+                        }),
+                        SectionCommand::Assert {
+                            expression: "SIZEOF(.text) < 0x1000".as_bytes(),
+                            message: "Text section too large".as_bytes(),
+                        },
+                    ],
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn test_assert_with_complex_expression() {
+        let script =
+            parse_script(r#"ASSERT(__bss_end - __bss_start <= 0x1000, "BSS too large");"#).unwrap();
+
+        assert_eq!(script.commands.len(), 1);
+        match &script.commands[0] {
+            Command::Assert {
+                expression,
+                message,
+            } => {
+                assert_eq!(*expression, "__bss_end - __bss_start <= 0x1000".as_bytes());
+                assert_eq!(*message, "BSS too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
     }
 }

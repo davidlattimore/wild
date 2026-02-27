@@ -215,6 +215,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                         }
                         SectionCommand::SetLocation(new_location) => location = Some(*new_location),
                         SectionCommand::Align(a) => extra_min_alignment = *a,
+                        SectionCommand::Assert { .. } => {
+                            // ASSERT commands are parsed but not yet evaluated during layout.
+                            // TODO: Implement assertion evaluation
+                        }
                     }
                 }
             }
