@@ -3364,11 +3364,24 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Lay
                         })?;
                     }
                     FileLayout::Prelude(prelude) => {
-                        write_prelude_dynsym(
+                        let offset = sym_def
+                            .symbol_id
+                            .offset_from(prelude.internal_symbols.start_symbol_id);
+                        let def_info = prelude
+                            .internal_symbols
+                            .symbol_definitions
+                            .get(offset)
+                            .with_context(|| {
+                                format!(
+                                    "Invalid prelude symbol {}",
+                                    layout.symbol_debug(sym_def.symbol_id)
+                                )
+                            })?;
+                        write_internal_dyn_symbol(
                             &mut table_writer.dynsym_writer,
                             layout,
                             sym_def.symbol_id,
-                            prelude,
+                            def_info,
                         )?;
                         if let Some(versym) = table_writer.versym.as_mut() {
                             write_symbol_version(versym, sym_def.version)?;
@@ -3405,7 +3418,7 @@ fn write_linker_script_dynsym(
         crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
+        return write_internal_dyn_symbol(dynsym_writer, layout, symbol_id, info);
     }
 
     let section_id = info
@@ -3489,8 +3502,23 @@ fn get_symbol_attributes(layout: &Layout, symbol_id: SymbolId) -> Result<(u16, u
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
-        _ => {
-            // For non-object files (e.g., prelude, epilogue), default to ABS
+        crate::grouping::SequencedInput::Prelude(prelude) =\u003e {
+            let offset = symbol_id.offset_from(prelude.symbol_definitions_range().start());
+            let def_info = prelude
+                .symbol_definitions
+                .get(offset)
+                .with_context(|| format!(\"Invalid prelude symbol {}\", layout.symbol_debug(symbol_id)))?;
+            let shndx = def_info.section_id().map_or(object::elf::SHN_ABS, |section_id| {
+                let section_id = layout.output_sections.primary_output_section(section_id);
+                layout
+                    .output_sections
+                    .output_index_of_section(section_id)
+                    .unwrap_or(object::elf::SHN_ABS)
+            });
+            Ok((shndx, def_info.elf_symbol_type))
+        }
+        _ =\u003e {
+            // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
         }
     }
@@ -3500,58 +3528,25 @@ fn write_prelude_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &Layout,
     symbol_id: SymbolId,
-    prelude: &PreludeLayout,
-) -> Result {
+    prelude: \u0026PreludeLayout,
+) -\u003e Result {
     let offset = symbol_id.offset_from(prelude.internal_symbols.start_symbol_id);
     let def_info = prelude
         .internal_symbols
         .symbol_definitions
         .get(offset)
-        .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
+        .with_context(|| format!(\"Invalid prelude symbol {}\", layout.symbol_debug(symbol_id)))?;
 
-    if matches!(
-        def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
-    }
-
-    let section_id = def_info
-        .section_id()
-        .context("Tried to export dynamic symbol not associated with a section")?;
-
-    let section_id = layout.output_sections.primary_output_section(section_id);
-
-    let shndx = layout
-        .output_sections
-        .output_index_of_section(section_id)
-        .context("Tried to write dynamic symbol in section that's not being output")?;
-
-    let resolution = layout
-        .local_symbol_resolution(symbol_id)
-        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
-
-    let address = resolution.address()?;
-    let name = layout.symbol_db.symbol_name(symbol_id)?;
-
-    dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
-
-    Ok(())
+    write_internal_dyn_symbol(dynsym_writer, layout, symbol_id, def_info)
 }
 
-/// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
-fn write_defsym_dynsym(
+/// Writes a dynsym entry for an internal symbol.
+fn write_internal_dyn_symbol(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &Layout,
     symbol_id: SymbolId,
     def_info: &crate::parsing::InternalSymDefInfo,
 ) -> Result {
-    debug_assert!(matches!(
-        def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ));
 
     let resolution = layout
         .local_symbol_resolution(symbol_id)
