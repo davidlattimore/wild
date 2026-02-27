@@ -3209,7 +3209,7 @@ impl<'data> PreludeLayoutState<'data> {
 
         <File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
 
-        if args.gdb_index {
+        if args.gdb_index && total_debug_info_section_count > 0 {
             let gdb_index_size = compute_gdb_index_size(total_debug_info_section_count);
             common.allocate(part_id::GDB_INDEX, gdb_index_size);
         }

@@ -13,8 +13,7 @@
 
 //#Config:no-debug-info:default
 //#LinkArgs:--gdb-index
-//#DiffIgnore:section.gdb_index
-//#ExpectSection:.gdb_index
+//#NoSection:.gdb_index
 
 #include "runtime.h"
 

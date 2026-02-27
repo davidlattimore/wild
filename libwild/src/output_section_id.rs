@@ -579,7 +579,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GDB_INDEX_SECTION_NAME)),
         ty: sht::PROGBITS,
-        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
