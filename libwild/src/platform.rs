@@ -1,10 +1,13 @@
 use crate::Args;
 use crate::OutputKind;
 use crate::Result;
+use crate::bail;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
+use crate::layout;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
+use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -12,13 +15,16 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::resolution::LoadedMetrics;
+use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
+use rayon::Scope;
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -104,10 +110,18 @@ pub(crate) trait Platform<'data>: 'data {
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <<Self::File as ObjectFile<'data>>::SectionHeader as SectionHeader>::SectionFlags,
+        section_flags: <Self::File as ObjectFile<'data>>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
+
+    fn process_riscv_attributes(
+        _object: &Self::File,
+        _format_specific: &mut <Self::File as ObjectFile<'data>>::FileLayoutState,
+        _riscv_attributes_section_index: object::SectionIndex,
+    ) -> Result {
+        bail!(".riscv.attribute section is supported only for riscv64 target");
+    }
 }
 
 pub(crate) trait Relaxation {
@@ -132,7 +146,10 @@ pub(crate) struct RelaxSymbolInfo {
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
     type Symbol: Symbol;
-    type SectionHeader: SectionHeader;
+    type SectionHeader: SectionHeader<'data, Self>;
+    type SectionFlags: SectionFlags;
+    type SectionType: SectionType;
+    type SectionAttributes: SectionAttributes;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues: DynamicTagValues<'data>;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
@@ -144,12 +161,14 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type DynamicLayout: std::fmt::Debug + Send + Sync + 'data;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'data;
     type NonAddressableCounts: Default + Send + Sync + 'data;
+    type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
+    type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Copy;
 
     /// Format-specific per-file state used during the layout phase.
-    type FileLayoutState: 'static;
+    type FileLayoutState: 'data;
 
     /// Format-specific properties produced by the layout phase.
     type LayoutProperties: 'static;
@@ -246,6 +265,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
     ) -> Self::DynamicLayout;
+
+    fn new_epilogue_layout(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self::EpilogueLayout;
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
@@ -348,19 +373,63 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
     where
-        'data: 'files;
+        'data: 'files,
+        'data: 'states;
+
+    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+        object: &mut ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        eh_frame_section_index: object::SectionIndex,
+        resources: &'scope layout::GraphResources<'data, '_>,
+        queue: &mut layout::LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
+    /// Called when a section is loaded (not GCed). Implementations should process any exception
+    /// frame data related to the loaded section.
+    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+        object: &mut layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        queue: &mut layout::LocalWorkQueue,
+        unloaded: UnloadedSection,
+        resources: &'scope layout::GraphResources<'data, 'scope>,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
+    fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
+
+    /// Called after GC phase has completed. Mostly useful for platform-specific logging.
+    fn finalise_find_required_sections(groups: &[layout::GroupState]);
+
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args);
+
+    fn finalise_object_sizes(
+        object: &mut layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState,
+    );
+
+    fn finalise_object_layout(
+        object: &layout::ObjectLayoutState<'data>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    );
+
+    fn compute_object_addresses(
+        object: &layout::ObjectLayoutState<'data>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    );
+
+    /// Resolves a reference to the frame data section.
+    fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
 }
 
-pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
-    type SectionFlags: SectionFlags;
-    type SectionType: SectionType;
-    type Attributes: SectionAttributes;
+pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
+    std::fmt::Debug + Send + Sync + 'data
+{
+    fn flags(&self) -> O::SectionFlags;
 
-    fn flags(&self) -> Self::SectionFlags;
+    fn attributes(&self) -> O::SectionAttributes;
 
-    fn attributes(&self) -> Self::Attributes;
-
-    fn section_type(&self) -> Self::SectionType;
+    fn section_type(&self) -> O::SectionType;
 }
 
 pub(crate) trait SectionType: Copy {
@@ -497,4 +566,19 @@ pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);
 pub(crate) struct SourceInfoDetails {
     pub(crate) path: PathBuf,
     pub(crate) line: u64,
+}
+
+/// An index into the exception frames for an object. Interpretation of the value is up to the
+/// platform.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameIndex(NonZeroU32);
+
+impl FrameIndex {
+    pub(crate) fn from_usize(raw: usize) -> Self {
+        Self(NonZeroU32::new(raw as u32 + 1).unwrap())
+    }
+
+    pub(crate) fn as_usize(self) -> usize {
+        self.0.get() as usize - 1
+    }
 }

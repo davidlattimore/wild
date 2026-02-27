@@ -2,6 +2,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::RelocationList;
 use crate::ensure;
 use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform::ObjectFile as _;
 use crate::platform::RelaxSymbolInfo;
@@ -271,6 +272,17 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
             section,
             offset_in_section,
         )
+    }
+
+    fn process_riscv_attributes(
+        object: &Self::File,
+        format_specific: &mut <Self::File as crate::platform::ObjectFile<'data>>::FileLayoutState,
+        riscv_attributes_section_index: object::SectionIndex,
+    ) -> Result {
+        format_specific.riscv_attributes =
+            crate::elf::process_riscv_attributes(object, riscv_attributes_section_index)
+                .context("Cannot parse .riscv.attributes section")?;
+        Ok(())
     }
 }
 

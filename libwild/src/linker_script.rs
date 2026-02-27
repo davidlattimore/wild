@@ -119,7 +119,10 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
 pub(crate) struct Matcher<'a> {
     pub(crate) must_keep: bool,
 
-    // TODO: Add support for matching based on input filenames.
+    /// Optional glob pattern for matching input filenames. `None` means match all files (i.e. the
+    /// `*` wildcard was used, or no filename was specified).
+    pub(crate) input_file_pattern: Option<&'a [u8]>,
+
     pub(crate) input_section_name_patterns: Vec<&'a [u8]>,
 }
 
@@ -427,8 +430,8 @@ fn parse_keep<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input
 }
 
 fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
-    // For now, we only support wildcards here.
-    '*'.parse_next(input)?;
+    // Parse the file pattern token (e.g., *, foo.o, *crtbegin*.o).
+    let file_pattern = parse_token(input)?;
     skip_comments_and_whitespace(input)?;
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
@@ -436,8 +439,16 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
     let (patterns, _) = repeat_till(0.., parse_pattern, ')').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
+    // A bare `*` means "match all files", represented as None.
+    let input_file_pattern = if file_pattern == b"*" {
+        None
+    } else {
+        Some(file_pattern)
+    };
+
     Ok(Matcher {
         must_keep: false,
+        input_file_pattern,
         input_section_name_patterns: patterns,
     })
 }
@@ -648,10 +659,12 @@ mod tests {
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
+                        input_file_pattern: None,
                         input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
+                        input_file_pattern: None,
                         input_section_name_patterns: vec![".text3".as_bytes()],
                     }),
                 ],
@@ -697,6 +710,7 @@ mod tests {
                                     }),
                                     ContentsCommand::Matcher(Matcher {
                                         must_keep: true,
+                                        input_file_pattern: None,
                                         input_section_name_patterns: vec![".rodata.foo".as_bytes()],
                                     }),
                                     ContentsCommand::Align(Alignment::new(32).unwrap()),
@@ -819,5 +833,60 @@ mod tests {
         let version_script = VersionScript::parse(script_data).unwrap();
 
         assert_eq!(version_script.version_count(), 2);
+    }
+
+    #[test]
+    fn test_section_command_with_filename() {
+        check_section_command(
+            ".text : { foo.o(.text .text2) *(.text3) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text".as_bytes(),
+                commands: vec![
+                    ContentsCommand::Matcher(Matcher {
+                        must_keep: false,
+                        input_file_pattern: Some("foo.o".as_bytes()),
+                        input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
+                    }),
+                    ContentsCommand::Matcher(Matcher {
+                        must_keep: false,
+                        input_file_pattern: None,
+                        input_section_name_patterns: vec![".text3".as_bytes()],
+                    }),
+                ],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_command_with_glob_filename() {
+        check_section_command(
+            ".ctors : { *crtbegin*.o(.ctors) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".ctors".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: Some("*crtbegin*.o".as_bytes()),
+                    input_section_name_patterns: vec![".ctors".as_bytes()],
+                })],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_keep_with_filename() {
+        check_section_command(
+            ".init : { KEEP(crti.o(.init)) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".init".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: true,
+                    input_file_pattern: Some("crti.o".as_bytes()),
+                    input_section_name_patterns: vec![".init".as_bytes()],
+                })],
+                alignment: None,
+            }),
+        );
     }
 }

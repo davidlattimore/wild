@@ -15,7 +15,7 @@ repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
 version = "0.8.0"
 readme = "README.md"
-rust-version = "1.92"
+rust-version = "1.93"
 edition = "2024"
 
 # Note, the versions listed here are minimum supported versions and should only be increased when
