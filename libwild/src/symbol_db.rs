@@ -1368,12 +1368,10 @@ impl SymbolPrioritySelector {
                     self.first_weak = Some(id);
                 }
             }
-            SymbolStrength::Common(size) => {
-                match self.max_common {
-                    Some((prev_size, _)) if size <= prev_size => {}
-                    _ => self.max_common = Some((size, id)),
-                }
-            }
+            SymbolStrength::Common(size) => match self.max_common {
+                Some((prev_size, _)) if size <= prev_size => {}
+                _ => self.max_common = Some((size, id)),
+            },
             SymbolStrength::Undefined => {}
         }
     }
