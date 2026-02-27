@@ -10,6 +10,8 @@
 //#LinkArgs:--gdb-index
 //#DiffIgnore:section.gdb_index
 //#ExpectSection:.gdb_index
+//#ValidateGdbIndex:true
+//#ExpectGdbIndexCuCount:3
 
 //#Config:no-debug-info:default
 //#LinkArgs:--gdb-index

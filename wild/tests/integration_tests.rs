@@ -62,6 +62,13 @@
 //!
 //! NoSection:{section-name} Checks that the specified section does not exist in the output binary.
 //!
+//! ValidateGdbIndex:true Validates the structural integrity of the .gdb_index section. Checks
+//! version, offset consistency, CU list entries match .debug_info CUs, CU entries don't overlap
+//! and cover all of .debug_info, and address area entries reference .text.
+//!
+//! ExpectGdbIndexCuCount:{n} Asserts the exact number of CU entries in the .gdb_index section.
+//! Implies ValidateGdbIndex.
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -879,6 +886,8 @@ struct Assertions {
     absent_dynamic_entries: Vec<String>,
     expected_sections: Vec<String>,
     absent_sections: Vec<String>,
+    validate_gdb_index: bool,
+    expected_gdb_index_cu_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1140,6 +1149,17 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .assertions
                     .absent_sections
                     .push(arg.trim().to_owned()),
+                "ValidateGdbIndex" => {
+                    config.assertions.validate_gdb_index = true;
+                }
+                "ExpectGdbIndexCuCount" => {
+                    config.assertions.validate_gdb_index = true;
+                    config.assertions.expected_gdb_index_cu_count = Some(
+                        arg.trim()
+                            .parse()
+                            .with_context(|| format!("Invalid ExpectGdbIndexCuCount: {arg}"))?,
+                    );
+                }
                 "ExpectLoadAlignment" => {
                     let alignment_str = arg.trim();
                     let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
@@ -2712,6 +2732,9 @@ impl Assertions {
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
         self.verify_sections(&obj)?;
+        if self.validate_gdb_index {
+            self.verify_gdb_index(&obj)?;
+        }
         Ok(())
     }
 
@@ -2879,6 +2902,176 @@ impl Assertions {
                 bail!("Section `{absent}` should be absent but was found in output binary");
             }
         }
+        Ok(())
+    }
+
+    fn verify_gdb_index(&self, obj: &ElfFile64) -> Result {
+        let section = obj
+            .section_by_name(".gdb_index")
+            .context(".gdb_index section not found but ValidateGdbIndex was set")?;
+        let data = section.data()?;
+
+        // Validate minimum header size (6 x u32 = 24 bytes).
+        const HEADER_SIZE: usize = 24;
+        if data.len() < HEADER_SIZE {
+            bail!(
+                ".gdb_index section too small for header: {} bytes",
+                data.len()
+            );
+        }
+
+        let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let cu_list_offset = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        let tu_list_offset = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let address_area_offset = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
+        let symbol_table_offset = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let constant_pool_offset = u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize;
+
+        // Check version.
+        if version != 7 {
+            bail!(".gdb_index has version {version}, expected 7");
+        }
+
+        // Check offsets are monotonically non-decreasing and within bounds.
+        let offsets = [
+            ("cu_list", cu_list_offset),
+            ("tu_list", tu_list_offset),
+            ("address_area", address_area_offset),
+            ("symbol_table", symbol_table_offset),
+            ("constant_pool", constant_pool_offset),
+        ];
+        for pair in offsets.windows(2) {
+            if pair[0].1 > pair[1].1 {
+                bail!(
+                    ".gdb_index offset {} ({}) > {} ({})",
+                    pair[0].0,
+                    pair[0].1,
+                    pair[1].0,
+                    pair[1].1
+                );
+            }
+        }
+        if constant_pool_offset > data.len() {
+            bail!(
+                ".gdb_index constant_pool_offset ({constant_pool_offset}) exceeds section size ({})",
+                data.len()
+            );
+        }
+
+        // Validate CU list entries are properly sized (each is 16 bytes).
+        let cu_list_size = tu_list_offset - cu_list_offset;
+        if !cu_list_size.is_multiple_of(16) {
+            bail!(".gdb_index CU list size ({cu_list_size}) is not a multiple of 16");
+        }
+        let cu_count = cu_list_size / 16;
+
+        // Cross-check: if .debug_info exists, we should have CU entries.
+        let has_debug_info = obj.section_by_name(".debug_info").is_some();
+        if has_debug_info && cu_count == 0 {
+            bail!(".gdb_index has 0 CU entries but .debug_info section exists");
+        }
+        if !has_debug_info && cu_count > 0 {
+            bail!(".gdb_index has {cu_count} CU entries but no .debug_info section");
+        }
+
+        // Check expected CU count if specified.
+        if let Some(expected) = self.expected_gdb_index_cu_count
+            && cu_count != expected
+        {
+            bail!(".gdb_index has {cu_count} CU entries, expected {expected}");
+        }
+
+        // Validate address area entries are properly sized (each is 20 bytes).
+        let address_area_size = symbol_table_offset - address_area_offset;
+        if !address_area_size.is_multiple_of(20) {
+            bail!(".gdb_index address area size ({address_area_size}) is not a multiple of 20");
+        }
+
+        // Parse and validate each CU entry.
+        let mut cu_ranges: Vec<(u64, u64)> = Vec::with_capacity(cu_count);
+        for i in 0..cu_count {
+            let entry_off = cu_list_offset + i * 16;
+            let cu_offset = u64::from_le_bytes(data[entry_off..entry_off + 8].try_into().unwrap());
+            let cu_length =
+                u64::from_le_bytes(data[entry_off + 8..entry_off + 16].try_into().unwrap());
+            if cu_length == 0 {
+                bail!(".gdb_index CU entry {i} has zero length");
+            }
+            // CU entries should be within .debug_info bounds.
+            if let Some(di_section) = obj.section_by_name(".debug_info") {
+                let di_size = di_section.size();
+                if cu_offset + cu_length > di_size {
+                    bail!(
+                        ".gdb_index CU entry {i}: offset {cu_offset} + length {cu_length} \
+                         exceeds .debug_info size {di_size}"
+                    );
+                }
+            }
+            cu_ranges.push((cu_offset, cu_length));
+        }
+
+        // Check that CU entries are sorted by offset and don't overlap.
+        for i in 1..cu_ranges.len() {
+            let (prev_off, prev_len) = cu_ranges[i - 1];
+            let (cur_off, _) = cu_ranges[i];
+            let prev_end = prev_off + prev_len;
+            if cur_off < prev_end {
+                bail!(
+                    ".gdb_index CU entries {prev} and {cur} overlap: entry {prev} ends at \
+                     offset {prev_end}, entry {cur} starts at offset {cur_off}",
+                    prev = i - 1,
+                    cur = i
+                );
+            }
+        }
+
+        // Check that CU entries together cover all of .debug_info.
+        if let Some(di_section) = obj.section_by_name(".debug_info") {
+            let di_size = di_section.size();
+            if !cu_ranges.is_empty() {
+                let total_cu_coverage: u64 = cu_ranges.iter().map(|&(_, len)| len).sum();
+                if total_cu_coverage != di_size {
+                    bail!(
+                        ".gdb_index CU entries cover {total_cu_coverage} bytes but \
+                         .debug_info is {di_size} bytes"
+                    );
+                }
+            }
+        }
+
+        // Validate address area entries.
+        let addr_entry_count = address_area_size / 20;
+        let text_section = obj.section_by_name(".text");
+        for i in 0..addr_entry_count {
+            let entry_off = address_area_offset + i * 20;
+            let low = u64::from_le_bytes(data[entry_off..entry_off + 8].try_into().unwrap());
+            let high = u64::from_le_bytes(data[entry_off + 8..entry_off + 16].try_into().unwrap());
+            let cu_idx =
+                u32::from_le_bytes(data[entry_off + 16..entry_off + 20].try_into().unwrap());
+            if low > high {
+                bail!(".gdb_index address entry {i}: low ({low:#x}) > high ({high:#x})");
+            }
+            if cu_idx as usize >= cu_count {
+                bail!(".gdb_index address entry {i}: cu_index ({cu_idx}) >= cu_count ({cu_count})");
+            }
+            // Cross-check against .text section if available.
+            if let Some(ref text) = text_section {
+                let text_addr = text.address();
+                let text_end = text_addr + text.size();
+                if low < text_addr || high > text_end {
+                    bail!(
+                        ".gdb_index address entry {i}: range [{low:#x}, {high:#x}) is outside \
+                         .text [{text_addr:#x}, {text_end:#x})"
+                    );
+                }
+            }
+        }
+
+        // If we have CUs, we should have at least one address area entry.
+        if cu_count > 0 && addr_entry_count == 0 {
+            bail!(".gdb_index has {cu_count} CU entries but no address area entries");
+        }
+
         Ok(())
     }
 }
