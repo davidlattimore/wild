@@ -362,7 +362,11 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     ] {
         Cow::Borrowed(name)
     } else {
-        Cow::Owned(format!("Unknown aarch64 relocation type 0x{r_type:x}"))
+        match r_type {
+            crate::aarch64::R_AARCH64_PLT32 => Cow::Borrowed("R_AARCH64_PLT32"),
+            crate::aarch64::R_AARCH64_GOTPCREL32 => Cow::Borrowed("R_AARCH64_GOTPCREL32"),
+            _ => Cow::Owned(format!("Unknown aarch64 relocation type 0x{r_type:x}")),
+        }
     }
 }
 

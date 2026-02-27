@@ -10,6 +10,11 @@ use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 
+/// Missing from the `object` crate and upstream ELF header.
+/// See AArch64 ELF spec §5.7.5 (Static Data relocations).
+pub const R_AARCH64_PLT32: u32 = 314;
+pub const R_AARCH64_GOTPCREL32: u32 = 315;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -169,8 +174,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
 
-        // TODO: missing in upstream header file (as well as in Object crate):
-        // object::elf::R_AARCH64_PLT32
+        R_AARCH64_PLT32 => (
+            RelocationKind::PltRelative,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            1,
+        ),
 
         // 5.7.6   Static AArch64 relocations
         // Group relocations to create a 16-, 32-, 48-, or 64-bit unsigned data value or address
@@ -465,8 +475,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(31)),
             1,
         ),
-        // TODO: missing in upstream header file (as well as in Object crate)
-        // object::elf::R_AARCH64_GOTPCREL32
+        R_AARCH64_GOTPCREL32 => (
+            RelocationKind::GotRelative,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            1,
+        ),
         object::elf::R_AARCH64_GOT_LD_PREL19 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_aarch64(2, 21, AArch64Instruction::LdSt),
