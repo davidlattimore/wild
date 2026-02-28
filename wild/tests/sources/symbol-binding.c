@@ -4,8 +4,8 @@
 //#LinkArgs:-z now -as-needed
 //#SkipLinker:ld
 //#Shared:symbol-binding-dyn.c
-//#Object:symbol-binding-weak.c
-//#Archive:symbol-binding-strong.c
+//#Object:symbol-binding-1.c
+//#Archive:symbol-binding-2.c
 
 #include "runtime.h"
 
