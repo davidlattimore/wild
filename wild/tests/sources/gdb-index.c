@@ -12,6 +12,7 @@
 //#ExpectSection:.gdb_index
 //#ValidateGdbIndex:true
 //#ExpectGdbIndexCuCount:3
+//#TestUpdateInPlace:true
 
 //#Config:no-debug-info:default
 //#LinkArgs:--gdb-index

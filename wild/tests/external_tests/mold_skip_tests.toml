@@ -61,18 +61,6 @@ tests = [
   "warn-once.sh",
 ]
 
-[skipped_groups.gdb_index]
-reason = "GDB index support"
-tracking_issue = "https://github.com/davidlattimore/wild/issues/811"
-tests = [
-  "gdb-index-compress-output.sh",
-  "gdb-index-dwarf2.sh",
-  "gdb-index-dwarf3.sh",
-  "gdb-index-dwarf4.sh",
-  "gdb-index-dwarf5.sh",
-  "gdb-index-dwarf64.sh",
-  "gdb-index-split-dwarf.sh",
-]
 
 [skipped_groups.version_script]
 reason = "Version script support"
