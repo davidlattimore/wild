@@ -2187,7 +2187,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     // .debug_gnu_pubnames / .debug_gnu_pubtypes sections in each object that has a
     // .debug_info CU.  We do this only when --gdb-index is requested.
     let gdb_index_pubnames_symbol_size = if resources.symbol_db.args.gdb_index {
-        gdb_index::compute_symbol_table_size(
+        let (_, total) = gdb_index::compute_symbol_table_size(
             group_states
                 .iter()
                 .flat_map(|g| g.files.iter())
@@ -2216,7 +2216,8 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
                         .and_then(|(_, sec)| obj.object.raw_section_data(sec).ok());
                     (pubnames, pubtypes)
                 }),
-        )
+        );
+        total
     } else {
         0
     };

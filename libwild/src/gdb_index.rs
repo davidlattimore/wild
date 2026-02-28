@@ -114,7 +114,7 @@ impl<'a> Iterator for PubnamesIter<'a> {
 
 pub(crate) fn compute_symbol_table_size<'a>(
     sections: impl Iterator<Item = (Option<&'a [u8]>, Option<&'a [u8]>)>,
-) -> usize {
+) -> (usize, usize) {
     // Count how many times each name appears across all CUs.
     let mut name_ref_counts: HashMap<&'a [u8], usize> = HashMap::new();
 
@@ -127,16 +127,17 @@ pub(crate) fn compute_symbol_table_size<'a>(
     }
 
     if name_ref_counts.is_empty() {
-        return 0;
+        return (0, 0);
     }
 
     let num_symbols = name_ref_counts.len();
     let hash_table_slots = compute_hash_table_slots(num_symbols);
-    let symbol_table_bytes = hash_table_slots * 8;
+    let hash_table_bytes = hash_table_slots * 8;
     let cu_vectors_bytes: usize = name_ref_counts.values().map(|&count| 4 + count * 4).sum();
     let names_bytes: usize = name_ref_counts.keys().map(|n| n.len() + 1).sum();
 
-    symbol_table_bytes + cu_vectors_bytes + 1 + names_bytes
+    let total_bytes = hash_table_bytes + cu_vectors_bytes + 1 + names_bytes;
+    (hash_table_bytes, total_bytes)
 }
 
 pub(crate) fn write_symbol_table<'a>(

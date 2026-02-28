@@ -4100,6 +4100,7 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     // Compute the symbol table + constant pool from .debug_gnu_pubnames sections.
     // We need a second pass over objects-with-CUs, this time with their assigned CU indices.
     let pubnames_symbol_size: usize;
+    let pubnames_hash_table_bytes: usize;
     {
         let mut cu_index: u32 = 0;
         let sections_iter = layout.group_layouts.iter().flat_map(|g| g.files.iter()).filter_map(|f| {
@@ -4132,13 +4133,12 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
                 None
             }
         });
-        pubnames_symbol_size =
+        (pubnames_hash_table_bytes, pubnames_symbol_size) =
             gdb_index::compute_symbol_table_size(sections_iter.map(|(p, t, _)| (p, t)));
     }
 
-    let constant_pool_offset = symbol_table_offset + pubnames_symbol_size;
-
-    let needed = constant_pool_offset;
+    let constant_pool_offset = symbol_table_offset + pubnames_hash_table_bytes;
+    let needed = symbol_table_offset + pubnames_symbol_size;
     if allocated_len < needed {
         bail!(
             ".gdb_index allocation too small ({allocated_len} bytes, need at least \
@@ -4155,7 +4155,7 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     header.tu_list_offset = tu_list_offset as u32;
     header.address_area_offset = address_area_offset as u32;
     header.symbol_table_offset = symbol_table_offset as u32;
-    header.constant_pool_offset = constant_pool_offset as u32;
+    header.constant_pool_offset = constant_pool_offset as u32; // points to CU-vectors + names area
 
     let (cu_list, rest) =
         <[elf::GdbIndexCuEntry]>::mut_from_prefix_with_elems(rest, cu_count).unwrap();

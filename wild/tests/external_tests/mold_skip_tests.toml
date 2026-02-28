@@ -32,6 +32,7 @@ tests = [
   "package-metadata.sh",
   "relocatable-archive.sh",
   "relocatable-c++.sh",
+  "relocatable-compressed-debug-info.sh",  # `--relocatable` is not supported yet
   "relocatable-debug-info.sh",
   "relocatable-exception.sh",
   "relocatable-many-sections.sh",      # `-r`
