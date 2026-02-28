@@ -12,6 +12,8 @@
 //#Arch: aarch64
 //#SkipLinker:ld
 //#DiffEnabled:false
+//#RequiresAsmReloc:314
+//#RequiresAsmReloc:315
 
 .section .rodata, "a", @progbits
 .p2align 2

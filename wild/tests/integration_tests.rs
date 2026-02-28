@@ -102,6 +102,9 @@
 //! test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements are
 //! met and no tests are skipped.
 //!
+//! RequiresAsmReloc:{type} Checks if the assembler supports `.reloc` with the given numeric
+//! relocation type. Skips the test if the assembler doesn't support it.
+//!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
@@ -514,6 +517,7 @@ struct Config {
     requires_glibc_version: Option<String>,
     requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
+    requires_asm_reloc_types: Vec<u32>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     remove_sections: Vec<String>,
@@ -987,6 +991,7 @@ impl Config {
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
+            requires_asm_reloc_types: Vec::new(),
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
             auto_add_objects: true,
@@ -1242,6 +1247,13 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     config
                         .requires_compiler_flags
                         .extend(arg.trim().split(' ').map(str::to_owned));
+                }
+                "RequiresAsmReloc" => {
+                    config
+                        .requires_asm_reloc_types
+                        .push(arg.trim().parse().with_context(|| {
+                            format!("Invalid RequiresAsmReloc value: `{arg}`")
+                        })?);
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
@@ -3658,19 +3670,45 @@ fn verify_platform_requirements(
         verify_linker_plugin_requirements(config, cross_arch, src_path)?;
     }
 
-    if config.requires_compiler_flags.is_empty() {
-        return Ok(());
+    if !config.requires_compiler_flags.is_empty() {
+        let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
+            return Ok(());
+        };
+
+        verify_command_success(
+            Command::new(&compiler)
+                .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+                .args(&config.requires_compiler_flags),
+        )?;
     }
 
-    let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
-        return Ok(());
-    };
+    if !config.requires_asm_reloc_types.is_empty() {
+        let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
+            return Ok(());
+        };
 
-    verify_command_success(
-        Command::new(&compiler)
-            .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
-            .args(&config.requires_compiler_flags),
-    )
+        for reloc_type in &config.requires_asm_reloc_types {
+            let asm_snippet = format!(".reloc ., {reloc_type}, .\n");
+            let mut command = Command::new(&compiler);
+            command.args(["-c", "-x", "assembler", "-", "-o", "/dev/null"]);
+            command.stdin(Stdio::piped());
+            let mut child = command.spawn().with_context(|| {
+                format!("Failed to spawn {compiler} to check asm reloc support")
+            })?;
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                let _ = stdin.write_all(asm_snippet.as_bytes());
+            }
+            let status = child.wait()?;
+            if !status.success() {
+                bail!(
+                    "Assembler does not support .reloc with type {reloc_type}"
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn verify_linker_plugin_requirements(
