@@ -2142,6 +2142,46 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         .map(|g| g.common.format_specific.debug_info_section_count)
         .sum();
 
+    // Count total address entries needed for .gdb_index. For each object that has at least
+    // one .debug_info CU, count its loaded executable sections with non-zero size.
+    let debug_info_section_id = resources
+        .output_sections
+        .custom_name_to_id(SectionName(b".debug_info"));
+    let total_gdb_index_address_entry_count: usize = group_states
+        .iter()
+        .flat_map(|g| g.files.iter())
+        .filter_map(|f| {
+            if let FileLayoutState::Object(obj) = f {
+                Some(obj)
+            } else {
+                None
+            }
+        })
+        .filter(|obj| {
+            debug_info_section_id.is_some_and(|di_id| {
+                obj.sections.iter().any(|s| {
+                    matches!(s, SectionSlot::LoadedDebugInfo(sec) if sec.output_section_id() == di_id)
+                })
+            })
+        })
+        .map(|obj| {
+            obj.sections
+                .iter()
+                .filter(|s| {
+                    if let SectionSlot::Loaded(sec) = s {
+                        resources
+                            .output_sections
+                            .section_flags(sec.output_section_id())
+                            .contains(shf::EXECINSTR)
+                            && sec.size > 0
+                    } else {
+                        false
+                    }
+                })
+                .count()
+        })
+        .sum();
+
     let prelude_group = &mut group_states[0];
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
@@ -2152,6 +2192,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         resources.symbol_db.args,
         resources.symbol_db.output_kind,
         total_debug_info_section_count,
+        total_gdb_index_address_entry_count,
     );
 
     Ok(GcOutputs {
@@ -3015,12 +3056,13 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     }
 }
 
-fn compute_gdb_index_size(cu_count: usize) -> u64 {
+fn compute_gdb_index_size(cu_count: usize, address_entry_count: usize) -> u64 {
     let cu_count = cu_count as u64;
+    let address_entry_count = address_entry_count as u64;
 
     size_of::<elf::GdbIndexHeader>() as u64
         + cu_count * size_of::<elf::GdbIndexCuEntry>() as u64
-        + cu_count * size_of::<elf::GdbIndexAddressEntry>() as u64
+        + address_entry_count * size_of::<elf::GdbIndexAddressEntry>() as u64
 }
 
 impl<'data> PreludeLayoutState<'data> {
@@ -3189,6 +3231,7 @@ impl<'data> PreludeLayoutState<'data> {
         args: &Args,
         output_kind: OutputKind,
         total_debug_info_section_count: usize,
+        total_gdb_index_address_entry_count: usize,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
@@ -3204,7 +3247,10 @@ impl<'data> PreludeLayoutState<'data> {
         <File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
 
         if args.gdb_index && total_debug_info_section_count > 0 {
-            let gdb_index_size = compute_gdb_index_size(total_debug_info_section_count);
+            let gdb_index_size = compute_gdb_index_size(
+                total_debug_info_section_count,
+                total_gdb_index_address_entry_count,
+            );
             common.allocate(part_id::GDB_INDEX, gdb_index_size);
         }
     }
