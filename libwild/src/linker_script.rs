@@ -119,8 +119,49 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AssertCommand<'a> {
-    pub(crate) expression: &'a [u8],
+    pub(crate) expression: Expression<'a>,
     pub(crate) message: &'a [u8],
+}
+
+/// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
+///
+/// Currently supports:
+/// - Arithmetic: +, -, *, /
+/// - Comparison: <, >, <=, >=, ==, !=
+/// - Functions: SIZEOF, ADDR, ALIGN
+/// - Numbers (hex/decimal), symbols, location counter (.)
+/// - Parentheses for grouping
+///
+/// Not yet supported (can be added when needed):
+/// - Unary operators (-, !)
+/// - Bitwise operators (&, |, ^, ~, <<, >>)
+/// - Logical operators (&&, ||)
+/// - Ternary operator (? :)
+/// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Expression<'a> {
+    /// A numeric literal (e.g., 0x1000, 42)
+    Number(u64),
+    /// A symbol reference (e.g., __bss_start)
+    Symbol(&'a [u8]),
+    /// The location counter '.'
+    LocationCounter,
+    /// Binary arithmetic: +, -, *, /
+    Add(Box<Expression<'a>>, Box<Expression<'a>>),
+    Subtract(Box<Expression<'a>>, Box<Expression<'a>>),
+    Multiply(Box<Expression<'a>>, Box<Expression<'a>>),
+    Divide(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Comparison operators: <, >, <=, >=, ==, !=
+    LessThan(Box<Expression<'a>>, Box<Expression<'a>>),
+    GreaterThan(Box<Expression<'a>>, Box<Expression<'a>>),
+    LessEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    GreaterEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    Equal(Box<Expression<'a>>, Box<Expression<'a>>),
+    NotEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Function calls
+    Sizeof(&'a [u8]),
+    Addr(&'a [u8]),
+    Align(Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -265,8 +306,14 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
     skip_comments_and_whitespace(input)?;
 
     // Parse expression (everything until comma)
-    let expression = take_while(1.., |b| b != b',').parse_next(input)?;
-    let expression = expression.trim_ascii_end();
+    let expr_bytes = take_while(1.., |b| b != b',').parse_next(input)?;
+    let expr_bytes = expr_bytes.trim_ascii();
+
+    // Parse the expression
+    let expression = match parse_expression(expr_bytes) {
+        Ok(expr) => expr,
+        Err(_) => return Err(winnow::error::ContextError::default()),
+    };
 
     skip_comments_and_whitespace(input)?;
     ','.parse_next(input)?;
@@ -285,6 +332,305 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
         expression,
         message,
     })
+}
+
+/// Parse an expression from bytes
+fn parse_expression<'a>(input: &'a [u8]) -> Result<Expression<'a>> {
+    let mut pos = 0;
+    let expr = parse_comparison(input, &mut pos)?;
+
+    // Ensure we consumed all input
+    skip_whitespace(input, &mut pos);
+    if pos < input.len() {
+        return Err(error!(
+            "Unexpected trailing characters in expression: '{}'",
+            String::from_utf8_lossy(&input[pos..])
+        ));
+    }
+
+    Ok(expr)
+}
+
+/// Parse comparison operators: <, >, <=, >=, ==, !=
+fn parse_comparison<'a>(input: &'a [u8], pos: &mut usize) -> Result<Expression<'a>> {
+    let mut left = parse_additive(input, pos)?;
+
+    skip_whitespace(input, pos);
+
+    while *pos < input.len() {
+        let op = if input[*pos..].starts_with(b"<=") {
+            *pos += 2;
+            Some(CompOp::LessEqual)
+        } else if input[*pos..].starts_with(b">=") {
+            *pos += 2;
+            Some(CompOp::GreaterEqual)
+        } else if input[*pos..].starts_with(b"==") {
+            *pos += 2;
+            Some(CompOp::Equal)
+        } else if input[*pos..].starts_with(b"!=") {
+            *pos += 2;
+            Some(CompOp::NotEqual)
+        } else if input[*pos..].starts_with(b"<") {
+            *pos += 1;
+            Some(CompOp::LessThan)
+        } else if input[*pos..].starts_with(b">") {
+            *pos += 1;
+            Some(CompOp::GreaterThan)
+        } else {
+            None
+        };
+
+        if let Some(op) = op {
+            skip_whitespace(input, pos);
+            let right = parse_additive(input, pos)?;
+            left = match op {
+                CompOp::LessThan => Expression::LessThan(Box::new(left), Box::new(right)),
+                CompOp::GreaterThan => Expression::GreaterThan(Box::new(left), Box::new(right)),
+                CompOp::LessEqual => Expression::LessEqual(Box::new(left), Box::new(right)),
+                CompOp::GreaterEqual => Expression::GreaterEqual(Box::new(left), Box::new(right)),
+                CompOp::Equal => Expression::Equal(Box::new(left), Box::new(right)),
+                CompOp::NotEqual => Expression::NotEqual(Box::new(left), Box::new(right)),
+            };
+            skip_whitespace(input, pos);
+        } else {
+            break;
+        }
+    }
+
+    Ok(left)
+}
+
+/// Parse additive operators: +, -
+fn parse_additive<'a>(input: &'a [u8], pos: &mut usize) -> Result<Expression<'a>> {
+    let mut left = parse_multiplicative(input, pos)?;
+
+    skip_whitespace(input, pos);
+
+    while *pos < input.len() {
+        let op = if input[*pos] == b'+' {
+            *pos += 1;
+            Some(AddOp::Add)
+        } else if input[*pos] == b'-' {
+            *pos += 1;
+            Some(AddOp::Subtract)
+        } else {
+            None
+        };
+
+        if let Some(op) = op {
+            skip_whitespace(input, pos);
+            let right = parse_multiplicative(input, pos)?;
+            left = match op {
+                AddOp::Add => Expression::Add(Box::new(left), Box::new(right)),
+                AddOp::Subtract => Expression::Subtract(Box::new(left), Box::new(right)),
+            };
+            skip_whitespace(input, pos);
+        } else {
+            break;
+        }
+    }
+
+    Ok(left)
+}
+
+/// Parse multiplicative operators: *, /
+fn parse_multiplicative<'a>(input: &'a [u8], pos: &mut usize) -> Result<Expression<'a>> {
+    let mut left = parse_primary(input, pos)?;
+
+    skip_whitespace(input, pos);
+
+    while *pos < input.len() {
+        let op = if input[*pos] == b'*' {
+            *pos += 1;
+            Some(MulOp::Multiply)
+        } else if input[*pos] == b'/' {
+            *pos += 1;
+            Some(MulOp::Divide)
+        } else {
+            None
+        };
+
+        if let Some(op) = op {
+            skip_whitespace(input, pos);
+            let right = parse_primary(input, pos)?;
+            left = match op {
+                MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
+                MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
+            };
+            skip_whitespace(input, pos);
+        } else {
+            break;
+        }
+    }
+
+    Ok(left)
+}
+
+/// Parse primary expressions: numbers, symbols, functions, parentheses
+fn parse_primary<'a>(input: &'a [u8], pos: &mut usize) -> Result<Expression<'a>> {
+    skip_whitespace(input, pos);
+
+    if *pos >= input.len() {
+        return Err(error!("Unexpected end of expression"));
+    }
+
+    // Handle parentheses
+    if input[*pos] == b'(' {
+        *pos += 1;
+        skip_whitespace(input, pos);
+        let expr = parse_comparison(input, pos)?;
+        skip_whitespace(input, pos);
+        if *pos >= input.len() || input[*pos] != b')' {
+            return Err(error!("Expected closing parenthesis"));
+        }
+        *pos += 1;
+        return Ok(expr);
+    }
+
+    // Handle location counter '.'
+    if input[*pos] == b'.' && (*pos + 1 >= input.len() || !input[*pos + 1].is_ascii_alphanumeric())
+    {
+        *pos += 1;
+        return Ok(Expression::LocationCounter);
+    }
+
+    // Handle hex numbers (0x...)
+    if input[*pos..].starts_with(b"0x") || input[*pos..].starts_with(b"0X") {
+        *pos += 2;
+        let start = *pos;
+        while *pos < input.len() && input[*pos].is_ascii_hexdigit() {
+            *pos += 1;
+        }
+        let hex_str =
+            std::str::from_utf8(&input[start..*pos]).map_err(|_| error!("Invalid hex number"))?;
+        let num = u64::from_str_radix(hex_str, 16).map_err(|_| error!("Invalid hex number"))?;
+        return Ok(Expression::Number(num));
+    }
+
+    // Handle decimal numbers
+    if input[*pos].is_ascii_digit() {
+        let start = *pos;
+        while *pos < input.len() && input[*pos].is_ascii_digit() {
+            *pos += 1;
+        }
+        let num_str =
+            std::str::from_utf8(&input[start..*pos]).map_err(|_| error!("Invalid number"))?;
+        let num = num_str
+            .parse::<u64>()
+            .map_err(|_| error!("Invalid number"))?;
+        return Ok(Expression::Number(num));
+    }
+
+    // Handle identifiers (symbols or functions)
+    if input[*pos].is_ascii_alphabetic() || input[*pos] == b'_' {
+        let start = *pos;
+        while *pos < input.len()
+            && (input[*pos].is_ascii_alphanumeric() || input[*pos] == b'_' || input[*pos] == b'.')
+        {
+            *pos += 1;
+        }
+        let ident = &input[start..*pos];
+
+        skip_whitespace(input, pos);
+
+        // Check if it's a function call
+        if *pos < input.len() && input[*pos] == b'(' {
+            *pos += 1;
+            skip_whitespace(input, pos);
+
+            match ident {
+                b"SIZEOF" => {
+                    let arg = parse_function_arg(input, pos)?;
+                    Ok(Expression::Sizeof(arg))
+                }
+                b"ADDR" => {
+                    let arg = parse_function_arg(input, pos)?;
+                    Ok(Expression::Addr(arg))
+                }
+                b"ALIGN" => {
+                    let arg_expr = parse_comparison(input, pos)?;
+                    skip_whitespace(input, pos);
+                    if *pos >= input.len() || input[*pos] != b')' {
+                        return Err(error!("Expected closing parenthesis"));
+                    }
+                    *pos += 1;
+                    Ok(Expression::Align(Box::new(arg_expr)))
+                }
+                _ => Err(error!(
+                    "Unknown function: {}",
+                    String::from_utf8_lossy(ident)
+                )),
+            }
+        } else {
+            // It's a symbol
+            Ok(Expression::Symbol(ident))
+        }
+    } else {
+        Err(error!(
+            "Unexpected character in expression: {}",
+            input[*pos] as char
+        ))
+    }
+}
+
+/// Parse a function argument (section name)
+fn parse_function_arg<'a>(input: &'a [u8], pos: &mut usize) -> Result<&'a [u8]> {
+    skip_whitespace(input, pos);
+    let start = *pos;
+
+    // Section names can start with '.' or be alphanumeric
+    if *pos < input.len()
+        && (input[*pos] == b'.' || input[*pos].is_ascii_alphabetic() || input[*pos] == b'_')
+    {
+        while *pos < input.len()
+            && (input[*pos].is_ascii_alphanumeric() || input[*pos] == b'_' || input[*pos] == b'.')
+        {
+            *pos += 1;
+        }
+    }
+
+    if *pos == start {
+        return Err(error!("Expected section name"));
+    }
+
+    let arg = &input[start..*pos];
+    skip_whitespace(input, pos);
+
+    if *pos >= input.len() || input[*pos] != b')' {
+        return Err(error!("Expected closing parenthesis"));
+    }
+    *pos += 1;
+
+    Ok(arg)
+}
+
+/// Skip whitespace in expression
+fn skip_whitespace(input: &[u8], pos: &mut usize) {
+    while *pos < input.len() && input[*pos].is_ascii_whitespace() {
+        *pos += 1;
+    }
+}
+
+#[derive(Debug)]
+enum CompOp {
+    LessThan,
+    GreaterThan,
+    LessEqual,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug)]
+enum AddOp {
+    Add,
+    Subtract,
+}
+
+#[derive(Debug)]
+enum MulOp {
+    Multiply,
+    Divide,
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
@@ -954,7 +1300,10 @@ mod tests {
                         })],
                     }),
                     Command::Assert(AssertCommand {
-                        expression: ". < 0x10000".as_bytes(),
+                        expression: Expression::LessThan(
+                            Box::new(Expression::LocationCounter),
+                            Box::new(Expression::Number(0x10000)),
+                        ),
                         message: "Output too large".as_bytes(),
                     }),
                 ],
@@ -984,7 +1333,10 @@ mod tests {
                             alignment: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
-                            expression: "SIZEOF(.text) < 0x1000".as_bytes(),
+                            expression: Expression::LessThan(
+                                Box::new(Expression::Sizeof(".text".as_bytes())),
+                                Box::new(Expression::Number(0x1000)),
+                            ),
                             message: "Text section too large".as_bytes(),
                         }),
                     ],
@@ -1003,9 +1355,136 @@ mod tests {
             Command::Assert(assert_cmd) => {
                 assert_eq!(
                     assert_cmd.expression,
-                    "__bss_end - __bss_start <= 0x1000".as_bytes()
+                    Expression::LessEqual(
+                        Box::new(Expression::Subtract(
+                            Box::new(Expression::Symbol("__bss_end".as_bytes())),
+                            Box::new(Expression::Symbol("__bss_start".as_bytes())),
+                        )),
+                        Box::new(Expression::Number(0x1000)),
+                    )
                 );
                 assert_eq!(assert_cmd.message, "BSS too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_operator_precedence() {
+        // Test that multiplication has higher precedence than addition: 1 + 2 * 3 = 7
+        let script = parse_script(r#"ASSERT(1 + 2 * 3 == 7, "Math is broken");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Add(
+                            Box::new(Expression::Number(1)),
+                            Box::new(Expression::Multiply(
+                                Box::new(Expression::Number(2)),
+                                Box::new(Expression::Number(3)),
+                            )),
+                        )),
+                        Box::new(Expression::Number(7)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_nested_parentheses() {
+        // Test nested parentheses: (1 + 2) * (3 + 4) = 21
+        let script =
+            parse_script(r#"ASSERT((1 + 2) * (3 + 4) == 21, "Parentheses broken");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Multiply(
+                            Box::new(Expression::Add(
+                                Box::new(Expression::Number(1)),
+                                Box::new(Expression::Number(2)),
+                            )),
+                            Box::new(Expression::Add(
+                                Box::new(Expression::Number(3)),
+                                Box::new(Expression::Number(4)),
+                            )),
+                        )),
+                        Box::new(Expression::Number(21)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_function_in_comparison() {
+        // Test function call inside comparison: SIZEOF(.data) + SIZEOF(.bss) < 0x2000
+        let script = parse_script(
+            r#"ASSERT(SIZEOF(.data) + SIZEOF(.bss) < 0x2000, "Data sections too large");"#,
+        )
+        .unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LessThan(
+                        Box::new(Expression::Add(
+                            Box::new(Expression::Sizeof(".data".as_bytes())),
+                            Box::new(Expression::Sizeof(".bss".as_bytes())),
+                        )),
+                        Box::new(Expression::Number(0x2000)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_hex_numbers() {
+        // Test hexadecimal number parsing
+        let script = parse_script(r#"ASSERT(. < 0xDEADBEEF, "Too large");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LessThan(
+                        Box::new(Expression::LocationCounter),
+                        Box::new(Expression::Number(0xDEADBEEF)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_align_function() {
+        // Test ALIGN function with expression
+        let script =
+            parse_script(r#"ASSERT(ALIGN(. + 0x100) < 0x10000, "Aligned too large");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LessThan(
+                        Box::new(Expression::Align(Box::new(Expression::Add(
+                            Box::new(Expression::LocationCounter),
+                            Box::new(Expression::Number(0x100)),
+                        )))),
+                        Box::new(Expression::Number(0x10000)),
+                    )
+                );
             }
             _ => panic!("Expected Assert command"),
         }
