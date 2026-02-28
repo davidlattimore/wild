@@ -3016,19 +3016,11 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
 }
 
 fn compute_gdb_index_size(cu_count: usize) -> u64 {
-    const MIN_SYMBOL_TABLE_SLOTS: u64 = 1024;
-
     let cu_count = cu_count as u64;
-    let has_addresses = cu_count > 0;
 
     size_of::<elf::GdbIndexHeader>() as u64
         + cu_count * size_of::<elf::GdbIndexCuEntry>() as u64
-        + if has_addresses {
-            size_of::<elf::GdbIndexAddressEntry>() as u64
-        } else {
-            0
-        }
-        + MIN_SYMBOL_TABLE_SLOTS * 8
+        + cu_count * size_of::<elf::GdbIndexAddressEntry>() as u64
 }
 
 impl<'data> PreludeLayoutState<'data> {

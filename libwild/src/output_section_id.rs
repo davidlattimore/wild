@@ -88,7 +88,6 @@ pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
 pub(crate) const SFRAME: OutputSectionId = part_id::SFRAME.output_section_id();
-#[allow(dead_code)]
 pub(crate) const GDB_INDEX: OutputSectionId = part_id::GDB_INDEX.output_section_id();
 pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
 pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();

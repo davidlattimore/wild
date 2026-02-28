@@ -866,6 +866,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::DYNAMIC),
             ));
         }
+        if !self.gdb_index.is_empty() {
+            return Err(excessive_allocation(
+                ".gdb_index",
+                self.gdb_index.len() as u64,
+                *mem_sizes.get(part_id::GDB_INDEX),
+            ));
+        }
         Ok(())
     }
 
@@ -4004,6 +4011,11 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         return Ok(());
     }
 
+    let gdb_layout = layout.section_layouts.get(output_section_id::GDB_INDEX);
+    if gdb_layout.mem_size == 0 {
+        return Ok(());
+    }
+
     let allocated_len = table_writer.gdb_index.len();
     if allocated_len == 0 {
         return Ok(());
@@ -4017,11 +4029,16 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         debug_info_section_id.map_or(0, |id| layout.section_layouts.get(id).mem_offset);
 
     let mut cu_entries: Vec<elf::GdbIndexCuEntry> = Vec::new();
+    let mut address_entries: Vec<elf::GdbIndexAddressEntry> = Vec::new();
 
     if let Some(di_section_id) = debug_info_section_id {
+        let mut cu_index: u32 = 0;
         for group in &layout.group_layouts {
             for file in &group.files {
                 if let FileLayout::Object(object) = file {
+                    // Check if this object has a .debug_info CU.
+                    let mut this_cu_index: Option<u32> = None;
+
                     for (slot, resolution) in object
                         .sections
                         .iter()
@@ -4033,8 +4050,35 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
                         {
                             cu_entries.push(elf::GdbIndexCuEntry {
                                 cu_offset: address - debug_info_start,
-                                cu_length: section.capacity(),
+                                cu_length: section.size,
                             });
+                            this_cu_index = Some(cu_index);
+                            cu_index += 1;
+                        }
+                    }
+
+                    // For each CU, find the object's executable sections and
+                    // create per-CU address area entries.
+                    if let Some(cui) = this_cu_index {
+                        for (slot, resolution) in object
+                            .sections
+                            .iter()
+                            .zip(object.section_resolutions.iter())
+                        {
+                            if let SectionSlot::Loaded(section) = slot
+                                && layout
+                                    .output_sections
+                                    .section_flags(section.output_section_id())
+                                    .contains(shf::EXECINSTR)
+                                && let Some(address) = resolution.address()
+                                && section.size > 0
+                            {
+                                address_entries.push(elf::GdbIndexAddressEntry {
+                                    low_address: address,
+                                    high_address: address + section.size,
+                                    cu_index: cui,
+                                });
+                            }
                         }
                     }
                 }
@@ -4043,24 +4087,22 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     }
 
     let cu_count = cu_entries.len();
-    let has_addresses = cu_count > 0;
+    let addr_count = address_entries.len();
 
     let cu_list_offset = size_of::<elf::GdbIndexHeader>();
     let cu_list_size = cu_count * size_of::<elf::GdbIndexCuEntry>();
     let tu_list_offset = cu_list_offset + cu_list_size;
     let address_area_offset = tu_list_offset;
-    let address_area_size = if has_addresses {
-        size_of::<elf::GdbIndexAddressEntry>()
-    } else {
-        0
-    };
+    let address_area_size = addr_count * size_of::<elf::GdbIndexAddressEntry>();
     let symbol_table_offset = address_area_offset + address_area_size;
-    let constant_pool_offset = allocated_len;
+    // Empty symbol table and constant pool.
+    let constant_pool_offset = symbol_table_offset;
 
-    if allocated_len < symbol_table_offset {
+    let needed = constant_pool_offset;
+    if allocated_len < needed {
         bail!(
             ".gdb_index allocation too small ({allocated_len} bytes, need at least \
-             {symbol_table_offset} for {cu_count} CU(s))"
+             {needed} for {cu_count} CU(s) and {addr_count} address entries)"
         );
     }
 
@@ -4081,12 +4123,10 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         *out = *entry;
     }
 
-    if has_addresses {
-        let (addr_entry, _rest) = elf::GdbIndexAddressEntry::mut_from_prefix(rest).unwrap();
-        let text_layout = layout.section_layouts.get(output_section_id::TEXT);
-        addr_entry.low_address = text_layout.mem_offset;
-        addr_entry.high_address = text_layout.mem_offset + text_layout.mem_size;
-        addr_entry.cu_index = 0;
+    let (addr_list, _rest) =
+        <[elf::GdbIndexAddressEntry]>::mut_from_prefix_with_elems(rest, addr_count).unwrap();
+    for (out, entry) in addr_list.iter_mut().zip(address_entries.iter()) {
+        *out = *entry;
     }
 
     Ok(())

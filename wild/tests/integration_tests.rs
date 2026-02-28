@@ -3025,23 +3025,33 @@ impl Assertions {
             }
         }
 
-        // Check that CU entries together cover all of .debug_info.
+        // Check that CU entries together are within .debug_info bounds.
+        // Note: CU lengths reflect actual DWARF CU sizes, so alignment padding between
+        // input sections means total coverage may be less than the full .debug_info size.
         if let Some(di_section) = obj.section_by_name(".debug_info") {
             let di_size = di_section.size();
-            if !cu_ranges.is_empty() {
-                let total_cu_coverage: u64 = cu_ranges.iter().map(|&(_, len)| len).sum();
-                if total_cu_coverage != di_size {
-                    bail!(
-                        ".gdb_index CU entries cover {total_cu_coverage} bytes but \
-                         .debug_info is {di_size} bytes"
-                    );
-                }
+            if let Some(&(last_off, last_len)) = cu_ranges.last()
+                && last_off + last_len > di_size
+            {
+                bail!(
+                    ".gdb_index last CU entry ends at offset {} but \
+                     .debug_info is only {di_size} bytes",
+                    last_off + last_len
+                );
             }
         }
 
         // Validate address area entries.
+        // Collect all executable sections for cross-checking address ranges.
+        let exec_sections: Vec<_> = obj
+            .sections()
+            .filter(|s| {
+                matches!(s.flags(), object::SectionFlags::Elf { sh_flags } if sh_flags & u64::from(object::elf::SHF_EXECINSTR) != 0)
+            })
+            .map(|s| (s.address(), s.address() + s.size()))
+            .collect();
+
         let addr_entry_count = address_area_size / 20;
-        let text_section = obj.section_by_name(".text");
         for i in 0..addr_entry_count {
             let entry_off = address_area_offset + i * 20;
             let low = u64::from_le_bytes(data[entry_off..entry_off + 8].try_into().unwrap());
@@ -3054,14 +3064,15 @@ impl Assertions {
             if cu_idx as usize >= cu_count {
                 bail!(".gdb_index address entry {i}: cu_index ({cu_idx}) >= cu_count ({cu_count})");
             }
-            // Cross-check against .text section if available.
-            if let Some(ref text) = text_section {
-                let text_addr = text.address();
-                let text_end = text_addr + text.size();
-                if low < text_addr || high > text_end {
+            // Cross-check: the address range should fall within some executable section.
+            if !exec_sections.is_empty() {
+                let in_some_section = exec_sections
+                    .iter()
+                    .any(|&(sec_start, sec_end)| low >= sec_start && high <= sec_end);
+                if !in_some_section {
                     bail!(
-                        ".gdb_index address entry {i}: range [{low:#x}, {high:#x}) is outside \
-                         .text [{text_addr:#x}, {text_end:#x})"
+                        ".gdb_index address entry {i}: range [{low:#x}, {high:#x}) is not \
+                         within any executable section"
                     );
                 }
             }
