@@ -25,7 +25,7 @@ pub(crate) fn compute_hash_table_slots(num_symbols: usize) -> usize {
 
 pub(crate) fn attrs_to_cu_entry(attrs: u8, cu_index: u32) -> u32 {
     let kind = u32::from((attrs >> 4) & 0x7);
-    let is_static: u32 = if (attrs >> 7) != 0 { 1 } else { 0 };
+    let is_static = u32::from(attrs >> 7 != 0);
     (cu_index & 0x00FF_FFFF) | (kind << 28) | (is_static << 31)
 }
 
