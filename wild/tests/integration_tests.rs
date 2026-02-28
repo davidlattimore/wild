@@ -3580,6 +3580,7 @@ fn integration_test(
         "riscv-call-relaxation.s",
         "riscv-cross-object-call-relaxation.s",
         "riscv-hi20-relaxation.s",
+        "aarch64-plt32-gotpcrel32.s",
         "segment-end-syms.c",
         "linker-script-filename-match.c"
     )]
