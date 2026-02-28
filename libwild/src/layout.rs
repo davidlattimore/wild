@@ -48,7 +48,6 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::platform::DynamicTagValues as _;
 use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
@@ -89,7 +88,6 @@ use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use foldhash::HashSet;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
@@ -108,7 +106,6 @@ use object::LittleEndian;
 use object::SectionIndex;
 use object::elf::gnu_hash;
 use object::read::elf::Crel;
-use object::read::elf::Dyn as _;
 use object::read::elf::RelocationSections;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
@@ -141,7 +138,8 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
 ) -> Result<Layout<'data>> {
     timing_phase!("Layout");
 
-    let sonames = Sonames::new(&symbol_db.groups);
+    let layout_resources_ext =
+        <crate::elf::File<'data> as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -166,7 +164,7 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
                 &symbol_db,
                 &atomic_per_symbol_flags,
                 &output_sections,
-                sonames,
+                layout_resources_ext,
             )
         },
     );
@@ -1390,7 +1388,7 @@ pub(crate) struct GraphResources<'data, 'scope> {
     /// Groups that cannot be processed until all groups have completed activation.
     delay_processing: ArrayQueue<GroupState<'data>>,
 
-    sonames: Sonames<'data>,
+    pub(crate) layout_resources_ext: crate::elf::LayoutResourcesExt<'data>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -2088,7 +2086,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    sonames: Sonames<'data>,
+    layout_resources_ext: crate::elf::LayoutResourcesExt<'data>,
 ) -> Result<GcOutputs<'data>> {
     timing_phase!("Find required sections");
 
@@ -2115,7 +2113,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         start_stop_sections: output_sections.new_section_map(),
         activations_remaining: AtomicUsize::new(num_groups),
         delay_processing: ArrayQueue::new(1),
-        sonames,
+        layout_resources_ext,
     };
     let resources_ref = &resources;
 
@@ -5411,17 +5409,8 @@ impl<'data> DynamicLayoutState<'data> {
                 // object's dependencies are loaded.
 
                 let args = resources.symbol_db.args;
-                let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
-                    let is_executable = resources.symbol_db.output_kind.is_executable();
-                    !args.allow_shlib_undefined
-                        && is_executable
-                        // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
-                        // errors for shared objects that have all their dependencies in the link.
-                        // This is in contrast to GNU ld which recursively loads all transitive
-                        // dependencies of shared objects and checks our shared object against
-                        // those.
-                        && self.has_complete_deps(resources)
-                });
+                let check_undefined = *check_undefined_cache
+                    .get_or_insert_with(|| self.object.should_enforce_undefined(resources));
 
                 if check_undefined {
                     let symbol = self
@@ -5678,32 +5667,6 @@ impl<'data> DynamicLayoutState<'data> {
                 Ok((input_address, output_address))
             })
             .try_collect()
-    }
-
-    /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
-    /// we have loaded.
-    fn has_complete_deps(&self, resources: &GraphResources) -> bool {
-        let Ok(dynamic_tags) = self.object.dynamic_tags() else {
-            return true;
-        };
-
-        let e = LittleEndian;
-        for entry in dynamic_tags {
-            let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
-                object::elf::DT_NEEDED => {
-                    let Ok(name) = self.object.symbols.strings().get(value as u32) else {
-                        return false;
-                    };
-                    if !resources.sonames.contains(name) {
-                        return false;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        true
     }
 }
 
@@ -6056,41 +6019,6 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
     })?;
 
     Ok(())
-}
-
-pub(crate) struct Sonames<'data>(HashSet<&'data [u8]>);
-
-impl<'data> Sonames<'data> {
-    /// Builds an index of the DT_SONAMEs of the input dynamic objects. Note, that we include
-    /// --as-needed shared objects that we're not actually linking against. This means that we can
-    /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
-    /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
-    fn new(groups: &[Group<'data, crate::elf::File<'data>>]) -> Self {
-        timing_phase!("Build SONAME index");
-
-        Sonames(
-            groups
-                .iter()
-                .flat_map(|group| {
-                    let objects = match group {
-                        Group::Objects(objects) => *objects,
-                        _ => &[],
-                    };
-                    objects.iter().filter_map(|input| {
-                        input
-                            .parsed
-                            .object
-                            .dynamic_tag_values()
-                            .map(|tag_values| tag_values.lib_name(&input.parsed.input))
-                    })
-                })
-                .collect(),
-        )
-    }
-
-    fn contains(&self, name: &[u8]) -> bool {
-        self.0.contains(name)
-    }
 }
 
 impl<'scope, 'data> FinaliseLayoutResources<'scope, 'data> {
