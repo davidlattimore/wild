@@ -5859,7 +5859,8 @@ impl<'data> LinkerScriptLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        // Allocate space for any raw bytes that the linker script requested via BYTE/SHORT/LONG/QUAD
+        // Allocate space for any raw bytes that the linker script requested via
+        // BYTE/SHORT/LONG/QUAD
         for (section_id, data) in &self.section_datas {
             // Use alignment::MIN to match finalise_sizes and elf_writer.
             let part_id = section_id.part_id_with_alignment(alignment::MIN);
