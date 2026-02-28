@@ -69,11 +69,7 @@ pub(crate) enum Command<'a> {
         value: &'a [u8],
     },
     Provide(ProvideSymbolDefinition<'a>),
-    Assert {
-        /// ASSERT(expression, "message") — parsed but not yet evaluated.
-        expression: &'a [u8],
-        message: &'a [u8],
-    },
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -86,11 +82,7 @@ pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
     SetLocation(Location),
     Align(Alignment),
-    Assert {
-        /// ASSERT(expression, "message") — parsed but not yet evaluated
-        expression: &'a [u8],
-        message: &'a [u8],
-    },
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -123,6 +115,12 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
     pub(crate) name: &'a [u8],
     pub(crate) value: &'a [u8],
     pub(crate) hidden: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AssertCommand<'a> {
+    pub(crate) expression: &'a [u8],
+    pub(crate) message: &'a [u8],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -216,13 +214,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"VERSION" => Command::Version(parse_version(input)?),
         b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
-        b"ASSERT" => {
-            let (expression, message) = parse_assert(input)?;
-            Command::Assert {
-                expression,
-                message,
-            }
-        }
+        b"ASSERT" => Command::Assert(parse_assert(input)?),
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -268,7 +260,7 @@ fn parse_provide<'input>(
     })
 }
 
-fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<(&'input [u8], &'input [u8])> {
+fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertCommand<'input>> {
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
@@ -289,7 +281,10 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<(&'input [u8
     opt(';').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
-    Ok((expression, message))
+    Ok(AssertCommand {
+        expression,
+        message,
+    })
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
@@ -364,11 +359,7 @@ fn parse_section_command<'input>(
 
     // Handle ASSERT command
     if name == b"ASSERT" {
-        let (expression, message) = parse_assert(input)?;
-        return Ok(SectionCommand::Assert {
-            expression,
-            message,
-        });
+        return Ok(SectionCommand::Assert(parse_assert(input)?));
     }
 
     if name == b"." {
@@ -962,10 +953,10 @@ mod tests {
                             alignment: None,
                         })],
                     }),
-                    Command::Assert {
+                    Command::Assert(AssertCommand {
                         expression: ". < 0x10000".as_bytes(),
                         message: "Output too large".as_bytes(),
-                    },
+                    }),
                 ],
             },
         );
@@ -992,10 +983,10 @@ mod tests {
                             })],
                             alignment: None,
                         }),
-                        SectionCommand::Assert {
+                        SectionCommand::Assert(AssertCommand {
                             expression: "SIZEOF(.text) < 0x1000".as_bytes(),
                             message: "Text section too large".as_bytes(),
-                        },
+                        }),
                     ],
                 })],
             },
@@ -1009,12 +1000,12 @@ mod tests {
 
         assert_eq!(script.commands.len(), 1);
         match &script.commands[0] {
-            Command::Assert {
-                expression,
-                message,
-            } => {
-                assert_eq!(*expression, "__bss_end - __bss_start <= 0x1000".as_bytes());
-                assert_eq!(*message, "BSS too large".as_bytes());
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    "__bss_end - __bss_start <= 0x1000".as_bytes()
+                );
+                assert_eq!(assert_cmd.message, "BSS too large".as_bytes());
             }
             _ => panic!("Expected Assert command"),
         }
