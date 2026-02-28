@@ -8,6 +8,8 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:dynsym.w2.section
+//#ExpectSym:_start section=".text"
+//#ExpectSym:w4
 
 #include "runtime.h"
 

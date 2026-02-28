@@ -13,18 +13,23 @@
 // On aarch64, GNU ld seems to emit a GOT in the shared object even though it
 // isn't needed.
 //#DiffIgnore:section.got
+//#ExpectSym:_start section=".text"
+//#ExpectSym:foo_ptr section=".data"
 
 //#Config:origin:default
 //#LinkArgs:-z now -z origin
+//#ExpectDynamic:DT_FLAGS
 
 //#Config:nodelete:default
 //#LinkArgs:-z now -z nodelete
+//#ExpectDynamic:DT_FLAGS_1
 
 //#Config:symbolic:default
 //#LinkArgs:-z now -Bsymbolic
 // TODO: Set these
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
+//#ExpectDynamic:DT_FLAGS
 
 #include "runtime.h"
 

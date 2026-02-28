@@ -1,4 +1,5 @@
 //#Object:runtime.c
+//#TestUpdateInPlace:true
 
 #include "runtime.h"
 

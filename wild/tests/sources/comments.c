@@ -1,6 +1,7 @@
 //#Object:comments0.c
 //#Object:comments1.c
 //#Object:runtime.c
+//#TestUpdateInPlace:true
 
 #include "runtime.h"
 

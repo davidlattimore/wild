@@ -7,6 +7,10 @@
 //#DiffIgnore:dynsym.data1.*
 //#DiffIgnore:dynsym.data4.*
 //#DiffIgnore:dynsym.data5.*
+//#ExpectDynSym:data2
+//#ExpectDynSym:data3
+//#ExpectDynSym:get_data1
+//#ExpectDynSym:get_data5
 
 // This symbol is included, but isn't exported as a dynamic symbol because of a
 // second definition in our other file that's marked as hidden.
