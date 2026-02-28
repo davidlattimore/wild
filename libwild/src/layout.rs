@@ -4146,10 +4146,14 @@ impl<'data> ObjectLayoutState<'data> {
                 )?;
             }
             SectionSlot::Discard => {
-                bail!(
-                    "{self}: Don't know what segment to put `{}` in, but it's referenced",
-                    self.object.section_display_name(section_index),
-                );
+                // In partial-link mode, discarded sections may still be referenced
+                // (e.g. .discard.addressable in arm64 kernel modules). Just skip them.
+                if !resources.symbol_db.output_kind.is_partial_link() {
+                    bail!(
+                        "{self}: Don't know what segment to put `{}` in, but it's referenced",
+                        self.object.section_display_name(section_index),
+                    );
+                }
             }
             SectionSlot::Loaded(_)
             | SectionSlot::FrameData(..)
@@ -5856,13 +5860,8 @@ impl<'data> LinkerScriptLayoutState<'data> {
 
         // Allocate space for any raw bytes that the linker script requested via BYTE/SHORT/LONG/QUAD
         for (section_id, data) in &self.section_datas {
-            // Use the section's minimum alignment when choosing the part id.
-            let min_alignment = resources
-                .output_sections
-                .section_infos
-                .get(*section_id)
-                .min_alignment;
-            let part_id = section_id.part_id_with_alignment(min_alignment);
+            // Use alignment::MIN to match finalise_sizes and elf_writer.
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
             memory_offsets.increment(part_id, data.len() as u64);
         }
         Ok(())
@@ -5916,6 +5915,16 @@ impl<'data> LinkerScriptLayoutState<'data> {
             }
         }
 
+        // Mark sections that have BYTE/SHORT/LONG/QUAD data from the linker
+        // script as must-keep so they are included in the output even if no
+        // input sections map to them.
+        for (section_id, _data) in &self.section_datas {
+            resources
+                .must_keep_sections
+                .get(*section_id)
+                .fetch_or(true, atomic::Ordering::Relaxed);
+        }
+
         Ok(())
     }
 
@@ -5934,6 +5943,13 @@ impl<'data> LinkerScriptLayoutState<'data> {
                     .has_resolution()
             },
         )?;
+
+        // Account for raw bytes from BYTE/SHORT/LONG/QUAD linker script
+        // directives so that buffers are allocated for these sections.
+        for (section_id, data) in &self.section_datas {
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            *common.mem_sizes.get_mut(part_id) += data.len() as u64;
+        }
 
         Ok(())
     }
