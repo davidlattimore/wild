@@ -4,7 +4,7 @@ use self::elf::NoteProperty;
 use self::elf::get_page_mask;
 use crate::OutputKind;
 use crate::alignment;
-use crate::args::Args;
+use crate::args::ElfArgs;
 use crate::args::BuildIdOption;
 use crate::bail;
 use crate::debug_assert_bail;
@@ -4228,7 +4228,7 @@ struct DynamicEntryWriter {
 }
 
 struct DynamicEntryInputs<'layout> {
-    args: &'layout Args,
+    args: &'layout ElfArgs,
     has_static_tls: bool,
     has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,

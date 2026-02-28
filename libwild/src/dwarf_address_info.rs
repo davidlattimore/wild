@@ -15,8 +15,10 @@ use object::LittleEndian;
 use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use std::borrow::Cow;
+#[cfg(unix)]
 use std::ffi::OsStr;
 use std::fmt::Display;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -60,7 +62,17 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
         let comp_dir = unit
             .comp_dir
             .as_ref()
-            .map(|dir| Path::new(OsStr::from_bytes(dir)).to_owned())
+            .map(|dir| {
+                Path::new({
+                    #[cfg(not(unix))]
+                    {
+                        std::str::from_utf8(dir).expect("DWARF comp_dir is not valid UTF-8")
+                    }
+                    #[cfg(unix)]
+                    OsStr::from_bytes(dir)
+                })
+                .to_owned()
+            })
             .unwrap_or_default();
 
         let mut rows = program.rows();
@@ -78,9 +90,16 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
             if let Some(file) = row.file(header) {
                 path = comp_dir.clone();
 
-                path.push(OsStr::from_bytes(
-                    &dwarf.attr_string(&unit, file.path_name())?,
-                ));
+                let file_path_name = dwarf.attr_string(&unit, file.path_name())?;
+                path.push({
+                    #[cfg(not(unix))]
+                    {
+                        std::str::from_utf8(&file_path_name)
+                            .expect("DWARF file path is not valid UTF-8")
+                    }
+                    #[cfg(unix)]
+                    OsStr::from_bytes(&file_path_name)
+                });
             }
 
             let line = row.line().map_or(0, |l| l.get());

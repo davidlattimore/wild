@@ -1,0 +1,39 @@
+[package]
+name = "wlibwild"
+repository.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+bytemuck = { workspace = true }
+bytesize = { workspace = true }
+colored = { workspace = true }
+indexmap = { workspace = true }
+itertools = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+object = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["ansi"] }
+walkdir = "2"
+
+
+[target.'cfg(target_os = "windows")'.dependencies]
+phnt = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+]
+
+
+[lints]
+workspace = true

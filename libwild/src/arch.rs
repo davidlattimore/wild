@@ -14,6 +14,29 @@ pub(crate) enum Architecture {
     LoongArch64,
 }
 
+impl Default for Architecture {
+    fn default() -> Self {
+        Architecture::DEFAULT
+    }
+}
+
+impl Architecture {
+    pub const DEFAULT: Self = const {
+        #[cfg(target_arch = "x86_64")]
+        {
+            Architecture::X86_64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            Architecture::AArch64
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            Architecture::RISCV64
+        }
+    };
+}
+
 impl TryFrom<u16> for Architecture {
     type Error = crate::error::Error;
 

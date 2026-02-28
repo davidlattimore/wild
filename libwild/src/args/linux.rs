@@ -65,7 +65,7 @@ pub(crate) enum DefsymValue {
 }
 
 #[derive(Debug)]
-pub struct Args {
+pub struct ElfArgs {
     pub(crate) unrecognized_options: Vec<String>,
 
     pub(crate) arch: Architecture,
@@ -154,6 +154,7 @@ pub struct Args {
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
 
+
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
 
@@ -194,7 +195,7 @@ pub(crate) enum CopyRelocations {
 /// Represents a command-line argument that specifies the number of threads to use,
 /// triggering activation of the thread pool.
 pub struct ActivatedArgs {
-    pub args: Args,
+    pub args: ElfArgs,
     _jobserver_tokens: Vec<Acquired>,
 }
 
@@ -321,7 +322,7 @@ pub(crate) enum InputSpec {
     Search(Box<str>),
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) enum BSymbolicKind {
     None,
     All,
@@ -345,74 +346,11 @@ pub(crate) enum UnresolvedSymbols {
     IgnoreAll,
 }
 
-pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
-pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
-pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
-pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
-pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
-pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
+use super::consts::*;
 
-/// Set this environment variable if you get a failure during writing due to too much or too little
-/// space being allocated to some section. When set, each time we allocate during layout, we'll
-/// check that what we're doing is consistent with writing and fail in a more easy to debug way. i.e
-/// we'll report the particular combination of value flags, resolution flags etc that triggered the
-/// inconsistency.
-pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
-
-// These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
-// these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
-// other linkers. On the other, we should perhaps somehow let the user know that we don't support a
-// feature.
-const SILENTLY_IGNORED_FLAGS: &[&str] = &[
-    // Just like other modern linkers, we don't need groups in order to resolve cycles.
-    "start-group",
-    "end-group",
-    // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
-    // built-in search paths. Perhaps we should?
-    "nostdlib",
-    // TODO
-    "no-undefined-version",
-    "fatal-warnings",
-    "color-diagnostics",
-    "undefined-version",
-    "sort-common",
-    "stats",
-];
-const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
-    "(",
-    ")",
-    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld
-    // linker.
-    #[cfg(target_os = "illumos")]
-    "C",
-];
-
-const IGNORED_FLAGS: &[&str] = &[
-    "gdb-index",
-    "fix-cortex-a53-835769",
-    "fix-cortex-a53-843419",
-    "discard-all",
-    "use-android-relr-tags",
-    "x", // alias for --discard-all
-];
-
-// These flags map to the default behavior of the linker.
-const DEFAULT_FLAGS: &[&str] = &[
-    "no-call-graph-profile-sort",
-    "no-copy-dt-needed-entries",
-    "no-add-needed",
-    "discard-locals",
-    "no-fatal-warnings",
-    "no-use-android-relr-tags",
-];
-const DEFAULT_SHORT_FLAGS: &[&str] = &[
-    "X",  // alias for --discard-locals
-    "EL", // little endian
-];
-
-impl Default for Args {
+impl Default for ElfArgs {
     fn default() -> Self {
-        Args {
+        ElfArgs {
             arch: default_target_arch(),
             unrecognized_options: Vec::new(),
 
@@ -504,7 +442,7 @@ impl Default for Args {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<ElfArgs> {
     use crate::input_data::MAX_FILES_PER_GROUP;
 
     // SAFETY: Should be called early before other descriptors are opened and
@@ -523,7 +461,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         );
     }
 
-    let mut args = Args {
+    let mut args = ElfArgs {
         files_per_group,
         jobserver_client,
         ..Default::default()
@@ -596,8 +534,8 @@ pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     arguments_from_string(&contents)
 }
 
-impl Args {
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+impl ElfArgs {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<ElfArgs> {
         timing_phase!("Parse args");
         parse(input)
     }
@@ -817,34 +755,51 @@ fn warn_unsupported(opt: &str) -> Result {
     Ok(())
 }
 
-struct ArgumentParser {
-    options: HashMap<&'static str, OptionHandler>,
-    short_options: HashMap<&'static str, OptionHandler>, // Short option lookup
-    prefix_options: HashMap<&'static str, PrefixOptionHandler>, // For options like -L, -l, etc.
+pub(crate) struct ArgumentParser<ArgsType> {
+    options: HashMap<&'static str, OptionHandler<ArgsType>>,
+    short_options: HashMap<&'static str, OptionHandler<ArgsType>>,
+    prefix_options: HashMap<&'static str, PrefixOptionHandler<ArgsType>>,
+    case_insensitive: bool,
 }
 
-#[derive(Clone)]
-struct OptionHandler {
+struct OptionHandler<ArgsType> {
     help_text: &'static str,
-    handler: OptionHandlerFn,
+    handler: OptionHandlerFn<ArgsType>,
     short_names: Vec<&'static str>,
 }
 
-struct PrefixOptionHandler {
+impl<ArgsType> Clone for OptionHandler<ArgsType> {
+    fn clone(&self) -> Self {
+        Self {
+            help_text: self.help_text,
+            handler: self.handler,
+            short_names: self.short_names.clone(),
+        }
+    }
+}
+
+struct PrefixOptionHandler<ArgsType> {
     help_text: &'static str,
-    handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
-    sub_options: HashMap<&'static str, SubOption>,
+    handler: fn(&mut ArgsType, &mut Vec<Modifiers>, &str) -> Result<()>,
+    sub_options: HashMap<&'static str, SubOption<ArgsType>>,
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy)]
-enum OptionHandlerFn {
-    NoParam(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
-    WithParam(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
-    OptionalParam(fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
+enum OptionHandlerFn<ArgsType> {
+    NoParam(fn(&mut ArgsType, &mut Vec<Modifiers>) -> Result<()>),
+    WithParam(fn(&mut ArgsType, &mut Vec<Modifiers>, &str) -> Result<()>),
+    OptionalParam(fn(&mut ArgsType, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
 }
 
-impl OptionHandlerFn {
+impl<ArgsType> Clone for OptionHandlerFn<ArgsType> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<ArgsType> Copy for OptionHandlerFn<ArgsType> {}
+
+impl<ArgsType> OptionHandlerFn<ArgsType> {
     fn help_suffix_long(&self) -> &'static str {
         match self {
             OptionHandlerFn::NoParam(_) => "",
@@ -862,57 +817,82 @@ impl OptionHandlerFn {
     }
 }
 
-struct OptionDeclaration<'a, T> {
-    parser: &'a mut ArgumentParser,
+pub(crate) struct OptionDeclaration<'a, ArgsType, T> {
+    parser: &'a mut ArgumentParser<ArgsType>,
     long_names: Vec<&'static str>,
     short_names: Vec<&'static str>,
     prefixes: Vec<&'static str>,
-    sub_options: HashMap<&'static str, SubOption>,
+    sub_options: HashMap<&'static str, SubOption<ArgsType>>,
     help_text: &'static str,
     _phantom: std::marker::PhantomData<T>,
 }
 
-struct NoParam;
-struct WithParam;
-struct WithOptionalParam;
+pub struct NoParam;
+pub struct WithParam;
+pub struct WithOptionalParam;
 
-#[derive(Clone, Copy)]
-enum SubOptionHandler {
+enum SubOptionHandler<ArgsType> {
     /// Handler without value parameter (exact match)
-    NoValue(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
+    NoValue(fn(&mut ArgsType, &mut Vec<Modifiers>) -> Result<()>),
     /// Handler with value parameter (prefix match)
-    WithValue(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
+    WithValue(fn(&mut ArgsType, &mut Vec<Modifiers>, &str) -> Result<()>),
 }
 
-#[derive(Clone, Copy)]
-struct SubOption {
+impl<ArgsType> Clone for SubOptionHandler<ArgsType> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<ArgsType> Copy for SubOptionHandler<ArgsType> {}
+
+struct SubOption<ArgsType> {
     help: &'static str,
-    handler: SubOptionHandler,
+    handler: SubOptionHandler<ArgsType>,
 }
 
-impl SubOption {
+impl<ArgsType> Clone for SubOption<ArgsType> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<ArgsType> Copy for SubOption<ArgsType> {}
+
+impl<ArgsType> SubOption<ArgsType> {
     fn with_value(&self) -> bool {
         matches!(self.handler, SubOptionHandler::WithValue(_))
     }
 }
 
-impl Default for ArgumentParser {
+impl<ArgsType> Default for ArgumentParser<ArgsType> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ArgumentParser {
+impl<ArgsType> ArgumentParser<ArgsType> {
     #[must_use]
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             options: HashMap::new(),
             short_options: HashMap::new(),
             prefix_options: HashMap::new(),
+            case_insensitive: false,
         }
     }
 
-    fn declare(&mut self) -> OptionDeclaration<'_, NoParam> {
+    #[must_use]
+    pub fn new_case_insensitive() -> Self {
+        Self {
+            options: HashMap::new(),
+            short_options: HashMap::new(),
+            prefix_options: HashMap::new(),
+            case_insensitive: true,
+        }
+    }
+
+    pub fn declare(&mut self) -> OptionDeclaration<'_, ArgsType, NoParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -924,7 +904,7 @@ impl ArgumentParser {
         }
     }
 
-    fn declare_with_param(&mut self) -> OptionDeclaration<'_, WithParam> {
+    pub fn declare_with_param(&mut self) -> OptionDeclaration<'_, ArgsType, WithParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -936,7 +916,9 @@ impl ArgumentParser {
         }
     }
 
-    fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, WithOptionalParam> {
+    pub fn declare_with_optional_param(
+        &mut self,
+    ) -> OptionDeclaration<'_, ArgsType, WithOptionalParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -948,13 +930,32 @@ impl ArgumentParser {
         }
     }
 
-    fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
+    fn get_option_handler(&self, option_name: &str) -> Option<&OptionHandler<ArgsType>> {
+        if self.case_insensitive {
+            if let Some(handler) = self.options.get(option_name) {
+                return Some(handler);
+            }
+            for (key, handler) in &self.options {
+                if key.eq_ignore_ascii_case(option_name) {
+                    return Some(handler);
+                }
+            }
+            None
+        } else {
+            self.options.get(option_name)
+        }
+    }
+
+    pub(crate) fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
-        args: &mut Args,
+        args: &mut ArgsType,
         modifier_stack: &mut Vec<Modifiers>,
         arg: &str,
         input: &mut I,
-    ) -> Result<()> {
+    ) -> Result<()>
+    where
+        ArgsType: super::PrivateArgs,
+    {
         // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
@@ -966,13 +967,13 @@ impl ArgumentParser {
             return Ok(());
         }
 
-        if let Some(stripped) = strip_option(arg) {
-            // Check for option with '=' syntax
-            if let Some(eq_pos) = stripped.find('=') {
+        if let Some(stripped) = ArgsType::strip_option(arg) {
+            // Check for option with separator syntax
+            if let Some(eq_pos) = ArgsType::find_separator(stripped) {
                 let option_name = &stripped[..eq_pos];
                 let value = &stripped[eq_pos + 1..];
 
-                if let Some(handler) = self.options.get(option_name) {
+                if let Some(handler) = self.get_option_handler(option_name) {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
@@ -982,14 +983,14 @@ impl ArgumentParser {
                 }
             } else {
                 if stripped == "build-id"
-                    && let Some(handler) = self.options.get(stripped)
+                    && let Some(handler) = self.get_option_handler(stripped)
                     && let OptionHandlerFn::WithParam(f) = &handler.handler
                 {
                     f(args, modifier_stack, "fast")?;
                     return Ok(());
                 }
 
-                if let Some(handler) = self.options.get(stripped) {
+                if let Some(handler) = self.get_option_handler(stripped) {
                     match &handler.handler {
                         OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                         OptionHandlerFn::WithParam(f) => {
@@ -1068,20 +1069,20 @@ impl ArgumentParser {
             }
         }
 
-        if arg.starts_with('-') {
-            if let Some(stripped) = strip_option(arg)
+        if ArgsType::has_option_prefix(arg) {
+            if let Some(stripped) = ArgsType::strip_option(arg)
                 && IGNORED_FLAGS.contains(&stripped)
             {
                 warn_unsupported(arg)?;
                 return Ok(());
             }
 
-            args.unrecognized_options.push(arg.to_owned());
+            args.unrecognized_options_mut().push(arg.to_owned());
             return Ok(());
         }
 
-        args.save_dir.handle_file(arg);
-        args.inputs.push(Input {
+        args.save_dir_mut().handle_file(arg);
+        args.inputs_mut().push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,
             modifiers: *modifier_stack.last().unwrap(),
@@ -1193,36 +1194,36 @@ impl ArgumentParser {
     }
 }
 
-impl<'a, T> OptionDeclaration<'a, T> {
+impl<'a, ArgsType, T> OptionDeclaration<'a, ArgsType, T> {
     #[must_use]
-    fn long(mut self, name: &'static str) -> Self {
+    pub fn long(mut self, name: &'static str) -> Self {
         self.long_names.push(name);
         self
     }
 
     #[must_use]
-    fn short(mut self, option: &'static str) -> Self {
+    pub fn short(mut self, option: &'static str) -> Self {
         self.short_names.push(option);
         self
     }
 
     #[must_use]
-    fn help(mut self, text: &'static str) -> Self {
+    pub fn help(mut self, text: &'static str) -> Self {
         self.help_text = text;
         self
     }
 
-    fn prefix(mut self, prefix: &'static str) -> Self {
+    pub fn prefix(mut self, prefix: &'static str) -> Self {
         self.prefixes.push(prefix);
         self
     }
 
     #[must_use]
-    fn sub_option(
+    pub fn sub_option(
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>,
+        handler: fn(&mut ArgsType, &mut Vec<Modifiers>) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -1235,11 +1236,11 @@ impl<'a, T> OptionDeclaration<'a, T> {
     }
 
     #[must_use]
-    fn sub_option_with_value(
+    pub fn sub_option_with_value(
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+        handler: fn(&mut ArgsType, &mut Vec<Modifiers>, &str) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -1252,8 +1253,8 @@ impl<'a, T> OptionDeclaration<'a, T> {
     }
 }
 
-impl<'a> OptionDeclaration<'a, NoParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>) {
+impl<'a, ArgsType> OptionDeclaration<'a, ArgsType, NoParam> {
+    pub fn execute(self, handler: fn(&mut ArgsType, &mut Vec<Modifiers>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::NoParam(handler),
@@ -1272,8 +1273,8 @@ impl<'a> OptionDeclaration<'a, NoParam> {
     }
 }
 
-impl<'a> OptionDeclaration<'a, WithParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
+impl<'a, ArgsType> OptionDeclaration<'a, ArgsType, WithParam> {
+    pub fn execute(self, handler: fn(&mut ArgsType, &mut Vec<Modifiers>, &str) -> Result<()>) {
         let mut short_names = self.short_names.clone();
         short_names.extend_from_slice(&self.prefixes);
 
@@ -1305,8 +1306,11 @@ impl<'a> OptionDeclaration<'a, WithParam> {
     }
 }
 
-impl<'a> OptionDeclaration<'a, WithOptionalParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
+impl<'a, ArgsType> OptionDeclaration<'a, ArgsType, WithOptionalParam> {
+    pub fn execute(
+        self,
+        handler: fn(&mut ArgsType, &mut Vec<Modifiers>, Option<&str>) -> Result<()>,
+    ) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::OptionalParam(handler),
@@ -1325,18 +1329,14 @@ impl<'a> OptionDeclaration<'a, WithOptionalParam> {
     }
 }
 
-fn strip_option(arg: &str) -> Option<&str> {
-    arg.strip_prefix("--").or(arg.strip_prefix('-'))
-}
-
-fn setup_argument_parser() -> ArgumentParser {
+fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     let mut parser = ArgumentParser::new();
 
     parser
         .declare_with_param()
         .prefix("L")
         .help("Add directory to library search path")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             let handle_sysroot = |path| {
                 args.sysroot
                     .as_ref()
@@ -1381,7 +1381,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .execute(|args, modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, modifier_stack, value| {
             let spec = if let Some(stripped) = value.strip_prefix(':') {
                 InputSpec::Search(Box::from(stripped))
             } else {
@@ -1399,7 +1399,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("u")
         .help("Force resolution of the symbol")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.undefined.push(value.to_owned());
             Ok(())
         });
@@ -1443,7 +1443,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
 
@@ -1577,7 +1577,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 Ok(())
             },
         )
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack, value| {
             warn_unsupported(&("-z ".to_owned() + value))?;
             Ok(())
         });
@@ -1586,7 +1586,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .prefix("R")
         .help("Add runtime library search path")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             if Path::new(value).is_file() {
                 args.unrecognized_options
                     .push(format!("-R,{value}(filename)"));
@@ -1599,7 +1599,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .prefix("O")
-        .execute(|_args, _modifier_stack, _value|
+        .execute(|_args: &mut ElfArgs, _modifier_stack, _value|
         // We don't use opt-level for now.
         Ok(()));
 
@@ -1608,7 +1608,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("static")
         .long("Bstatic")
         .help("Disallow linking of shared libraries")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().allow_shared = false;
             Ok(())
         });
@@ -1617,7 +1617,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bdynamic")
         .help("Allow linking of shared libraries")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().allow_shared = true;
             Ok(())
         });
@@ -1627,7 +1627,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("output")
         .short("o")
         .help("Set the output filename")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.output = Arc::from(Path::new(value));
             Ok(())
         });
@@ -1637,7 +1637,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("strip-all")
         .short("s")
         .help("Strip all symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.strip = Strip::All;
             Ok(())
         });
@@ -1647,7 +1647,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("strip-debug")
         .short("S")
         .help("Strip debug symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.strip = Strip::Debug;
             Ok(())
         });
@@ -1656,7 +1656,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("gc-sections")
         .help("Enable removal of unused sections")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.gc_sections = true;
             Ok(())
         });
@@ -1665,7 +1665,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-gc-sections")
         .help("Disable removal of unused sections")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.gc_sections = false;
             Ok(())
         });
@@ -1675,7 +1675,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("shared")
         .long("Bshareable")
         .help("Create a shared library")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.should_output_executable = false;
             Ok(())
         });
@@ -1685,7 +1685,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("pie")
         .long("pic-executable")
         .help("Create a position-independent executable")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
             args.should_output_executable = true;
             Ok(())
@@ -1695,7 +1695,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-pie")
         .help("Do not create a position-dependent executable (default)")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
             args.should_output_executable = true;
             Ok(())
@@ -1705,7 +1705,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("pack-dyn-relocs")
         .help("Specify dynamic relocation packing format")
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack, value| {
             if value != "none" {
                 warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
             }
@@ -1716,7 +1716,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("help")
         .help("Show this help message")
-        .execute(|_args, _modifier_stack| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack| {
             let parser = setup_argument_parser();
             println!("{}", parser.generate_help());
 
@@ -1731,7 +1731,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("version")
         .help("Show version information and exit")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.version_mode = VersionMode::ExitAfterPrint;
             Ok(())
         });
@@ -1740,7 +1740,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .short("v")
         .help("Print version and continue linking")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.version_mode = VersionMode::Verbose;
             Ok(())
         });
@@ -1749,7 +1749,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("demangle")
         .help("Enable symbol demangling")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.demangle = true;
             Ok(())
         });
@@ -1758,7 +1758,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-demangle")
         .help("Disable symbol demangling")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.demangle = false;
             Ok(())
         });
@@ -1767,7 +1767,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_optional_param()
         .long("time")
         .help("Show timing information")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             match value {
                 Some(v) => args.time_phase_options = Some(parse_time_phase_options(v)?),
                 None => args.time_phase_options = Some(Vec::new()),
@@ -1779,7 +1779,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("dynamic-linker")
         .help("Set dynamic linker path")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.dynamic_linker = Some(Box::from(Path::new(value)));
             Ok(())
         });
@@ -1788,7 +1788,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-dynamic-linker")
         .help("Omit the load-time dynamic linker request")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.dynamic_linker = None;
             Ok(())
         });
@@ -1797,7 +1797,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("mmap-output-file")
         .help("Write output file using mmap (default)")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.mmap_output_file = true;
             Ok(())
         });
@@ -1806,7 +1806,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-mmap-output-file")
         .help("Write output file without mmap")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.mmap_output_file = false;
             Ok(())
         });
@@ -1816,7 +1816,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("entry")
         .short("e")
         .help("Set the entry point")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.entry = Some(value.to_owned());
             Ok(())
         });
@@ -1825,7 +1825,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_optional_param()
         .long("threads")
         .help("Use multiple threads for linking")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             match value {
                 Some(v) => {
                     args.num_threads = Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
@@ -1841,7 +1841,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-threads")
         .help("Use a single thread")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
@@ -1850,7 +1850,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("wild-experiments")
         .help("List of numbers. Used to tweak internal parameters. '_' keeps default value.")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.numeric_experiments = value
                 .split(',')
                 .map(|p| {
@@ -1868,7 +1868,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("as-needed")
         .help("Set DT_NEEDED if used")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().as_needed = true;
             Ok(())
         });
@@ -1877,7 +1877,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-as-needed")
         .help("Always set DT_NEEDED")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().as_needed = false;
             Ok(())
         });
@@ -1886,7 +1886,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("whole-archive")
         .help("Include all objects from archives")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().whole_archive = true;
             Ok(())
         });
@@ -1895,7 +1895,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-whole-archive")
         .help("Disable --whole-archive")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().whole_archive = false;
             Ok(())
         });
@@ -1904,7 +1904,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("push-state")
         .help("Save current linker flags")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.push(*modifier_stack.last().unwrap());
             Ok(())
         });
@@ -1913,7 +1913,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("pop-state")
         .help("Restore previous linker flags")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.pop();
             if modifier_stack.is_empty() {
                 bail!("Mismatched --pop-state");
@@ -1925,7 +1925,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("eh-frame-hdr")
         .help("Create .eh_frame_hdr section")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.should_write_eh_frame_hdr = true;
             Ok(())
         });
@@ -1934,7 +1934,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-eh-frame-hdr")
         .help("Don't create .eh_frame_hdr section")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.should_write_eh_frame_hdr = false;
             Ok(())
         });
@@ -1944,7 +1944,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("export-dynamic")
         .short("E")
         .help("Export all dynamic symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.export_all_dynamic_symbols = true;
             Ok(())
         });
@@ -1953,7 +1953,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-export-dynamic")
         .help("Do not export dynamic symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.export_all_dynamic_symbols = false;
             Ok(())
         });
@@ -1963,7 +1963,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("soname")
         .prefix("h")
         .help("Set shared object name")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.soname = Some(value.to_owned());
             Ok(())
         });
@@ -1972,7 +1972,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("rpath")
         .help("Add directory to runtime library search path")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.rpath_set.insert(value.to_string());
             Ok(())
         });
@@ -1981,7 +1981,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-string-merge")
         .help("Disable section merging")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.merge_sections = false;
             Ok(())
         });
@@ -1990,7 +1990,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-undefined")
         .help("Do not allow unresolved symbols in object files")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.no_undefined = true;
             Ok(())
         });
@@ -1999,7 +1999,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("allow-multiple-definition")
         .help("Allow multiple definitions of symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.allow_multiple_definitions = true;
             Ok(())
         });
@@ -2008,7 +2008,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("relax")
         .help("Enable target-specific optimization (instruction relaxation)")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.relax = true;
             Ok(())
         });
@@ -2017,7 +2017,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-relax")
         .help("Disable relaxation")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.relax = false;
             Ok(())
         });
@@ -2025,7 +2025,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("validate-output")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.validate_output = true;
             Ok(())
         });
@@ -2033,7 +2033,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("write-layout")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.write_layout = true;
             Ok(())
         });
@@ -2041,7 +2041,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("write-trace")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.write_trace = true;
             Ok(())
         });
@@ -2050,7 +2050,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("got-plt-syms")
         .help("Write symbol table entries that point to the GOT/PLT entry for symbols")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.got_plt_syms = true;
             Ok(())
         });
@@ -2059,7 +2059,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bsymbolic")
         .help("Bind global references locally")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::All;
             Ok(())
         });
@@ -2068,7 +2068,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bsymbolic-functions")
         .help("Bind global function references locally")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::Functions;
             Ok(())
         });
@@ -2077,7 +2077,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bsymbolic-non-weak-functions")
         .help("Bind non-weak global function references locally")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::NonWeakFunctions;
             Ok(())
         });
@@ -2086,7 +2086,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bsymbolic-non-weak")
         .help("Bind non-weak global references locally")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::NonWeak;
             Ok(())
         });
@@ -2095,7 +2095,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("Bno-symbolic")
         .help("Do not bind global symbol references locally")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::None;
             Ok(())
         });
@@ -2104,7 +2104,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("thread-count")
         .help("Set the number of threads to use")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
             Ok(())
         });
@@ -2113,7 +2113,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("exclude-libs")
         .help("Exclude libraries")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             for lib in value.split([',', ':']) {
                 if lib.is_empty() {
                     continue;
@@ -2144,7 +2144,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("version-script")
         .help("Use version script")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.save_dir.handle_file(value);
             args.version_script_path = Some(PathBuf::from(value));
             Ok(())
@@ -2155,7 +2155,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("script")
         .prefix("T")
         .help("Use linker script")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.save_dir.handle_file(value);
             args.add_script(value);
             Ok(())
@@ -2165,7 +2165,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("export-dynamic-symbol")
         .help("Export dynamic symbol")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.export_list.push(value.to_owned());
             Ok(())
         });
@@ -2174,7 +2174,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("export-dynamic-symbol-list")
         .help("Export dynamic symbol list")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.export_list_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -2183,7 +2183,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("dynamic-list")
         .help("Read the dynamic symbol list from a file")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.b_symbolic = BSymbolicKind::All;
             args.export_list_path = Some(PathBuf::from(value));
             Ok(())
@@ -2193,7 +2193,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("write-gc-stats")
         .help("Write GC statistics")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.write_gc_stats = Some(PathBuf::from(value));
             Ok(())
         });
@@ -2202,7 +2202,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("gc-stats-ignore")
         .help("Ignore files in GC stats")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.gc_stats_ignore.push(value.to_owned());
             Ok(())
         });
@@ -2211,7 +2211,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-identity-comment")
         .help("Don't write the linker name and version in .comment")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.should_write_linker_identity = false;
             Ok(())
         });
@@ -2220,7 +2220,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("debug-address")
         .help("Set debug address")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.debug_address = Some(parse_number(value).context("Invalid --debug-address")?);
             Ok(())
         });
@@ -2228,7 +2228,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .long("debug-fuel")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.debug_fuel = Some(AtomicI64::new(value.parse()?));
             args.num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
@@ -2238,7 +2238,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("unresolved-symbols")
         .help("Specify how to handle unresolved symbols")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.unresolved_symbols = match value {
                 "report-all" => UnresolvedSymbols::ReportAll,
                 "ignore-in-shared-libs" => UnresolvedSymbols::IgnoreInSharedLibs,
@@ -2253,7 +2253,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("undefined")
         .help("Force resolution of the symbol")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.undefined.push(value.to_owned());
             Ok(())
         });
@@ -2262,7 +2262,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("wrap")
         .help("Use a wrapper function")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.wrap.push(value.to_owned());
             Ok(())
         });
@@ -2271,7 +2271,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("defsym")
         .help("Define a symbol alias: --defsym=symbol=value")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             let parts: Vec<&str> = value.splitn(2, '=').collect();
             if parts.len() != 2 {
                 bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
@@ -2289,7 +2289,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("section-start")
         .help("Set start address for a section: --section-start=.section=address")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             let parts: Vec<&str> = value.splitn(2, '=').collect();
             if parts.len() != 2 {
                 bail!("Invalid --section-start format. Expected: --section-start=.section=address");
@@ -2311,7 +2311,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.hash_style = match value {
                 "gnu" => HashStyle::Gnu,
                 "sysv" => HashStyle::Sysv,
@@ -2325,7 +2325,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("enable-new-dtags")
         .help("Use DT_RUNPATH and DT_FLAGS/DT_FLAGS_1 (default)")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.enable_new_dtags = true;
             Ok(())
         });
@@ -2334,7 +2334,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("disable-new-dtags")
         .help("Use DT_RPATH and individual dynamic entries instead of DT_FLAGS")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.enable_new_dtags = false;
             Ok(())
         });
@@ -2346,7 +2346,7 @@ fn setup_argument_parser() -> ArgumentParser {
             "Filter symtab to contain only symbols listed in the supplied file. \
             One symbol per line.",
         )
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             // The performance this flag is not especially optimised. For one, we copy each string
             // to the heap. We also do two lookups in the hashset for each symbol. This is a pretty
             // obscure flag that we don't expect to be used much, so at this stage, it doesn't seem
@@ -2372,7 +2372,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("build-id")
         .help("Generate build ID")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.build_id = match value {
                 "none" => BuildIdOption::None,
                 "fast" | "md5" | "sha1" => BuildIdOption::Fast,
@@ -2394,7 +2394,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("icf")
         .help("Enable identical code folding (merge duplicate functions)")
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack, value| {
             match value {
                 "none" => {}
                 other => warn_unsupported(&format!("--icf={other}"))?,
@@ -2406,7 +2406,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("sysroot")
         .help("Set system root")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
@@ -2423,7 +2423,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("auxiliary")
         .short("f")
         .help("Set DT_AUXILIARY to a given value")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.auxiliary.push(value.to_owned());
             Ok(())
         });
@@ -2432,7 +2432,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("plugin-opt")
         .help("Pass options to the plugin")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.plugin_args
                 .push(CString::new(value).context("Invalid --plugin-opt argument")?);
             Ok(())
@@ -2442,7 +2442,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("dependency-file")
         .help("Write dependency rules")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.dependency_file = Some(PathBuf::from(value));
             Ok(())
         });
@@ -2451,7 +2451,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("plugin")
         .help("Load plugin")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.plugin_path = Some(value.to_owned());
             Ok(())
         });
@@ -2460,7 +2460,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("rpath-link")
         .help("Add runtime library search path")
-        .execute(|_args, _modifier_stack, _value| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack, _value| {
             // TODO
             Ok(())
         });
@@ -2469,7 +2469,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("sym-info")
         .help("Show symbol information. Accepts symbol name or ID.")
-        .execute(|args, _modifier_stack, value| {
+        .execute(|args: &mut ElfArgs, _modifier_stack, value| {
             args.sym_info = Some(value.to_owned());
             Ok(())
         });
@@ -2478,7 +2478,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("start-lib")
         .help("Start library group")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().archive_semantics = true;
             Ok(())
         });
@@ -2487,7 +2487,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("end-lib")
         .help("End library group")
-        .execute(|_args, modifier_stack| {
+        .execute(|_args: &mut ElfArgs, modifier_stack| {
             modifier_stack.last_mut().unwrap().archive_semantics = false;
             Ok(())
         });
@@ -2496,7 +2496,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-fork")
         .help("Do not fork while linking")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.should_fork = false;
             Ok(())
         });
@@ -2505,7 +2505,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("update-in-place")
         .help("Update file in place")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
             Ok(())
         });
@@ -2514,7 +2514,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-update-in-place")
         .help("Delete and recreate the file")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
             Ok(())
         });
@@ -2523,7 +2523,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("EB")
         .help("Big-endian (not supported)")
-        .execute(|_args, _modifier_stack| {
+        .execute(|_args: &mut ElfArgs, _modifier_stack| {
             bail!("Big-endian target is not supported");
         });
 
@@ -2531,7 +2531,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("prepopulate-maps")
         .help("Prepopulate maps")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.prepopulate_maps = true;
             Ok(())
         });
@@ -2540,7 +2540,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("verbose-gc-stats")
         .help("Show GC statistics")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.verbose_gc_stats = true;
             Ok(())
         });
@@ -2549,7 +2549,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("allow-shlib-undefined")
         .help("Allow undefined symbol references in shared libraries")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.allow_shlib_undefined = true;
             Ok(())
         });
@@ -2558,7 +2558,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("no-allow-shlib-undefined")
         .help("Disallow undefined symbol references in shared libraries")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.allow_shlib_undefined = false;
             Ok(())
         });
@@ -2567,7 +2567,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("error-unresolved-symbols")
         .help("Treat unresolved symbols as errors")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.error_unresolved_symbols = true;
             Ok(())
         });
@@ -2576,7 +2576,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("warn-unresolved-symbols")
         .help("Treat unresolved symbols as warnings")
-        .execute(|args, _modifier_stack| {
+        .execute(|args: &mut ElfArgs, _modifier_stack| {
             args.error_unresolved_symbols = false;
             Ok(())
         });
@@ -2587,30 +2587,12 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
 }
 
-fn add_silently_ignored_flags(parser: &mut ArgumentParser) {
-    for flag in SILENTLY_IGNORED_FLAGS {
-        let mut declaration = parser.declare();
-        declaration = declaration.long(flag);
-        declaration.execute(|_args, _modifier_stack| Ok(()));
-    }
-    for flag in SILENTLY_IGNORED_SHORT_FLAGS {
-        let mut declaration = parser.declare();
-        declaration = declaration.short(flag);
-        declaration.execute(|_args, _modifier_stack| Ok(()));
-    }
+fn add_silently_ignored_flags(parser: &mut ArgumentParser<ElfArgs>) {
+    super::add_silently_ignored_flags(parser);
 }
 
-fn add_default_flags(parser: &mut ArgumentParser) {
-    for flag in DEFAULT_FLAGS {
-        let mut declaration = parser.declare();
-        declaration = declaration.long(flag);
-        declaration.execute(|_args, _modifier_stack| Ok(()));
-    }
-    for flag in DEFAULT_SHORT_FLAGS {
-        let mut declaration = parser.declare();
-        declaration = declaration.short(flag);
-        declaration.execute(|_args, _modifier_stack| Ok(()));
-    }
+fn add_default_flags(parser: &mut ArgumentParser<ElfArgs>) {
+    super::add_default_flags(parser);
 }
 
 fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
@@ -2654,11 +2636,61 @@ impl Display for CopyRelocationsDisabledReason {
     }
 }
 
+impl super::PrivateArgs for ElfArgs {
+    fn new_default() -> Self {
+        Self::default()
+    }
+
+    fn save_dir_mut(&mut self) -> &mut crate::save_dir::SaveDir {
+        &mut self.save_dir
+    }
+
+    fn inputs_mut(&mut self) -> &mut Vec<Input> {
+        &mut self.inputs
+    }
+
+    fn unrecognized_options_mut(&mut self) -> &mut Vec<String> {
+        &mut self.unrecognized_options
+    }
+
+    fn files_per_group_mut(&mut self) -> &mut Option<u32> {
+        &mut self.files_per_group
+    }
+
+    fn jobserver_client_mut(&mut self) -> &mut Option<Client> {
+        &mut self.jobserver_client
+    }
+
+    fn write_layout_mut(&mut self) -> &mut bool {
+        &mut self.write_layout
+    }
+
+    fn write_trace_mut(&mut self) -> &mut bool {
+        &mut self.write_trace
+    }
+
+    fn setup_argument_parser() -> ArgumentParser<Self> {
+        setup_argument_parser()
+    }
+
+    fn has_option_prefix(arg: &str) -> bool {
+        arg.starts_with('-')
+    }
+
+    fn strip_option<'a>(arg: &'a str) -> Option<&'a str> {
+        arg.strip_prefix("--").or(arg.strip_prefix('-'))
+    }
+
+    fn find_separator(stripped: &str) -> Option<usize> {
+        stripped.find('=')
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
     use super::VersionMode;
-    use crate::Args;
+    use crate::args::ElfArgs;
     use crate::args::InputSpec;
     use itertools::Itertools;
     use std::fs::File;
@@ -2803,7 +2835,7 @@ mod tests {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
     }
 
-    fn input1_assertions(args: &Args) {
+    fn input1_assertions(args: &ElfArgs) {
         assert_eq!(
             args.inputs
                 .iter()
@@ -2842,7 +2874,7 @@ mod tests {
         );
     }
 
-    fn inline_and_file_options_assertions(args: &Args) {
+    fn inline_and_file_options_assertions(args: &ElfArgs) {
         assert_contains(&args.lib_search_path, "/lib");
     }
 

@@ -45,6 +45,7 @@ sharded-vec-writer = { workspace = true }
 smallvec = { workspace = true }
 symbolic-common = { workspace = true }
 symbolic-demangle = { workspace = true }
+target-lexicon = "0.13"
 thread_local = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -55,6 +56,20 @@ zstd = { workspace = true }
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+phnt = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+]
 
 [dev-dependencies]
 ar = { workspace = true }

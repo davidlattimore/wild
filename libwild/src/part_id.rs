@@ -1,6 +1,6 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::args::Args;
+use crate::args::ElfArgs;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
@@ -60,7 +60,7 @@ pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 pub(crate) fn should_merge_sections<S: platform::SectionFlags>(
     section_flags: S,
     section_alignment: u64,
-    args: &Args,
+    args: &ElfArgs,
 ) -> bool {
     if !args.merge_sections {
         return false;

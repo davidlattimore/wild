@@ -62,6 +62,7 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
+pub(crate) mod target_os;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
@@ -78,6 +79,7 @@ use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 pub use args::Args;
+use args::ElfArgs;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
@@ -89,15 +91,33 @@ use output_section_id::OutputSections;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
-pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Runs the linker and cleans up associated resources. Only use this function if you've OK with
-/// waiting for cleanup.
-pub fn run(args: Args) -> error::Result {
+/// Runs the linker. Dispatches to the appropriate format-specific linker based on `target_args`.
+pub fn run(args: args::Args) -> error::Result {
+    match args.target_args {
+        args::TargetArgs::Elf(elf_args) => run_elf(elf_args),
+        args::TargetArgs::Pe(_) => Err(anyhow::anyhow!("PE linking not yet implemented").into()),
+    }
+}
+
+/// # Safety
+/// Must not be called once threads have been spawned.
+pub unsafe fn run_in_subprocess(args: args::Args) -> ! {
+    match args.target_args {
+        args::TargetArgs::Elf(elf_args) => unsafe { subprocess::run_in_subprocess(elf_args) },
+        args::TargetArgs::Pe(_) => {
+            eprintln!("PE linking does not support fork mode");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Runs the ELF linker and cleans up associated resources.
+pub(crate) fn run_elf(args: ElfArgs) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
@@ -113,7 +133,7 @@ pub fn run(args: Args) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
+pub fn setup_tracing(args: &ElfArgs) -> Result<(), AlreadyInitialised> {
     if let Some(opts) = args.time_phase_options.as_ref() {
         timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
@@ -207,7 +227,7 @@ impl Linker {
 
     fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
-        args: &'data Args,
+        args: &'data ElfArgs,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
@@ -236,7 +256,7 @@ impl Linker {
     fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data Args,
+        args: &'data ElfArgs,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin =
             linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
