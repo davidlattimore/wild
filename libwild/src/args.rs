@@ -1714,6 +1714,17 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
+        .declare_with_param()
+        .long("compress-debug-sections")
+        .help("Compression method for debug sections (not yet implemented)")
+        .execute(|_args, _modifier_stack, value| {
+            if value != "none" {
+                warn_unsupported(&format!("--compress-debug-sections={value}"))?;
+            }
+            Ok(())
+        });
+
+    parser
         .declare()
         .long("help")
         .help("Show this help message")

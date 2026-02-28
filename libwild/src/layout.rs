@@ -30,6 +30,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::error::warning;
 use crate::file_writer;
+use crate::gdb_index;
 use crate::grouping::Group;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
@@ -2182,6 +2183,44 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         })
         .sum();
 
+    // Compute the size of the gdb_index symbol table and constant pool by parsing
+    // .debug_gnu_pubnames / .debug_gnu_pubtypes sections in each object that has a
+    // .debug_info CU.  We do this only when --gdb-index is requested.
+    let gdb_index_pubnames_symbol_size = if resources.symbol_db.args.gdb_index {
+        gdb_index::compute_symbol_table_size(
+            group_states
+                .iter()
+                .flat_map(|g| g.files.iter())
+                .filter_map(|f| {
+                    if let FileLayoutState::Object(obj) = f {
+                        Some(obj)
+                    } else {
+                        None
+                    }
+                })
+                .filter(|obj| {
+                    debug_info_section_id.is_some_and(|di_id| {
+                        obj.sections.iter().any(|s| {
+                            matches!(s, SectionSlot::LoadedDebugInfo(sec) if sec.output_section_id() == di_id)
+                        })
+                    })
+                })
+                .map(|obj| {
+                    let pubnames = obj
+                        .object
+                        .section_by_name(".debug_gnu_pubnames")
+                        .and_then(|(_, sec)| obj.object.raw_section_data(sec).ok());
+                    let pubtypes = obj
+                        .object
+                        .section_by_name(".debug_gnu_pubtypes")
+                        .and_then(|(_, sec)| obj.object.raw_section_data(sec).ok());
+                    (pubnames, pubtypes)
+                }),
+        )
+    } else {
+        0
+    };
+
     let prelude_group = &mut group_states[0];
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
@@ -2193,6 +2232,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
         resources.symbol_db.output_kind,
         total_debug_info_section_count,
         total_gdb_index_address_entry_count,
+        gdb_index_pubnames_symbol_size,
     );
 
     Ok(GcOutputs {
@@ -3056,13 +3096,18 @@ fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     }
 }
 
-fn compute_gdb_index_size(cu_count: usize, address_entry_count: usize) -> u64 {
+fn compute_gdb_index_size(
+    cu_count: usize,
+    address_entry_count: usize,
+    pubnames_symbol_size: usize,
+) -> u64 {
     let cu_count = cu_count as u64;
     let address_entry_count = address_entry_count as u64;
 
     size_of::<elf::GdbIndexHeader>() as u64
         + cu_count * size_of::<elf::GdbIndexCuEntry>() as u64
         + address_entry_count * size_of::<elf::GdbIndexAddressEntry>() as u64
+        + pubnames_symbol_size as u64
 }
 
 impl<'data> PreludeLayoutState<'data> {
@@ -3232,6 +3277,7 @@ impl<'data> PreludeLayoutState<'data> {
         output_kind: OutputKind,
         total_debug_info_section_count: usize,
         total_gdb_index_address_entry_count: usize,
+        gdb_index_pubnames_symbol_size: usize,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
@@ -3250,6 +3296,7 @@ impl<'data> PreludeLayoutState<'data> {
             let gdb_index_size = compute_gdb_index_size(
                 total_debug_info_section_count,
                 total_gdb_index_address_entry_count,
+                gdb_index_pubnames_symbol_size,
             );
             common.allocate(part_id::GDB_INDEX, gdb_index_size);
         }

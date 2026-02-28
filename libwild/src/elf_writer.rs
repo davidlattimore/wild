@@ -41,6 +41,7 @@ use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::gdb_index;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -4095,8 +4096,47 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let address_area_offset = tu_list_offset;
     let address_area_size = addr_count * size_of::<elf::GdbIndexAddressEntry>();
     let symbol_table_offset = address_area_offset + address_area_size;
-    // Empty symbol table and constant pool.
-    let constant_pool_offset = symbol_table_offset;
+
+    // Compute the symbol table + constant pool from .debug_gnu_pubnames sections.
+    // We need a second pass over objects-with-CUs, this time with their assigned CU indices.
+    let pubnames_symbol_size: usize;
+    {
+        let mut cu_index: u32 = 0;
+        let sections_iter = layout.group_layouts.iter().flat_map(|g| g.files.iter()).filter_map(|f| {
+            if let FileLayout::Object(object) = f { Some(object) } else { None }
+        }).filter_map(|object| {
+            let has_di = debug_info_section_id.is_some_and(|di_id| {
+                object.sections.iter().zip(object.section_resolutions.iter()).any(|(slot, res)| {
+                    matches!(slot, SectionSlot::LoadedDebugInfo(s) if s.output_section_id() == di_id)
+                        && res.address().is_some()
+                })
+            });
+            if has_di {
+                let this_cu_index = cu_index;
+                // Count how many .debug_info sections this object has
+                let di_count = object.sections.iter().zip(object.section_resolutions.iter())
+                    .filter(|(slot, res)| {
+                        debug_info_section_id.is_some_and(|di_id| {
+                            matches!(slot, SectionSlot::LoadedDebugInfo(s) if s.output_section_id() == di_id)
+                                && res.address().is_some()
+                        })
+                    })
+                    .count() as u32;
+                cu_index += di_count;
+                let pubnames = object.object.section_by_name(".debug_gnu_pubnames")
+                    .and_then(|(_, sec)| object.object.raw_section_data(sec).ok());
+                let pubtypes = object.object.section_by_name(".debug_gnu_pubtypes")
+                    .and_then(|(_, sec)| object.object.raw_section_data(sec).ok());
+                Some((pubnames, pubtypes, this_cu_index))
+            } else {
+                None
+            }
+        });
+        pubnames_symbol_size =
+            gdb_index::compute_symbol_table_size(sections_iter.map(|(p, t, _)| (p, t)));
+    }
+
+    let constant_pool_offset = symbol_table_offset + pubnames_symbol_size;
 
     let needed = constant_pool_offset;
     if allocated_len < needed {
@@ -4123,10 +4163,60 @@ fn write_gdb_index(table_writer: &mut TableWriter, layout: &Layout) -> Result {
         *out = *entry;
     }
 
-    let (addr_list, _rest) =
+    let (addr_list, rest) =
         <[elf::GdbIndexAddressEntry]>::mut_from_prefix_with_elems(rest, addr_count).unwrap();
     for (out, entry) in addr_list.iter_mut().zip(address_entries.iter()) {
         *out = *entry;
+    }
+
+    // Write symbol table + constant pool if there are any pubnames entries.
+    if pubnames_symbol_size > 0 {
+        let sym_table_buf = &mut rest[..pubnames_symbol_size];
+
+        // Third pass: collect pubnames data with CU indices for writing.
+        let mut cu_index: u32 = 0;
+        #[allow(clippy::type_complexity)]
+        let sections_for_write: Vec<(Option<&[u8]>, Option<&[u8]>, u32)> = layout
+            .group_layouts
+            .iter()
+            .flat_map(|g| g.files.iter())
+            .filter_map(|f| {
+                if let FileLayout::Object(object) = f {
+                    Some(object)
+                } else {
+                    None
+                }
+            })
+            .filter_map(|object| {
+                let di_slots: Vec<_> = object
+                    .sections
+                    .iter()
+                    .zip(object.section_resolutions.iter())
+                    .filter(|(slot, res)| {
+                        debug_info_section_id.is_some_and(|di_id| {
+                            matches!(slot, SectionSlot::LoadedDebugInfo(s) if s.output_section_id() == di_id)
+                                && res.address().is_some()
+                        })
+                    })
+                    .collect();
+                if di_slots.is_empty() {
+                    return None;
+                }
+                let this_cu_index = cu_index;
+                cu_index += di_slots.len() as u32;
+                let pubnames = object
+                    .object
+                    .section_by_name(".debug_gnu_pubnames")
+                    .and_then(|(_, sec)| object.object.raw_section_data(sec).ok());
+                let pubtypes = object
+                    .object
+                    .section_by_name(".debug_gnu_pubtypes")
+                    .and_then(|(_, sec)| object.object.raw_section_data(sec).ok());
+                Some((pubnames, pubtypes, this_cu_index))
+            })
+            .collect();
+
+        gdb_index::write_symbol_table(sections_for_write.into_iter(), sym_table_buf);
     }
 
     Ok(())
