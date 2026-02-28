@@ -153,6 +153,8 @@ pub struct Args {
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
+    /// When true, produce a relocatable/partial-link output (ET_REL)
+    pub(crate) output_relocatable: bool,
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
@@ -446,6 +448,7 @@ impl Default for Args {
                 .and_then(|s| s.parse().ok())
                 .map(FileId::from_encoded),
             relocation_model: RelocationModel::NonRelocatable,
+            output_relocatable: false,
             version_script_path: None,
             debug_address: None,
             should_write_eh_frame_hdr: false,
@@ -1688,6 +1691,16 @@ fn setup_argument_parser() -> ArgumentParser {
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
             args.should_output_executable = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("r")
+        .help("Produce relocatable/partial-link output (like -r)")
+        .execute(|args, _modifier_stack| {
+            args.output_relocatable = true;
+            args.should_output_executable = false;
             Ok(())
         });
 

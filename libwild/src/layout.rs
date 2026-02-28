@@ -739,6 +739,7 @@ pub(crate) struct LinkerScriptLayoutState<'data> {
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug)]
@@ -3413,8 +3414,10 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        // Always keep the program headers segment even though we don't emit any sections in it.
-        keep_segments[0] = true;
+        // Keep the program headers segment only for executable outputs (not for ET_REL).
+        if resources.symbol_db.output_kind.is_executable() {
+            keep_segments[0] = true;
+        }
 
         // If relro is disabled, then discard the relro segment.
         if !resources.symbol_db.args.relro {
@@ -5715,7 +5718,20 @@ impl<'data> LinkerScriptLayoutState<'data> {
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result {
         self.internal_symbols
-            .finalise_layout(memory_offsets, resolutions_out, resources)
+            .finalise_layout(memory_offsets, resolutions_out, resources)?;
+
+        // Allocate space for any raw bytes that the linker script requested via BYTE/SHORT/LONG/QUAD
+        for (section_id, data) in &self.section_datas {
+            // Use the section's minimum alignment when choosing the part id.
+            let min_alignment = resources
+                .output_sections
+                .section_infos
+                .get(*section_id)
+                .min_alignment;
+            let part_id = section_id.part_id_with_alignment(min_alignment);
+            memory_offsets.increment(part_id, data.len() as u64);
+        }
+        Ok(())
     }
 
     fn new(input: ResolvedLinkerScript<'data>) -> Self {
@@ -5727,6 +5743,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
                 symbol_definitions: input.symbol_definitions,
                 start_symbol_id: input.symbol_id_range.start(),
             },
+            section_datas: input.section_datas,
         }
     }
 

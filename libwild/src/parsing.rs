@@ -51,6 +51,7 @@ pub(crate) struct ParsedInputObject<'data, O: ObjectFile<'data>> {
 pub(crate) struct ProcessedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug)]

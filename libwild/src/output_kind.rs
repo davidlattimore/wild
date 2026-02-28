@@ -4,6 +4,8 @@ use crate::input_data::FileLoader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
+    /// Relocatable/partial-link output (ET_REL)
+    Relocatable,
     StaticExecutable(RelocationModel),
     DynamicExecutable(RelocationModel),
     SharedObject,
@@ -11,6 +13,9 @@ pub(crate) enum OutputKind {
 
 impl OutputKind {
     pub(crate) fn new(args: &Args, input_data: &FileLoader<'_>) -> OutputKind {
+        if args.output_relocatable {
+            return OutputKind::Relocatable;
+        }
         if !args.should_output_executable {
             OutputKind::SharedObject
         } else if args.dynamic_linker.is_some()
@@ -32,7 +37,7 @@ impl OutputKind {
     }
 
     pub(crate) fn is_executable(self) -> bool {
-        !matches!(self, OutputKind::SharedObject)
+        matches!(self, OutputKind::StaticExecutable(_) | OutputKind::DynamicExecutable(_))
     }
 
     pub(crate) fn is_shared_object(self) -> bool {
@@ -72,7 +77,7 @@ impl OutputKind {
     }
 
     pub(crate) fn base_address(self) -> u64 {
-        if self.is_relocatable() {
+        if self.is_relocatable() || matches!(self, OutputKind::Relocatable) {
             0
         } else {
             crate::elf::NON_PIE_START_MEM_ADDRESS

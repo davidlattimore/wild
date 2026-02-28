@@ -164,6 +164,19 @@ pub(crate) fn write<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     write_sframe_section(section_buffers.get_mut(output_section_id::SFRAME), layout)?;
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
+    // Debug: snapshot section headers after post-processing writes (e.g., .sframe, notes)
+    if layout.symbol_db.output_kind.is_relocatable() {
+        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+        let shslice = section_buffers.get_mut(output_section_id::SECTION_HEADERS);
+        let shbuf: &mut [u8] = *shslice;
+        use blake3::Hasher;
+        let mut hasher = Hasher::new();
+        hasher.update(shbuf);
+        let hash = hasher.finalize();
+        eprintln!("DEBUG: post-write section headers snapshot section_len={} blake3={}", shbuf.len(), hex::encode(hash.as_bytes()));
+        let len = shbuf.len().min(64);
+        eprintln!("DEBUG: post-write sh[0..{}]={}", len, hex::encode(&shbuf[..len]));
+    }
     Ok(())
 }
 
@@ -249,6 +262,25 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
             Ok(())
         })?;
 
+    // Debug: for relocatable outputs, snapshot the section header area after all groups
+    // have been written. This helps determine whether later writes are corrupting the
+    // section header region. For ET_REL, section headers start at FILE_HEADER_SIZE.
+    if layout.symbol_db.output_kind.is_relocatable() {
+        // For relocatable outputs the section headers are in the SECTION_HEADERS output
+        // section. Use `section_buffers` to access the slice without reborrowing the full
+        // output buffer.
+        let shslice = section_buffers.get_mut(output_section_id::SECTION_HEADERS);
+        let shbuf: &mut [u8] = *shslice;
+        let sh_size = shbuf.len();
+        use blake3::Hasher;
+        let mut hasher = Hasher::new();
+        hasher.update(shbuf);
+        let hash = hasher.finalize();
+        eprintln!("DEBUG: section headers snapshot section_len={} blake3={}", sh_size, hex::encode(hash.as_bytes()));
+        let len = shbuf.len().min(64);
+        eprintln!("DEBUG: sh[0..{}]={}", len, hex::encode(&shbuf[..len]));
+    }
+
     for (output_section_id, _) in layout.output_sections.ids_with_info() {
         let relocations = layout
             .relocation_statistics
@@ -264,6 +296,22 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
     }
 
     fill_padding(section_buffers);
+
+    // Debug: Snapshot section headers after padding has been applied. This recreates the
+    // section buffers and compares the SECTION_HEADERS area so we can detect any overwrite
+    // that happened during padding.
+    if layout.symbol_db.output_kind.is_relocatable() {
+        let mut section_buffers_after = split_output_into_sections(layout, &mut sized_output.out);
+        let shslice_after = section_buffers_after.get_mut(output_section_id::SECTION_HEADERS);
+        let shbuf_after: &mut [u8] = *shslice_after;
+        use blake3::Hasher;
+        let mut hasher = Hasher::new();
+        hasher.update(shbuf_after);
+        let hash = hasher.finalize();
+        eprintln!("DEBUG: after-fill_padding section headers snapshot len={} blake3={}", shbuf_after.len(), hex::encode(hash.as_bytes()));
+        let len = shbuf_after.len().min(64);
+        eprintln!("DEBUG: after-fill_padding sh[0..{}]={}", len, hex::encode(&shbuf_after[..len]));
+    }
 
     Ok(())
 }
@@ -353,10 +401,10 @@ fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>
     header: &mut FileHeader,
 ) -> Result {
     let output_kind = layout.symbol_db.output_kind;
-    let ty = if output_kind.is_relocatable() {
-        object::elf::ET_DYN
-    } else {
-        object::elf::ET_EXEC
+    let ty = match output_kind {
+        crate::OutputKind::Relocatable => object::elf::ET_REL,
+        _ if output_kind.is_relocatable() => object::elf::ET_DYN,
+        _ => object::elf::ET_EXEC,
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
@@ -370,19 +418,36 @@ fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>
     header.e_machine.set(e, P::elf_header_arch_magic());
     header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
     header.e_entry.set(e, layout.entry_symbol_address()?);
-    header.e_phoff.set(e, elf::PHEADER_OFFSET);
-    header.e_shoff.set(
-        e,
-        u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
-    );
+    if matches!(output_kind, crate::OutputKind::Relocatable) {
+        header.e_phoff.set(e, 0);
+        // For relocatable outputs, the section header table may not be immediately after
+        // the file header. Use the actual file offset of the SECTION_HEADERS output section
+        // so that `e_shoff` points to the correct location.
+        let sh_off = layout
+            .section_layouts
+            .get(output_section_id::SECTION_HEADERS)
+            .file_offset as u64;
+        header.e_shoff.set(e, sh_off);
+    } else {
+        header.e_phoff.set(e, elf::PHEADER_OFFSET);
+        header.e_shoff.set(
+            e,
+            u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
+        );
+    }
     header
         .e_flags
         .set(e, layout.properties_and_attributes.eflags.0);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
-    header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
-    header
-        .e_phnum
-        .set(e, header_info.active_segment_ids.len() as u16);
+    if matches!(output_kind, crate::OutputKind::Relocatable) {
+        header.e_phentsize.set(e, 0);
+        header.e_phnum.set(e, 0);
+    } else {
+        header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
+        header
+            .e_phnum
+            .set(e, header_info.active_segment_ids.len() as u16);
+    }
     header.e_shentsize.set(e, elf::SECTION_HEADER_SIZE);
     header
         .e_shnum
@@ -409,7 +474,7 @@ fn write_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         FileLayout::Prelude(s) => write_prelude::<P>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<P>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<P>(s, table_writer, layout)?,
-        FileLayout::LinkerScript(s) => write_linker_script_state::<P>(s, table_writer, layout)?,
+        FileLayout::LinkerScript(s) => write_linker_script_state::<P>(s, buffers, table_writer, layout)?,
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<P>(s, table_writer, layout)?,
     }
@@ -2884,13 +2949,14 @@ fn write_prelude<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     let mut program_headers = ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
     write_program_headers(&mut program_headers, layout)?;
 
-    write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
+    // Debug: print buffer lengths for header areas to diagnose potential overflows.
+    let shbuf = buffers.get_mut(part_id::SECTION_HEADERS);
+    eprintln!("DEBUG: SECTION_HEADERS buf len={}", shbuf.len());
+    write_section_headers(shbuf, layout)?;
 
-    write_section_header_strings(
-        buffers.get_mut(part_id::SHSTRTAB),
-        &layout.output_sections,
-        &layout.output_order,
-    );
+    let shstr = buffers.get_mut(part_id::SHSTRTAB);
+    eprintln!("DEBUG: SHSTRTAB buf len={}", shstr.len());
+    write_section_header_strings(shstr, &layout.output_sections, &layout.output_order);
 
     write_plt_got_entries::<P>(prelude, layout, table_writer)?;
 
@@ -3173,6 +3239,7 @@ pub(crate) struct EpilogueOffsets {
 
 fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     script: &LinkerScriptLayoutState,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout<'data>,
 ) -> Result {
@@ -3185,6 +3252,13 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
     )?;
 
     write_internal_symbols_plt_got_entries::<P>(&script.internal_symbols, table_writer, layout)?;
+
+    // Emit any raw bytes requested by the linker script into their sections.
+    for (section_id, data) in &script.section_datas {
+        let buf = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+        let slice = buf.split_off_mut(..data.len()).unwrap();
+        slice.copy_from_slice(data);
+    }
 
     Ok(())
 }
@@ -4443,6 +4517,24 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         entry.sh_info.set(e, *info_values.get(section_id));
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
+        // Debug: print computed section header fields to help diagnose malformed headers.
+        eprintln!(
+            "SHDR {}: name_off={} type={} flags={:#x} addr={:#x} off={} size={} link={} info={} align={} entsize={}",
+            output_sections.section_debug(section_id),
+            name_offset,
+            section_type.raw(),
+            output_sections
+                .section_flags(section_id)
+                .without(shf::COMPRESSED)
+                .raw(),
+            section_layout.mem_offset,
+            section_layout.file_offset,
+            size,
+            link,
+            *info_values.get(section_id),
+            alignment,
+            entsize,
+        );
 
         name_offset += name.len() as u32 + 1;
     }
