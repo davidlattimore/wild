@@ -1069,15 +1069,7 @@ impl<'data, O: ObjectFile<'data>> ResolvedCommon<'data, O> {
             // Errors from this function should have been reported elsewhere.
             return SymbolStrength::Undefined;
         };
-        if obj_symbol.is_weak() {
-            SymbolStrength::Weak
-        } else if obj_symbol.is_common() {
-            SymbolStrength::Common(obj_symbol.size())
-        } else if obj_symbol.is_gnu_unique() {
-            SymbolStrength::GnuUnique
-        } else {
-            SymbolStrength::Strong
-        }
+        SymbolStrength::of(obj_symbol)
     }
 }
 
