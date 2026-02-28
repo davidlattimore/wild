@@ -3873,8 +3873,15 @@ mod kernel_module_tests {
         let has_rela = object::File::parse(&*data)
             .context("parse output")?
             .sections()
-            .any(|s| s.name().ok().map_or(false, |name| name.starts_with(".rela") || name.starts_with(".crel")));
-        ensure!(has_rela, "expected relocation sections to be preserved in relocatable output");
+            .any(|s| {
+                s.name()
+                    .ok()
+                    .is_some_and(|name| name.starts_with(".rela") || name.starts_with(".crel"))
+            });
+        ensure!(
+            has_rela,
+            "expected relocation sections to be preserved in relocatable output"
+        );
 
         Ok(())
     }

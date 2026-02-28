@@ -1240,7 +1240,11 @@ impl CommonGroupState<'_> {
             *self.mem_sizes.get(part_id::SYMTAB_GLOBAL),
         );
 
-        (strtab_offset_start, symtab_local_start_index, symtab_global_start_index)
+        (
+            strtab_offset_start,
+            symtab_local_start_index,
+            symtab_global_start_index,
+        )
     }
 
     pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
@@ -3509,9 +3513,7 @@ impl<'data> PreludeLayoutState<'data> {
 
         // For partial-link (-r), discard ALL segments. ET_REL has no program headers.
         if resources.symbol_db.output_kind.is_partial_link() {
-            for keep in keep_segments.iter_mut() {
-                *keep = false;
-            }
+            keep_segments.fill(false);
         }
 
         // If relro is disabled, then discard the relro segment.
@@ -3523,15 +3525,18 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        let active_segment_ids: Vec<ProgramSegmentId> = if resources.symbol_db.output_kind.is_partial_link() {
-            // ET_REL has no program headers at all.
-            Vec::new()
-        } else {
-            (0..program_segments.len())
-                .map(ProgramSegmentId::new)
-                .filter(|id| keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id))
-                .collect()
-        };
+        let active_segment_ids: Vec<ProgramSegmentId> =
+            if resources.symbol_db.output_kind.is_partial_link() {
+                // ET_REL has no program headers at all.
+                Vec::new()
+            } else {
+                (0..program_segments.len())
+                    .map(ProgramSegmentId::new)
+                    .filter(|id| {
+                        keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id)
+                    })
+                    .collect()
+            };
 
         let header_info = HeaderInfo {
             num_output_sections_with_content: num_sections
@@ -4698,15 +4703,11 @@ impl<'data> SymbolCopyInfo<'data> {
                 if !symbol_db.is_canonical(symbol_id) {
                     return None;
                 }
-            } else {
-                if !symbol_db.is_canonical(symbol_id) {
-                    return None;
-                }
-            }
-        } else {
-            if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
+            } else if !symbol_db.is_canonical(symbol_id) {
                 return None;
             }
+        } else if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
+            return None;
         }
 
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index)

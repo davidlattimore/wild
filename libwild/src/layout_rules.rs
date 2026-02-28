@@ -323,9 +323,10 @@ impl<'data> SectionRule<'data> {
         // Support SORT(...) wrappers by treating the inner text as a section-name glob.
         let raw_pattern = if s.starts_with("SORT(") && s.ends_with(")") {
             let inner = &s[5..s.len() - 1];
-            section_name_pattern = Some(Pattern::new(inner).map_err(|_| {
-                crate::error!("Invalid SORT() pattern '{}'", inner)
-            })?);
+            section_name_pattern = Some(
+                Pattern::new(inner)
+                    .map_err(|_| crate::error!("Invalid SORT() pattern '{}'", inner))?,
+            );
             inner.as_bytes()
         } else {
             pattern
@@ -336,11 +337,14 @@ impl<'data> SectionRule<'data> {
             // full glob pattern instead of simple prefix matching.
             let prefix_str = std::str::from_utf8(raw_pattern)
                 .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
-            if prefix.iter().any(|&b| b == b'[' || b == b']' || b == b'?') || section_name_pattern.is_some() {
+            if prefix.iter().any(|&b| b == b'[' || b == b']' || b == b'?')
+                || section_name_pattern.is_some()
+            {
                 if section_name_pattern.is_none() {
-                    section_name_pattern = Some(Pattern::new(prefix_str).map_err(|_| {
-                        crate::error!("Invalid glob pattern '{}'", prefix_str)
-                    })?);
+                    section_name_pattern = Some(
+                        Pattern::new(prefix_str)
+                            .map_err(|_| crate::error!("Invalid glob pattern '{}'", prefix_str))?,
+                    );
                 }
                 let name_key = &raw_pattern[..raw_pattern.len().min(4)];
                 Ok(Self {
@@ -365,9 +369,8 @@ impl<'data> SectionRule<'data> {
             let s = std::str::from_utf8(pattern)
                 .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
             if s.contains('*') || s.contains('[') || s.contains(']') {
-                let pat = Pattern::new(s).map_err(|_| {
-                    crate::error!("Invalid glob pattern '{}'", s)
-                })?;
+                let pat =
+                    Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
                 let name_key = &pattern[..pattern.len().min(4)];
                 Ok(Self {
                     name: name_key,

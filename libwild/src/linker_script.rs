@@ -350,7 +350,7 @@ fn parse_section_command<'input>(
     // Optional address before the ':' (e.g. `name 0 : { ... }`)
     // Try to parse a numeric address (hex 0x... or decimal) if present.
     let mut address: Option<Location> = None;
-    if input.starts_with(b"0x") || (input.first().map(|b| b.is_ascii_digit()).unwrap_or(false)) {
+    if input.starts_with(b"0x") || (input.first().is_some_and(|b| b.is_ascii_digit())) {
         // Attempt hex or decimal parse. If it fails, we fall back to expecting ':' directly.
         let save = *input;
         if let Ok(loc) = parse_location(input) {
@@ -404,7 +404,13 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_data_command, parse_matcher, parse_assignment)).parse_next(input)
+    alt((
+        parse_contents_provide,
+        parse_data_command,
+        parse_matcher,
+        parse_assignment,
+    ))
+    .parse_next(input)
 }
 
 fn parse_data_command<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
@@ -428,7 +434,11 @@ fn parse_data_command<'input>(input: &mut &'input BStr) -> winnow::Result<Conten
         // Accept decimal or hex (0x) numbers.
         let num_token = take_while(1.., |b| !b",) \t\n".contains(&b)).parse_next(input)?;
         let s = std::str::from_utf8(num_token).map_err(|_| ContextError::new())?;
-        let val = if let Some(hex) = s.strip_prefix("0x") { u64::from_str_radix(hex, 16).map_err(|_| ContextError::new())? } else { s.parse::<u64>().map_err(|_| ContextError::new())? };
+        let val = if let Some(hex) = s.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16).map_err(|_| ContextError::new())?
+        } else {
+            s.parse::<u64>().map_err(|_| ContextError::new())?
+        };
 
         // Emit little-endian bytes of the requested size.
         for i in 0..size {
@@ -934,9 +944,9 @@ mod tests {
 
     #[test]
     fn test_section_command_with_filename() {
-            check_section_command(
-                ".text : { foo.o(.text .text2) *(.text3) }",
-                &SectionCommand::Section(Section {
+        check_section_command(
+            ".text : { foo.o(.text .text2) *(.text3) }",
+            &SectionCommand::Section(Section {
                 output_section_name: ".text".as_bytes(),
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
@@ -958,9 +968,9 @@ mod tests {
 
     #[test]
     fn test_section_command_with_glob_filename() {
-            check_section_command(
-                ".ctors : { *crtbegin*.o(.ctors) }",
-                &SectionCommand::Section(Section {
+        check_section_command(
+            ".ctors : { *crtbegin*.o(.ctors) }",
+            &SectionCommand::Section(Section {
                 output_section_name: ".ctors".as_bytes(),
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
@@ -975,9 +985,9 @@ mod tests {
 
     #[test]
     fn test_keep_with_filename() {
-            check_section_command(
-                ".init : { KEEP(crti.o(.init)) }",
-                &SectionCommand::Section(Section {
+        check_section_command(
+            ".init : { KEEP(crti.o(.init)) }",
+            &SectionCommand::Section(Section {
                 output_section_name: ".init".as_bytes(),
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: true,

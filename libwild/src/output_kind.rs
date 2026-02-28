@@ -37,7 +37,10 @@ impl OutputKind {
     }
 
     pub(crate) fn is_executable(self) -> bool {
-        matches!(self, OutputKind::StaticExecutable(_) | OutputKind::DynamicExecutable(_))
+        matches!(
+            self,
+            OutputKind::StaticExecutable(_) | OutputKind::DynamicExecutable(_)
+        )
     }
 
     pub(crate) fn is_shared_object(self) -> bool {

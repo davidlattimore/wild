@@ -248,12 +248,10 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
                 // Compute this file's starting absolute symtab indices.
                 let consumed_locals =
                     initial_local_remaining - table_writer.debug_symbol_writer.local_entries.len();
-                let consumed_globals =
-                    initial_global_remaining - table_writer.debug_symbol_writer.global_entries.len();
-                let file_local_base =
-                    group.symtab_local_start_index + consumed_locals as u32;
-                let file_global_base =
-                    group.symtab_global_start_index + consumed_globals as u32;
+                let consumed_globals = initial_global_remaining
+                    - table_writer.debug_symbol_writer.global_entries.len();
+                let file_local_base = group.symtab_local_start_index + consumed_locals as u32;
+                let file_global_base = group.symtab_global_start_index + consumed_globals as u32;
 
                 write_file::<P>(
                     file,
@@ -462,7 +460,9 @@ fn write_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         FileLayout::Prelude(s) => write_prelude::<P>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<P>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<P>(s, table_writer, layout)?,
-        FileLayout::LinkerScript(s) => write_linker_script_state::<P>(s, buffers, table_writer, layout)?,
+        FileLayout::LinkerScript(s) => {
+            write_linker_script_state::<P>(s, buffers, table_writer, layout)?;
+        }
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<P>(s, table_writer, layout)?,
     }
@@ -1353,7 +1353,13 @@ fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     // For partial link, pre-compute the input→output symbol index mapping.
     // This is needed for fixing up .rela.* sections with correct symbol indices.
     let sym_index_map = if is_partial_link {
-        build_symbol_index_map(object, layout, symtab_local_base, symtab_global_base, global_sym_map)
+        build_symbol_index_map(
+            object,
+            layout,
+            symtab_local_base,
+            symtab_global_base,
+            global_sym_map,
+        )
     } else {
         Vec::new()
     };
@@ -1441,7 +1447,7 @@ fn build_global_symbol_output_map(layout: &Layout) -> HashMap<SymbolId, u32> {
                     .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
                 {
                     let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-                    if let Some(_) = SymbolCopyInfo::new(
+                    if SymbolCopyInfo::new(
                         object.object,
                         sym_index,
                         sym,
@@ -1449,7 +1455,9 @@ fn build_global_symbol_output_map(layout: &Layout) -> HashMap<SymbolId, u32> {
                         &layout.symbol_db,
                         flags.get(),
                         &object.sections,
-                    ) {
+                    )
+                    .is_some()
+                    {
                         let is_local = flags.get().is_symtab_local(sym);
                         if is_local {
                             let output_idx = group.symtab_local_start_index + local_count;
@@ -1544,7 +1552,7 @@ fn fixup_rela_entries(
     const R_OFFSET_OFFSET: usize = 0; // offset of r_offset within Elf64_Rela
     const R_INFO_OFFSET: usize = 8; // offset of r_info within Elf64_Rela
 
-    if out.len() % RELA_ENTRY_SIZE != 0 {
+    if !out.len().is_multiple_of(RELA_ENTRY_SIZE) {
         bail!(
             ".rela section size {} is not a multiple of RELA entry size {}",
             out.len(),
@@ -1560,20 +1568,14 @@ fn fixup_rela_entries(
         // Adjust r_offset by the section's base offset in the combined output section.
         if section_base_offset != 0 {
             let offset_pos = entry_offset + R_OFFSET_OFFSET;
-            let r_offset = u64::from_le_bytes(
-                out[offset_pos..offset_pos + 8].try_into().unwrap(),
-            );
+            let r_offset = u64::from_le_bytes(out[offset_pos..offset_pos + 8].try_into().unwrap());
             let new_r_offset = r_offset + section_base_offset;
             out[offset_pos..offset_pos + 8].copy_from_slice(&new_r_offset.to_le_bytes());
         }
 
         // Fix up symbol index in r_info.
         let info_offset = entry_offset + R_INFO_OFFSET;
-        let r_info = u64::from_le_bytes(
-            out[info_offset..info_offset + 8]
-                .try_into()
-                .unwrap(),
-        );
+        let r_info = u64::from_le_bytes(out[info_offset..info_offset + 8].try_into().unwrap());
 
         let old_sym_idx = (r_info >> 32) as usize;
         let rel_type = r_info & 0xFFFF_FFFF;
@@ -1589,7 +1591,7 @@ fn fixup_rela_entries(
             old_sym_idx as u32
         };
 
-        let new_r_info = ((new_sym_idx as u64) << 32) | rel_type;
+        let new_r_info = (u64::from(new_sym_idx) << 32) | rel_type;
         out[info_offset..info_offset + 8].copy_from_slice(&new_r_info.to_le_bytes());
     }
 
@@ -4731,58 +4733,50 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         // For partial-link output, .rela.* custom sections need sh_link pointing to .symtab
         // and sh_info pointing to the target section (e.g., .rela.text → .text).
         let mut info_override = None;
-        if layout.symbol_db.output_kind.is_partial_link() {
-            if let Some(section_name) = output_sections.name(section_id) {
-                let name_bytes = section_name.bytes();
-                // Extract the target section name from a relocation section name.
-                // Handles both ".rela.text" -> ".text" and ".rela__ex_table" -> "__ex_table"
-                let target_name = if name_bytes.starts_with(b".rela.") {
-                    Some(&name_bytes[b".rela".len()..]) // ".text" (keeps leading dot)
-                } else if name_bytes.starts_with(b".crel.") {
-                    Some(&name_bytes[b".crel".len()..])
-                } else if name_bytes.starts_with(b".rela") && name_bytes.len() > 5 {
-                    Some(&name_bytes[b".rela".len()..]) // "__ex_table" (no leading dot)
-                } else if name_bytes.starts_with(b".crel") && name_bytes.len() > 5 {
-                    Some(&name_bytes[b".crel".len()..])
-                } else {
-                    None
-                };
-                if let Some(target) = target_name {
-                    // sh_link → .symtab (or the combined symtab section)
-                    if let Some(symtab_idx) =
-                        output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
-                    {
-                        link = symtab_idx.into();
-                    }
-                    // sh_info → target section index (e.g., .text for .rela.text)
-                    // target already includes the leading dot, e.g. ".text"
-                    // Search among output sections for the target
-                    if let Some(target_id) = output_sections
-                        .custom_name_to_id(crate::output_section_id::SectionName(target))
-                    {
-                        if let Some(target_idx) =
-                            output_sections.output_index_of_section(target_id)
+        if layout.symbol_db.output_kind.is_partial_link()
+            && let Some(section_name) = output_sections.name(section_id)
+        {
+            let name_bytes = section_name.bytes();
+            // Extract the target section name from a relocation section name.
+            // Handles both ".rela.text" -> ".text" and ".rela__ex_table" -> "__ex_table"
+            let target_name = if name_bytes.starts_with(b".rela.") {
+                Some(&name_bytes[b".rela".len()..]) // ".text" (keeps leading dot)
+            } else if name_bytes.starts_with(b".crel.") {
+                Some(&name_bytes[b".crel".len()..])
+            } else if name_bytes.starts_with(b".rela") && name_bytes.len() > 5 {
+                Some(&name_bytes[b".rela".len()..]) // "__ex_table" (no leading dot)
+            } else if name_bytes.starts_with(b".crel") && name_bytes.len() > 5 {
+                Some(&name_bytes[b".crel".len()..])
+            } else {
+                None
+            };
+            if let Some(target) = target_name {
+                // sh_link → .symtab (or the combined symtab section)
+                if let Some(symtab_idx) =
+                    output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
+                {
+                    link = symtab_idx;
+                }
+                // sh_info → target section index (e.g., .text for .rela.text)
+                // target already includes the leading dot, e.g. ".text"
+                // Search among output sections for the target
+                if let Some(target_id) =
+                    output_sections.custom_name_to_id(crate::output_section_id::SectionName(target))
+                    && let Some(target_idx) = output_sections.output_index_of_section(target_id)
+                {
+                    info_override = Some(u32::from(target_idx));
+                }
+                // Also check built-in section names
+                if info_override.is_none() {
+                    for event in &layout.output_order {
+                        if let OrderEvent::Section(sid) = event
+                            && output_sections.output_index_of_section(sid).is_some()
+                            && let Some(sname) = output_sections.name(sid)
+                            && sname.bytes() == target
+                            && let Some(idx) = output_sections.output_index_of_section(sid)
                         {
-                            info_override = Some(target_idx as u32);
-                        }
-                    }
-                    // Also check built-in section names
-                    if info_override.is_none() {
-                        for event in &layout.output_order {
-                            if let OrderEvent::Section(sid) = event {
-                                if output_sections.output_index_of_section(sid).is_some() {
-                                    if let Some(sname) = output_sections.name(sid) {
-                                        if sname.bytes() == target {
-                                            if let Some(idx) =
-                                                output_sections.output_index_of_section(sid)
-                                            {
-                                                info_override = Some(idx as u32);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            info_override = Some(u32::from(idx));
+                            break;
                         }
                     }
                 }
@@ -4814,10 +4808,9 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
         entry.sh_link.set(e, link.into());
-        entry.sh_info.set(
-            e,
-            info_override.unwrap_or(*info_values.get(section_id)),
-        );
+        entry
+            .sh_info
+            .set(e, info_override.unwrap_or(*info_values.get(section_id)));
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
 
@@ -5258,7 +5251,7 @@ mod tests {
 
         // Map: sym 2 → 7, sym 5 → 12
         let map: Vec<Option<u32>> = vec![
-            Some(0), // 0 → 0
+            Some(0),  // 0 → 0
             None,     // 1 → unmapped
             Some(7),  // 2 → 7
             None,     // 3 → unmapped
@@ -5270,13 +5263,29 @@ mod tests {
 
         // Verify entry 0: sym_idx should now be 7
         let new_r_info_0 = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-        assert_eq!(new_r_info_0 >> 32, 7, "Symbol index should be remapped to 7");
-        assert_eq!(new_r_info_0 & 0xFFFF_FFFF, 1, "Relocation type should be preserved");
+        assert_eq!(
+            new_r_info_0 >> 32,
+            7,
+            "Symbol index should be remapped to 7"
+        );
+        assert_eq!(
+            new_r_info_0 & 0xFFFF_FFFF,
+            1,
+            "Relocation type should be preserved"
+        );
 
         // Verify entry 1: sym_idx should now be 12
         let new_r_info_1 = u64::from_le_bytes(buf[32..40].try_into().unwrap());
-        assert_eq!(new_r_info_1 >> 32, 12, "Symbol index should be remapped to 12");
-        assert_eq!(new_r_info_1 & 0xFFFF_FFFF, 10, "Relocation type should be preserved");
+        assert_eq!(
+            new_r_info_1 >> 32,
+            12,
+            "Symbol index should be remapped to 12"
+        );
+        assert_eq!(
+            new_r_info_1 & 0xFFFF_FFFF,
+            10,
+            "Relocation type should be preserved"
+        );
 
         // Verify offsets and addends are unchanged
         assert_eq!(
@@ -5295,7 +5304,7 @@ mod tests {
     fn test_fixup_rela_entries_null_symbol_preserved() {
         // Entry with symbol index 0 should remain unchanged.
         let mut buf = vec![0u8; 24];
-        let r_info: u64 = (0u64 << 32) | 5;
+        let r_info: u64 = 5;
         buf[8..16].copy_from_slice(&r_info.to_le_bytes());
 
         let map: Vec<Option<u32>> = vec![Some(0), Some(42)];
@@ -5326,6 +5335,10 @@ mod tests {
         fixup_rela_entries(&mut buf, &map, 0).unwrap();
 
         let new_r_info = u64::from_le_bytes(buf[8..16].try_into().unwrap());
-        assert_eq!(new_r_info >> 32, 3, "Unmapped symbol should keep original index");
+        assert_eq!(
+            new_r_info >> 32,
+            3,
+            "Unmapped symbol should keep original index"
+        );
     }
 }
