@@ -1697,10 +1697,15 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .short("r")
-        .help("Produce relocatable/partial-link output (like -r)")
+        .long("relocatable")
+        .help("Produce relocatable/partial-link output (ET_REL)")
         .execute(|args, _modifier_stack| {
             args.output_relocatable = true;
             args.should_output_executable = false;
+            // Partial link must preserve all sections (no GC) and has no
+            // program segments, so relro padding is meaningless.
+            args.gc_sections = false;
+            args.relro = false;
             Ok(())
         });
 

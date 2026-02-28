@@ -269,6 +269,27 @@ impl<'data> LayoutRulesBuilder<'data> {
                 output_section_id::COMMENT,
             ));
 
+            // Even with a linker script, we still need to discard internal ELF sections
+            // (.symtab, .strtab, .shstrtab) from input objects — the linker generates
+            // its own versions of these. Also discard .group sections which have already
+            // been processed by the linker.
+            self.rules.push(SectionRule::exact(
+                secnames::SYMTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::STRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::SHSTRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::GROUP_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+
             SectionRules::from_rules(&self.rules)
         };
 
@@ -311,13 +332,33 @@ impl<'data> SectionRule<'data> {
         };
 
         if let Some(prefix) = raw_pattern.strip_suffix(b"*") {
-            Ok(Self {
-                name: prefix,
-                is_prefix: true,
-                input_file_pattern: compiled_file_pattern,
-                section_name_pattern,
-                outcome,
-            })
+            // If the prefix portion itself contains glob characters (e.g. `[0-9]`), use a
+            // full glob pattern instead of simple prefix matching.
+            let prefix_str = std::str::from_utf8(raw_pattern)
+                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+            if prefix.iter().any(|&b| b == b'[' || b == b']' || b == b'?') || section_name_pattern.is_some() {
+                if section_name_pattern.is_none() {
+                    section_name_pattern = Some(Pattern::new(prefix_str).map_err(|_| {
+                        crate::error!("Invalid glob pattern '{}'", prefix_str)
+                    })?);
+                }
+                let name_key = &raw_pattern[..raw_pattern.len().min(4)];
+                Ok(Self {
+                    name: name_key,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            } else {
+                Ok(Self {
+                    name: prefix,
+                    is_prefix: true,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            }
         } else {
             // If the pattern contains glob characters or char classes, compile a glob pattern
             // for section name matching and use the first 4 bytes as the hash-key.
@@ -484,9 +525,6 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
         secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
         output_section_id::GCC_EXCEPT_TABLE,
     ),
-    // Preserve relocation sections for partial linking; do not discard them.
-    SectionRule::prefix(b".rela", SectionRuleOutcome::Custom),
-    SectionRule::prefix(b".crel", SectionRuleOutcome::Custom),
     SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
@@ -614,4 +652,53 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_rela_sections_are_custom() {
+    let rules = SectionRules::from_rules(BUILT_IN_RULES);
+    let lookup_name = |name: &str| {
+        rules.lookup(
+            name.as_bytes(),
+            None,
+            linker_utils::elf::SectionFlags::empty(),
+            linker_utils::elf::SectionType::from_u32(0),
+        )
+    };
+
+    // Relocation sections should be treated as Custom (not discarded)
+    // so that relocatable output (-r) can preserve them.
+    assert_eq!(lookup_name(".rela.text"), SectionRuleOutcome::Custom);
+    assert_eq!(lookup_name(".rela.dyn"), SectionRuleOutcome::Custom);
+}
+
+#[test]
+fn test_sort_pattern_matching() {
+    // Test that SORT(...) patterns are correctly handled in SectionRule::new
+    let rule = SectionRule::new(
+        b"SORT(___ksymtab+*)",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b"___ksymtab+foo", None));
+    assert!(rule.matches(b"___ksymtab+bar_baz", None));
+    assert!(!rule.matches(b"__ksymtab_foo", None));
+}
+
+#[test]
+fn test_glob_char_class_pattern() {
+    // Test that character class [0-9a-zA-Z_] patterns work
+    let rule = SectionRule::new(
+        b".bss.[0-9a-zA-Z_]*",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b".bss.foo_bar", None));
+    assert!(rule.matches(b".bss.0test", None));
 }

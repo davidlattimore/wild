@@ -1207,10 +1207,6 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
     {
         // For relocatable/partial-link output, preserve relocation sections instead of discarding
         // them. Treat them as custom sections so they are emitted with their original name.
-        eprintln!(
-            "DEBUG: resolution: preserving relocation section '{}' for relocatable output",
-            String::from_utf8_lossy(section_name)
-        );
         crate::layout_rules::SectionRuleOutcome::Custom
     } else {
         rules.lookup(section_name, file_name, section_flags, section_type)

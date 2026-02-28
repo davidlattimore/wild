@@ -404,8 +404,7 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_matcher, parse_assignment, parse_data_command)).
-        parse_next(input)
+    alt((parse_contents_provide, parse_data_command, parse_matcher, parse_assignment)).parse_next(input)
 }
 
 fn parse_data_command<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
@@ -985,6 +984,122 @@ mod tests {
                     input_file_pattern: Some("crti.o".as_bytes()),
                     input_section_name_patterns: vec![".init".as_bytes()],
                 })],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_discard_section() {
+        check_section_command(
+            "/DISCARD/ : { *(.discard.*) }",
+            &SectionCommand::Section(Section {
+                output_section_name: "/DISCARD/".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".discard.*".as_bytes()],
+                })],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_sort_in_matcher() {
+        check_section_command(
+            "__ksymtab 0 : { *(SORT(___ksymtab+*)) }",
+            &SectionCommand::Section(Section {
+                output_section_name: "__ksymtab".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec!["SORT(___ksymtab+*)".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_vma_address() {
+        check_section_command(
+            ".plt 0 : { BYTE(0) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".plt".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0])],
+                alignment: None,
+                address: Some(Location { address: 0 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_hex_address() {
+        check_section_command(
+            ".text 0x1000 : { *(.text) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".text".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0x1000 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_byte_data_command() {
+        check_section_command(
+            ".data : { BYTE(42) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![42])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_short_data_command() {
+        check_section_command(
+            ".data : { SHORT(0x1234) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x34, 0x12])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_long_data_command() {
+        check_section_command(
+            ".data : { LONG(0x12345678) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x78, 0x56, 0x34, 0x12])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_quad_data_command() {
+        check_section_command(
+            ".data : { QUAD(1) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![1, 0, 0, 0, 0, 0, 0, 0])],
                 alignment: None,
                 address: None,
             }),

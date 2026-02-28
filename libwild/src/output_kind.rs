@@ -61,6 +61,12 @@ impl OutputKind {
         )
     }
 
+    /// Returns true for `-r` / `--relocatable` partial-link output (ET_REL).
+    /// This is distinct from `is_relocatable()` which means PIE/PIC.
+    pub(crate) fn is_partial_link(self) -> bool {
+        matches!(self, OutputKind::Relocatable)
+    }
+
     pub(crate) fn needs_dynsym(self) -> bool {
         matches!(
             self,
@@ -74,6 +80,7 @@ impl OutputKind {
 
     pub(crate) fn needs_dynamic(self) -> bool {
         self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+            && !matches!(self, OutputKind::Relocatable)
     }
 
     pub(crate) fn base_address(self) -> u64 {
@@ -89,5 +96,52 @@ impl OutputKind {
             self,
             OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_relocatable_output_kind_properties() {
+        let kind = OutputKind::Relocatable;
+        assert!(!kind.is_executable());
+        assert!(!kind.is_shared_object());
+        assert!(!kind.needs_dynsym());
+        assert!(!kind.needs_dynamic());
+        assert!(!kind.should_output_symbol_versions());
+        assert_eq!(kind.base_address(), 0);
+        assert!(kind.is_partial_link());
+        assert!(!kind.is_relocatable());
+        assert!(!kind.is_dynamic_executable());
+        assert!(!kind.is_static_executable());
+    }
+
+    #[test]
+    fn test_partial_link_distinct_from_pie() {
+        // Relocatable (ET_REL / -r) is distinct from PIE (is_relocatable).
+        let partial = OutputKind::Relocatable;
+        let pie = OutputKind::DynamicExecutable(RelocationModel::Relocatable);
+
+        assert!(partial.is_partial_link());
+        assert!(!partial.is_relocatable());
+
+        assert!(!pie.is_partial_link());
+        assert!(pie.is_relocatable());
+    }
+
+    #[test]
+    fn test_output_kinds_needs_dynamic() {
+        // Partial link doesn't need dynamic sections
+        assert!(!OutputKind::Relocatable.needs_dynamic());
+
+        // Static non-relocatable doesn't need dynamic
+        assert!(!OutputKind::StaticExecutable(RelocationModel::NonRelocatable).needs_dynamic());
+
+        // Everything else does
+        assert!(OutputKind::SharedObject.needs_dynamic());
+        assert!(OutputKind::DynamicExecutable(RelocationModel::Relocatable).needs_dynamic());
+        assert!(OutputKind::StaticExecutable(RelocationModel::Relocatable).needs_dynamic());
     }
 }
