@@ -3509,6 +3509,7 @@ fn integration_test(
         "backtrace.c",
         "eh_frame.c",
         "symbol-priority.c",
+        "symbol-binding.c",
         "hidden-ref.c",
         "trivial_asm.s",
         "non-alloc.s",
