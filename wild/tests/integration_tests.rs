@@ -1249,11 +1249,11 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .extend(arg.trim().split(' ').map(str::to_owned));
                 }
                 "RequiresAsmReloc" => {
-                    config
-                        .requires_asm_reloc_types
-                        .push(arg.trim().parse().with_context(|| {
-                            format!("Invalid RequiresAsmReloc value: `{arg}`")
-                        })?);
+                    config.requires_asm_reloc_types.push(
+                        arg.trim()
+                            .parse()
+                            .with_context(|| format!("Invalid RequiresAsmReloc value: `{arg}`"))?,
+                    );
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
@@ -3701,9 +3701,7 @@ fn verify_platform_requirements(
             }
             let status = child.wait()?;
             if !status.success() {
-                bail!(
-                    "Assembler does not support .reloc with type {reloc_type}"
-                );
+                bail!("Assembler does not support .reloc with type {reloc_type}");
             }
         }
     }
