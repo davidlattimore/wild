@@ -314,6 +314,7 @@ fn resolve_group<'data, 'definitions, O: ObjectFile<'data>>(
                         symbol_id_range: s.symbol_id_range,
                         // TODO: Consider alternative to cloning this.
                         symbol_definitions: s.parsed.symbol_defs.clone(),
+                        section_datas: s.parsed.section_datas.clone(),
                     })
                 })
                 .collect();
@@ -669,6 +670,7 @@ pub(crate) struct ResolvedLinkerScript<'data> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone)]

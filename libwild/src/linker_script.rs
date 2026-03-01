@@ -101,6 +101,8 @@ pub(crate) enum ContentsCommand<'a> {
     SymbolAssignment(SymbolAssignment<'a>),
     Align(Alignment),
     Provide(ProvideSymbolDefinition<'a>),
+    /// Raw bytes to be emitted into the section (from BYTE/SHORT/LONG/QUAD commands)
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -380,7 +382,58 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_matcher, parse_assignment)).parse_next(input)
+    alt((
+        parse_contents_provide,
+        parse_data_command,
+        parse_matcher,
+        parse_assignment,
+    ))
+    .parse_next(input)
+}
+
+fn parse_data_command<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
+    // Support BYTE(), SHORT(), LONG(), QUAD() with numeric literals.
+    let name = parse_token(input)?;
+    let size = match name {
+        b"BYTE" => 1usize,
+        b"SHORT" => 2usize,
+        b"LONG" => 4usize,
+        b"QUAD" => 8usize,
+        _ => return Err(ContextError::new()),
+    };
+
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let mut bytes = Vec::new();
+    loop {
+        let num_token = take_while(1.., |b| !",) \t\n".contains(b as char)).parse_next(input)?;
+        let s = std::str::from_utf8(num_token).map_err(|_| ContextError::new())?;
+        let val = if let Some(hex) = s.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16).map_err(|_| ContextError::new())?
+        } else {
+            s.parse::<u64>().map_err(|_| ContextError::new())?
+        };
+        // Emit little-endian bytes of the requested size.
+        for i in 0..size {
+            bytes.push(((val >> (8 * i)) & 0xff) as u8);
+        }
+        skip_comments_and_whitespace(input)?;
+        if input.starts_with(b",") {
+            ','.parse_next(input)?;
+            skip_comments_and_whitespace(input)?;
+            continue;
+        }
+        break;
+    }
+
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(ContentsCommand::Bytes(bytes))
 }
 
 fn parse_contents_provide<'input>(
@@ -885,6 +938,54 @@ mod tests {
                     input_file_pattern: Some("crti.o".as_bytes()),
                     input_section_name_patterns: vec![".init".as_bytes()],
                 })],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_byte_data_command() {
+        check_section_command(
+            ".data : { BYTE(42) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![42])],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_short_data_command() {
+        check_section_command(
+            ".data : { SHORT(0x1234) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x34, 0x12])],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_long_data_command() {
+        check_section_command(
+            ".data : { LONG(0x12345678) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x78, 0x56, 0x34, 0x12])],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_quad_data_command() {
+        check_section_command(
+            ".data : { QUAD(1) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![1, 0, 0, 0, 0, 0, 0, 0])],
                 alignment: None,
             }),
         );

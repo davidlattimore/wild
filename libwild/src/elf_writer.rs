@@ -409,7 +409,9 @@ fn write_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         FileLayout::Prelude(s) => write_prelude::<P>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<P>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<P>(s, table_writer, layout)?,
-        FileLayout::LinkerScript(s) => write_linker_script_state::<P>(s, table_writer, layout)?,
+        FileLayout::LinkerScript(s) => {
+            write_linker_script_state::<P>(s, buffers, table_writer, layout)?
+        },
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<P>(s, table_writer, layout)?,
     }
@@ -3173,6 +3175,7 @@ pub(crate) struct EpilogueOffsets {
 
 fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     script: &LinkerScriptLayoutState,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout<'data>,
 ) -> Result {
@@ -3185,6 +3188,13 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
     )?;
 
     write_internal_symbols_plt_got_entries::<P>(&script.internal_symbols, table_writer, layout)?;
+
+    // Emit any raw bytes requested by the linker script into their sections.
+    for (section_id, data) in &script.section_datas {
+        let buf = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+        let slice = buf.split_off_mut(..data.len()).unwrap();
+        slice.copy_from_slice(data);
+    }
 
     Ok(())
 }
