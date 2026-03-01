@@ -118,7 +118,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+pub fn compute<'data, P: Platform<'data>>(
     symbol_db: SymbolDb<'data, P::File>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, P::File>>,
@@ -132,9 +132,8 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
-    let symbol_info_printer = symbol_db.args.sym_info.as_ref().map(|sym_name| {
-        SymbolInfoPrinter::new(&symbol_db, sym_name, &atomic_per_symbol_flags, &groups)
-    });
+    let mut symbol_info_printer = SymbolInfoPrinter::new(symbol_db.args, &groups);
+    symbol_info_printer.update(&symbol_db, &atomic_per_symbol_flags);
 
     let string_merge_inputs =
         crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
@@ -200,7 +199,8 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     )?;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
-    // got an error, then we'll have printed at that point.
+    // got an error or panic, then we'll have printed at that point.
+    symbol_info_printer.update(&symbol_db, &atomic_per_symbol_flags);
     drop(symbol_info_printer);
 
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, &symbol_db)?;
