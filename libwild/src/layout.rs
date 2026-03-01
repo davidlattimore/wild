@@ -18,7 +18,6 @@ use crate::elf;
 use crate::elf::ElfLayoutProperties;
 use crate::elf::File;
 use crate::elf::RawSymbolName;
-use crate::elf::Rela;
 use crate::elf::RelocationList;
 use crate::elf::SectionAttributes;
 use crate::elf::Versym;
@@ -55,7 +54,6 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
-use crate::platform::RelocationSequence;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -105,7 +103,6 @@ use linker_utils::relaxation::opt_input_to_output;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::elf::gnu_hash;
-use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
@@ -4072,28 +4069,9 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
 
-        match self.relocations(section.index)? {
-            RelocationList::Rela(relocations) => {
-                self.load_section_relocations::<P, Rela>(
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.rel_iter(),
-                    scope,
-                )?;
-            }
-            RelocationList::Crel(relocations) => {
-                self.load_section_relocations::<P, Crel>(
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.flat_map(|r| r.ok()),
-                    scope,
-                )?;
-            }
-        }
+        <P::File as ObjectFile<'data>>::load_object_section_relocations::<P>(
+            self, common, queue, resources, section, scope,
+        )?;
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
@@ -4114,7 +4092,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section_relocations<
+    pub(crate) fn load_section_relocations<
         'scope,
         P: Platform<'data, File = crate::elf::File<'data>>,
         R: Relocation,
@@ -4167,24 +4145,9 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         if P::local_symbols_in_debug_info() {
-            match self.relocations(section.index)? {
-                RelocationList::Rela(relocations) => self.load_debug_relocations::<P, Rela>(
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.rel_iter(),
-                    scope,
-                )?,
-                RelocationList::Crel(relocations) => self.load_debug_relocations::<P, Crel>(
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.flat_map(|r| r.ok()),
-                    scope,
-                )?,
-            }
+            <P::File as ObjectFile<'data>>::load_object_debug_relocations::<P>(
+                self, common, queue, resources, section, scope,
+            )?;
         }
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
@@ -4194,7 +4157,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_relocations<
+    pub(crate) fn load_debug_relocations<
         'scope,
         P: Platform<'data, File = crate::elf::File<'data>>,
         R: Relocation,
