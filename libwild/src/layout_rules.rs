@@ -62,6 +62,10 @@ pub(crate) struct SectionRule<'data> {
     /// files.
     input_file_pattern: Option<Pattern>,
 
+    /// Optional glob pattern for matching section names (used for SORT() and char-class/wildcard
+    /// matchers). If `None` then the simple prefix/equality matching is used.
+    section_name_pattern: Option<Pattern>,
+
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
 }
@@ -109,6 +113,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         output_sections: &mut OutputSections<'data>,
     ) -> Result<ProcessedLinkerScript<'data>> {
         let mut symbol_defs = Vec::new();
+        let mut section_datas: Vec<(OutputSectionId, Vec<u8>)> = Vec::new();
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -147,10 +152,27 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 .unwrap_or(alignment::MIN)
                                 .max(replace(&mut extra_min_alignment, alignment::MIN));
 
+                            // Support `/DISCARD/ : { ... }` which indicates matched sections should
+                            // be discarded.
+                            if sec.output_section_name == b"/DISCARD/" {
+                                for contents_cmd in &sec.commands {
+                                    if let ContentsCommand::Matcher(matcher) = contents_cmd {
+                                        for pattern in &matcher.input_section_name_patterns {
+                                            self.add_section_rule(SectionRule::new(
+                                                pattern,
+                                                matcher.input_file_pattern,
+                                                crate::layout_rules::SectionRuleOutcome::Discard,
+                                            )?);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
-                                location.take(),
+                                sec.address.or(location.take()),
                             );
 
                             let mut last_section_id = None;
@@ -210,6 +232,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             InternalSymDefInfo::notype(placement, provide.name)
                                         });
                                     }
+                                    ContentsCommand::Bytes(b) => {
+                                        // Append bytes for this output section.
+                                        section_datas.push((primary_section_id, b.clone()));
+                                    }
                                 }
                             }
                         }
@@ -226,6 +252,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 file: input.input_file,
                 entry: None,
             },
+            section_datas,
         })
     }
 
@@ -240,6 +267,27 @@ impl<'data> LayoutRulesBuilder<'data> {
             self.rules.push(SectionRule::exact_section_keep(
                 secnames::COMMENT_SECTION_NAME,
                 output_section_id::COMMENT,
+            ));
+
+            // Even with a linker script, we still need to discard internal ELF sections
+            // (.symtab, .strtab, .shstrtab) from input objects — the linker generates
+            // its own versions of these. Also discard .group sections which have already
+            // been processed by the linker.
+            self.rules.push(SectionRule::exact(
+                secnames::SYMTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::STRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::SHSTRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::GROUP_SECTION_NAME,
+                SectionRuleOutcome::Discard,
             ));
 
             SectionRules::from_rules(&self.rules)
@@ -267,32 +315,97 @@ impl<'data> SectionRule<'data> {
             })
             .transpose()?;
 
-        if let Some(prefix) = pattern.strip_suffix(b"*") {
-            Ok(Self {
-                name: prefix,
-                is_prefix: true,
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
-        } else {
-            ensure!(
-                !pattern.contains(&b'*'),
-                "Wildcards are only supported at the end, found '{}'",
-                String::from_utf8_lossy(pattern)
-            );
+        let s = std::str::from_utf8(pattern)
+            .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
 
-            Ok(Self {
-                name: pattern,
-                is_prefix: false,
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
+        let mut section_name_pattern = None;
+
+        // Support SORT(...) wrappers by treating the inner text as a section-name glob.
+        let raw_pattern = if s.starts_with("SORT(") && s.ends_with(")") {
+            let inner = &s[5..s.len() - 1];
+            section_name_pattern = Some(
+                Pattern::new(inner)
+                    .map_err(|_| crate::error!("Invalid SORT() pattern '{}'", inner))?,
+            );
+            inner.as_bytes()
+        } else {
+            pattern
+        };
+
+        if let Some(prefix) = raw_pattern.strip_suffix(b"*") {
+            // If the prefix portion itself contains glob characters (e.g. `[0-9]`), use a
+            // full glob pattern instead of simple prefix matching.
+            let prefix_str = std::str::from_utf8(raw_pattern)
+                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+            if prefix.iter().any(|&b| b == b'[' || b == b']' || b == b'?')
+                || section_name_pattern.is_some()
+            {
+                if section_name_pattern.is_none() {
+                    section_name_pattern = Some(
+                        Pattern::new(prefix_str)
+                            .map_err(|_| crate::error!("Invalid glob pattern '{}'", prefix_str))?,
+                    );
+                }
+                let name_key = &raw_pattern[..raw_pattern.len().min(4)];
+                Ok(Self {
+                    name: name_key,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            } else {
+                Ok(Self {
+                    name: prefix,
+                    is_prefix: true,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            }
+        } else {
+            // If the pattern contains glob characters or char classes, compile a glob pattern
+            // for section name matching and use the first 4 bytes as the hash-key.
+            let s = std::str::from_utf8(pattern)
+                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+            if s.contains('*') || s.contains('[') || s.contains(']') {
+                let pat =
+                    Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
+                let name_key = &pattern[..pattern.len().min(4)];
+                Ok(Self {
+                    name: name_key,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern: Some(pat),
+                    outcome,
+                })
+            } else {
+                ensure!(
+                    !pattern.contains(&b'*'),
+                    "Wildcards are only supported at the end, found '{}'",
+                    String::from_utf8_lossy(pattern)
+                );
+
+                Ok(Self {
+                    name: pattern,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern: None,
+                    outcome,
+                })
+            }
         }
     }
 
     #[inline(always)]
     fn matches(&self, section_name: &[u8], file_name: Option<&[u8]>) -> bool {
-        let section_matches = if self.is_prefix {
+        let section_matches = if let Some(pat) = &self.section_name_pattern {
+            if let Ok(s) = std::str::from_utf8(section_name) {
+                pat.matches(s)
+            } else {
+                false
+            }
+        } else if self.is_prefix {
             section_name.starts_with(self.name)
         } else {
             section_name == self.name
@@ -359,6 +472,7 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: false,
             input_file_pattern: None,
+            section_name_pattern: None,
             outcome,
         }
     }
@@ -368,6 +482,7 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: true,
             input_file_pattern: None,
+            section_name_pattern: None,
             outcome,
         }
     }
@@ -413,8 +528,6 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
         secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
         output_section_id::GCC_EXCEPT_TABLE,
     ),
-    SectionRule::prefix(b".rela", SectionRuleOutcome::Discard),
-    SectionRule::prefix(b".crel", SectionRuleOutcome::Discard),
     SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
@@ -542,4 +655,53 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_rela_sections_are_custom() {
+    let rules = SectionRules::from_rules(BUILT_IN_RULES);
+    let lookup_name = |name: &str| {
+        rules.lookup(
+            name.as_bytes(),
+            None,
+            linker_utils::elf::SectionFlags::empty(),
+            linker_utils::elf::SectionType::from_u32(0),
+        )
+    };
+
+    // Relocation sections should be treated as Custom (not discarded)
+    // so that relocatable output (-r) can preserve them.
+    assert_eq!(lookup_name(".rela.text"), SectionRuleOutcome::Custom);
+    assert_eq!(lookup_name(".rela.dyn"), SectionRuleOutcome::Custom);
+}
+
+#[test]
+fn test_sort_pattern_matching() {
+    // Test that SORT(...) patterns are correctly handled in SectionRule::new
+    let rule = SectionRule::new(
+        b"SORT(___ksymtab+*)",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b"___ksymtab+foo", None));
+    assert!(rule.matches(b"___ksymtab+bar_baz", None));
+    assert!(!rule.matches(b"__ksymtab_foo", None));
+}
+
+#[test]
+fn test_glob_char_class_pattern() {
+    // Test that character class [0-9a-zA-Z_] patterns work
+    let rule = SectionRule::new(
+        b".bss.[0-9a-zA-Z_]*",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b".bss.foo_bar", None));
+    assert!(rule.matches(b".bss.0test", None));
 }

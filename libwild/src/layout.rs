@@ -739,6 +739,7 @@ pub(crate) struct LinkerScriptLayoutState<'data> {
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug)]
@@ -937,6 +938,12 @@ fn allocate_resolution(
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
+    // For partial-link output (-r), we don't create GOT, PLT or dynamic relocations.
+    // Symbols remain unresolved and relocations are preserved as-is.
+    if output_kind.is_partial_link() {
+        return;
+    }
+
     let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
     if flags.needs_got() && !flags.is_tls() {
@@ -1196,7 +1203,7 @@ impl CommonGroupState<'_> {
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> u32 {
+    ) -> (u32, u32, u32) {
         // strtab
         let offset = memory_offsets.get_mut(part_id::STRTAB);
         let strtab_offset_start = (*offset
@@ -1205,7 +1212,25 @@ impl CommonGroupState<'_> {
             .expect("Symbol string table overflowed 32 bits");
         *offset += self.mem_sizes.get(part_id::STRTAB);
 
-        // symtab
+        // symtab — compute starting indices before incrementing
+        let entry_size = size_of::<crate::elf::SymtabEntry>() as u64;
+        let symtab_section_start = section_layouts
+            .get(output_section_id::SYMTAB_LOCAL)
+            .mem_offset;
+        let symtab_local_start_index = ((*memory_offsets.get(part_id::SYMTAB_LOCAL)
+            - symtab_section_start)
+            / entry_size) as u32;
+
+        // Global symbols start after ALL local symbols (from all groups).
+        // We compute the byte offset of the global entries relative to the start of the global
+        // portion. The total local count will be added by the caller.
+        let symtab_global_section_start = section_layouts
+            .get(output_section_id::SYMTAB_GLOBAL)
+            .mem_offset;
+        let symtab_global_start_index = ((*memory_offsets.get(part_id::SYMTAB_GLOBAL)
+            - symtab_global_section_start)
+            / entry_size) as u32;
+
         memory_offsets.increment(
             part_id::SYMTAB_LOCAL,
             *self.mem_sizes.get(part_id::SYMTAB_LOCAL),
@@ -1215,7 +1240,11 @@ impl CommonGroupState<'_> {
             *self.mem_sizes.get(part_id::SYMTAB_GLOBAL),
         );
 
-        strtab_offset_start
+        (
+            strtab_offset_start,
+            symtab_local_start_index,
+            symtab_global_start_index,
+        )
     }
 
     pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
@@ -1330,6 +1359,16 @@ pub(crate) struct GroupLayout<'data> {
 
     /// The offset in .strtab at which we'll start writing.
     pub(crate) strtab_start_offset: u32,
+
+    /// The starting symtab entry index for local symbols in this group.
+    /// This is the absolute index in the output .symtab (accounts for null symbol and previous
+    /// groups' locals).
+    pub(crate) symtab_local_start_index: u32,
+
+    /// The starting symtab entry index for global symbols in this group.
+    /// This is the absolute index in the output .symtab (accounts for all locals from all groups
+    /// and previous groups' globals).
+    pub(crate) symtab_global_start_index: u32,
 
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
@@ -1497,8 +1536,10 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
         let Some(symbol_id) = self.prelude().entry_symbol_id else {
-            if self.symbol_db.output_kind == OutputKind::SharedObject {
-                // Shared objects don't have an implicit entry point.
+            if self.symbol_db.output_kind == OutputKind::SharedObject
+                || self.symbol_db.output_kind == OutputKind::Relocatable
+            {
+                // Shared objects and relocatable outputs don't have an implicit entry point.
                 return Ok(0);
             }
 
@@ -1739,6 +1780,14 @@ fn compute_segment_layout(
     header_info: &HeaderInfo,
     args: &Args,
 ) -> Result<SegmentLayouts> {
+    // For partial-link (-r / ET_REL), there are no program segments at all.
+    if args.output_relocatable {
+        return Ok(SegmentLayouts {
+            segments: Vec::new(),
+            tls_layout: None,
+        });
+    }
+
     #[derive(Clone)]
     struct Record {
         segment_id: ProgramSegmentId,
@@ -2262,7 +2311,7 @@ impl<'data> GroupState<'data> {
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
 
-        let strtab_start_offset = self
+        let (strtab_start_offset, symtab_local_start_index, symtab_global_start_index) = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
         let dynstr_start_offset = (memory_offsets.get(part_id::DYNSTR)
@@ -2272,10 +2321,21 @@ impl<'data> GroupState<'data> {
                 .mem_offset) as u32;
         memory_offsets.increment(part_id::DYNSTR, *self.common.mem_sizes.get(part_id::DYNSTR));
 
+        // Compute the total number of local symbols across ALL groups. This is needed to
+        // compute absolute global symbol indices (globals come after all locals in .symtab).
+        let total_local_count = (resources
+            .section_layouts
+            .get(output_section_id::SYMTAB_LOCAL)
+            .file_size
+            / size_of::<crate::elf::SymtabEntry>()) as u32;
+        let absolute_global_start = total_local_count + symtab_global_start_index;
+
         Ok(GroupLayout {
             files,
             strtab_start_offset,
             dynstr_start_offset,
+            symtab_local_start_index,
+            symtab_global_start_index: absolute_global_start,
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
             format_specific,
@@ -2817,6 +2877,19 @@ pub(crate) fn process_relocation<
         let symbol_id = symbol_db.definition(local_symbol_id);
         let mut flags = resources.local_flags_for_symbol(symbol_id);
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+
+        // For partial-link output (-r), we only need to discover symbol references so the GC
+        // can pull in dependent sections. We don't process relocation flags, GOT/PLT, or
+        // dynamic relocation allocation — relocations are preserved verbatim in .rela.* sections.
+        if symbol_db.output_kind.is_partial_link() {
+            let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+            let previous_flags = atomic_flags.get();
+            if !previous_flags.has_resolution() {
+                queue.send_symbol_request::<P>(symbol_id, resources, scope);
+            }
+            return Ok(next_modifier);
+        }
+
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
         let section_flags = SectionFlags::from_header(section);
@@ -3266,6 +3339,14 @@ impl<'data> PreludeLayoutState<'data> {
             extra_sizes,
             symbol_db,
             |symbol_id, def_info| {
+                // For partial-link (-r), don't emit linker-internal symbols at all.
+                // These are synthesised symbols like __ehdr_start, __executable_start,
+                // __start_*/__stop_*, _GLOBAL_OFFSET_TABLE_, etc. that don't belong
+                // in relocatable output.
+                if symbol_db.output_kind.is_partial_link() {
+                    return false;
+                }
+
                 let flags = per_symbol_flags.flags_for_symbol(symbol_id);
 
                 // If the symbol is referenced, then we keep it.
@@ -3324,6 +3405,18 @@ impl<'data> PreludeLayoutState<'data> {
             if section_id.built_in_details().keep_if_empty {
                 // Don't keep .relro_padding if relro is disabled.
                 if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
+                {
+                    continue;
+                }
+                // For partial-link (-r), don't force-keep linker-internal
+                // sections that have no content (e.g. PROGRAM_HEADERS,
+                // SECTION_HEADERS placeholder sections).
+                // We keep FILE_HEADER because it becomes the NULL section at
+                // index 0 (its type is sht::NULL). We also keep .shstrtab,
+                // .symtab, .strtab because they will have content.
+                if resources.symbol_db.output_kind.is_partial_link()
+                    && (section_id == output_section_id::PROGRAM_HEADERS
+                        || section_id == output_section_id::SECTION_HEADERS)
                 {
                     continue;
                 }
@@ -3413,8 +3506,15 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        // Always keep the program headers segment even though we don't emit any sections in it.
-        keep_segments[0] = true;
+        // Keep the program headers segment only for executable outputs (not for ET_REL).
+        if resources.symbol_db.output_kind.is_executable() {
+            keep_segments[0] = true;
+        }
+
+        // For partial-link (-r), discard ALL segments. ET_REL has no program headers.
+        if resources.symbol_db.output_kind.is_partial_link() {
+            keep_segments.fill(false);
+        }
 
         // If relro is disabled, then discard the relro segment.
         if !resources.symbol_db.args.relro {
@@ -3425,10 +3525,18 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        let active_segment_ids = (0..program_segments.len())
-            .map(ProgramSegmentId::new)
-            .filter(|id| keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id))
-            .collect();
+        let active_segment_ids: Vec<ProgramSegmentId> =
+            if resources.symbol_db.output_kind.is_partial_link() {
+                // ET_REL has no program headers at all.
+                Vec::new()
+            } else {
+                (0..program_segments.len())
+                    .map(ProgramSegmentId::new)
+                    .filter(|id| {
+                        keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id)
+                    })
+                    .collect()
+            };
 
         let header_info = HeaderInfo {
             num_output_sections_with_content: num_sections
@@ -3652,6 +3760,10 @@ fn should_emit_undefined_error(
     args: &Args,
     output_kind: OutputKind,
 ) -> bool {
+    // Partial-link (-r) deliberately leaves symbols unresolved.
+    if output_kind.is_partial_link() {
+        return false;
+    }
     if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
         return false;
     }
@@ -4039,10 +4151,14 @@ impl<'data> ObjectLayoutState<'data> {
                 )?;
             }
             SectionSlot::Discard => {
-                bail!(
-                    "{self}: Don't know what segment to put `{}` in, but it's referenced",
-                    self.object.section_display_name(section_index),
-                );
+                // In partial-link mode, discarded sections may still be referenced
+                // (e.g. .discard.addressable in arm64 kernel modules). Just skip them.
+                if !resources.symbol_db.output_kind.is_partial_link() {
+                    bail!(
+                        "{self}: Don't know what segment to put `{}` in, but it's referenced",
+                        self.object.section_display_name(section_index),
+                    );
+                }
             }
             SectionSlot::Loaded(_)
             | SectionSlot::FrameData(..)
@@ -4574,7 +4690,23 @@ impl<'data> SymbolCopyInfo<'data> {
         symbol_state: ValueFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
-        if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
+        let is_partial_link = symbol_db.output_kind.is_partial_link();
+
+        if is_partial_link {
+            // For partial-link (-r), keep undefined symbols in the output so they can be
+            // resolved by a later link step. Only the canonical definition owner writes
+            // defined globals; undefined globals from any file are written if this file
+            // originally declared them.
+            if sym.is_undefined() {
+                // Keep undefined symbols if this file is the canonical owner (i.e. nothing
+                // resolved it), so that the partial-link output still lists them.
+                if !symbol_db.is_canonical(symbol_id) {
+                    return None;
+                }
+            } else if !symbol_db.is_canonical(symbol_id) {
+                return None;
+            }
+        } else if !symbol_db.is_canonical(symbol_id) || sym.is_undefined() {
             return None;
         }
 
@@ -4582,6 +4714,10 @@ impl<'data> SymbolCopyInfo<'data> {
             && !sections[section.0].is_loaded()
         {
             // Symbol is in a discarded section.
+            if !is_partial_link {
+                return None;
+            }
+            // For partial link, symbols in discarded sections are still dropped.
             return None;
         }
 
@@ -5227,6 +5363,9 @@ fn layout_section_parts(
 
     let mut pending_location = None;
 
+    // For partial-link (-r / ET_REL), all section VMA addresses must be 0.
+    let is_partial_link = args.output_relocatable;
+
     let mut records_out = output_sections.new_part_map();
 
     for event in output_order {
@@ -5292,12 +5431,15 @@ fn layout_section_parts(
                                 0
                             };
 
+                            // For partial-link, all section addresses are 0.
+                            let section_mem_offset = if is_partial_link { 0 } else { mem_offset };
+
                             *part_layout = OutputRecordLayout {
                                 file_size,
                                 mem_size,
                                 alignment,
                                 file_offset,
-                                mem_offset,
+                                mem_offset: section_mem_offset,
                             };
 
                             file_offset += file_size;
@@ -5715,7 +5857,16 @@ impl<'data> LinkerScriptLayoutState<'data> {
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result {
         self.internal_symbols
-            .finalise_layout(memory_offsets, resolutions_out, resources)
+            .finalise_layout(memory_offsets, resolutions_out, resources)?;
+
+        // Allocate space for any raw bytes that the linker script requested via
+        // BYTE/SHORT/LONG/QUAD
+        for (section_id, data) in &self.section_datas {
+            // Use alignment::MIN to match finalise_sizes and elf_writer.
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            memory_offsets.increment(part_id, data.len() as u64);
+        }
+        Ok(())
     }
 
     fn new(input: ResolvedLinkerScript<'data>) -> Self {
@@ -5727,6 +5878,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
                 symbol_definitions: input.symbol_definitions,
                 start_symbol_id: input.symbol_id_range.start(),
             },
+            section_datas: input.section_datas,
         }
     }
 
@@ -5765,6 +5917,16 @@ impl<'data> LinkerScriptLayoutState<'data> {
             }
         }
 
+        // Mark sections that have BYTE/SHORT/LONG/QUAD data from the linker
+        // script as must-keep so they are included in the output even if no
+        // input sections map to them.
+        for (section_id, _data) in &self.section_datas {
+            resources
+                .must_keep_sections
+                .get(*section_id)
+                .fetch_or(true, atomic::Ordering::Relaxed);
+        }
+
         Ok(())
     }
 
@@ -5783,6 +5945,13 @@ impl<'data> LinkerScriptLayoutState<'data> {
                     .has_resolution()
             },
         )?;
+
+        // Account for raw bytes from BYTE/SHORT/LONG/QUAD linker script
+        // directives so that buffers are allocated for these sections.
+        for (section_id, data) in &self.section_datas {
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            *common.mem_sizes.get_mut(part_id) += data.len() as u64;
+        }
 
         Ok(())
     }

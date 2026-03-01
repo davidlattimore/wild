@@ -135,6 +135,11 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         let is_absolute_address = is_known_address && non_relocatable;
         let interposable = flags.is_interposable();
 
+        // For partial link (-r), never apply relaxations — relocations are preserved as-is.
+        if output_kind.is_partial_link() {
+            return None;
+        }
+
         // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
         // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change

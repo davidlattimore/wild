@@ -800,35 +800,33 @@ fn diff_key_for_res_mismatch<A: Arch>(
         &resolutions[0].reference.referent,
         &resolutions[1].reference.referent,
     ) {
-        (Referent::DynamicRelocation(d), Referent::Undefined(unmatched)) => {
-            if d.entry.is_weak && unmatched.address == 0 {
-                // The reference linker emitted a null and we emitted a dynamic
-                // relocation for a weak symbol.
-                return format!("rel.undefined-weak.dynamic.{}", d.r_type);
-            }
+        (Referent::DynamicRelocation(d), Referent::Undefined(unmatched))
+            if d.entry.is_weak && unmatched.address == 0 =>
+        {
+            // The reference linker emitted a null and we emitted a dynamic
+            // relocation for a weak symbol.
+            return format!("rel.undefined-weak.dynamic.{}", d.r_type);
         }
-        (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs)) => {
+        (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs))
             if !resolutions[0].reference.indirection.is_via_plt()
                 && resolutions[1].reference.indirection.is_via_plt()
                 && ours.addend == 0
                 && theirs.addend == 0
-                && ours.entry == theirs.entry
-            {
-                // We used an in-place relocation where the reference linker emitted the address of
-                // a PLT entry for the same symbol.
-                return "rel.dynamic-plt-bypass".to_owned();
-            }
+                && ours.entry == theirs.entry =>
+        {
+            // We used an in-place relocation where the reference linker emitted the address of
+            // a PLT entry for the same symbol.
+            return "rel.dynamic-plt-bypass".to_owned();
         }
         (Referent::Named(ours, _), Referent::Undefined(_)) => {
             // We defined a symbol that the reference linker didn't.
             return format!("rel.extra-symbol.{ours}");
         }
-        (Referent::Named(_, _), Referent::DynamicRelocation(_)) => {
+        (Referent::Named(_, _), Referent::DynamicRelocation(_))
             if resolutions[0].reference.indirection == Indirection::Got
-                && resolutions[1].reference.indirection == Indirection::Got
-            {
-                return format!("rel.missing-got-dynamic.{}", bin_attributes.output_kind);
-            }
+                && resolutions[1].reference.indirection == Indirection::Got =>
+        {
+            return format!("rel.missing-got-dynamic.{}", bin_attributes.output_kind);
         }
         _ => {}
     }
@@ -1172,8 +1170,9 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             )?;
 
             // Print instruction bytes.
-            let mut offset = instruction.address() - self.section_address;
-            for v in instruction.bytes {
+            for (offset, v) in
+                (instruction.address() - self.section_address..).zip(instruction.bytes.iter())
+            {
                 if self.range.contains(&offset) {
                     // Bytes within the range that we would have compared are highlighted yellow,
                     // while bytes outside the range are left in the default colour. This makes it
@@ -1182,7 +1181,6 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                 } else {
                     write!(f, "{v:02x} ")?;
                 }
-                offset += 1;
             }
 
             let out = A::instruction_to_string(instruction);
@@ -3239,10 +3237,10 @@ impl<'data> AddressIndex<'data> {
                 object::elf::DT_VERSYM => {
                     self.versym_address = Some(entry.d_val.get(e));
                 }
-                object::elf::DT_FLAGS_1 => {
-                    if entry.d_val.get(e) & u64::from(object::elf::DF_1_PIE) != 0 {
-                        self.bin_attributes.output_kind = OutputKind::Executable;
-                    }
+                object::elf::DT_FLAGS_1
+                    if entry.d_val.get(e) & u64::from(object::elf::DF_1_PIE) != 0 =>
+                {
+                    self.bin_attributes.output_kind = OutputKind::Executable;
                 }
                 object::elf::DT_NEEDED => {
                     self.bin_attributes.link_type = LinkType::Dynamic;

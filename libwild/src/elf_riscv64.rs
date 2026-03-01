@@ -177,6 +177,11 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         let mut relocation = ElfRiscV64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
+        // For partial link (-r), never apply relaxations — relocations are preserved as-is.
+        if output_kind.is_partial_link() {
+            return None;
+        }
+
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
         // relocation is in a non-executable section.
         if !section_flags.contains(shf::EXECINSTR) {

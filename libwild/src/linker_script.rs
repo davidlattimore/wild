@@ -93,6 +93,7 @@ pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
+    pub(crate) address: Option<Location>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -101,6 +102,8 @@ pub(crate) enum ContentsCommand<'a> {
     SymbolAssignment(SymbolAssignment<'a>),
     Align(Alignment),
     Provide(ProvideSymbolDefinition<'a>),
+    /// Raw bytes to be emitted into the section (from BYTE/SHORT/LONG/QUAD commands)
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -252,11 +255,17 @@ fn parse_provide<'input>(
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
-    "0x".parse_next(input)?;
-    let hex_str =
-        std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
-    let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
-    Ok(Location { address })
+    // Accept either hex (0x...) or decimal numeric literal.
+    if input.starts_with(b"0x") {
+        "0x".parse_next(input)?;
+        let hex_str =
+            std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
+        let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
+        Ok(Location { address })
+    } else {
+        let raw: u64 = dec_uint.parse_next(input)?;
+        Ok(Location { address: raw })
+    }
 }
 
 fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
@@ -338,6 +347,20 @@ fn parse_section_command<'input>(
         return Ok(cmd);
     }
 
+    // Optional address before the ':' (e.g. `name 0 : { ... }`)
+    // Try to parse a numeric address (hex 0x... or decimal) if present.
+    let mut address: Option<Location> = None;
+    if input.starts_with(b"0x") || (input.first().is_some_and(|b| b.is_ascii_digit())) {
+        // Attempt hex or decimal parse. If it fails, we fall back to expecting ':' directly.
+        let save = *input;
+        if let Ok(loc) = parse_location(input) {
+            skip_comments_and_whitespace(input)?;
+            address = Some(loc);
+        } else {
+            *input = save;
+        }
+    }
+
     ':'.parse_next(input)?;
 
     skip_comments_and_whitespace(input)?;
@@ -359,6 +382,7 @@ fn parse_section_command<'input>(
         output_section_name: name,
         commands,
         alignment,
+        address,
     }))
 }
 
@@ -380,7 +404,65 @@ fn parse_alignment(input: &mut &BStr) -> winnow::Result<Alignment> {
 fn parse_contents_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<ContentsCommand<'input>> {
-    alt((parse_contents_provide, parse_matcher, parse_assignment)).parse_next(input)
+    alt((
+        parse_contents_provide,
+        parse_data_command,
+        parse_matcher,
+        parse_assignment,
+    ))
+    .parse_next(input)
+}
+
+fn parse_data_command<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
+    // Support BYTE(), SHORT(), LONG(), QUAD() with numeric literals separated by commas.
+    let name = parse_token(input)?;
+    let size = match name {
+        b"BYTE" => 1usize,
+        b"SHORT" => 2usize,
+        b"LONG" => 4usize,
+        b"QUAD" => 8usize,
+        _ => return Err(ContextError::new()),
+    };
+
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Collect literal numbers separated by commas.
+    let mut bytes = Vec::new();
+    loop {
+        // Accept decimal or hex (0x) numbers.
+        let num_token = take_while(1.., |b| !b",) \t\n".contains(&b)).parse_next(input)?;
+        let s = std::str::from_utf8(num_token).map_err(|_| ContextError::new())?;
+        let val = if let Some(hex) = s.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16).map_err(|_| ContextError::new())?
+        } else {
+            s.parse::<u64>().map_err(|_| ContextError::new())?
+        };
+
+        // Emit little-endian bytes of the requested size.
+        for i in 0..size {
+            bytes.push(((val >> (8 * i)) & 0xff) as u8);
+        }
+
+        skip_comments_and_whitespace(input)?;
+        if input.starts_with(b",") {
+            ','.parse_next(input)?;
+            skip_comments_and_whitespace(input)?;
+            continue;
+        }
+        break;
+    }
+
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    // We produce an owned Vec<u8> containing the requested bytes and return it as a
+    // `ContentsCommand::Bytes`. This will be carried through `ProcessedLinkerScript` and
+    // eventually emitted into the output file by `elf_writer`.
+    Ok(ContentsCommand::Bytes(bytes))
 }
 
 fn parse_contents_provide<'input>(
@@ -454,9 +536,32 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
 }
 
 fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
-    let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
-    skip_comments_and_whitespace(input)?;
-    Ok(pattern)
+    // Support SORT(...) patterns which contain an inner ')' by parsing balanced parens for SORT.
+    if input.starts_with(b"SORT(") {
+        let mut depth = 1usize;
+        let mut pos = 5; // we've matched 'SORT('
+        while depth > 0 && pos < input.len() {
+            let b = input[pos];
+            pos += 1;
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            }
+        }
+        if depth != 0 {
+            return Err(ContextError::new());
+        }
+        // Return the entire SORT(...) token including closing ')'
+        let pattern = &input[..pos];
+        *input = &input[pos..];
+        skip_comments_and_whitespace(input)?;
+        Ok(pattern)
+    } else {
+        let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        Ok(pattern)
+    }
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -669,6 +774,7 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -719,6 +825,7 @@ mod tests {
                                     }),
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
+                                address: None,
                             }),
                         ],
                     }),
@@ -854,6 +961,7 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -870,6 +978,7 @@ mod tests {
                     input_section_name_patterns: vec![".ctors".as_bytes()],
                 })],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -886,6 +995,123 @@ mod tests {
                     input_section_name_patterns: vec![".init".as_bytes()],
                 })],
                 alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_discard_section() {
+        check_section_command(
+            "/DISCARD/ : { *(.discard.*) }",
+            &SectionCommand::Section(Section {
+                output_section_name: "/DISCARD/".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".discard.*".as_bytes()],
+                })],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_sort_in_matcher() {
+        check_section_command(
+            "__ksymtab 0 : { *(SORT(___ksymtab+*)) }",
+            &SectionCommand::Section(Section {
+                output_section_name: "__ksymtab".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec!["SORT(___ksymtab+*)".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_vma_address() {
+        check_section_command(
+            ".plt 0 : { BYTE(0) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".plt".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0])],
+                alignment: None,
+                address: Some(Location { address: 0 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_hex_address() {
+        check_section_command(
+            ".text 0x1000 : { *(.text) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".text".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0x1000 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_byte_data_command() {
+        check_section_command(
+            ".data : { BYTE(42) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![42])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_short_data_command() {
+        check_section_command(
+            ".data : { SHORT(0x1234) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x34, 0x12])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_long_data_command() {
+        check_section_command(
+            ".data : { LONG(0x12345678) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![0x78, 0x56, 0x34, 0x12])],
+                alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_quad_data_command() {
+        check_section_command(
+            ".data : { QUAD(1) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".data".as_bytes(),
+                commands: vec![ContentsCommand::Bytes(vec![1, 0, 0, 0, 0, 0, 0, 0])],
+                alignment: None,
+                address: None,
             }),
         );
     }

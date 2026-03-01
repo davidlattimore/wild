@@ -218,6 +218,14 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
+    // For partial link, build a global SymbolId → output index map so that cross-object
+    // references can be resolved to the correct output symbol index.
+    let global_sym_map = if layout.symbol_db.output_kind.is_partial_link() {
+        build_global_symbol_output_map(layout)
+    } else {
+        HashMap::new()
+    };
+
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
     groups_and_buffers
@@ -233,13 +241,27 @@ fn write_file_contents<'data, P: Platform<'data, File = crate::elf::File<'data>>
                 group.format_specific.eh_frame_start_address,
             );
 
+            let initial_local_remaining = table_writer.debug_symbol_writer.local_entries.len();
+            let initial_global_remaining = table_writer.debug_symbol_writer.global_entries.len();
+
             for file in &group.files {
+                // Compute this file's starting absolute symtab indices.
+                let consumed_locals =
+                    initial_local_remaining - table_writer.debug_symbol_writer.local_entries.len();
+                let consumed_globals = initial_global_remaining
+                    - table_writer.debug_symbol_writer.global_entries.len();
+                let file_local_base = group.symtab_local_start_index + consumed_locals as u32;
+                let file_global_base = group.symtab_global_start_index + consumed_globals as u32;
+
                 write_file::<P>(
                     file,
                     &mut buffers,
                     &mut table_writer,
                     layout,
                     &sized_output.trace,
+                    file_local_base,
+                    file_global_base,
+                    &global_sym_map,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -353,10 +375,10 @@ fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>
     header: &mut FileHeader,
 ) -> Result {
     let output_kind = layout.symbol_db.output_kind;
-    let ty = if output_kind.is_relocatable() {
-        object::elf::ET_DYN
-    } else {
-        object::elf::ET_EXEC
+    let ty = match output_kind {
+        crate::OutputKind::Relocatable => object::elf::ET_REL,
+        _ if output_kind.is_relocatable() => object::elf::ET_DYN,
+        _ => object::elf::ET_EXEC,
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
@@ -370,19 +392,36 @@ fn populate_file_header<'data, P: Platform<'data, File = crate::elf::File<'data>
     header.e_machine.set(e, P::elf_header_arch_magic());
     header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
     header.e_entry.set(e, layout.entry_symbol_address()?);
-    header.e_phoff.set(e, elf::PHEADER_OFFSET);
-    header.e_shoff.set(
-        e,
-        u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
-    );
+    if matches!(output_kind, crate::OutputKind::Relocatable) {
+        header.e_phoff.set(e, 0);
+        // For relocatable outputs, the section header table may not be immediately after
+        // the file header. Use the actual file offset of the SECTION_HEADERS output section
+        // so that `e_shoff` points to the correct location.
+        let sh_off = layout
+            .section_layouts
+            .get(output_section_id::SECTION_HEADERS)
+            .file_offset as u64;
+        header.e_shoff.set(e, sh_off);
+    } else {
+        header.e_phoff.set(e, elf::PHEADER_OFFSET);
+        header.e_shoff.set(
+            e,
+            u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
+        );
+    }
     header
         .e_flags
         .set(e, layout.properties_and_attributes.eflags.0);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
-    header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
-    header
-        .e_phnum
-        .set(e, header_info.active_segment_ids.len() as u16);
+    if matches!(output_kind, crate::OutputKind::Relocatable) {
+        header.e_phentsize.set(e, 0);
+        header.e_phnum.set(e, 0);
+    } else {
+        header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
+        header
+            .e_phnum
+            .set(e, header_info.active_segment_ids.len() as u16);
+    }
     header.e_shentsize.set(e, elf::SECTION_HEADER_SIZE);
     header
         .e_shnum
@@ -403,13 +442,27 @@ fn write_file<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     table_writer: &mut TableWriter,
     layout: &Layout<'data>,
     trace: &TraceOutput,
+    symtab_local_base: u32,
+    symtab_global_base: u32,
+    global_sym_map: &HashMap<SymbolId, u32>,
 ) -> Result {
     match file {
-        FileLayout::Object(s) => write_object::<P>(s, buffers, table_writer, layout, trace)?,
+        FileLayout::Object(s) => write_object::<P>(
+            s,
+            buffers,
+            table_writer,
+            layout,
+            trace,
+            symtab_local_base,
+            symtab_global_base,
+            global_sym_map,
+        )?,
         FileLayout::Prelude(s) => write_prelude::<P>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<P>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<P>(s, table_writer, layout)?,
-        FileLayout::LinkerScript(s) => write_linker_script_state::<P>(s, table_writer, layout)?,
+        FileLayout::LinkerScript(s) => {
+            write_linker_script_state::<P>(s, buffers, table_writer, layout)?;
+        }
         FileLayout::NotLoaded => {}
         FileLayout::Dynamic(s) => write_dynamic_file::<P>(s, table_writer, layout)?,
     }
@@ -1286,15 +1339,43 @@ fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     table_writer: &mut TableWriter,
     layout: &Layout<'data>,
     trace: &TraceOutput,
+    symtab_local_base: u32,
+    symtab_global_base: u32,
+    global_sym_map: &HashMap<SymbolId, u32>,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().trace_span_for_file(object.file_id);
+
+    let is_partial_link = layout.symbol_db.output_kind.is_partial_link();
+
+    // For partial link, pre-compute the input→output symbol index mapping.
+    // This is needed for fixing up .rela.* sections with correct symbol indices.
+    let sym_index_map = if is_partial_link {
+        build_symbol_index_map(
+            object,
+            layout,
+            symtab_local_base,
+            symtab_global_base,
+            global_sym_map,
+        )
+    } else {
+        Vec::new()
+    };
+
     for sec in &object.sections {
         match sec {
             SectionSlot::Loaded(sec) => {
-                write_object_section::<P>(object, layout, sec, buffers, table_writer, trace)?;
+                write_object_section::<P>(
+                    object,
+                    layout,
+                    sec,
+                    buffers,
+                    table_writer,
+                    trace,
+                    &sym_index_map,
+                )?;
             }
             SectionSlot::LoadedDebugInfo(sec) => {
                 write_debug_section::<P>(object, layout, sec, buffers)?;
@@ -1347,6 +1428,176 @@ fn write_object<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     Ok(())
 }
 
+/// For partial link, builds a global map from canonical SymbolId to output symtab index.
+/// This allows cross-object symbol references (e.g. b.o referencing a.o's global_a) to be
+/// resolved to the correct output symbol index during relocation fixup.
+fn build_global_symbol_output_map(layout: &Layout) -> HashMap<SymbolId, u32> {
+    use crate::layout::SymbolCopyInfo;
+
+    let mut map = HashMap::new();
+    for group in &layout.group_layouts {
+        let mut local_count = 0u32;
+        let mut global_count = 0u32;
+        for file in &group.files {
+            if let FileLayout::Object(object) = file {
+                for ((sym_index, sym), flags) in object
+                    .object
+                    .symbols
+                    .enumerate()
+                    .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+                {
+                    let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+                    if SymbolCopyInfo::new(
+                        object.object,
+                        sym_index,
+                        sym,
+                        symbol_id,
+                        &layout.symbol_db,
+                        flags.get(),
+                        &object.sections,
+                    )
+                    .is_some()
+                    {
+                        let is_local = flags.get().is_symtab_local(sym);
+                        if is_local {
+                            let output_idx = group.symtab_local_start_index + local_count;
+                            map.insert(symbol_id, output_idx);
+                            local_count += 1;
+                        } else {
+                            let output_idx = group.symtab_global_start_index + global_count;
+                            map.insert(symbol_id, output_idx);
+                            global_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    map
+}
+
+/// For partial link, builds a mapping from input symbol index → output symbol index.
+/// This mirrors the logic of `SymbolCopyInfo::new` and `write_symbols` to predict which symbols
+/// will be written and where they'll end up in the output `.symtab`.
+fn build_symbol_index_map(
+    object: &ObjectLayout,
+    layout: &Layout,
+    local_base: u32,
+    global_base: u32,
+    global_sym_map: &HashMap<SymbolId, u32>,
+) -> Vec<Option<u32>> {
+    let mut map = vec![None; object.object.symbols.len()];
+    let mut local_idx = 0u32;
+    let mut global_idx = 0u32;
+
+    // Symbol 0 is the null symbol (index 0 in output .symtab)
+    map[0] = Some(0);
+
+    for ((sym_index, sym), flags) in object
+        .object
+        .symbols
+        .enumerate()
+        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+    {
+        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+        if let Some(_info) = SymbolCopyInfo::new(
+            object.object,
+            sym_index,
+            sym,
+            symbol_id,
+            &layout.symbol_db,
+            flags.get(),
+            &object.sections,
+        ) {
+            let is_local = flags.get().is_symtab_local(sym);
+            if is_local {
+                map[sym_index.0] = Some(local_base + local_idx);
+                local_idx += 1;
+            } else {
+                map[sym_index.0] = Some(global_base + global_idx);
+                global_idx += 1;
+            }
+        }
+    }
+
+    // Second pass: fill in unmapped entries using the global map.
+    // This handles cross-object symbol references (e.g. b.o referencing a.o's global_a).
+    for ((sym_index, _sym), _flags) in object
+        .object
+        .symbols
+        .enumerate()
+        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+    {
+        if map[sym_index.0].is_none() && sym_index.0 != 0 {
+            let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+            let canonical_id = layout.symbol_db.definition(symbol_id);
+            if let Some(&output_idx) = global_sym_map.get(&canonical_id) {
+                map[sym_index.0] = Some(output_idx);
+            }
+        }
+    }
+
+    map
+}
+
+/// For partial link, fixes up symbol indices in a .rela.* section that has been raw-copied.
+/// Each RELA entry's r_info field contains the symbol index (upper 32 bits) and relocation type
+/// (lower 32 bits). We remap the symbol index using the provided mapping.
+fn fixup_rela_entries(
+    out: &mut [u8],
+    sym_index_map: &[Option<u32>],
+    section_base_offset: u64,
+) -> Result {
+    const RELA_ENTRY_SIZE: usize = 24; // sizeof(Elf64_Rela)
+    const R_OFFSET_OFFSET: usize = 0; // offset of r_offset within Elf64_Rela
+    const R_INFO_OFFSET: usize = 8; // offset of r_info within Elf64_Rela
+
+    if !out.len().is_multiple_of(RELA_ENTRY_SIZE) {
+        bail!(
+            ".rela section size {} is not a multiple of RELA entry size {}",
+            out.len(),
+            RELA_ENTRY_SIZE
+        );
+    }
+
+    let num_entries = out.len() / RELA_ENTRY_SIZE;
+
+    for i in 0..num_entries {
+        let entry_offset = i * RELA_ENTRY_SIZE;
+
+        // Adjust r_offset by the section's base offset in the combined output section.
+        if section_base_offset != 0 {
+            let offset_pos = entry_offset + R_OFFSET_OFFSET;
+            let r_offset = u64::from_le_bytes(out[offset_pos..offset_pos + 8].try_into().unwrap());
+            let new_r_offset = r_offset + section_base_offset;
+            out[offset_pos..offset_pos + 8].copy_from_slice(&new_r_offset.to_le_bytes());
+        }
+
+        // Fix up symbol index in r_info.
+        let info_offset = entry_offset + R_INFO_OFFSET;
+        let r_info = u64::from_le_bytes(out[info_offset..info_offset + 8].try_into().unwrap());
+
+        let old_sym_idx = (r_info >> 32) as usize;
+        let rel_type = r_info & 0xFFFF_FFFF;
+
+        if old_sym_idx == 0 {
+            // Symbol index 0 (null) stays as 0
+            continue;
+        }
+
+        let new_sym_idx = if old_sym_idx < sym_index_map.len() {
+            sym_index_map[old_sym_idx].unwrap_or(old_sym_idx as u32)
+        } else {
+            old_sym_idx as u32
+        };
+
+        let new_r_info = (u64::from(new_sym_idx) << 32) | rel_type;
+        out[info_offset..info_offset + 8].copy_from_slice(&new_r_info.to_le_bytes());
+    }
+
+    Ok(())
+}
+
 fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     object: &ObjectLayout<'data>,
     layout: &Layout<'data>,
@@ -1354,8 +1605,37 @@ fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     let out = write_section_raw(object, layout, section, buffers)?;
+
+    // For partial-link output (-r), we don't resolve relocations. The raw section data is copied
+    // as-is and the relocation entries are preserved in separate .rela.* output sections.
+    if layout.symbol_db.output_kind.is_partial_link() {
+        // Fix up symbol indices and r_offset in .rela.* sections.
+        if !sym_index_map.is_empty() {
+            let section_name = object.object.section_display_name(section.index);
+            let name_bytes = section_name.as_bytes();
+            if name_bytes.starts_with(b".rela.") {
+                // Get the target section's base offset from sh_info. When multiple
+                // input sections are combined, the r_offset values in relocations
+                // from later objects must be adjusted by the target section's
+                // starting offset within the combined output section.
+                let section_hdr = object.object.section(section.index)?;
+                let target_section_idx = section_hdr.sh_info.get(LittleEndian) as usize;
+                let section_base_offset = if target_section_idx < object.section_resolutions.len() {
+                    object.section_resolutions[target_section_idx]
+                        .address()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                fixup_rela_entries(out, sym_index_map, section_base_offset)?;
+            }
+            // TODO: Handle .crel.* sections (CREL format has different encoding)
+        }
+        return Ok(());
+    }
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
@@ -1574,6 +1854,8 @@ fn write_symbols(
     symbol_writer: &mut SymbolTableWriter,
     layout: &Layout,
 ) -> Result {
+    let is_partial_link = layout.symbol_db.output_kind.is_partial_link();
+
     for ((sym_index, sym), flags) in object
         .object
         .symbols
@@ -1595,6 +1877,19 @@ fn write_symbols(
             &object.sections,
         ) {
             let e = LittleEndian;
+
+            // For partial link, undefined symbols should be written as SHN_UNDEF (shndx = 0).
+            if is_partial_link && sym.is_undefined(e) {
+                symbol_writer
+                    .copy_symbol_shndx(sym, info.name, 0, 0, flags.get())
+                    .with_context(|| {
+                        format!(
+                            "Failed to write undefined symbol {}",
+                            layout.symbol_debug(symbol_id)
+                        )
+                    })?;
+                continue;
+            }
 
             let section_id =
                 if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
@@ -2884,13 +3179,11 @@ fn write_prelude<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     let mut program_headers = ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
     write_program_headers(&mut program_headers, layout)?;
 
-    write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
+    let shbuf = buffers.get_mut(part_id::SECTION_HEADERS);
+    write_section_headers(shbuf, layout)?;
 
-    write_section_header_strings(
-        buffers.get_mut(part_id::SHSTRTAB),
-        &layout.output_sections,
-        &layout.output_order,
-    );
+    let shstr = buffers.get_mut(part_id::SHSTRTAB);
+    write_section_header_strings(shstr, &layout.output_sections, &layout.output_order);
 
     write_plt_got_entries::<P>(prelude, layout, table_writer)?;
 
@@ -3173,6 +3466,7 @@ pub(crate) struct EpilogueOffsets {
 
 fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     script: &LinkerScriptLayoutState,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout<'data>,
 ) -> Result {
@@ -3185,6 +3479,13 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
     )?;
 
     write_internal_symbols_plt_got_entries::<P>(&script.internal_symbols, table_writer, layout)?;
+
+    // Emit any raw bytes requested by the linker script into their sections.
+    for (section_id, data) in &script.section_datas {
+        let buf = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+        let slice = buf.split_off_mut(..data.len()).unwrap();
+        slice.copy_from_slice(data);
+    }
 
     Ok(())
 }
@@ -4387,33 +4688,100 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         }
 
         let entsize = output_info.entsize.max(section_id.element_size());
-        let size;
-        let alignment;
 
         if section_type == sht::NULL {
-            size = 0;
-            alignment = 0;
-        } else {
-            size = section_layout.mem_size;
-            alignment = section_layout.alignment.value();
-
-            while let Some(OrderEvent::Section(next_section_id)) = order.peek()
-                && let Some(primary_id) = output_sections.merge_target(*next_section_id)
-            {
-                debug_assert_bail!(
-                    primary_id == section_id,
-                    "Section order mismatch {} != {}",
-                    output_sections.section_debug(primary_id),
-                    output_sections.section_debug(section_id),
-                );
-                order.next();
+            // Section index 0 must be the all-zeros NULL entry per ELF spec.
+            // Explicitly zero all fields.
+            let entry = entries.next().unwrap();
+            let e = LittleEndian;
+            entry.sh_name.set(e, 0);
+            entry.sh_type.set(e, 0);
+            entry.sh_flags.set(e, 0);
+            entry.sh_addr.set(e, 0);
+            entry.sh_offset.set(e, 0);
+            entry.sh_size.set(e, 0);
+            entry.sh_link.set(e, 0);
+            entry.sh_info.set(e, 0);
+            entry.sh_addralign.set(e, 0);
+            entry.sh_entsize.set(e, 0);
+            if let Some(name) = layout.output_sections.name(section_id) {
+                name_offset += name.len() as u32 + 1;
             }
-        };
+            continue;
+        }
 
-        let link = output_section_id::link_ids(section_id)
+        let size = section_layout.mem_size;
+        let alignment = section_layout.alignment.value();
+
+        while let Some(OrderEvent::Section(next_section_id)) = order.peek()
+            && let Some(primary_id) = output_sections.merge_target(*next_section_id)
+        {
+            debug_assert_bail!(
+                primary_id == section_id,
+                "Section order mismatch {} != {}",
+                output_sections.section_debug(primary_id),
+                output_sections.section_debug(section_id),
+            );
+            order.next();
+        }
+
+        let mut link = output_section_id::link_ids(section_id)
             .iter()
             .find_map(|link_id| output_sections.output_index_of_section(*link_id))
             .unwrap_or(0);
+
+        // For partial-link output, .rela.* custom sections need sh_link pointing to .symtab
+        // and sh_info pointing to the target section (e.g., .rela.text → .text).
+        let mut info_override = None;
+        if layout.symbol_db.output_kind.is_partial_link()
+            && let Some(section_name) = output_sections.name(section_id)
+        {
+            let name_bytes = section_name.bytes();
+            // Extract the target section name from a relocation section name.
+            // Handles both ".rela.text" -> ".text" and ".rela__ex_table" -> "__ex_table"
+            let target_name = if name_bytes.starts_with(b".rela.") {
+                Some(&name_bytes[b".rela".len()..]) // ".text" (keeps leading dot)
+            } else if name_bytes.starts_with(b".crel.") {
+                Some(&name_bytes[b".crel".len()..])
+            } else if name_bytes.starts_with(b".rela") && name_bytes.len() > 5 {
+                Some(&name_bytes[b".rela".len()..]) // "__ex_table" (no leading dot)
+            } else if name_bytes.starts_with(b".crel") && name_bytes.len() > 5 {
+                Some(&name_bytes[b".crel".len()..])
+            } else {
+                None
+            };
+            if let Some(target) = target_name {
+                // sh_link → .symtab (or the combined symtab section)
+                if let Some(symtab_idx) =
+                    output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
+                {
+                    link = symtab_idx;
+                }
+                // sh_info → target section index (e.g., .text for .rela.text)
+                // target already includes the leading dot, e.g. ".text"
+                // Search among output sections for the target
+                if let Some(target_id) =
+                    output_sections.custom_name_to_id(crate::output_section_id::SectionName(target))
+                    && let Some(target_idx) = output_sections.output_index_of_section(target_id)
+                {
+                    info_override = Some(u32::from(target_idx));
+                }
+                // Also check built-in section names
+                if info_override.is_none() {
+                    for event in &layout.output_order {
+                        if let OrderEvent::Section(sid) = event
+                            && output_sections.output_index_of_section(sid).is_some()
+                            && let Some(sname) = output_sections.name(sid)
+                            && sname.bytes() == target
+                            && let Some(idx) = output_sections.output_index_of_section(sid)
+                        {
+                            info_override = Some(u32::from(idx));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         let entry = entries.next().unwrap();
         let e = LittleEndian;
@@ -4440,7 +4808,9 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
         entry.sh_link.set(e, link.into());
-        entry.sh_info.set(e, *info_values.get(section_id));
+        entry
+            .sh_info
+            .set(e, info_override.unwrap_or(*info_values.get(section_id)));
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
 
@@ -4854,5 +5224,121 @@ impl<R> Default for RelocationCache<R> {
             previous: Default::default(),
             high_part_symbols: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_fixup_rela_entries_basic() {
+        // Create a buffer with two RELA entries (24 bytes each).
+        // Entry: r_offset (8 bytes) + r_info (8 bytes) + r_addend (8 bytes)
+        let mut buf = vec![0u8; 48];
+
+        // Entry 0: r_offset=0x10, sym_idx=2, type=1, addend=0
+        let r_info_0: u64 = (2u64 << 32) | 1;
+        buf[0..8].copy_from_slice(&0x10u64.to_le_bytes()); // r_offset
+        buf[8..16].copy_from_slice(&r_info_0.to_le_bytes()); // r_info
+        buf[16..24].copy_from_slice(&0i64.to_le_bytes()); // r_addend
+
+        // Entry 1: r_offset=0x20, sym_idx=5, type=10, addend=-4
+        let r_info_1: u64 = (5u64 << 32) | 10;
+        buf[24..32].copy_from_slice(&0x20u64.to_le_bytes());
+        buf[32..40].copy_from_slice(&r_info_1.to_le_bytes());
+        buf[40..48].copy_from_slice(&(-4i64).to_le_bytes());
+
+        // Map: sym 2 → 7, sym 5 → 12
+        let map: Vec<Option<u32>> = vec![
+            Some(0),  // 0 → 0
+            None,     // 1 → unmapped
+            Some(7),  // 2 → 7
+            None,     // 3 → unmapped
+            None,     // 4 → unmapped
+            Some(12), // 5 → 12
+        ];
+
+        fixup_rela_entries(&mut buf, &map, 0).unwrap();
+
+        // Verify entry 0: sym_idx should now be 7
+        let new_r_info_0 = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+        assert_eq!(
+            new_r_info_0 >> 32,
+            7,
+            "Symbol index should be remapped to 7"
+        );
+        assert_eq!(
+            new_r_info_0 & 0xFFFF_FFFF,
+            1,
+            "Relocation type should be preserved"
+        );
+
+        // Verify entry 1: sym_idx should now be 12
+        let new_r_info_1 = u64::from_le_bytes(buf[32..40].try_into().unwrap());
+        assert_eq!(
+            new_r_info_1 >> 32,
+            12,
+            "Symbol index should be remapped to 12"
+        );
+        assert_eq!(
+            new_r_info_1 & 0xFFFF_FFFF,
+            10,
+            "Relocation type should be preserved"
+        );
+
+        // Verify offsets and addends are unchanged
+        assert_eq!(
+            u64::from_le_bytes(buf[0..8].try_into().unwrap()),
+            0x10,
+            "r_offset should be unchanged"
+        );
+        assert_eq!(
+            i64::from_le_bytes(buf[40..48].try_into().unwrap()),
+            -4,
+            "r_addend should be unchanged"
+        );
+    }
+
+    #[test]
+    fn test_fixup_rela_entries_null_symbol_preserved() {
+        // Entry with symbol index 0 should remain unchanged.
+        let mut buf = vec![0u8; 24];
+        let r_info: u64 = 5;
+        buf[8..16].copy_from_slice(&r_info.to_le_bytes());
+
+        let map: Vec<Option<u32>> = vec![Some(0), Some(42)];
+        fixup_rela_entries(&mut buf, &map, 0).unwrap();
+
+        let new_r_info = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+        assert_eq!(new_r_info >> 32, 0, "Null symbol should stay 0");
+        assert_eq!(new_r_info & 0xFFFF_FFFF, 5, "Type should be preserved");
+    }
+
+    #[test]
+    fn test_fixup_rela_entries_invalid_size() {
+        // Buffer not a multiple of 24 should error.
+        let mut buf = vec![0u8; 25];
+        let result = fixup_rela_entries(&mut buf, &[], 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fixup_rela_entries_unmapped_symbol_keeps_original() {
+        // If a symbol index has no mapping (None), the original index should be preserved.
+        let mut buf = vec![0u8; 24];
+        let r_info: u64 = (3u64 << 32) | 7;
+        buf[8..16].copy_from_slice(&r_info.to_le_bytes());
+
+        // Map doesn't include index 3
+        let map: Vec<Option<u32>> = vec![Some(0), Some(1), Some(2)];
+        fixup_rela_entries(&mut buf, &map, 0).unwrap();
+
+        let new_r_info = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+        assert_eq!(
+            new_r_info >> 32,
+            3,
+            "Unmapped symbol should keep original index"
+        );
     }
 }

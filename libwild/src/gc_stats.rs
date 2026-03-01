@@ -83,20 +83,20 @@ fn write_gc_stats(
             let mut file_discarded = 0;
             for (slot, section) in obj.sections.iter().zip(obj.object.section_iter()) {
                 match slot {
-                    SectionSlot::Unloaded(unloaded) => {
-                        if unloaded.part_id.output_section_id() == output_section_id::TEXT {
-                            file_discarded += obj.object.section_size(section)?;
-                            if args.verbose_gc_stats {
-                                file_record
-                                    .discarded_names
-                                    .push(obj.object.section_name(section)?);
-                            }
+                    SectionSlot::Unloaded(unloaded)
+                        if unloaded.part_id.output_section_id() == output_section_id::TEXT =>
+                    {
+                        file_discarded += obj.object.section_size(section)?;
+                        if args.verbose_gc_stats {
+                            file_record
+                                .discarded_names
+                                .push(obj.object.section_name(section)?);
                         }
                     }
-                    SectionSlot::Loaded(s) => {
-                        if s.part_id.output_section_id() == output_section_id::TEXT {
-                            file_kept += obj.object.section_size(section)?;
-                        }
+                    SectionSlot::Loaded(s)
+                        if s.part_id.output_section_id() == output_section_id::TEXT =>
+                    {
+                        file_kept += obj.object.section_size(section)?;
                     }
                     _ => {}
                 }

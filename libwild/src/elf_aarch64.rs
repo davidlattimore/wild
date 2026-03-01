@@ -133,6 +133,11 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         let mut relocation = ElfAArch64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
+        // For partial link (-r), never apply relaxations — relocations are preserved as-is.
+        if output_kind.is_partial_link() {
+            return None;
+        }
+
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
         if flags.is_ifunc() {
             return match relocation_kind {

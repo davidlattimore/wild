@@ -314,6 +314,7 @@ fn resolve_group<'data, 'definitions, O: ObjectFile<'data>>(
                         symbol_id_range: s.symbol_id_range,
                         // TODO: Consider alternative to cloning this.
                         symbol_definitions: s.parsed.symbol_defs.clone(),
+                        section_datas: s.parsed.section_datas.clone(),
                     })
                 })
                 .collect();
@@ -669,6 +670,7 @@ pub(crate) struct ResolvedLinkerScript<'data> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1192,7 +1194,17 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             .map(|n| n.as_encoded_bytes())
     };
 
-    match rules.lookup(section_name, file_name, section_flags, section_type) {
+    let outcome = if args.output_relocatable
+        && (section_name.starts_with(b".rela") || section_name.starts_with(b".crel"))
+    {
+        // For relocatable/partial-link output, preserve relocation sections instead of discarding
+        // them. Treat them as custom sections so they are emitted with their original name.
+        crate::layout_rules::SectionRuleOutcome::Custom
+    } else {
+        rules.lookup(section_name, file_name, section_flags, section_type)
+    };
+
+    match outcome {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)

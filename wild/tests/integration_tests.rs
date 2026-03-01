@@ -3821,6 +3821,73 @@ fn read_test_config() -> Result<TestConfig> {
     Ok(config)
 }
 
+// Kernel-module / relocatable output tests
+#[cfg(test)]
+mod kernel_module_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    #[test]
+    fn test_kernel_module_relocatable_output() -> Result {
+        // Create a temporary directory for sources and outputs.
+        let td = tempfile::tempdir().context("tempdir")?;
+        let src = td.path().join("mod.c");
+        let obj = td.path().join("mod.o");
+        let out = td.path().join("mod.out");
+
+        // Write a tiny C source file.
+        std::fs::write(&src, "int foo(void) { return 42; }\n").context("write src")?;
+
+        // Compile to object file using host gcc/clang. Prefer gcc.
+        let mut cc = Command::new("gcc");
+        cc.arg("-c").arg(&src).arg("-o").arg(&obj);
+        let outp = cc.output().context("spawn gcc")?;
+        if !outp.status.success() {
+            // Try clang as fallback.
+            let mut cc2 = Command::new("clang");
+            cc2.arg("-c").arg(&src).arg("-o").arg(&obj);
+            let outp2 = cc2.output().context("spawn clang")?;
+            ensure!(outp2.status.success(), "failed to compile object");
+        }
+
+        // Invoke wild with -r to produce relocatable output.
+        let wild = wild_path();
+        let mut cmd = Command::new(wild);
+        cmd.arg("-r").arg("-o").arg(&out).arg(&obj);
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::piped());
+        let outp = cmd.output().context("spawn wild")?;
+        if !outp.status.success() {
+            let stderr = String::from_utf8_lossy(&outp.stderr);
+            bail!("wild failed to link relocatable output: {}", stderr);
+        }
+
+        // Inspect output ELF header.
+        let data = std::fs::read(&out).context("read output")?;
+        let elf = ElfFile64::parse(&*data).context("parse ELF output")?;
+        // Expect relocatable (ET_REL)
+        let etype = elf.elf_header().e_type;
+        let et = etype.get(LittleEndian);
+        ensure!(et == object::elf::ET_REL, "expected ET_REL, got {et:#x}");
+
+        // Check that at least one relocation section exists (.rela* or .crel*)
+        let has_rela = object::File::parse(&*data)
+            .context("parse output")?
+            .sections()
+            .any(|s| {
+                s.name()
+                    .ok()
+                    .is_some_and(|name| name.starts_with(".rela") || name.starts_with(".crel"))
+            });
+        ensure!(
+            has_rela,
+            "expected relocation sections to be preserved in relocatable output"
+        );
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tidy {
     use super::*;
