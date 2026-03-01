@@ -2,6 +2,7 @@ use crate::Args;
 use crate::OutputKind;
 use crate::Result;
 use crate::bail;
+use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -163,6 +164,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type NonAddressableCounts: Default + Send + Sync + 'data;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
+    type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Copy;
@@ -420,6 +422,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Resolves a reference to the frame data section.
     fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
+
+    /// Returns whether we should check for undefined symbols in `self`. Only called for dynamic
+    /// objects.
+    fn should_enforce_undefined(&self, resources: &layout::GraphResources) -> bool;
+
+    fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:

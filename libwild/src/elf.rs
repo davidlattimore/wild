@@ -7,6 +7,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -21,6 +22,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::platform;
 use crate::platform::CommonSymbol;
+use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
@@ -33,6 +35,7 @@ use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::version_script::VersionScript;
+use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
@@ -245,6 +248,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type EpilogueLayout = EpilogueLayout;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
+    type LayoutResourcesExt = LayoutResourcesExt<'data>;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -1151,6 +1155,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             part_id::EH_FRAME,
             object.format_specific_layout_state.eh_frame_size,
         );
+    }
+
+    fn should_enforce_undefined(&self, resources: &layout::GraphResources) -> bool {
+        let is_executable = resources.symbol_db.output_kind.is_executable();
+
+        !resources.symbol_db. args.allow_shlib_undefined
+            && is_executable
+            // Like lld, our behaviour for --no-allow-shlib-undefined is to only report errors for
+            // shared objects that have all their dependencies in the link. This is in contrast to
+            // GNU ld which recursively loads all transitive dependencies of shared objects and
+            // checks our shared object against those.
+            && has_complete_deps(self, resources)
+    }
+
+    fn layout_resources_ext(
+        groups: &[crate::grouping::Group<'data, Self>],
+    ) -> Self::LayoutResourcesExt {
+        LayoutResourcesExt {
+            sonames: Sonames::new(groups),
+        }
     }
 }
 
@@ -2693,4 +2717,71 @@ pub(crate) struct GroupLayoutExt {
 pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_relocations: usize,
     pub(crate) exception_frame_count: usize,
+}
+
+/// Return whether all DT_NEEDED entries for this shared object correspond to input files that
+/// we have loaded.
+fn has_complete_deps(file: &File, resources: &layout::GraphResources) -> bool {
+    let Ok(dynamic_tags) = file.dynamic_tags() else {
+        return true;
+    };
+
+    let e = LittleEndian;
+    for entry in dynamic_tags {
+        let value = entry.d_val(e);
+        match entry.d_tag(e) as u32 {
+            object::elf::DT_NEEDED => {
+                let Ok(name) = file.symbols.strings().get(value as u32) else {
+                    return false;
+                };
+                if !resources.layout_resources_ext.sonames.contains(name) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
+#[derive(Debug)]
+pub(crate) struct LayoutResourcesExt<'data> {
+    sonames: Sonames<'data>,
+}
+
+#[derive(Debug)]
+struct Sonames<'data>(HashSet<&'data [u8]>);
+
+impl<'data> Sonames<'data> {
+    /// Builds an index of the DT_SONAMEs of the input dynamic objects. Note, that we include
+    /// --as-needed shared objects that we're not actually linking against. This means that we can
+    /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
+    /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
+    fn new(groups: &[Group<'data, crate::elf::File<'data>>]) -> Self {
+        timing_phase!("Build SONAME index");
+
+        Sonames(
+            groups
+                .iter()
+                .flat_map(|group| {
+                    let objects = match group {
+                        Group::Objects(objects) => *objects,
+                        _ => &[],
+                    };
+                    objects.iter().filter_map(|input| {
+                        input
+                            .parsed
+                            .object
+                            .dynamic_tag_values()
+                            .map(|tag_values| tag_values.lib_name(&input.parsed.input))
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn contains(&self, name: &[u8]) -> bool {
+        self.0.contains(name)
+    }
 }
