@@ -157,7 +157,7 @@ pub struct LinkerOutput<'layout_inputs> {
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<layout::Layout<'layout_inputs>>,
+    layout: Option<layout::Layout<'layout_inputs, crate::elf::File<'layout_inputs>>>,
 }
 
 impl Linker {

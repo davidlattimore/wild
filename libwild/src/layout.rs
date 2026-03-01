@@ -4,7 +4,6 @@
 
 use self::elf::GNU_NOTE_NAME;
 use self::elf::NoteHeader;
-use self::elf::Symbol;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -15,11 +14,7 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::ElfLayoutProperties;
-use crate::elf::File;
 use crate::elf::RawSymbolName;
-use crate::elf::RelocationList;
-use crate::elf::SectionAttributes;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
@@ -89,7 +84,6 @@ use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pt;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
@@ -100,10 +94,8 @@ use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::relaxation::opt_input_to_output;
-use object::LittleEndian;
 use object::SectionIndex;
 use object::elf::gnu_hash;
-use object::read::elf::RelocationSections;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
@@ -127,16 +119,16 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
 pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    symbol_db: SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: SymbolDb<'data, P::File>,
     mut per_symbol_flags: PerSymbolFlags,
-    mut groups: Vec<ResolvedGroup<'data, crate::elf::File<'data>>>,
+    mut groups: Vec<ResolvedGroup<'data, P::File>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
-) -> Result<Layout<'data>> {
+) -> Result<Layout<'data, P::File>> {
     timing_phase!("Layout");
 
     let layout_resources_ext =
-        <crate::elf::File<'data> as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
+        <P::File as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -187,7 +179,7 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         num_symbols: 0,
     });
 
-    let properties_and_attributes = crate::elf::File::create_layout_properties::<P>(
+    let properties_and_attributes = P::File::create_layout_properties::<P>(
         symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
@@ -354,16 +346,16 @@ pub fn compute<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     })
 }
 
-struct FinaliseSizesResources<'data, 'scope> {
+struct FinaliseSizesResources<'data, 'scope, O: ObjectFile<'data>> {
     dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data>],
-    symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &'scope SymbolDb<'data, O>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    format_specific: &'scope <File<'data> as ObjectFile<'data>>::LayoutProperties,
+    format_specific: &'scope O::LayoutProperties,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
-fn update_defsym_symbol_resolutions<'data>(
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+fn update_defsym_symbol_resolutions<'data, O: ObjectFile<'data>>(
+    symbol_db: &SymbolDb<'data, O>,
     resolutions: &mut [Option<Resolution>],
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
@@ -400,10 +392,10 @@ fn update_defsym_symbol_resolutions<'data>(
     Ok(())
 }
 
-fn update_defsym_symbol_resolution<'data>(
+fn update_defsym_symbol_resolution<'data, O: ObjectFile<'data>>(
     symbol_id: SymbolId,
     def_info: &InternalSymDefInfo,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, O>,
     resolutions: &mut [Option<Resolution>],
 ) -> Result {
     let SymbolPlacement::DefsymSymbol(target_name, offset) = def_info.placement else {
@@ -434,9 +426,9 @@ fn update_defsym_symbol_resolution<'data>(
 }
 
 /// Update resolutions for all dynamic symbols that our output file defines.
-fn update_dynamic_symbol_resolutions(
-    resources: &FinaliseLayoutResources,
-    layouts: &[GroupLayout],
+fn update_dynamic_symbol_resolutions<'data, O: ObjectFile<'data>>(
+    resources: &FinaliseLayoutResources<'_, 'data, O>,
+    layouts: &[GroupLayout<'data, O>],
     resolutions: &mut [Option<Resolution>],
 ) {
     timing_phase!("Update dynamic symbol resolutions");
@@ -458,9 +450,9 @@ fn update_dynamic_symbol_resolutions(
 /// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
 /// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
 /// For that reason, this needs to be done before we merge dynamic symbol definitions.
-fn finalise_copy_relocations<'data>(
-    group_states: &mut [GroupState<'data>],
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+fn finalise_copy_relocations<'data, O: ObjectFile<'data>>(
+    group_states: &mut [GroupState<'data, O>],
+    symbol_db: &SymbolDb<'data, O>,
     symbol_flags: &AtomicPerSymbolFlags,
 ) -> Result {
     timing_phase!("Finalise copy relocations");
@@ -477,11 +469,11 @@ fn finalise_copy_relocations<'data>(
     })
 }
 
-fn finalise_all_sizes<'data>(
-    group_states: &mut [GroupState<'data>],
+fn finalise_all_sizes<'data, O: ObjectFile<'data>>(
+    group_states: &mut [GroupState<'data, O>],
     output_sections: &OutputSections,
     per_symbol_flags: &AtomicPerSymbolFlags,
-    resources: &FinaliseSizesResources<'data, '_>,
+    resources: &FinaliseSizesResources<'data, '_, O>,
 ) -> Result {
     timing_phase!("Finalise per-object sizes");
 
@@ -491,9 +483,9 @@ fn finalise_all_sizes<'data>(
     })
 }
 
-fn merge_dynamic_symbol_definitions<'data>(
-    group_states: &[GroupState<'data>],
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+fn merge_dynamic_symbol_definitions<'data, O: ObjectFile<'data>>(
+    group_states: &[GroupState<'data, O>],
+    symbol_db: &SymbolDb<'data, O>,
 ) -> Result<Vec<DynamicSymbolDefinition<'data>>> {
     timing_phase!("Merge dynamic symbol definitions");
 
@@ -511,9 +503,9 @@ fn merge_dynamic_symbol_definitions<'data>(
     Ok(dynamic_symbol_definitions)
 }
 
-fn append_prelude_defsym_dynamic_symbols<'data>(
-    group_states: &[GroupState<'data>],
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+fn append_prelude_defsym_dynamic_symbols<'data, O: ObjectFile<'data>>(
+    group_states: &[GroupState<'data, O>],
+    symbol_db: &SymbolDb<'data, O>,
     dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
 ) -> Result {
     if symbol_db.output_kind.needs_dynsym()
@@ -565,9 +557,9 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
     Ok(())
 }
 
-fn objects_iter<'groups, 'data>(
-    group_states: &'groups [GroupState<'data>],
-) -> impl Iterator<Item = &'groups ObjectLayoutState<'data>> + Clone {
+fn objects_iter<'groups, 'data, O: ObjectFile<'data>>(
+    group_states: &'groups [GroupState<'data, O>],
+) -> impl Iterator<Item = &'groups ObjectLayoutState<'data, O>> + Clone {
     group_states.iter().flat_map(|group| {
         group.files.iter().filter_map(|file| match file {
             FileLayoutState::Object(object) => Some(object),
@@ -585,8 +577,8 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
 #[derive(Debug)]
-pub struct Layout<'data> {
-    pub(crate) symbol_db: SymbolDb<'data, crate::elf::File<'data>>,
+pub struct Layout<'data, O: ObjectFile<'data>> {
+    pub(crate) symbol_db: SymbolDb<'data, O>,
     pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
 
@@ -596,13 +588,12 @@ pub struct Layout<'data> {
     /// section. Values for secondary sections are reset to 0 and should not be used.
     pub(crate) merged_section_layouts: OutputSectionMap<OutputRecordLayout>,
 
-    pub(crate) group_layouts: Vec<GroupLayout<'data>>,
+    pub(crate) group_layouts: Vec<GroupLayout<'data, O>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) program_segments: ProgramSegments,
     pub(crate) output_order: OutputOrder,
-    pub(crate) non_addressable_counts:
-        <crate::elf::File<'data> as ObjectFile<'data>>::NonAddressableCounts,
+    pub(crate) non_addressable_counts: O::NonAddressableCounts,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
     pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
@@ -610,7 +601,7 @@ pub struct Layout<'data> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    pub(crate) properties_and_attributes: <File<'data> as ObjectFile<'data>>::LayoutProperties,
+    pub(crate) properties_and_attributes: O::LayoutProperties,
 }
 
 #[derive(Debug)]
@@ -632,12 +623,12 @@ pub(crate) struct SymbolResolutions {
     resolutions: Vec<Option<Resolution>>,
 }
 
-pub(crate) enum FileLayout<'data> {
+pub(crate) enum FileLayout<'data, O: ObjectFile<'data>> {
     Prelude(PreludeLayout<'data>),
-    Object(ObjectLayout<'data>),
-    Dynamic(DynamicLayout<'data>),
+    Object(ObjectLayout<'data, O>),
+    Dynamic(DynamicLayout<'data, O>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data>),
-    Epilogue(EpilogueLayout),
+    Epilogue(EpilogueLayout<'data, O>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data>),
 }
@@ -695,13 +686,13 @@ impl SectionResolution {
     }
 }
 
-enum FileLayoutState<'data> {
+enum FileLayoutState<'data, O: ObjectFile<'data>> {
     Prelude(PreludeLayoutState<'data>),
-    Object(ObjectLayoutState<'data>),
-    Dynamic(DynamicLayoutState<'data>),
+    Object(ObjectLayoutState<'data, O>),
+    Dynamic(DynamicLayoutState<'data, O>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data>),
-    Epilogue(EpilogueLayoutState),
+    Epilogue(EpilogueLayoutState<'data, O>),
     LinkerScript(LinkerScriptLayoutState<'data>),
 }
 
@@ -724,11 +715,12 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data> {
     internal_symbols: InternalSymbols<'data>,
 }
 
-pub(crate) struct EpilogueLayoutState {
-    format_specific: crate::elf::EpilogueLayout,
+pub(crate) struct EpilogueLayoutState<'data, O: ObjectFile<'data>> {
+    format_specific: O::EpilogueLayout,
     build_id_size: Option<usize>,
 }
 
+#[derive(Debug)]
 pub(crate) struct LinkerScriptLayoutState<'data> {
     file_id: FileId,
     input: InputRef<'data>,
@@ -742,18 +734,18 @@ pub(crate) struct SyntheticSymbolsLayout<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout {
-    pub(crate) format_specific: crate::elf::EpilogueLayout,
+pub(crate) struct EpilogueLayout<'data, O: ObjectFile<'data>> {
+    pub(crate) format_specific: O::EpilogueLayout,
     pub(crate) dynsym_start_index: u32,
 }
 
 #[derive(Debug)]
-pub(crate) struct ObjectLayout<'data> {
+pub(crate) struct ObjectLayout<'data, O: ObjectFile<'data>> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) object: &'data File<'data>,
+    pub(crate) object: &'data O,
     pub(crate) sections: Vec<SectionSlot>,
-    pub(crate) relocations: RelocationSections,
+    pub(crate) relocations: O::RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
     /// SFrame section ranges for this object, relative to the start of the .sframe output section.
@@ -778,7 +770,8 @@ pub(crate) struct InternalSymbols<'data> {
     pub(crate) start_symbol_id: SymbolId,
 }
 
-pub(crate) struct DynamicLayout<'data> {
+#[derive(Debug)]
+pub(crate) struct DynamicLayout<'data, O: ObjectFile<'data>> {
     pub(crate) file_id: FileId,
     input: InputRef<'data>,
 
@@ -787,12 +780,11 @@ pub(crate) struct DynamicLayout<'data> {
 
     pub(crate) symbol_id_range: SymbolIdRange,
 
-    pub(crate) object: &'data crate::elf::File<'data>,
+    pub(crate) object: &'data O,
 
     pub(crate) copy_relocation_symbols: Vec<SymbolId>,
 
-    pub(crate) format_specific_layout:
-        <crate::elf::File<'data> as ObjectFile<'data>>::DynamicLayout,
+    pub(crate) format_specific_layout: O::DynamicLayout,
 }
 
 trait HandlerData {
@@ -801,12 +793,12 @@ trait HandlerData {
     fn file_id(&self) -> FileId;
 }
 
-trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
+trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + HandlerData {
     fn finalise_symbol_sizes(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         let symbol_db = resources.symbol_db;
 
@@ -864,20 +856,20 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         Ok(())
     }
 
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result;
 }
 
-fn export_dynamic<'data>(
-    common: &mut CommonGroupState<'data>,
+fn export_dynamic<'data, O: ObjectFile<'data>>(
+    common: &mut CommonGroupState<'data, O>,
     symbol_id: SymbolId,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, O>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
     let RawSymbolName {
@@ -980,7 +972,7 @@ fn allocate_resolution(
     }
 }
 
-impl HandlerData for ObjectLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> HandlerData for ObjectLayoutState<'data, O> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -990,12 +982,12 @@ impl HandlerData for ObjectLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for ObjectLayoutState<'data, O> {
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         _scope: &Scope<'scope>,
     ) -> Result {
@@ -1026,7 +1018,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
     }
 }
 
-impl HandlerData for DynamicLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> HandlerData for DynamicLayoutState<'data, O> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         self.symbol_id_range
     }
@@ -1036,12 +1028,12 @@ impl HandlerData for DynamicLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for DynamicLayoutState<'data, O> {
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        _common: &mut CommonGroupState,
+        _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &GraphResources<'data, 'scope, O>,
         _queue: &mut LocalWorkQueue,
         _scope: &Scope<'scope>,
     ) -> Result {
@@ -1070,12 +1062,12 @@ impl HandlerData for PreludeLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for PreludeLayoutState<'data> {
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        _common: &mut CommonGroupState,
+        _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope>,
+        _resources: &GraphResources<'data, 'scope, O>,
         _queue: &mut LocalWorkQueue,
         _scope: &Scope<'scope>,
     ) -> Result {
@@ -1093,12 +1085,14 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
+    for LinkerScriptLayoutState<'data>
+{
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        _common: &mut CommonGroupState<'data>,
+        _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope>,
+        _resources: &GraphResources<'data, 'scope, O>,
         _queue: &mut LocalWorkQueue,
         _scope: &Scope<'scope>,
     ) -> Result {
@@ -1116,12 +1110,14 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
+    for SyntheticSymbolsLayoutState<'data>
+{
+    fn load_symbol<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        _common: &mut CommonGroupState,
+        _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         _queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -1147,10 +1143,10 @@ impl<'data> SymbolRequestHandler<'data> for SyntheticSymbolsLayoutState<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct CommonGroupState<'data> {
+pub(crate) struct CommonGroupState<'data, O: ObjectFile<'data>> {
     mem_sizes: OutputSectionPartMap<u64>,
 
-    section_attributes: OutputSectionMap<Option<SectionAttributes>>,
+    section_attributes: OutputSectionMap<Option<O::SectionAttributes>>,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
@@ -1161,7 +1157,7 @@ pub(crate) struct CommonGroupState<'data> {
     pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::CommonGroupStateExt,
 }
 
-impl CommonGroupState<'_> {
+impl<'data, O: ObjectFile<'data>> CommonGroupState<'data, O> {
     fn new(output_sections: &OutputSections) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
@@ -1218,21 +1214,12 @@ impl CommonGroupState<'_> {
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
-    fn section_loaded(
-        &mut self,
-        part_id: PartId,
-        header: &object::elf::SectionHeader64<LittleEndian>,
-        section: Section,
-    ) {
+    fn section_loaded(&mut self, part_id: PartId, header: &O::SectionHeader, section: Section) {
         self.allocate(part_id, section.capacity());
         self.store_section_attributes(part_id, header);
     }
 
-    fn store_section_attributes(
-        &mut self,
-        part_id: PartId,
-        header: &object::elf::SectionHeader64<LittleEndian>,
-    ) {
+    fn store_section_attributes(&mut self, part_id: PartId, header: &O::SectionHeader) {
         let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
 
         let new_attributes = header.attributes();
@@ -1245,19 +1232,19 @@ impl CommonGroupState<'_> {
     }
 }
 
-pub(crate) struct ObjectLayoutState<'data> {
+pub(crate) struct ObjectLayoutState<'data, O: ObjectFile<'data>> {
     input: InputRef<'data>,
     file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) object: &'data File<'data>,
+    pub(crate) object: &'data O,
 
     /// Info about each of our sections. Indexed the same as the sections in the input object.
     pub(crate) sections: Vec<SectionSlot>,
 
     /// Mapping from sections to their corresponding relocation section.
-    relocations: object::read::elf::RelocationSections,
+    relocations: O::RelocationSections,
 
-    pub(crate) format_specific_layout_state: <File<'data> as ObjectFile<'data>>::FileLayoutState,
+    pub(crate) format_specific_layout_state: O::FileLayoutState,
 
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
@@ -1273,14 +1260,14 @@ pub(crate) struct LocalWorkQueue {
     local_work: Vec<WorkItem>,
 }
 
-struct DynamicLayoutState<'data> {
-    object: &'data File<'data>,
+struct DynamicLayoutState<'data, O: ObjectFile<'data>> {
+    object: &'data O,
     input: InputRef<'data>,
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     lib_name: &'data [u8],
 
-    format_specific_state: <File<'data> as ObjectFile<'data>>::DynamicLayoutState,
+    format_specific_state: O::DynamicLayoutState,
 
     /// Maps from addresses within the shared object to copy relocations at that address.
     copy_relocations: HashMap<u64, CopyRelocationInfo>,
@@ -1317,8 +1304,8 @@ pub(crate) struct Section {
 }
 
 #[derive(Debug)]
-pub(crate) struct GroupLayout<'data> {
-    pub(crate) files: Vec<FileLayout<'data>>,
+pub(crate) struct GroupLayout<'data, O: ObjectFile<'data>> {
+    pub(crate) files: Vec<FileLayout<'data, O>>,
 
     /// The offset in .dynstr at which we'll start writing.
     pub(crate) dynstr_start_offset: u32,
@@ -1329,14 +1316,14 @@ pub(crate) struct GroupLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
 
-    pub(crate) format_specific: <crate::elf::File<'data> as ObjectFile<'data>>::GroupLayoutExt,
+    pub(crate) format_specific: O::GroupLayoutExt,
 }
 
 #[derive(Debug)]
-pub(crate) struct GroupState<'data> {
+pub(crate) struct GroupState<'data, O: ObjectFile<'data>> {
     queue: LocalWorkQueue,
-    files: Vec<FileLayoutState<'data>>,
-    pub(crate) common: CommonGroupState<'data>,
+    files: Vec<FileLayoutState<'data, O>>,
+    pub(crate) common: CommonGroupState<'data, O>,
     num_symbols: usize,
 }
 
@@ -1354,12 +1341,12 @@ pub(crate) struct OutputRecordLayout {
     pub(crate) mem_offset: u64,
 }
 
-pub(crate) struct GraphResources<'data, 'scope> {
-    pub(crate) symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
+pub(crate) struct GraphResources<'data, 'scope, O: ObjectFile<'data>> {
+    pub(crate) symbol_db: &'scope SymbolDb<'data, O>,
 
     output_sections: &'scope OutputSections<'data>,
 
-    worker_slots: Vec<Mutex<WorkerSlot<'data>>>,
+    worker_slots: Vec<Mutex<WorkerSlot<'data, O>>>,
 
     errors: Mutex<Vec<Error>>,
 
@@ -1383,13 +1370,13 @@ pub(crate) struct GraphResources<'data, 'scope> {
     activations_remaining: AtomicUsize,
 
     /// Groups that cannot be processed until all groups have completed activation.
-    delay_processing: ArrayQueue<GroupState<'data>>,
+    delay_processing: ArrayQueue<GroupState<'data, O>>,
 
-    pub(crate) layout_resources_ext: crate::elf::LayoutResourcesExt<'data>,
+    pub(crate) layout_resources_ext: O::LayoutResourcesExt,
 }
 
-struct FinaliseLayoutResources<'scope, 'data> {
-    symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
+struct FinaliseLayoutResources<'scope, 'data, O: ObjectFile<'data>> {
+    symbol_db: &'scope SymbolDb<'data, O>,
     per_symbol_flags: &'scope PerSymbolFlags,
     output_sections: &'scope OutputSections<'data>,
     output_order: &'scope OutputOrder,
@@ -1399,7 +1386,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments,
-    format_specific: &'scope ElfLayoutProperties,
+    format_specific: &'scope O::LayoutProperties,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1431,7 +1418,7 @@ struct SectionLoadRequest {
 }
 
 impl WorkItem {
-    fn file_id<'data>(self, symbol_db: &SymbolDb<'data, crate::elf::File<'data>>) -> FileId {
+    fn file_id<'data, O: ObjectFile<'data>>(self, symbol_db: &SymbolDb<'data, O>) -> FileId {
         match self {
             WorkItem::LoadGlobalSymbol(s) | WorkItem::CopyRelocateSymbol(s) => {
                 symbol_db.file_id_for_symbol(s)
@@ -1442,7 +1429,7 @@ impl WorkItem {
     }
 }
 
-impl<'data> Layout<'data> {
+impl<'data, O: ObjectFile<'data>> Layout<'data, O> {
     pub(crate) fn prelude(&self) -> &PreludeLayout<'data> {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
@@ -1458,7 +1445,7 @@ impl<'data> Layout<'data> {
     pub(crate) fn symbol_debug<'layout>(
         &'layout self,
         symbol_id: SymbolId,
-    ) -> SymbolDebug<'layout, 'data, crate::elf::File<'data>> {
+    ) -> SymbolDebug<'layout, 'data, O> {
         self.symbol_db
             .symbol_debug(&self.per_symbol_flags, symbol_id)
     }
@@ -1605,7 +1592,7 @@ impl<'data> Layout<'data> {
             .flags_for_symbol(&self.per_symbol_flags, symbol_id)
     }
 
-    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout<'data> {
+    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout<'data, O> {
         let group_layout = &self.group_layouts[file_id.group()];
         &group_layout.files[file_id.file()]
     }
@@ -1669,8 +1656,8 @@ fn merge_secondary_parts(
     }
 }
 
-fn compute_start_offsets_by_group(
-    group_states: &[GroupState<'_>],
+fn compute_start_offsets_by_group<'data, O: ObjectFile<'data>>(
+    group_states: &[GroupState<'data, O>],
     mut mem_offsets: OutputSectionPartMap<u64>,
 ) -> Vec<OutputSectionPartMap<u64>> {
     timing_phase!("Compute per-group start offsets");
@@ -1685,12 +1672,12 @@ fn compute_start_offsets_by_group(
         .collect_vec()
 }
 
-fn compute_symbols_and_layouts<'data>(
-    group_states: Vec<GroupState<'data>>,
+fn compute_symbols_and_layouts<'data, O: ObjectFile<'data>>(
+    group_states: Vec<GroupState<'data, O>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
-    resources: &FinaliseLayoutResources<'_, 'data>,
-) -> Result<Vec<GroupLayout<'data>>> {
+    resources: &FinaliseLayoutResources<'_, 'data, O>,
+) -> Result<Vec<GroupLayout<'data, O>>> {
     timing_phase!("Assign symbol addresses");
 
     group_states
@@ -1886,14 +1873,14 @@ fn compute_segment_layout(
     })
 }
 
-fn compute_total_section_part_sizes(
-    group_states: &mut [GroupState],
+fn compute_total_section_part_sizes<'data, O: ObjectFile<'data>>(
+    group_states: &mut [GroupState<'data, O>],
     output_sections: &mut OutputSections,
     output_order: &OutputOrder,
     program_segments: &ProgramSegments,
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
-    resources: &FinaliseSizesResources,
+    resources: &FinaliseSizesResources<'data, '_, O>,
 ) -> Result<OutputSectionPartMap<u64>> {
     timing_phase!("Compute total section sizes");
 
@@ -1917,7 +1904,7 @@ fn compute_total_section_part_sizes(
         unreachable!();
     };
 
-    prelude.apply_late_size_adjustments(
+    prelude.apply_late_size_adjustments::<O>(
         &mut first_group.common,
         &mut total_sizes,
         must_keep_sections,
@@ -1932,7 +1919,10 @@ fn compute_total_section_part_sizes(
 }
 
 /// Propagates attributes from input sections to the output sections into which they were placed.
-fn propagate_section_attributes(group_states: &[GroupState], output_sections: &mut OutputSections) {
+fn propagate_section_attributes<'data, O: ObjectFile<'data>>(
+    group_states: &[GroupState<'data, O>],
+    output_sections: &mut OutputSections,
+) {
     timing_phase!("Propagate section attributes");
 
     for group_state in group_states {
@@ -1950,15 +1940,15 @@ fn propagate_section_attributes(group_states: &[GroupState], output_sections: &m
 /// This is similar to computing start addresses, but is used for things that aren't addressable,
 /// but which need to be unique. It's non parallel. It could potentially be run in parallel with
 /// some of the stages that run after it, that don't need access to the file states.
-fn apply_non_addressable_indexes<'data>(
-    group_states: &mut [GroupState],
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
-) -> Result<crate::elf::NonAddressableCounts> {
+fn apply_non_addressable_indexes<'data, O: ObjectFile<'data>>(
+    group_states: &mut [GroupState<'data, O>],
+    symbol_db: &SymbolDb<'data, O>,
+) -> Result<O::NonAddressableCounts> {
     timing_phase!("Apply non-addressable indexes");
 
-    let mut indexes = <crate::elf::File as ObjectFile>::NonAddressableIndexes::new(symbol_db);
+    let mut indexes = O::NonAddressableIndexes::new(symbol_db);
 
-    let mut counts = <crate::elf::File as ObjectFile>::NonAddressableCounts::default();
+    let mut counts = O::NonAddressableCounts::default();
 
     for g in group_states.iter_mut() {
         for s in &mut g.files {
@@ -1971,17 +1961,14 @@ fn apply_non_addressable_indexes<'data>(
                     )?;
                 }
                 FileLayoutState::Epilogue(s) => {
-                    <crate::elf::File<'data> as ObjectFile<'data>>::apply_non_addressable_indexes_epilogue(
-                        &mut counts,
-                        &mut s.format_specific,
-                    );
+                    O::apply_non_addressable_indexes_epilogue(&mut counts, &mut s.format_specific);
                 }
                 _ => {}
             }
         }
     }
 
-    <crate::elf::File<'data> as ObjectFile<'data>>::apply_non_addressable_indexes(
+    O::apply_non_addressable_indexes(
         symbol_db,
         &counts,
         group_states.iter_mut().map(|g| &mut g.common.mem_sizes),
@@ -2000,29 +1987,29 @@ fn starting_memory_offsets(
 }
 
 #[derive(Default)]
-struct WorkerSlot<'data> {
+struct WorkerSlot<'data, O: ObjectFile<'data>> {
     work: Vec<WorkItem>,
-    worker: Option<GroupState<'data>>,
+    worker: Option<GroupState<'data, O>>,
 }
 
 #[derive(Debug)]
-struct GcOutputs<'data> {
-    group_states: Vec<GroupState<'data>>,
+struct GcOutputs<'data, O: ObjectFile<'data>> {
+    group_states: Vec<GroupState<'data, O>>,
     must_keep_sections: OutputSectionMap<bool>,
     has_static_tls: bool,
     has_variant_pcs: bool,
 }
 
-struct GroupActivationInputs<'data> {
-    resolved: ResolvedGroup<'data, crate::elf::File<'data>>,
+struct GroupActivationInputs<'data, O: ObjectFile<'data>> {
+    resolved: ResolvedGroup<'data, O>,
     num_symbols: usize,
     group_index: usize,
 }
 
-impl<'data> GroupActivationInputs<'data> {
-    fn activate_group<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
+    fn activate_group<'scope, P: Platform<'data, File = O>>(
         self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
     ) {
         let GroupActivationInputs {
@@ -2078,13 +2065,13 @@ impl<'data> GroupActivationInputs<'data> {
     }
 }
 
-fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-    groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+fn find_required_sections<'data, P: Platform<'data>>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, P::File>>,
+    symbol_db: &SymbolDb<'data, P::File>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    layout_resources_ext: crate::elf::LayoutResourcesExt<'data>,
-) -> Result<GcOutputs<'data>> {
+    layout_resources_ext: <P::File as ObjectFile<'data>>::LayoutResourcesExt,
+) -> Result<GcOutputs<'data, P::File>> {
     timing_phase!("Find required sections");
 
     let num_groups = groups_in.len();
@@ -2127,7 +2114,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
-    <File<'data> as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
+    <P::File as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2135,7 +2122,7 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
     };
-    prelude.pre_finalise_sizes(
+    prelude.pre_finalise_sizes::<P::File>(
         &mut prelude_group.common,
         &resources.uses_tlsld,
         resources.symbol_db.args,
@@ -2150,14 +2137,10 @@ fn find_required_sections<'data, P: Platform<'data, File = crate::elf::File<'dat
     })
 }
 
-fn queue_initial_group_processing<
-    'data,
-    'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
->(
-    groups_in: Vec<resolution::ResolvedGroup<'data, crate::elf::File<'data>>>,
-    symbol_db: &'scope SymbolDb<'data, crate::elf::File<'data>>,
-    resources: &'scope GraphResources<'data, '_>,
+fn queue_initial_group_processing<'data, 'scope, P: Platform<'data>>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, P::File>>,
+    symbol_db: &'scope SymbolDb<'data, P::File>,
+    resources: &'scope GraphResources<'data, '_, P::File>,
     scope: &Scope<'scope>,
 ) {
     verbose_timing_phase!("Create worker slots");
@@ -2181,21 +2164,21 @@ fn queue_initial_group_processing<
         });
 }
 
-fn unwrap_worker_states<'data>(
-    worker_slots: &[Mutex<WorkerSlot<'data>>],
-) -> Vec<GroupState<'data>> {
+fn unwrap_worker_states<'data, O: ObjectFile<'data>>(
+    worker_slots: &[Mutex<WorkerSlot<'data, O>>],
+) -> Vec<GroupState<'data, O>> {
     worker_slots
         .iter()
         .filter_map(|w| w.lock().unwrap().worker.take())
         .collect()
 }
 
-impl<'data> GroupState<'data> {
+impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn do_pending_work<'scope, P: Platform<'data, File = O>>(
         mut self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
     ) {
         loop {
@@ -2228,7 +2211,7 @@ impl<'data> GroupState<'data> {
         &mut self,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources<'data, '_>,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         for file_state in &mut self.files {
             file_state.finalise_sizes(
@@ -2247,10 +2230,9 @@ impl<'data> GroupState<'data> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
-        resources: &FinaliseLayoutResources<'_, 'data>,
-    ) -> Result<GroupLayout<'data>> {
-        let format_specific =
-            <crate::elf::File<'data> as ObjectFile<'data>>::finalise_group_layout(memory_offsets);
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
+    ) -> Result<GroupLayout<'data, O>> {
+        let format_specific = O::finalise_group_layout(memory_offsets);
         let files = self
             .files
             .into_iter()
@@ -2278,11 +2260,11 @@ impl<'data> GroupState<'data> {
     }
 }
 
-fn activate<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
-    common: &mut CommonGroupState<'data>,
-    file: &mut FileLayoutState<'data>,
+fn activate<'data, 'scope, P: Platform<'data>>(
+    common: &mut CommonGroupState<'data, P::File>,
+    file: &mut FileLayoutState<'data, P::File>,
     queue: &mut LocalWorkQueue,
-    resources: &'scope GraphResources<'data, '_>,
+    resources: &'scope GraphResources<'data, '_, P::File>,
     scope: &Scope<'scope>,
 ) -> Result {
     match file {
@@ -2299,9 +2281,9 @@ fn activate<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn send_work<'data, 'scope, P: Platform<'data>>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         file_id: FileId,
         work: WorkItem,
         scope: &Scope<'scope>,
@@ -2321,10 +2303,10 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn send_symbol_request<'data, 'scope, P: Platform<'data>>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
@@ -2337,14 +2319,10 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<
-        'data,
-        'scope,
-        P: Platform<'data, File = crate::elf::File<'data>>,
-    >(
+    fn send_copy_relocation_request<'data, 'scope, P: Platform<'data>>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
@@ -2358,7 +2336,7 @@ impl LocalWorkQueue {
     }
 }
 
-impl<'data> GraphResources<'data, '_> {
+impl<'data, O: ObjectFile<'data>> GraphResources<'data, '_, O> {
     fn report_error(&self, error: Error) {
         self.errors.lock().unwrap().push(error);
     }
@@ -2366,11 +2344,11 @@ impl<'data> GraphResources<'data, '_> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn send_work<'scope, P: Platform<'data, File = O>>(
         &self,
         file_id: FileId,
         work: WorkItem,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
     ) {
         let worker;
@@ -2391,10 +2369,7 @@ impl<'data> GraphResources<'data, '_> {
         self.per_symbol_flags.flags_for_symbol(symbol_id)
     }
 
-    fn symbol_debug<'a>(
-        &'a self,
-        symbol_id: SymbolId,
-    ) -> SymbolDebug<'a, 'data, crate::elf::File<'data>> {
+    fn symbol_debug<'a>(&'a self, symbol_id: SymbolId) -> SymbolDebug<'a, 'data, O> {
         self.symbol_db
             .symbol_debug(self.per_symbol_flags, symbol_id)
     }
@@ -2412,13 +2387,13 @@ impl<'data> GraphResources<'data, '_> {
     }
 }
 
-impl<'data> FileLayoutState<'data> {
+impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
     fn finalise_sizes(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources<'data, '_>,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
@@ -2447,19 +2422,16 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::NotLoaded(_) => {}
         }
 
-        <crate::elf::File<'data> as ObjectFile<'data>>::finalise_sizes_all(
-            &mut common.mem_sizes,
-            resources.symbol_db,
-        );
+        O::finalise_sizes_all(&mut common.mem_sizes, resources.symbol_db);
 
         Ok(())
     }
 
-    fn do_work<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn do_work<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         work_item: WorkItem,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -2506,28 +2478,36 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    fn handle_symbol_request<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn handle_symbol_request<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
         match self {
             FileLayoutState::Object(state) => {
-                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+                SymbolRequestHandler::load_symbol::<P>(
+                    state, common, symbol_id, resources, queue, scope,
+                )?;
             }
             FileLayoutState::Prelude(state) => {
-                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+                SymbolRequestHandler::load_symbol::<P>(
+                    state, common, symbol_id, resources, queue, scope,
+                )?;
             }
             FileLayoutState::Dynamic(state) => {
-                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+                SymbolRequestHandler::load_symbol::<P>(
+                    state, common, symbol_id, resources, queue, scope,
+                )?;
             }
             FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::SyntheticSymbols(state) => {
-                state.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+                SymbolRequestHandler::load_symbol::<P>(
+                    state, common, symbol_id, resources, queue, scope,
+                )?;
             }
             FileLayoutState::Epilogue(_) => {
                 // The epilogue doesn't define symbols. In fact, it isn't even created until after
@@ -2542,8 +2522,8 @@ impl<'data> FileLayoutState<'data> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
-        resources: &FinaliseLayoutResources<'_, 'data>,
-    ) -> Result<FileLayout<'data>> {
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
+    ) -> Result<FileLayout<'data, O>> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
         let file_layout = match self {
             Self::Object(s) => {
@@ -2606,7 +2586,7 @@ impl std::fmt::Display for PreludeLayoutState<'_> {
     }
 }
 
-impl std::fmt::Display for EpilogueLayoutState {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for EpilogueLayoutState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
@@ -2624,7 +2604,7 @@ impl std::fmt::Display for LinkerScriptLayoutState<'_> {
     }
 }
 
-impl std::fmt::Display for FileLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for FileLayoutState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
@@ -2638,7 +2618,7 @@ impl std::fmt::Display for FileLayoutState<'_> {
     }
 }
 
-impl std::fmt::Display for FileLayout<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for FileLayout<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
@@ -2652,7 +2632,7 @@ impl std::fmt::Display for FileLayout<'_> {
     }
 }
 
-impl std::fmt::Display for GroupLayout<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for GroupLayout<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.files.len() == 1 {
             self.files[0].fmt(f)
@@ -2667,7 +2647,7 @@ impl std::fmt::Display for GroupLayout<'_> {
     }
 }
 
-impl std::fmt::Display for GroupState<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for GroupState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.files.len() == 1 {
             self.files[0].fmt(f)
@@ -2682,13 +2662,13 @@ impl std::fmt::Display for GroupState<'_> {
     }
 }
 
-impl std::fmt::Debug for FileLayout<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Debug for FileLayout<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self, f)
     }
 }
 
-impl std::fmt::Display for ObjectLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for ObjectLayoutState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         // TODO: This is mostly for debugging use. Consider only showing this if some environment
@@ -2697,21 +2677,21 @@ impl std::fmt::Display for ObjectLayoutState<'_> {
     }
 }
 
-impl std::fmt::Display for DynamicLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for DynamicLayoutState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         write!(f, " ({})", self.file_id())
     }
 }
 
-impl std::fmt::Display for DynamicLayout<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for DynamicLayout<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         write!(f, " ({})", self.file_id)
     }
 }
 
-impl std::fmt::Display for ObjectLayout<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for ObjectLayout<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         // TODO: This is mostly for debugging use. Consider only showing this if some environment
@@ -2721,9 +2701,9 @@ impl std::fmt::Display for ObjectLayout<'_> {
 }
 
 impl Section {
-    fn create(
-        header: &crate::elf::SectionHeader,
-        object_state: &mut ObjectLayoutState,
+    fn create<'data, O: ObjectFile<'data>>(
+        header: &O::SectionHeader,
+        object_state: &ObjectLayoutState<'data, O>,
         section_index: object::SectionIndex,
         part_id: PartId,
     ) -> Result<Section> {
@@ -2789,17 +2769,12 @@ impl Section {
 }
 
 #[inline(always)]
-pub(crate) fn process_relocation<
-    'data,
-    'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
-    R: Relocation,
->(
-    object: &ObjectLayoutState<'data>,
-    common: &mut CommonGroupState,
+pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocation>(
+    object: &ObjectLayoutState<'data, P::File>,
+    common: &mut CommonGroupState<'data, P::File>,
     rel: &R,
-    section: &object::elf::SectionHeader64<LittleEndian>,
-    resources: &'scope GraphResources<'data, '_>,
+    section: &<P::File as ObjectFile<'data>>::SectionHeader,
+    resources: &'scope GraphResources<'data, '_, P::File>,
     queue: &mut LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
@@ -2814,7 +2789,7 @@ pub(crate) fn process_relocation<
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = SectionFlags::from_header(section);
+        let section_flags = section.flags();
 
         let rel_info = if let Some(relaxation) = P::new_relaxation(
             r_type,
@@ -2837,7 +2812,7 @@ pub(crate) fn process_relocation<
         let section_is_writable = section_flags.is_writable();
         let mut flags_to_add = resolution_flags(rel_info.kind);
 
-        if !section_flags.contains(shf::ALLOC) {
+        if !section_flags.is_alloc() {
             // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
         } else if rel_info.kind.is_tls() {
             if does_relocation_require_static_tls(rel_info.kind) {
@@ -2918,7 +2893,7 @@ pub(crate) fn process_relocation<
             }
 
             queue.send_symbol_request::<P>(symbol_id, resources, scope);
-            if should_emit_undefined_error(
+            if should_emit_undefined_error::<P::File>(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -3021,10 +2996,10 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn activate<'scope, P: Platform<'data>>(
         &mut self,
-        common: &mut CommonGroupState,
-        resources: &'scope GraphResources<'data, '_>,
+        common: &mut CommonGroupState<'data, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -3074,9 +3049,9 @@ impl<'data> PreludeLayoutState<'data> {
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn mark_defsyms_as_used<'scope, P: Platform<'data>>(
         &self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3127,9 +3102,9 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_entry_point<'scope, P: Platform<'data>>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, P::File>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3162,9 +3137,9 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn pre_finalise_sizes(
+    fn pre_finalise_sizes<O: ObjectFile<'data>>(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         uses_tlsld: &AtomicBool,
         args: &Args,
         output_kind: OutputKind,
@@ -3180,11 +3155,11 @@ impl<'data> PreludeLayoutState<'data> {
             }
         }
 
-        <File<'data> as ObjectFile<'data>>::pre_finalise_sizes_prelude(common, args);
+        O::pre_finalise_sizes_prelude(common, args);
     }
 
-    fn finalise_sizes(
-        common: &mut CommonGroupState<'data>,
+    fn finalise_sizes<O: ObjectFile<'data>>(
+        common: &mut CommonGroupState<'data, O>,
         merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     ) {
         merged_strings.for_each(|section_id, merged| {
@@ -3201,16 +3176,16 @@ impl<'data> PreludeLayoutState<'data> {
     /// of the section headers table, which depends on which sections we're writing, which depends
     /// on which sections are non-empty. We also decide which internal symtab entries we'll write
     /// here, since that also depends on which sections we're writing.
-    fn apply_late_size_adjustments(
+    fn apply_late_size_adjustments<O: ObjectFile<'data>>(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         total_sizes: &mut OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         output_order: &OutputOrder,
         program_segments: &ProgramSegments,
         per_symbol_flags: &mut PerSymbolFlags,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         // Total section  sizes have already been computed. So any allocations we do need to update
         // both `total_sizes` and the size records in `common`. We track the extra sizes in
@@ -3246,11 +3221,11 @@ impl<'data> PreludeLayoutState<'data> {
     /// Allocates space for our internal symbols. For unreferenced symbols, we also update the
     /// symbol so that it is treated as referenced, but only for symbols in sections that we're
     /// going to emit.
-    fn allocate_symbol_table_sizes(
+    fn allocate_symbol_table_sizes<O: ObjectFile<'data>>(
         &self,
         output_sections: &OutputSections,
         per_symbol_flags: &mut PerSymbolFlags,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        symbol_db: &SymbolDb<'data, O>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result<(), Error> {
         if symbol_db.args.strip_all() {
@@ -3289,7 +3264,7 @@ impl<'data> PreludeLayoutState<'data> {
         )
     }
 
-    fn determine_header_sizes(
+    fn determine_header_sizes<O: ObjectFile<'data>>(
         &mut self,
         total_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
@@ -3297,7 +3272,7 @@ impl<'data> PreludeLayoutState<'data> {
         output_sections: &mut OutputSections,
         program_segments: &ProgramSegments,
         output_order: &OutputOrder,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
         symbol_flags: &PerSymbolFlags,
     ) {
         use output_section_id::OrderEvent;
@@ -3453,11 +3428,11 @@ impl<'data> PreludeLayoutState<'data> {
         self.header_info = Some(header_info);
     }
 
-    fn finalise_layout(
+    fn finalise_layout<O: ObjectFile<'data>>(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, '_>,
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
     ) -> Result<PreludeLayout<'data>> {
         let header_layout = resources
             .section_layouts
@@ -3509,10 +3484,10 @@ impl<'data> PreludeLayoutState<'data> {
 }
 
 impl<'data> InternalSymbols<'data> {
-    fn allocate_symbol_table_sizes(
+    fn allocate_symbol_table_sizes<O: ObjectFile<'data>>(
         &self,
         sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        symbol_db: &SymbolDb<'data, O>,
         mut should_keep_symbol: impl FnMut(SymbolId, &InternalSymDefInfo) -> bool,
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
@@ -3540,11 +3515,11 @@ impl<'data> InternalSymbols<'data> {
         Ok(())
     }
 
-    fn finalise_layout(
+    fn finalise_layout<O: ObjectFile<'data>>(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
         for (local_index, &def_info) in self.symbol_definitions.iter().enumerate() {
@@ -3563,9 +3538,9 @@ impl<'data> InternalSymbols<'data> {
     }
 }
 
-fn create_start_end_symbol_resolution(
+fn create_start_end_symbol_resolution<'data, O: ObjectFile<'data>>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
-    resources: &FinaliseLayoutResources<'_, '_>,
+    resources: &FinaliseLayoutResources<'_, 'data, O>,
     def_info: InternalSymDefInfo,
     symbol_id: SymbolId,
 ) -> Option<Resolution> {
@@ -3639,8 +3614,8 @@ fn create_start_end_symbol_resolution(
     ))
 }
 
-fn should_emit_undefined_error(
-    symbol: &Symbol,
+fn should_emit_undefined_error<'data, O: ObjectFile<'data>>(
+    symbol: &O::Symbol,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
@@ -3676,11 +3651,11 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
         }
     }
 
-    fn finalise_sizes(
+    fn finalise_sizes<O: ObjectFile<'data>>(
         &self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         let symbol_db = resources.symbol_db;
 
@@ -3700,11 +3675,11 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_layout(
+    fn finalise_layout<O: ObjectFile<'data>>(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data>,
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
     ) -> Result<SyntheticSymbolsLayout<'data>> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
@@ -3715,12 +3690,12 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
     }
 }
 
-impl EpilogueLayoutState {
+impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
     fn new(
         args: &Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
-    ) -> EpilogueLayoutState {
+    ) -> Self {
         let build_id_size = match &args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
@@ -3729,24 +3704,20 @@ impl EpilogueLayoutState {
         };
 
         EpilogueLayoutState {
-            format_specific: <File as ObjectFile>::new_epilogue_layout(
-                args,
-                output_kind,
-                dynamic_symbol_definitions,
-            ),
+            format_specific: O::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
             build_id_size,
         }
     }
 
     fn apply_late_size_adjustments(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         total_sizes: &mut OutputSectionPartMap<u64>,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         if resources.symbol_db.args.hash_style.includes_sysv() {
             let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
-            <crate::elf::File as ObjectFile>::apply_late_size_adjustments_epilogue(
+            O::apply_late_size_adjustments_epilogue(
                 &mut self.format_specific,
                 total_sizes,
                 &mut extra_sizes,
@@ -3767,8 +3738,8 @@ impl EpilogueLayoutState {
 
     fn finalise_sizes(
         &mut self,
-        common: &mut CommonGroupState,
-        resources: &FinaliseSizesResources,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) {
         let symbol_db = resources.symbol_db;
 
@@ -3809,7 +3780,7 @@ impl EpilogueLayoutState {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        <crate::elf::File as ObjectFile>::finalise_sizes_epilogue(
+        O::finalise_sizes_epilogue(
             &mut self.format_specific,
             &mut common.mem_sizes,
             resources.format_specific,
@@ -3820,8 +3791,8 @@ impl EpilogueLayoutState {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resources: &FinaliseLayoutResources,
-    ) -> Result<EpilogueLayout> {
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
+    ) -> Result<EpilogueLayout<'data, O>> {
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -3840,7 +3811,7 @@ impl EpilogueLayoutState {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        <crate::elf::File as ObjectFile>::finalise_layout_epilogue(
+        O::finalise_layout_epilogue(
             &mut self.format_specific,
             memory_offsets,
             resources.symbol_db,
@@ -3874,9 +3845,9 @@ impl HeaderInfo {
 
 /// Construct a new inactive instance, which means we don't yet load non-GC sections and only
 /// load them later if a symbol from this object is referenced.
-fn new_object_layout_state<'data>(
-    input_state: resolution::ResolvedObject<'data, crate::elf::File<'data>>,
-) -> FileLayoutState<'data> {
+fn new_object_layout_state<'data, O: ObjectFile<'data>>(
+    input_state: resolution::ResolvedObject<'data, O>,
+) -> FileLayoutState<'data, O> {
     // Note, this function is called for all objects from a single thread, so don't be tempted to do
     // significant work here. Do work when activate is called instead. Doing it there also means
     // that we don't do the work unless the object is actually needed.
@@ -3893,9 +3864,9 @@ fn new_object_layout_state<'data>(
     })
 }
 
-fn new_dynamic_object_layout_state<'data>(
-    input_state: &resolution::ResolvedDynamic<'data, crate::elf::File<'data>>,
-) -> FileLayoutState<'data> {
+fn new_dynamic_object_layout_state<'data, O: ObjectFile<'data>>(
+    input_state: &resolution::ResolvedDynamic<'data, O>,
+) -> FileLayoutState<'data, O> {
     FileLayoutState::Dynamic(DynamicLayoutState {
         file_id: input_state.common.file_id,
         symbol_id_range: input_state.common.symbol_id_range,
@@ -3907,12 +3878,12 @@ fn new_dynamic_object_layout_state<'data>(
     })
 }
 
-impl<'data> ObjectLayoutState<'data> {
+impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
     #[inline(always)]
-    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn activate<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
-        resources: &'scope GraphResources<'data, 'scope>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -4009,10 +3980,10 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn handle_section_load_request<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
-        resources: &'scope GraphResources<'data, 'scope>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         section_index: SectionIndex,
         scope: &Scope<'scope>,
@@ -4056,13 +4027,13 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_section<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
         unloaded: UnloadedSection,
         section_index: SectionIndex,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         scope: &Scope<'scope>,
     ) -> Result {
         let part_id = unloaded.part_id;
@@ -4080,9 +4051,7 @@ impl<'data> ObjectLayoutState<'data> {
         let section_id = section.output_section_id();
 
         if section.size > 0 {
-            <File<'data> as ObjectFile<'data>>::non_empty_section_loaded::<P>(
-                self, common, queue, unloaded, resources, scope,
-            )?;
+            O::non_empty_section_loaded::<P>(self, common, queue, unloaded, resources, scope)?;
         } else if section_id.marks_zero_sized_inputs_as_content() {
             resources.keep_section(section_id);
         }
@@ -4092,15 +4061,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    pub(crate) fn load_section_relocations<
-        'scope,
-        P: Platform<'data, File = crate::elf::File<'data>>,
-        R: Relocation,
-    >(
+    pub(crate) fn load_section_relocations<'scope, P: Platform<'data, File = O>, R: Relocation>(
         &self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         section: Section,
         relocations: impl Iterator<Item = R>,
         scope: &Scope<'scope>,
@@ -4132,14 +4097,14 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_section<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_debug_section<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
 
         part_id: PartId,
         section_index: SectionIndex,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
     ) -> Result {
         let header = self.object.section(section_index)?;
@@ -4157,15 +4122,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    pub(crate) fn load_debug_relocations<
-        'scope,
-        P: Platform<'data, File = crate::elf::File<'data>>,
-        R: Relocation,
-    >(
+    pub(crate) fn load_debug_relocations<'scope, P: Platform<'data, File = O>, R: Relocation>(
         &self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         section: Section,
         relocations: impl Iterator<Item = R>,
         scope: &Scope<'scope>,
@@ -4198,10 +4159,10 @@ impl<'data> ObjectLayoutState<'data> {
 
     fn finalise_sizes(
         &mut self,
-        common: &mut CommonGroupState,
+        common: &mut CommonGroupState<'data, O>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources<'data, '_>,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) {
         common.mem_sizes.resize(output_sections.num_parts());
         if !resources.symbol_db.args.strip_all() {
@@ -4214,13 +4175,13 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        <File<'data> as ObjectFile<'data>>::finalise_object_sizes(self, common);
+        O::finalise_object_sizes(self, common);
     }
 
     fn allocate_symtab_space(
         &self,
-        common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        common: &mut CommonGroupState<'data, O>,
+        symbol_db: &SymbolDb<'data, O>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) {
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
@@ -4230,8 +4191,7 @@ impl<'data> ObjectLayoutState<'data> {
         let mut strings_size = 0;
         for ((sym_index, sym), flags) in self
             .object
-            .symbols
-            .enumerate()
+            .enumerate_symbols()
             .zip(per_symbol_flags.range(self.symbol_id_range()))
         {
             let symbol_id = self.symbol_id_range.input_to_id(sym_index);
@@ -4266,8 +4226,8 @@ impl<'data> ObjectLayoutState<'data> {
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data>,
-    ) -> Result<ObjectLayout<'data>> {
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
+    ) -> Result<ObjectLayout<'data, O>> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
@@ -4300,8 +4260,7 @@ impl<'data> ObjectLayoutState<'data> {
                     SectionResolution { address }
                 }
                 SectionSlot::FrameData(..) => {
-                    let address =
-                        <File<'data> as ObjectFile<'data>>::frame_data_base_address(memory_offsets);
+                    let address = O::frame_data_base_address(memory_offsets);
                     SectionResolution { address }
                 }
                 _ => SectionResolution::none(),
@@ -4311,8 +4270,7 @@ impl<'data> ObjectLayoutState<'data> {
 
         for ((local_symbol_index, local_symbol), &flags) in self
             .object
-            .symbols
-            .enumerate()
+            .enumerate_symbols()
             .zip(resources.per_symbol_flags.raw_range(symbol_id_range))
         {
             self.finalise_symbol(
@@ -4326,7 +4284,7 @@ impl<'data> ObjectLayoutState<'data> {
             )?;
         }
 
-        <File<'data> as ObjectFile<'data>>::finalise_object_layout(&self, memory_offsets);
+        O::finalise_object_layout(&self, memory_offsets);
 
         Ok(ObjectLayout {
             input: self.input,
@@ -4343,9 +4301,9 @@ impl<'data> ObjectLayoutState<'data> {
 
     fn finalise_symbol<'scope>(
         &self,
-        resources: &FinaliseLayoutResources<'scope, 'data>,
+        resources: &FinaliseLayoutResources<'scope, 'data, O>,
         flags: ValueFlags,
-        local_symbol: &object::elf::Sym64<LittleEndian>,
+        local_symbol: &O::Symbol,
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -4365,9 +4323,9 @@ impl<'data> ObjectLayoutState<'data> {
 
     fn create_symbol_resolution<'scope>(
         &self,
-        resources: &FinaliseLayoutResources<'scope, 'data>,
+        resources: &FinaliseLayoutResources<'scope, 'data, O>,
         flags: ValueFlags,
-        local_symbol: &object::elf::Sym64<LittleEndian>,
+        local_symbol: &O::Symbol,
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -4444,10 +4402,10 @@ impl<'data> ObjectLayoutState<'data> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_non_hidden_symbols<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
-        resources: &'scope GraphResources<'data, 'scope>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         export_all_dynamic: bool,
         scope: &Scope<'scope>,
@@ -4475,11 +4433,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn export_dynamic<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -4512,7 +4470,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<O::RelocationList> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -4526,12 +4484,12 @@ impl<'data> SymbolCopyInfo<'data> {
     /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
     /// it again.
     #[inline(always)]
-    pub(crate) fn new(
-        object: &crate::elf::File<'data>,
+    pub(crate) fn new<O: ObjectFile<'data>>(
+        object: &O,
         sym_index: object::SymbolIndex,
-        sym: &crate::elf::Symbol,
+        sym: &O::Symbol,
         symbol_id: SymbolId,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        symbol_db: &SymbolDb<'data, O>,
         symbol_state: ValueFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
@@ -4572,10 +4530,10 @@ impl<'data> SymbolCopyInfo<'data> {
 }
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
-fn can_export_symbol(
-    sym: &crate::elf::SymtabEntry,
+fn can_export_symbol<'data, O: ObjectFile<'data>>(
+    sym: &O::Symbol,
     symbol_id: SymbolId,
-    resources: &GraphResources,
+    resources: &GraphResources<'data, '_, O>,
     export_all_dynamic: bool,
 ) -> bool {
     if sym.is_undefined() || sym.is_local() {
@@ -4681,8 +4639,8 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     plt_address
 }
 
-impl<'data> resolution::ResolvedFile<'data, crate::elf::File<'data>> {
-    fn create_layout_state(self) -> FileLayoutState<'data> {
+impl<'data, O: ObjectFile<'data>> resolution::ResolvedFile<'data, O> {
+    fn create_layout_state(self) -> FileLayoutState<'data, O> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
@@ -4783,11 +4741,11 @@ impl Resolution {
     }
 
     #[inline(always)]
-    pub(crate) fn value_with_addend(
+    pub(crate) fn value_with_addend<'data, O: ObjectFile<'data>>(
         &self,
         addend: i64,
         symbol_index: object::SymbolIndex,
-        object_layout: &ObjectLayout,
+        object_layout: &ObjectLayout<'data, O>,
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
@@ -4849,7 +4807,7 @@ impl SymbolOutputInfos {
 /// Compute the output address of every loaded input section and every symbol in a single parallel
 /// pass over groups.
 fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
-    group_states: &[GroupState<'data>],
+    group_states: &[GroupState<'data, O>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, O>,
 ) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
@@ -4888,10 +4846,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
                             }
                         }
 
-                        <File<'data> as ObjectFile<'data>>::compute_object_addresses(
-                            obj,
-                            &mut offsets,
-                        );
+                        O::compute_object_addresses(obj, &mut offsets);
 
                         // While we have the section addresses, also resolve symbol
                         // output addresses for this file's canonical definitions.
@@ -4952,7 +4907,7 @@ type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
 fn relaxation_scan_pass<'data, P: Platform<'data>>(
-    group_states: &mut [GroupState<'data>],
+    group_states: &mut [GroupState<'data, P::File>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, P::File>,
     per_symbol_flags: &PerSymbolFlags,
@@ -5105,7 +5060,7 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
 }
 
 fn perform_iterative_relaxation<'data, P: Platform<'data>>(
-    group_states: &mut [GroupState<'data>],
+    group_states: &mut [GroupState<'data, P::File>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
@@ -5332,11 +5287,11 @@ fn compute_segment_alignments(
     segment_alignments
 }
 
-impl<'data> DynamicLayoutState<'data> {
-    fn activate<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
+    fn activate<'scope, P: Platform<'data, File = O>>(
         &mut self,
-        common: &mut CommonGroupState<'data>,
-        resources: &'scope GraphResources<'data, '_>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &'scope GraphResources<'data, '_, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -5353,9 +5308,9 @@ impl<'data> DynamicLayoutState<'data> {
         self.request_all_undefined_symbols::<P>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols<'scope, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn request_all_undefined_symbols<'scope, P: Platform<'data, File = O>>(
         &self,
-        resources: &'scope GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_, O>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -5416,8 +5371,8 @@ impl<'data> DynamicLayoutState<'data> {
 
     fn finalise_copy_relocations(
         &mut self,
-        common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        common: &mut CommonGroupState<'data, O>,
+        symbol_db: &SymbolDb<'data, O>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
         // Skip iterating over our symbol table if we don't have any copy relocations.
@@ -5428,7 +5383,7 @@ impl<'data> DynamicLayoutState<'data> {
         self.select_copy_relocation_alternatives(per_symbol_flags, common, symbol_db)
     }
 
-    fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data>) -> Result {
+    fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data, O>) -> Result {
         self.allocate_for_copy_relocations(common)?;
 
         self.object.finalise_sizes_dynamic(
@@ -5445,16 +5400,16 @@ impl<'data> DynamicLayoutState<'data> {
     fn select_copy_relocation_alternatives(
         &mut self,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+        common: &mut CommonGroupState<'data, O>,
+        symbol_db: &SymbolDb<'data, O>,
     ) -> Result {
-        for (i, symbol) in self.object.symbols.iter().enumerate() {
+        for (i, symbol) in self.object.enumerate_symbols() {
             let address = symbol.value();
             let Some(info) = self.copy_relocations.get_mut(&address) else {
                 continue;
             };
 
-            let symbol_id = self.symbol_id_range.offset_to_id(i);
+            let symbol_id = self.symbol_id_range.input_to_id(i);
 
             if !symbol_db.is_canonical(symbol_id) {
                 continue;
@@ -5477,7 +5432,7 @@ impl<'data> DynamicLayoutState<'data> {
         Ok(())
     }
 
-    fn allocate_for_copy_relocations(&self, common: &mut CommonGroupState<'data>) -> Result {
+    fn allocate_for_copy_relocations(&self, common: &mut CommonGroupState<'data, O>) -> Result {
         for value in self.copy_relocations.values() {
             let symbol_id = value.symbol_id;
 
@@ -5509,8 +5464,8 @@ impl<'data> DynamicLayoutState<'data> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data>,
-    ) -> Result<DynamicLayout<'data>> {
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
+    ) -> Result<DynamicLayout<'data, O>> {
         let copy_relocation_symbols = self
             .copy_relocations
             .values()
@@ -5586,7 +5541,7 @@ impl<'data> DynamicLayoutState<'data> {
     fn copy_relocate_symbol<'scope>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &GraphResources<'data, 'scope, O>,
     ) -> std::result::Result<(), Error> {
         let symbol = self
             .object
@@ -5634,11 +5589,11 @@ impl<'data> DynamicLayoutState<'data> {
 }
 
 impl<'data> LinkerScriptLayoutState<'data> {
-    fn finalise_layout(
+    fn finalise_layout<O: ObjectFile<'data>>(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data>,
+        resources: &FinaliseLayoutResources<'_, 'data, O>,
     ) -> Result {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)
@@ -5656,10 +5611,10 @@ impl<'data> LinkerScriptLayoutState<'data> {
         }
     }
 
-    fn activate(
+    fn activate<O: ObjectFile<'data>>(
         &self,
-        common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &GraphResources<'data, '_, O>,
     ) -> Result {
         for (offset, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(offset);
@@ -5694,11 +5649,11 @@ impl<'data> LinkerScriptLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_sizes(
+    fn finalise_sizes<O: ObjectFile<'data>>(
         &self,
-        common: &mut CommonGroupState<'data>,
+        common: &mut CommonGroupState<'data, O>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-        resources: &FinaliseSizesResources,
+        resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
         self.internal_symbols.allocate_symbol_table_sizes(
             &mut common.mem_sizes,
@@ -5715,7 +5670,12 @@ impl<'data> LinkerScriptLayoutState<'data> {
 }
 
 impl CopyRelocationInfo {
-    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, resources: &GraphResources) {
+    fn add_symbol<'data, O: ObjectFile<'data>>(
+        &mut self,
+        symbol_id: SymbolId,
+        is_weak: bool,
+        resources: &GraphResources<'data, '_, O>,
+    ) {
         if self.symbol_id == symbol_id || is_weak {
             return;
         }
@@ -5734,9 +5694,9 @@ impl CopyRelocationInfo {
 }
 
 /// Assigns the address in BSS for the copy relocation of a symbol.
-fn assign_copy_relocation_address(
-    file: &File,
-    local_symbol: &object::elf::Sym64<LittleEndian>,
+fn assign_copy_relocation_address<'data, O: ObjectFile<'data>>(
+    file: &O,
+    local_symbol: &O::Symbol,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> Result<u64, Error> {
     let section_index = local_symbol.section_index();
@@ -5762,13 +5722,13 @@ fn take_dynsym_index(
     Ok(index)
 }
 
-impl Layout<'_> {
+impl<'data, O: ObjectFile<'data>> Layout<'data, O> {
     pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).mem_offset
     }
 }
 
-impl std::fmt::Debug for FileLayoutState<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Debug for FileLayoutState<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
@@ -5784,8 +5744,8 @@ impl std::fmt::Debug for FileLayoutState<'_> {
     }
 }
 
-fn section_debug(
-    object: &crate::elf::File,
+fn section_debug<'data, O: ObjectFile<'data>>(
+    object: &O,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
     let name = object
@@ -5829,8 +5789,8 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
     )
 }
 
-impl<'data> ObjectLayout<'data> {
-    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
+impl<'data, O: ObjectFile<'data>> ObjectLayout<'data, O> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<O::RelocationList> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -5984,11 +5944,8 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
     Ok(())
 }
 
-impl<'scope, 'data> FinaliseLayoutResources<'scope, 'data> {
-    fn symbol_debug<'a>(
-        &'a self,
-        symbol_id: SymbolId,
-    ) -> SymbolDebug<'a, 'data, crate::elf::File<'data>> {
+impl<'scope, 'data, O: ObjectFile<'data>> FinaliseLayoutResources<'scope, 'data, O> {
+    fn symbol_debug<'a>(&'a self, symbol_id: SymbolId) -> SymbolDebug<'a, 'data, O> {
         self.symbol_db
             .symbol_debug(self.per_symbol_flags, symbol_id)
     }

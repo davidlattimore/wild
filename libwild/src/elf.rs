@@ -1003,10 +1003,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data>,
-        common: &mut crate::layout::CommonGroupState<'data>,
+        object: &mut crate::layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut crate::layout::CommonGroupState<'data, File<'data>>,
         eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_>,
+        resources: &'scope crate::layout::GraphResources<'data, '_, File<'data>>,
         queue: &mut crate::layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
@@ -1055,11 +1055,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
         queue: &mut layout::LocalWorkQueue,
         unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope>,
+        resources: &'scope layout::GraphResources<'data, 'scope, File<'data>>,
         scope: &Scope<'scope>,
     ) -> Result {
         let sizes = match &object.format_specific_layout_state.exception_frames {
@@ -1095,7 +1095,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn finalise_find_required_sections(groups: &[layout::GroupState]) {
+    fn finalise_find_required_sections(groups: &[layout::GroupState<'data, File<'data>>]) {
         tracing::debug!(target: "metrics", total = groups
             .iter()
             .map(|g| g.common.format_specific.exception_frame_count)
@@ -1107,15 +1107,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .sum::<usize>(), "resolved relocations");
     }
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args) {
+    fn pre_finalise_sizes_prelude(
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
+        args: &Args,
+    ) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
     }
 
     fn finalise_object_sizes(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState,
+        object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
     ) {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
@@ -1136,7 +1139,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn finalise_object_layout(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &layout::ObjectLayoutState<'data, File<'data>>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         memory_offsets.increment(
@@ -1146,7 +1149,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn compute_object_addresses(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &layout::ObjectLayoutState<'data, File<'data>>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         // Note, this is currently identical to finalise_object_layout above. The two functions are
@@ -1157,7 +1160,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         );
     }
 
-    fn should_enforce_undefined(&self, resources: &layout::GraphResources) -> bool {
+    fn should_enforce_undefined(
+        &self,
+        resources: &layout::GraphResources<'data, '_, Self>,
+    ) -> bool {
         let is_executable = resources.symbol_db.output_kind.is_executable();
 
         !resources.symbol_db. args.allow_shlib_undefined
@@ -1178,10 +1184,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
-        state: &layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -1212,10 +1218,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
-        state: &layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_>,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -1252,10 +1258,10 @@ fn process_eh_frame_relocations<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object: &mut layout::ObjectLayoutState<'data>,
-    common: &mut layout::CommonGroupState<'data>,
+    object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+    common: &mut layout::CommonGroupState<'data, File<'data>>,
     file_symbol_id_range: SymbolIdRange,
-    resources: &'scope layout::GraphResources<'data, '_>,
+    resources: &'scope layout::GraphResources<'data, '_, File<'data>>,
     queue: &mut layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
@@ -1385,10 +1391,10 @@ fn process_section_exception_frames<
     P: Platform<'data, File = crate::elf::File<'data>>,
     R: Relocation,
 >(
-    object: &layout::ObjectLayoutState<'data>,
+    object: &layout::ObjectLayoutState<'data, File<'data>>,
     frame_index: Option<FrameIndex>,
-    common: &mut layout::CommonGroupState<'data>,
-    resources: &'scope layout::GraphResources<'data, '_>,
+    common: &mut layout::CommonGroupState<'data, File<'data>>,
+    resources: &'scope layout::GraphResources<'data, '_, File<'data>>,
     queue: &mut layout::LocalWorkQueue,
     scope: &Scope<'scope>,
     exception_frames: &[ExceptionFrame<'data, R>],
@@ -2789,7 +2795,10 @@ pub(crate) struct CommonGroupStateExt {
 
 /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
 /// we have loaded.
-fn has_complete_deps(file: &File, resources: &layout::GraphResources) -> bool {
+fn has_complete_deps<'data>(
+    file: &File<'data>,
+    resources: &layout::GraphResources<'data, '_, File<'data>>,
+) -> bool {
     let Ok(dynamic_tags) = file.dynamic_tags() else {
         return true;
     };
