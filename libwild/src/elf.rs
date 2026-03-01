@@ -1176,6 +1176,74 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             sonames: Sonames::new(groups),
         }
     }
+
+    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        match state.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                state.load_section_relocations::<P, Rela>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.rel_iter(),
+                    scope,
+                )?;
+            }
+            RelocationList::Crel(relocations) => {
+                state.load_section_relocations::<P, Crel>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                    scope,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        match state.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                state.load_debug_relocations::<P, Rela>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.rel_iter(),
+                    scope,
+                )?;
+            }
+            RelocationList::Crel(relocations) => {
+                state.load_debug_relocations::<P, Crel>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                    scope,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn process_eh_frame_relocations<

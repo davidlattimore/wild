@@ -34,42 +34,42 @@ pub(crate) trait Platform<'data>: 'data {
     type Relaxation: Relaxation;
     type File: ObjectFile<'data>;
 
-    // Get ELF header magic for the architecture.
+    /// Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
 
-    // Get dynamic relocation value specific for the architecture.
+    /// Get dynamic relocation value specific for the architecture.
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
 
-    // Write PLT entry for the architecture.
+    /// Write PLT entry for the architecture.
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
-    // Make architecture-specific parsing of the relocation types.
+    /// Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
 
-    // Get string representation of a relocation specific for the architecture.
+    /// Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
 
-    // Get DTV OFFSET.
+    /// Get DTV OFFSET.
     fn get_dtv_offset() -> u64 {
         0
     }
 
-    // Some architectures use debug info relocation that depend on local symbols.
+    /// Some architectures use debug info relocation that depend on local symbols.
     fn local_symbols_in_debug_info() -> bool;
 
-    // Get position of the $tp (thread pointer) in the TLS section. Each platform defines
-    // a different place based on the following article:
-    // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
+    /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
+    /// a different place based on the following article:
+    /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
     fn tp_offset_start(layout: &Layout<'data>) -> u64;
 
-    // Classify a GNU property note.
+    /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
 
-    // Merge e_flags of the input files and provide an error
-    // if the flags are not compatible.
+    /// Merge e_flags of the input files and provide an error
+    /// if the flags are not compatible.
     fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32>;
 
-    // A list of high-part relocations that need to be tracked in a relocation cache
+    /// A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];
 
     /// Whether the platform supports relaxations that reduce the sizes of function.
@@ -428,6 +428,26 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn should_enforce_undefined(&self, resources: &layout::GraphResources) -> bool;
 
     fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
+
+    /// Calls `load_section_relocations` on `state` for the relocations in `section`.
+    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
+    /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
+    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data>,
+        common: &mut layout::CommonGroupState<'data>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
