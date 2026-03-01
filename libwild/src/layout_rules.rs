@@ -62,6 +62,10 @@ pub(crate) struct SectionRule<'data> {
     /// files.
     input_file_pattern: Option<Pattern>,
 
+    /// Optional glob pattern for matching section names (used for SORT() and char-class/wildcard
+    /// matchers). If `None` then the simple prefix/equality matching is used.
+    section_name_pattern: Option<Pattern>,
+
     /// What to do if the rule matches.
     outcome: SectionRuleOutcome,
 }
@@ -267,32 +271,95 @@ impl<'data> SectionRule<'data> {
             })
             .transpose()?;
 
-        if let Some(prefix) = pattern.strip_suffix(b"*") {
-            Ok(Self {
-                name: prefix,
-                is_prefix: true,
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
-        } else {
-            ensure!(
-                !pattern.contains(&b'*'),
-                "Wildcards are only supported at the end, found '{}'",
-                String::from_utf8_lossy(pattern)
-            );
+        let s = std::str::from_utf8(pattern)
+            .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
 
-            Ok(Self {
-                name: pattern,
-                is_prefix: false,
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
+        let mut section_name_pattern = None;
+
+        // Support SORT(...) wrappers by treating the inner text as a section-name glob.
+        let raw_pattern = if s.starts_with("SORT(") && s.ends_with(')') {
+            let inner = &s[5..s.len() - 1];
+            section_name_pattern = Some(
+                Pattern::new(inner)
+                    .map_err(|_| crate::error!("Invalid SORT() pattern '{}'", inner))?,
+            );
+            inner.as_bytes()
+        } else {
+            pattern
+        };
+
+        if let Some(prefix) = raw_pattern.strip_suffix(b"*") {
+            // If the prefix portion itself contains glob characters (e.g. `[0-9]`), use a
+            // full glob pattern instead of simple prefix matching.
+            let prefix_str = std::str::from_utf8(raw_pattern)
+                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+            if prefix.iter().any(|&b| b == b'[' || b == b']' || b == b'?')
+                || section_name_pattern.is_some()
+            {
+                if section_name_pattern.is_none() {
+                    section_name_pattern = Some(
+                        Pattern::new(prefix_str)
+                            .map_err(|_| crate::error!("Invalid glob pattern '{}'", prefix_str))?,
+                    );
+                }
+                let name_key = &raw_pattern[..raw_pattern.len().min(4)];
+                Ok(Self {
+                    name: name_key,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            } else {
+                Ok(Self {
+                    name: prefix,
+                    is_prefix: true,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern,
+                    outcome,
+                })
+            }
+        } else {
+            // If the pattern contains glob characters or char classes, compile a glob pattern
+            // for section name matching and use the first 4 bytes as the hash-key.
+            if s.contains('*') || s.contains('[') || s.contains(']') {
+                let pat =
+                    Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
+                let name_key = &pattern[..pattern.len().min(4)];
+                Ok(Self {
+                    name: name_key,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern: Some(pat),
+                    outcome,
+                })
+            } else {
+                ensure!(
+                    !pattern.contains(&b'*'),
+                    "Wildcards are only supported at the end, found '{}'",
+                    String::from_utf8_lossy(pattern)
+                );
+
+                Ok(Self {
+                    name: pattern,
+                    is_prefix: false,
+                    input_file_pattern: compiled_file_pattern,
+                    section_name_pattern: None,
+                    outcome,
+                })
+            }
         }
     }
 
     #[inline(always)]
     fn matches(&self, section_name: &[u8], file_name: Option<&[u8]>) -> bool {
-        let section_matches = if self.is_prefix {
+        let section_matches = if let Some(pat) = &self.section_name_pattern {
+            if let Ok(s) = std::str::from_utf8(section_name) {
+                pat.matches(s)
+            } else {
+                false
+            }
+        } else if self.is_prefix {
             section_name.starts_with(self.name)
         } else {
             section_name == self.name
@@ -359,6 +426,7 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: false,
             input_file_pattern: None,
+            section_name_pattern: None,
             outcome,
         }
     }
@@ -368,6 +436,7 @@ impl<'data> SectionRule<'data> {
             name,
             is_prefix: true,
             input_file_pattern: None,
+            section_name_pattern: None,
             outcome,
         }
     }
@@ -542,4 +611,35 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_sort_pattern_matching() {
+    // SORT(...) wrappers should compile to a glob pattern that matches the inner pattern.
+    let rule = SectionRule::new(
+        b"SORT(___ksymtab+*)",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b"___ksymtab+foo", None));
+    assert!(rule.matches(b"___ksymtab+bar_baz", None));
+    assert!(!rule.matches(b"__ksymtab_foo", None));
+}
+
+#[test]
+fn test_glob_char_class_pattern() {
+    // Patterns with character classes like [0-9a-zA-Z_] should be compiled as globs.
+    let rule = SectionRule::new(
+        b".bss.[0-9a-zA-Z_]*",
+        None,
+        SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS)),
+    )
+    .unwrap();
+
+    assert!(rule.section_name_pattern.is_some());
+    assert!(rule.matches(b".bss.foo_bar", None));
+    assert!(rule.matches(b".bss.0test", None));
 }

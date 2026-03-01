@@ -454,9 +454,32 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
 }
 
 fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
-    let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
-    skip_comments_and_whitespace(input)?;
-    Ok(pattern)
+    // Support SORT(...) patterns which contain an inner ')' by parsing balanced parens.
+    if input.starts_with(b"SORT(") {
+        let mut depth = 1usize;
+        let mut pos = 5; // we've matched 'SORT('
+        while depth > 0 && pos < input.len() {
+            let b = input[pos];
+            pos += 1;
+            if b == b'(' {
+                depth += 1;
+            } else if b == b')' {
+                depth -= 1;
+            }
+        }
+        if depth != 0 {
+            return Err(ContextError::new());
+        }
+        // Return the entire SORT(...) token including closing ')'
+        let pattern = &input[..pos];
+        *input = &input[pos..];
+        skip_comments_and_whitespace(input)?;
+        Ok(pattern)
+    } else {
+        let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        Ok(pattern)
+    }
 }
 
 /// Call `cb` for each input file requested by `commands`.
