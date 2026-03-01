@@ -26,9 +26,11 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::resolution::LoadedMetrics;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -1249,6 +1251,33 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
 
         Ok(())
+    }
+
+    fn create_dynamic_symbol_definition(
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_id: SymbolId,
+    ) -> Result<layout::DynamicSymbolDefinition<'data>> {
+        let symbol_name = symbol_db.symbol_name(symbol_id)?;
+        let RawSymbolName {
+            name,
+            version_name,
+            is_default,
+        } = RawSymbolName::parse(symbol_name.bytes());
+
+        let mut version = object::elf::VER_NDX_GLOBAL;
+        if symbol_db.version_script.version_count() > 0
+            && let Some(v) = symbol_db
+                .version_script
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
+        {
+            version = v;
+            if !is_default {
+                version |= object::elf::VERSYM_HIDDEN;
+            }
+        }
+        Ok(layout::DynamicSymbolDefinition::new(
+            symbol_id, name, version,
+        ))
     }
 }
 

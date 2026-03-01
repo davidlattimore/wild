@@ -532,25 +532,8 @@ fn append_prelude_defsym_dynamic_symbols<'data, O: ObjectFile<'data>>(
                 continue;
             }
 
-            let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let RawSymbolName {
-                name,
-                version_name,
-                is_default,
-            } = RawSymbolName::parse(symbol_name.bytes());
-
-            let mut version = object::elf::VER_NDX_GLOBAL;
-            if symbol_db.version_script.version_count() > 0
-                && let Some(v) = symbol_db
-                    .version_script
-                    .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
-            {
-                version = v;
-                if !is_default {
-                    version |= object::elf::VERSYM_HIDDEN;
-                }
-            }
-            dynamic_symbol_definitions.push(DynamicSymbolDefinition::new(symbol_id, name, version));
+            dynamic_symbol_definitions
+                .push(O::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
         }
     }
 
@@ -871,31 +854,9 @@ fn export_dynamic<'data, O: ObjectFile<'data>>(
     symbol_id: SymbolId,
     symbol_db: &SymbolDb<'data, O>,
 ) -> Result {
-    let name = symbol_db.symbol_name(symbol_id)?;
-    let RawSymbolName {
-        name,
-        version_name,
-        is_default,
-    } = RawSymbolName::parse(name.bytes());
-
-    let mut version = object::elf::VER_NDX_GLOBAL;
-    if symbol_db.version_script.version_count() > 0 {
-        // TODO: We already hashed this symbol at some point previously. See if we can avoid
-        // rehashing it here and if that actually saves us time.
-        if let Some(v) = symbol_db
-            .version_script
-            .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
-        {
-            version = v;
-            if !is_default {
-                version |= object::elf::VERSYM_HIDDEN;
-            }
-        }
-    }
-
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name, version));
+        .push(O::create_dynamic_symbol_definition(symbol_db, symbol_id)?);
 
     Ok(())
 }
@@ -5759,7 +5720,7 @@ fn section_debug<'data, O: ObjectFile<'data>>(
 }
 
 impl<'data> DynamicSymbolDefinition<'data> {
-    fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
+    pub(crate) fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
         Self {
             symbol_id,
             name,
