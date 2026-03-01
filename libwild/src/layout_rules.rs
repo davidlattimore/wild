@@ -147,6 +147,23 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 .unwrap_or(alignment::MIN)
                                 .max(replace(&mut extra_min_alignment, alignment::MIN));
 
+                            // Support `/DISCARD/ : { ... }` which indicates matched sections should
+                            // be discarded.
+                            if sec.output_section_name == b"/DISCARD/" {
+                                for contents_cmd in &sec.commands {
+                                    if let ContentsCommand::Matcher(matcher) = contents_cmd {
+                                        for pattern in &matcher.input_section_name_patterns {
+                                            self.add_section_rule(SectionRule::new(
+                                                pattern,
+                                                matcher.input_file_pattern,
+                                                crate::layout_rules::SectionRuleOutcome::Discard,
+                                            )?);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
@@ -240,6 +257,27 @@ impl<'data> LayoutRulesBuilder<'data> {
             self.rules.push(SectionRule::exact_section_keep(
                 secnames::COMMENT_SECTION_NAME,
                 output_section_id::COMMENT,
+            ));
+
+            // Even with a linker script, we still need to discard internal ELF sections
+            // (.symtab, .strtab, .shstrtab) from input objects — the linker generates
+            // its own versions of these. Also discard .group sections which have already
+            // been processed by the linker.
+            self.rules.push(SectionRule::exact(
+                secnames::SYMTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::STRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::SHSTRTAB_SECTION_NAME,
+                SectionRuleOutcome::Discard,
+            ));
+            self.rules.push(SectionRule::exact(
+                secnames::GROUP_SECTION_NAME,
+                SectionRuleOutcome::Discard,
             ));
 
             SectionRules::from_rules(&self.rules)
@@ -542,4 +580,23 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_discard_section_rule_from_linker_script() {
+    // When a linker script has `/DISCARD/ : { *(.discard.*) }`, the patterns
+    // should be added as Discard rules.
+    //
+    // We exercise this indirectly by checking that BUILT_IN_RULES discards
+    // .note.GNU-stack which uses the same mechanism.
+    let rules = SectionRules::from_rules(BUILT_IN_RULES);
+    let lookup_name = |name: &str| {
+        rules.lookup(
+            name.as_bytes(),
+            None,
+            linker_utils::elf::SectionFlags::empty(),
+            linker_utils::elf::SectionType::from_u32(0),
+        )
+    };
+    assert_eq!(lookup_name(".note.GNU-stack"), SectionRuleOutcome::Discard);
 }
