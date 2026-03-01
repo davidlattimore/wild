@@ -82,7 +82,7 @@ serde-keyvalue = "0.1.0"
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
-strum = { version = "0.27.0", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 symbolic-common = "12.0.0"
 symbolic-demangle = { version = "12.0.0", default-features = false, features = ["cpp", "rust"] }
 tabled = "0.20.0"
