@@ -3481,7 +3481,7 @@ fn write_linker_script_state<'data, P: Platform<'data, File = crate::elf::File<'
     write_internal_symbols_plt_got_entries::<P>(&script.internal_symbols, table_writer, layout)?;
 
     // Emit any raw bytes requested by the linker script into their sections.
-    for (section_id, data) in &script.section_datas {
+    for (section_id, data) in &script.section_data {
         let buf = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
         let slice = buf.split_off_mut(..data.len()).unwrap();
         slice.copy_from_slice(data);
