@@ -739,7 +739,7 @@ pub(crate) struct LinkerScriptLayoutState<'data> {
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data>,
-    pub(crate) section_datas: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
+    pub(crate) section_data: Vec<(crate::output_section_id::OutputSectionId, Vec<u8>)>,
 }
 
 #[derive(Debug)]
@@ -5718,8 +5718,9 @@ impl<'data> LinkerScriptLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        // Allocate space for any raw bytes that the linker script requested via BYTE/SHORT/LONG/QUAD
-        for (section_id, data) in &self.section_datas {
+        // Allocate space for any raw bytes that the linker script requested via
+        // BYTE/SHORT/LONG/QUAD
+        for (section_id, data) in &self.section_data {
             // Use alignment::MIN to match finalise_sizes and elf_writer.
             let part_id = section_id.part_id_with_alignment(alignment::MIN);
             memory_offsets.increment(part_id, data.len() as u64);
@@ -5736,7 +5737,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
                 symbol_definitions: input.symbol_definitions,
                 start_symbol_id: input.symbol_id_range.start(),
             },
-            section_datas: input.section_datas,
+            section_data: input.section_data,
         }
     }
 
@@ -5778,7 +5779,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
         // Mark sections that have BYTE/SHORT/LONG/QUAD data from the linker
         // script as must-keep so they are included in the output even if no
         // input sections map to them.
-        for (section_id, _data) in &self.section_datas {
+        for (section_id, _data) in &self.section_data {
             resources
                 .must_keep_sections
                 .get(*section_id)
@@ -5806,7 +5807,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
 
         // Account for raw bytes from BYTE/SHORT/LONG/QUAD linker script directives
         // so that buffer space is allocated for these sections.
-        for (section_id, data) in &self.section_datas {
+        for (section_id, data) in &self.section_data {
             let part_id = section_id.part_id_with_alignment(alignment::MIN);
             *common.mem_sizes.get_mut(part_id) += data.len() as u64;
         }

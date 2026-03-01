@@ -109,7 +109,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         output_sections: &mut OutputSections<'data>,
     ) -> Result<ProcessedLinkerScript<'data>> {
         let mut symbol_defs = Vec::new();
-        let mut section_datas: Vec<(OutputSectionId, Vec<u8>)> = Vec::new();
+        let mut section_data: Vec<(OutputSectionId, Vec<u8>)> = Vec::new();
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -213,7 +213,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                     ContentsCommand::Bytes(b) => {
                                         // Append bytes for this output section.
-                                        section_datas.push((primary_section_id, b.clone()));
+                                        section_data.push((primary_section_id, b.clone()));
                                     }
                                 }
                             }
@@ -231,7 +231,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 file: input.input_file,
                 entry: None,
             },
-            section_datas,
+            section_data,
         })
     }
 
