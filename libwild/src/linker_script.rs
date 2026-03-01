@@ -93,6 +93,7 @@ pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
+    pub(crate) address: Option<Location>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -252,11 +253,17 @@ fn parse_provide<'input>(
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
-    "0x".parse_next(input)?;
-    let hex_str =
-        std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
-    let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
-    Ok(Location { address })
+    // Accept either hex (0x...) or decimal numeric literal.
+    if input.starts_with(b"0x") {
+        "0x".parse_next(input)?;
+        let hex_str =
+            std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
+        let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
+        Ok(Location { address })
+    } else {
+        let raw: u64 = dec_uint.parse_next(input)?;
+        Ok(Location { address: raw })
+    }
 }
 
 fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
@@ -338,6 +345,18 @@ fn parse_section_command<'input>(
         return Ok(cmd);
     }
 
+    // Optional address before ':' (e.g. `name 0 : { ... }` or `name 0x1000 : { ... }`)
+    let mut address: Option<Location> = None;
+    if input.starts_with(b"0x") || (input.first().is_some_and(|b| b.is_ascii_digit())) {
+        let save = *input;
+        if let Ok(loc) = parse_location(input) {
+            skip_comments_and_whitespace(input)?;
+            address = Some(loc);
+        } else {
+            *input = save;
+        }
+    }
+
     ':'.parse_next(input)?;
 
     skip_comments_and_whitespace(input)?;
@@ -359,6 +378,7 @@ fn parse_section_command<'input>(
         output_section_name: name,
         commands,
         alignment,
+        address,
     }))
 }
 
@@ -669,6 +689,7 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -719,6 +740,7 @@ mod tests {
                                     }),
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
+                                address: None,
                             }),
                         ],
                     }),
@@ -854,6 +876,7 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -870,6 +893,7 @@ mod tests {
                     input_section_name_patterns: vec![".ctors".as_bytes()],
                 })],
                 alignment: None,
+                address: None,
             }),
         );
     }
@@ -886,6 +910,42 @@ mod tests {
                     input_section_name_patterns: vec![".init".as_bytes()],
                 })],
                 alignment: None,
+                address: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_decimal_vma_address() {
+        // Sections can have an explicit VMA like `.text 0 : { ... }` or `.text 0x1000 : { ... }`.
+        check_section_command(
+            ".text 0 : { *(.text) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".text".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0 }),
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_with_hex_vma_address() {
+        check_section_command(
+            ".text 0x1000 : { *(.text) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text".as_bytes(),
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![".text".as_bytes()],
+                })],
+                alignment: None,
+                address: Some(Location { address: 0x1000 }),
             }),
         );
     }

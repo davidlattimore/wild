@@ -150,7 +150,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
-                                location.take(),
+                                sec.address.or(location.take()),
                             );
 
                             let mut last_section_id = None;
