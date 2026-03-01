@@ -2881,7 +2881,7 @@ pub(crate) fn process_relocation<
         } else if flags.is_ifunc()
             && rel_info.kind == RelocationKind::Absolute
             && section_is_writable
-            && symbol_db.output_kind.is_relocatable()
+            && symbol_db.output_kind.needs_dynsym()
         {
             common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if symbol_db.output_kind.is_relocatable()

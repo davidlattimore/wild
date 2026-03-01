@@ -2840,7 +2840,7 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
         Ok(0)
     } else if resolution.flags.is_ifunc()
         && section_info.is_writable
-        && table_writer.output_kind.is_relocatable()
+        && table_writer.output_kind.needs_dynsym()
     {
         table_writer
             .write_ifunc_relocation_for_data::<P>(place, resolution.raw_value as i64 + addend)?;
