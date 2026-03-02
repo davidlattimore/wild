@@ -464,6 +464,9 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         output_sections: &OutputSections<'data>,
         section_id: OutputSectionId,
     ) -> Result;
+
+    /// Returns the default section type used for custom sections that don't specify a type.
+    fn default_section_type() -> Self::SectionType;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
@@ -479,6 +482,8 @@ pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
 pub(crate) trait SectionType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
 {
+    fn is_null(self) -> bool;
+
     fn is_note(self) -> bool;
 
     fn is_prog_bits(self) -> bool;

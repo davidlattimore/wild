@@ -1317,6 +1317,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         Ok(())
     }
+
+    fn default_section_type() -> Self::SectionType {
+        sht::PROGBITS
+    }
 }
 
 fn process_eh_frame_relocations<
@@ -1568,6 +1572,10 @@ impl<'data> platform::SectionHeader<'data, File<'data>> for SectionHeader {
 }
 
 impl platform::SectionType for SectionType {
+    fn is_null(self) -> bool {
+        self == sht::NULL
+    }
+
     fn is_note(self) -> bool {
         self == sht::NOTE
     }

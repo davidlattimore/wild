@@ -51,6 +51,7 @@ use crate::platform::Relocation;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
+use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
@@ -86,7 +87,6 @@ use linker_utils::elf::RelocationKind;
 use linker_utils::elf::pt;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
-use linker_utils::elf::sht;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -3271,13 +3271,14 @@ impl<'data> PreludeLayoutState<'data> {
             // This should just be the .phdr and .shdr sections which contain the program headers
             // and section headers. We need these sections in order to allocate space for those
             // structures, but other linkers don't emit section headers for them, so neither should
-            // we. Custom sections (e.g. from linker scripts) that still have NULL type get
-            // PROGBITS assigned instead, since an empty but explicitly defined section should still
-            // be emitted if something references it.
+            // we. Custom sections (e.g. from linker scripts) that still have NULL type get the
+            // default section type assigned instead, since an empty but explicitly defined section
+            // should still be emitted if something references it.
             let section_info = output_sections.section_infos.get(section_id);
-            if section_info.ty == sht::NULL && section_id != output_section_id::FILE_HEADER {
-                if section_id.as_usize() >= output_section_id::NUM_BUILT_IN_SECTIONS {
-                    output_sections.section_infos.get_mut(section_id).ty = sht::PROGBITS;
+            if section_info.ty.is_null() && section_id != output_section_id::FILE_HEADER {
+                if section_id.is_custom() {
+                    output_sections.section_infos.get_mut(section_id).ty =
+                        <crate::elf::File as ObjectFile>::default_section_type();
                 } else {
                     *keep_sections.get_mut(section_id) = false;
                 }

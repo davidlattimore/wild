@@ -911,6 +911,12 @@ impl OutputSectionId {
     pub(crate) fn element_size(self) -> u64 {
         self.opt_built_in_details().map_or(0, |d| d.element_size)
     }
+
+    /// Returns whether this section ID corresponds to a custom section as opposed to a built-in
+    /// section.
+    pub(crate) fn is_custom(self) -> bool {
+        self.as_usize() >= NUM_BUILT_IN_SECTIONS
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
