@@ -326,10 +326,6 @@ impl<'data> Prelude<'data> {
             SymbolPlacement::SectionEnd(output_section_id::RODATA),
             b"etext",
         ));
-        symbol_definitions.push(InternalSymDefInfo::hidden(
-            SymbolPlacement::SectionEnd(output_section_id::RODATA),
-            b"__etext",
-        ));
 
         // edata alias
         symbol_definitions.push(InternalSymDefInfo::notype(

@@ -726,8 +726,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
-        end_symbol_name: Some("_etext"),
-        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -772,6 +770,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         end_symbol_name: Some("_etext"),
+        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
