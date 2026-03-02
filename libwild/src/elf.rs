@@ -1338,6 +1338,38 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn default_section_type() -> Self::SectionType {
         sht::PROGBITS
     }
+
+    fn validate_sizes(mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if *mem_sizes.get(part_id::GNU_VERSION) > 0 {
+            let num_dynamic_symbols =
+                mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+            let num_versym = mem_sizes.get(part_id::GNU_VERSION) / size_of::<Versym>() as u64;
+            if num_versym != num_dynamic_symbols {
+                bail!(
+                    "Object has {num_dynamic_symbols} dynamic symbols, but \
+                         has {num_versym} versym entries"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn verify_resolution_allocation(
+        output_sections: &OutputSections,
+        output_order: &output_section_id::OutputOrder,
+        output_kind: OutputKind,
+        mem_sizes: &OutputSectionPartMap<u64>,
+        resolution: &layout::Resolution,
+    ) -> Result {
+        crate::elf_writer::verify_resolution_allocation(
+            output_sections,
+            output_order,
+            output_kind,
+            mem_sizes,
+            resolution,
+        )
+    }
 }
 
 fn process_eh_frame_relocations<
