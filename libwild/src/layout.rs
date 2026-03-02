@@ -2,13 +2,10 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
-use self::elf::GNU_NOTE_NAME;
-use self::elf::NoteHeader;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
-use crate::args::BuildIdOption;
 use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
@@ -697,7 +694,6 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data> {
 
 pub(crate) struct EpilogueLayoutState<'data, O: ObjectFile<'data>> {
     format_specific: O::EpilogueLayout,
-    build_id_size: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -3640,16 +3636,8 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> Self {
-        let build_id_size = match &args.build_id {
-            BuildIdOption::None => None,
-            BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
-            BuildIdOption::Hex(hex) => Some(hex.len()),
-            BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
-        };
-
         EpilogueLayoutState {
             format_specific: O::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
-            build_id_size,
         }
     }
 
@@ -3674,10 +3662,6 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
         }
 
         Ok(())
-    }
-
-    fn gnu_build_id_note_section_size(&self) -> Option<u64> {
-        Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 
     fn finalise_sizes(
@@ -3720,10 +3704,6 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
             );
         }
 
-        if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
-            common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
-        }
-
         O::finalise_sizes_epilogue(
             &mut self.format_specific,
             &mut common.mem_sizes,
@@ -3750,10 +3730,6 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
             part_id::DYNSYM,
             resources.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
         );
-
-        if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
-            memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
-        }
 
         O::finalise_layout_epilogue(
             &mut self.format_specific,
