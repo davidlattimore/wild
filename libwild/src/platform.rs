@@ -290,6 +290,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     );

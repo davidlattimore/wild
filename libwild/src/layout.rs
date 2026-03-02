@@ -12,7 +12,6 @@ use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::RawSymbolName;
-use crate::elf_writer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -3658,42 +3657,10 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
     ) {
         let symbol_db = resources.symbol_db;
 
-        if symbol_db.output_kind.needs_dynamic() {
-            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
-            common.allocate(
-                part_id::DYNAMIC,
-                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
-            );
-            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-                common.allocate(part_id::DYNSTR, rpath.len() as u64 + 1);
-            }
-            if let Some(soname) = symbol_db.args.soname.as_ref() {
-                common.allocate(part_id::DYNSTR, soname.len() as u64 + 1);
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-            }
-            for aux in &symbol_db.args.auxiliary {
-                common.allocate(part_id::DYNSTR, aux.len() as u64 + 1);
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-            }
-
-            common.allocate(
-                part_id::DYNSTR,
-                resources
-                    .dynamic_symbol_definitions
-                    .iter()
-                    .map(|n| n.name.len() + 1)
-                    .sum::<usize>() as u64,
-            );
-            common.allocate(
-                part_id::DYNSYM,
-                (resources.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
-            );
-        }
-
         O::finalise_sizes_epilogue(
             &mut self.format_specific,
             &mut common.mem_sizes,
+            resources.dynamic_symbol_definitions,
             resources.format_specific,
             symbol_db,
         );
