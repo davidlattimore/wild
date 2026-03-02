@@ -1,3 +1,4 @@
+use crate::Args;
 use crate::elf::RawSymbolName;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
@@ -12,30 +13,40 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
+use std::fmt::Write as _;
 
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
 /// either after resolution flags have been computed, or, if layout gets an error, then before we
 /// unwind.
-pub(crate) struct SymbolInfoPrinter<'data, O: ObjectFile<'data>> {
-    loaded_file_ids: hashbrown::HashSet<FileId>,
-    symbol_db: &'data SymbolDb<'data, O>,
-    name: &'data str,
-    per_symbol_flags: &'data AtomicPerSymbolFlags<'data>,
+pub(crate) enum SymbolInfoPrinter {
+    Disabled,
+    Enabled(Box<State>),
 }
 
-impl<'data, O: ObjectFile<'data>> Drop for SymbolInfoPrinter<'data, O> {
+pub(crate) struct State {
+    loaded_file_ids: hashbrown::HashSet<FileId>,
+    name: String,
+
+    /// Our output the last time `update` was called. This is what will be printed when dropped
+    /// unless `update` is called again.
+    output: String,
+}
+
+impl Drop for SymbolInfoPrinter {
     fn drop(&mut self) {
         self.print();
     }
 }
 
-impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
-    pub(crate) fn new<'data2, O2: ObjectFile<'data2>>(
-        symbol_db: &'data SymbolDb<'data, O>,
-        name: &'data str,
-        flags: &'data AtomicPerSymbolFlags<'data>,
-        groups: &[ResolvedGroup<'data2, O2>],
+impl SymbolInfoPrinter {
+    pub(crate) fn new<'data2, O: ObjectFile<'data2>>(
+        args: &Args,
+        groups: &[ResolvedGroup<'data2, O>],
     ) -> Self {
+        let Some(name) = args.sym_info.as_ref() else {
+            return Self::Disabled;
+        };
+
         let loaded_file_ids = groups
             .iter()
             .flat_map(|group| {
@@ -52,50 +63,57 @@ impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
             })
             .collect();
 
-        Self {
+        Self::Enabled(Box::new(State {
             loaded_file_ids,
-            symbol_db,
-            name,
-            per_symbol_flags: flags,
-        }
+            name: name.to_owned(),
+            output: "SymbolInfoPrinter::update never called, so can't print symbol info".into(),
+        }))
     }
 
-    fn print(&self) {
-        let name = self
-            .symbol_db
-            .find_mangled_name(self.name)
-            .unwrap_or_else(|| self.name.to_owned());
+    pub(crate) fn update<'data, O: ObjectFile<'data>>(
+        &mut self,
+        symbol_db: &SymbolDb<'data, O>,
+        per_symbol_flags: &AtomicPerSymbolFlags<'_>,
+    ) {
+        let Self::Enabled(state) = self else {
+            return;
+        };
+
+        let mut out = String::new();
+        let name = symbol_db
+            .find_mangled_name(&state.name)
+            .unwrap_or_else(|| state.name.clone());
 
         let matcher = NameMatcher::new(&name);
         let mut target_ids = Vec::new();
         target_ids.extend(name.parse().ok().map(SymbolId::from_usize));
 
-        let symbol_id = self.symbol_db.get(
+        let symbol_id = symbol_db.get(
             &PreHashedSymbolName::from_raw(&RawSymbolName::parse(name.as_bytes())),
             true,
         );
-        println!("Global name `{name}` refers to: {symbol_id:?}");
+        let _ = writeln!(&mut out, "Global name `{name}` refers to: {symbol_id:?}");
 
         target_ids.extend(symbol_id);
 
-        println!("Definitions / references with name `{name}`:");
-        for i in 0..self.symbol_db.num_symbols() {
+        let _ = writeln!(&mut out, "Definitions / references with name `{name}`:");
+        for i in 0..symbol_db.num_symbols() {
             let symbol_id = SymbolId::from_usize(i);
-            let canonical = self.symbol_db.definition(symbol_id);
-            let file_id = self.symbol_db.file_id_for_symbol(symbol_id);
-            let flags = self.per_symbol_flags.flags_for_symbol(symbol_id);
+            let canonical = symbol_db.definition(symbol_id);
+            let file_id = symbol_db.file_id_for_symbol(symbol_id);
+            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
 
-            let file_state = if self.loaded_file_ids.contains(&file_id) {
+            let file_state = if state.loaded_file_ids.contains(&file_id) {
                 "LOADED"
             } else {
                 "NOT LOADED"
             };
 
-            let Ok(sym_name) = self.symbol_db.symbol_name(symbol_id) else {
+            let Ok(sym_name) = symbol_db.symbol_name(symbol_id) else {
                 continue;
             };
 
-            let is_name_match = matcher.matches(sym_name.bytes(), symbol_id, self.symbol_db);
+            let is_name_match = matcher.matches(sym_name.bytes(), symbol_id, symbol_db);
 
             let is_id_match = target_ids.contains(&symbol_id);
 
@@ -108,7 +126,7 @@ impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
                     target_ids.push(canonical);
                 }
 
-                let file = self.symbol_db.file(file_id);
+                let file = symbol_db.file(file_id);
                 let local_index = symbol_id.to_input(file.symbol_id_range());
 
                 let sym_debug;
@@ -125,7 +143,8 @@ impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
                             input = o.parsed.input.to_string();
                         }
                         Err(e) => {
-                            println!(
+                            let _ = writeln!(
+                                &mut out,
                                 "  Corrupted input (file_id #{file_id}) {}: {}",
                                 o.parsed.input,
                                 e.to_string()
@@ -151,8 +170,7 @@ impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
                 // Versions can be either literally within the symbol name or in separate version
                 // tables. It's useful to know which we've got, so if we get a version from a
                 // separate table, we separate it visually from the rest of the name.
-                let version_str = self
-                    .symbol_db
+                let version_str = symbol_db
                     .symbol_version_debug(symbol_id)
                     .map_or_else(String::new, |v| format!(" version `{v}`"));
 
@@ -162,11 +180,21 @@ impl<'data, O: ObjectFile<'data>> SymbolInfoPrinter<'data, O> {
                     format!(" -> {canonical}")
                 };
 
-                println!(
+                let _ = writeln!(
+                    &mut out,
                     "  {symbol_id}{canon}: {sym_debug}: {flags} \
                             \n    {sym_name}{version_str}\n    \
                             #{local_index} in File #{file_id} {input} ({file_state})"
                 );
+            }
+        }
+    }
+
+    fn print(&self) {
+        match self {
+            SymbolInfoPrinter::Disabled => {}
+            SymbolInfoPrinter::Enabled(state) => {
+                println!("{}", &state.output);
             }
         }
     }
