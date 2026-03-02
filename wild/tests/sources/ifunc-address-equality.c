@@ -14,16 +14,16 @@
 
 typedef void (*Func)(void);
 
-__attribute__((ifunc("resolve_foo"))) void foo(void);
-static void real_foo(void) {}
-static Func resolve_foo(void) { return real_foo; }
-
-__attribute__((ifunc("resolve_bar"))) void bar(void);
-static void real_bar(void) {}
-static Func resolve_bar(void) { return real_bar; }
+// foo and bar are defined in ifunc-address-equality-1.c (compiled -fPIC).
+// This file has no direct (non-GOT) references to them, so the resolved
+// function address is canonical and data pointers must match it via IRELATIVE.
+extern void foo(void);
+extern void bar(void);
 
 extern Func get_foo(void);
 extern Func get_bar(void);
+extern Func foo_data_ptr;
+extern Func bar_data_ptr;
 
 void _start(void) {
   runtime_init();
@@ -33,28 +33,25 @@ void _start(void) {
     exit_syscall(rv);
   }
 
-  Func direct_foo = foo;
   Func got_foo = get_foo();
+  Func got_bar = get_bar();
 
-  if (direct_foo != got_foo) {
+  if (got_foo == got_bar) {
     exit_syscall(1);
   }
 
-  Func direct_bar = bar;
-  Func got_bar = get_bar();
-
-  if (direct_bar != got_bar) {
+  if (got_foo != foo_data_ptr) {
     exit_syscall(2);
   }
 
-  if (direct_foo == direct_bar) {
+  if (got_bar != bar_data_ptr) {
     exit_syscall(3);
   }
 
-  direct_foo();
   got_foo();
-  direct_bar();
   got_bar();
+  foo_data_ptr();
+  bar_data_ptr();
 
   exit_syscall(42);
 }
