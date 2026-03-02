@@ -218,10 +218,8 @@ impl<'data> Prelude<'data> {
         verbose_timing_phase!("Construct prelude");
 
         // The undefined symbol must always be symbol 0.
-        let mut symbol_definitions = vec![InternalSymDefInfo::hidden(
-            SymbolPlacement::Undefined,
-            &[],
-        )];
+        let mut symbol_definitions =
+            vec![InternalSymDefInfo::hidden(SymbolPlacement::Undefined, &[])];
 
         for section_id in output_section_id::built_in_section_ids() {
             // If we're producing non-relocatable, static executable, then don't define any symbols

@@ -3647,20 +3647,21 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
         }
         crate::grouping::SequencedInput::Prelude(prelude) => {
             let offset = symbol_id.offset_from(SymbolId::undefined());
-            let def_info = prelude
-                .symbol_definitions
-                .get(offset)
-                .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
-            let shndx = def_info.section_id().map_or(object::elf::SHN_ABS, |section_id| {
-                let section_id = layout.output_sections.primary_output_section(section_id);
-                layout
-                    .output_sections
-                    .output_index_of_section(section_id)
-                    .unwrap_or(object::elf::SHN_ABS)
-            });
+            let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
+                format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
+            })?;
+            let shndx = def_info
+                .section_id()
+                .map_or(object::elf::SHN_ABS, |section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .unwrap_or(object::elf::SHN_ABS)
+                });
             Ok((shndx, def_info.elf_symbol_type.raw()))
         }
-        _ => {
+        crate::grouping::SequencedInput::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
         }
