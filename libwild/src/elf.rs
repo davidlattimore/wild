@@ -1,6 +1,7 @@
 use crate::Args;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
+use crate::args::BuildIdOption;
 use crate::bail;
 use crate::ensure;
 use crate::error;
@@ -839,10 +840,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> Self::EpilogueLayout {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
+        let build_id_size = match &args.build_id {
+            BuildIdOption::None => None,
+            BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
+            BuildIdOption::Hex(hex) => Some(hex.len()),
+            BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
+        };
+
         EpilogueLayout {
             sysv_hash_layout: Default::default(),
             gnu_hash_layout,
             verdefs: Default::default(),
+            build_id_size,
         }
     }
 
@@ -880,6 +889,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
+        if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size() {
+            mem_sizes.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
+        }
+
         mem_sizes.increment(
             part_id::NOTE_GNU_PROPERTY,
             gnu_property_notes_section_size(&properties.gnu_property_notes),
@@ -953,6 +966,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result {
+        if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size() {
+            memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
+        }
+
         if let Some(gnu_hash_layout) = epilogue_state.gnu_hash_layout.as_mut() {
             gnu_hash_layout.symbol_base = dynsym_start_index;
         }
@@ -2704,6 +2721,7 @@ pub(crate) struct EpilogueLayout {
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
+    build_id_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2939,3 +2957,9 @@ impl<'data> Sonames<'data> {
 }
 
 impl platform::SegmentType for SegmentType {}
+
+impl EpilogueLayout {
+    fn gnu_build_id_note_section_size(&self) -> Option<u64> {
+        Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
+    }
+}
