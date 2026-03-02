@@ -975,7 +975,24 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         &mut self,
         place: u64,
         resolver_address: i64,
+        static_executable: bool,
     ) -> Result {
+        if static_executable {
+            let out = self
+                .rela_plt
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".rela.plt (ifunc data)"))?;
+            let e = LittleEndian;
+            out.r_offset.set(e, place);
+            out.r_addend.set(e, resolver_address);
+            out.set_r_info(
+                e,
+                false,
+                0,
+                P::get_dynamic_relocation_type(DynamicRelocationKind::Irelative),
+            );
+            return Ok(());
+        }
         // IRELATIVE relocations go in .rela.dyn general section, not the relative section,
         // because the dynamic linker expects only R_X86_64_RELATIVE in the relative section.
         self.write_rela_dyn_general(
@@ -2842,8 +2859,11 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
         && section_info.is_writable
         && table_writer.output_kind.needs_dynsym()
     {
-        table_writer
-            .write_ifunc_relocation_for_data::<P>(place, resolution.raw_value as i64 + addend)?;
+        table_writer.write_ifunc_relocation_for_data::<P>(
+            place,
+            resolution.raw_value as i64 + addend,
+            false,
+        )?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
         let address = resolution.value_with_addend(
