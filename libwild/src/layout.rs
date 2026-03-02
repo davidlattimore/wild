@@ -78,7 +78,6 @@ use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::secnames;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -2661,32 +2660,6 @@ impl Section {
     /// Returns the alignment for this section.
     fn alignment(&self) -> Alignment {
         self.part_id.alignment()
-    }
-
-    /// Returns whether to reverse the contents of this section. This is true for .ctors/.dtors
-    /// sections.
-    pub(crate) fn should_reverse_contents(
-        &self,
-        file: &crate::elf::File,
-        output_sections: &OutputSections,
-    ) -> bool {
-        // Getting the section name is expensive, so we only do it when the output section is
-        // .init_array / .fini_array.
-        let section_id = output_sections.primary_output_section(self.part_id.output_section_id());
-        if section_id != output_section_id::INIT_ARRAY
-            && section_id != output_section_id::FINI_ARRAY
-        {
-            return false;
-        }
-
-        file.section(self.index)
-            .and_then(|header| file.section_name(header))
-            .is_ok_and(|section_name| {
-                // .ctors and .dtors sections need their contents reversed when merged into
-                // .init_array/.fini_array
-                section_name.starts_with(secnames::CTORS_SECTION_NAME)
-                    || section_name.starts_with(secnames::DTORS_SECTION_NAME)
-            })
     }
 }
 
