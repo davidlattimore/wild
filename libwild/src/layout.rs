@@ -3484,10 +3484,10 @@ impl<'data> PreludeLayoutState<'data> {
 }
 
 impl<'data> InternalSymbols<'data> {
-    fn activate_symbols(
+    fn activate_symbols<O: ObjectFile<'data>>(
         &self,
-        common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_>,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &GraphResources<'data, '_, O>,
     ) -> Result {
         for (offset, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(offset);
@@ -3522,7 +3522,6 @@ impl<'data> InternalSymbols<'data> {
         Ok(())
     }
 
-    fn allocate_symbol_table_sizes(
     fn allocate_symbol_table_sizes<O: ObjectFile<'data>>(
         &self,
         sizes: &mut OutputSectionPartMap<u64>,

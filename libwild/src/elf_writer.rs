@@ -3684,7 +3684,7 @@ fn write_prelude_dynsym(
 
 fn write_internal_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
-    layout: &Layout,
+    layout: &ElfLayout,
     symbol_id: SymbolId,
     def_info: &crate::parsing::InternalSymDefInfo,
 ) -> Result {

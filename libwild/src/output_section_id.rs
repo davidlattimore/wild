@@ -564,7 +564,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         start_symbol_mode: DefinitionMode::ProvideHidden,
         end_symbol_name: Some("__rela_iplt_end"),
         end_symbol_mode: DefinitionMode::ProvideHidden,
-        info_fn: Some(rela_plt_info),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
