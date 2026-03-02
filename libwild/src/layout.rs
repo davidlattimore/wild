@@ -2884,6 +2884,19 @@ pub(crate) fn process_relocation<
             && symbol_db.output_kind.needs_dynsym()
         {
             common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        } else if flags.is_ifunc()
+            && rel_info.kind == RelocationKind::Absolute
+            && section_is_writable
+            && symbol_db.output_kind.is_static_executable()
+            && !symbol_db.output_kind.is_relocatable()
+            && !flags.ifunc_plt_is_canonical()
+        {
+            // For static (non-PIE) executables, an absolute reference to an ifunc in a writable
+            // data section (e.g. `void *bar2 = bar;`) needs an IRELATIVE entry in .rela.plt so
+            // that the startup code can resolve it to the actual function address at runtime.
+            // We only do this when the PLT stub address is not already the canonical address
+            // (i.e. no PltRelative or non-writable Absolute text references exist for this ifunc).
+            common.allocate(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
         } else if symbol_db.output_kind.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
             && flags.is_address()
@@ -2914,8 +2927,21 @@ pub(crate) fn process_relocation<
             if relocation_needs_got
                 && !symbol_db.output_kind.is_relocatable()
                 && flags.needs_direct()
+                && flags.ifunc_plt_is_canonical()
             {
                 flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
+            }
+            // Track when the PLT stub address becomes canonical: either a PltRelative relocation
+            // (e.g. R_X86_64_PLT32) or an Absolute/Relative relocation from a non-writable
+            // section (e.g. R_X86_64_32S in -fno-pie code) embeds the PLT stub address directly
+            // into code. When this flag is set, data pointers must also use the PLT stub address
+            // rather than an IRELATIVE relocation.
+            if !section_is_writable
+                && (rel_info.kind == RelocationKind::PltRelative
+                    || rel_info.kind == RelocationKind::Absolute
+                    || rel_info.kind == RelocationKind::Relative)
+            {
+                flags_to_add |= ValueFlags::IFUNC_PLT_CANONICAL;
             }
         }
 

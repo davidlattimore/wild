@@ -977,6 +977,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         resolver_address: i64,
         static_executable: bool,
     ) -> Result {
+        // For static (non-PIE) executables, IRELATIVE relocations for data references to ifunc
+        // symbols go into .rela.plt (bounded by __rela_iplt_start/__rela_iplt_end), which is
+        // processed by the static startup code at program start.
         if static_executable {
             let out = self
                 .rela_plt
@@ -2857,12 +2860,27 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
         Ok(0)
     } else if resolution.flags.is_ifunc()
         && section_info.is_writable
-        && table_writer.output_kind.needs_dynsym()
+        && (table_writer.output_kind.needs_dynsym()
+            || table_writer.output_kind.is_static_executable()
+                && !table_writer.output_kind.is_relocatable()
+                && !resolution.flags.ifunc_plt_is_canonical())
     {
+        // For static (non-PIE) executables, a data reference to an ifunc (e.g. `void *p =
+        // bar;`) must be resolved at startup via an IRELATIVE entry in .rela.plt.
+        // The startup code iterates __rela_iplt_start..__rela_iplt_end and calls
+        // each resolver, writing the result into the slot. This ensures address
+        // equality: both a direct call through the PLT and a data pointer will
+        // hold the same resolved function address.
+        //
+        // However, if IFUNC_PLT_CANONICAL is set, it means the PLT stub address has already
+        // been embedded directly into code (e.g. via R_X86_64_PLT32 or
+        // R_X86_64_32S). In that case the PLT stub IS the canonical address and we
+        // must write it directly into the data slot too, so both code and data
+        // agree on the address.
         table_writer.write_ifunc_relocation_for_data::<P>(
             place,
             resolution.raw_value as i64 + addend,
-            false,
+            table_writer.output_kind.is_static_executable(),
         )?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
