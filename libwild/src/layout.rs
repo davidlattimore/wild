@@ -3312,14 +3312,11 @@ impl<'data> PreludeLayoutState<'data> {
         // Always keep the program headers segment even though we don't emit any sections in it.
         keep_segments[0] = true;
 
-        // If relro is disabled, then discard the relro segment.
-        if !resources.symbol_db.args.relro {
-            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
-                if segment_def.segment_type == pt::GNU_RELRO {
-                    *keep = false;
-                }
-            }
-        }
+        O::update_segment_keep_list(
+            program_segments,
+            &mut keep_segments,
+            resources.symbol_db.args,
+        );
 
         let active_segment_ids = (0..program_segments.len())
             .map(ProgramSegmentId::new)
