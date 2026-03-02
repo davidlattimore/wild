@@ -311,13 +311,12 @@ impl<'data> Prelude<'data> {
             InternalSymDefInfo::notype(placement, name.as_bytes())
         }));
 
-        symbol_definitions.push(InternalSymDefInfo::hidden(
         symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::SectionEnd(output_section_id::TEXT),
             b"__etext",
         ));
 
-        symbol_definitions.push(InternalSymDefInfo::notype(
+        symbol_definitions.push(InternalSymDefInfo::hidden(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
         ));
