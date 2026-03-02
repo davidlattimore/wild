@@ -10,6 +10,7 @@ use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -467,6 +468,21 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Returns the default section type used for custom sections that don't specify a type.
     fn default_section_type() -> Self::SectionType;
+
+    /// Validate that the supplied sizes are internally consistent.
+    fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        Ok(())
+    }
+
+    /// Called when we detect an internal error with allocation in order to try and help determine
+    /// what we did wrong.
+    fn verify_resolution_allocation(
+        output_sections: &OutputSections,
+        output_order: &OutputOrder,
+        output_kind: OutputKind,
+        mem_sizes: &OutputSectionPartMap<u64>,
+        resolution: &layout::Resolution,
+    ) -> Result;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:

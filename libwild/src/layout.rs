@@ -12,7 +12,6 @@ use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::RawSymbolName;
-use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -808,7 +807,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
             }
 
             if symbol_db.args.verify_allocation_consistency {
-                verify_consistent_allocation_handling(flags, symbol_db.output_kind)?;
+                verify_consistent_allocation_handling::<O>(flags, symbol_db.output_kind)?;
             }
 
             allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
@@ -1122,19 +1121,7 @@ impl<'data, O: ObjectFile<'data>> CommonGroupState<'data, O> {
     }
 
     fn validate_sizes(&self) -> Result {
-        if *self.mem_sizes.get(part_id::GNU_VERSION) > 0 {
-            let num_dynamic_symbols =
-                self.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
-            let num_versym = self.mem_sizes.get(part_id::GNU_VERSION) / size_of::<Versym>() as u64;
-            if num_versym != num_dynamic_symbols {
-                bail!(
-                    "Object has {num_dynamic_symbols} dynamic symbols, but \
-                         has {num_versym} versym entries"
-                );
-            }
-        }
-
-        Ok(())
+        O::validate_sizes(&self.mem_sizes)
     }
 
     fn finalise_layout(
@@ -5831,7 +5818,10 @@ fn test_no_disallowed_overlaps() {
 /// combination of flags and output kind. If this function returns an error, then we would have
 /// failed during writing anyway. By failing now, we can report the particular combination of inputs
 /// that caused the failure.
-fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputKind) -> Result {
+fn verify_consistent_allocation_handling<'data, O: ObjectFile<'data>>(
+    flags: ValueFlags,
+    output_kind: OutputKind,
+) -> Result {
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
@@ -5845,7 +5835,7 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
 
     let resolution = create_resolution(flags, 0, dynamic_symbol_index, &mut memory_offsets);
 
-    elf_writer::verify_resolution_allocation(
+    O::verify_resolution_allocation(
         &output_sections,
         &output_order,
         output_kind,
