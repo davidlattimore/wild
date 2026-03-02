@@ -249,6 +249,11 @@ impl<'data> Prelude<'data> {
             {
                 continue;
             }
+            if output_kind == OutputKind::StaticExecutable(RelocationModel::Relocatable)
+                && section_id == output_section_id::RELA_PLT
+            {
+                continue;
+            }
 
             let def = section_id.built_in_details();
 
