@@ -30,7 +30,6 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id;
-use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -88,8 +87,6 @@ use linker_utils::elf::pt;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::sht::NOTE;
-use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -1750,34 +1747,19 @@ fn compute_segment_layout(
                         output_sections.section_debug(section_id)
                     );
                     ensure!(
-                        !section_flags.contains(shf::ALLOC),
-                        "Section with SHF_ALLOC flag {} not present in any program segment.",
+                        !section_flags.is_alloc(),
+                        "Alloc section {} not present in any program segment.",
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    // TODO: Remove the NOTE exception. Non-alloc sections should be placed outside
-                    // of program segments. NOTE sections are sometimes alloc and sometimes not.
-                    // Alloc NOTE sections should be placed within a LOAD segment and within a NOTE
-                    // segment. Non-alloc NOTE sections shouldn't be in any segment.
-
-                    // The .riscv.attributes section is non-alloc but is expected to be put into a
-                    // RISCV_ATTRIBUTES segment.
-                    if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
-                    } else {
-                        // All segments should only cover sections that are allocated and have a
-                        // non-zero address.
-                        ensure!(
-                            section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
-                            "Missing memory offset for section {} present in a program segment.",
-                            output_sections.section_debug(section_id),
-                        );
-                        ensure!(
-                            section_flags.contains(shf::ALLOC),
-                            "Missing SHF_ALLOC section flag for section {} present in a program \
-                         segment.",
-                            output_sections.section_debug(section_id)
-                        );
-                    }
+                    <crate::elf::File as ObjectFile>::validate_section(
+                        section_info,
+                        section_flags,
+                        section_layout,
+                        merge_target,
+                        output_sections,
+                        section_id,
+                    )?;
                     for opt_rec in &mut active_segments {
                         let Some(rec) = opt_rec.as_mut() else {
                             continue;
