@@ -66,7 +66,13 @@ bitflags! {
         /// An address in the global offset table is needed.
         const GOT = 1 << 7;
 
-        /// A PLT entry is needed.
+        /// A PLT entry is needed. For ifunc symbols in a static executable this also encodes that
+        /// the PLT stub address is the canonical address for the symbol: it is set when a
+        /// PltRelative relocation (e.g. R_X86_64_PLT32) or a non-writable Absolute/Relative
+        /// relocation (e.g. R_X86_64_32S in -fno-pie code) embeds the PLT stub address directly
+        /// into code. When this flag is absent on a static-executable ifunc (only GOT-relative
+        /// references exist), data pointers to the ifunc use an IRELATIVE relocation instead of
+        /// the PLT stub address, so they match the GOT-resolved address.
         const PLT = 1 << 8;
 
         /// A double GOT entry is needed in order to store the module number and offset within the
@@ -99,14 +105,6 @@ bitflags! {
         /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
         /// entry which will be resolved to the actual function address at runtime.
         const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
-
-        /// The PLT stub address is the canonical address for this ifunc. This is set when there
-        /// is a PltRelative relocation (e.g. R_X86_64_PLT32) or an Absolute relocation from a
-        /// non-writable section (e.g. R_X86_64_32S in -fno-pie code) that resolves to the PLT
-        /// stub address. When this flag is set, data pointers to the ifunc should also use the
-        /// PLT stub address directly. When it is not set (e.g. only GOTPCRELX references exist),
-        /// data pointers must use an IRELATIVE relocation so they match the GOT-resolved address.
-        const IFUNC_PLT_CANONICAL = 1 << 15;
     }
 }
 
@@ -136,8 +134,7 @@ impl ValueFlags {
                 | ValueFlags::GOT_TLS_DESCRIPTOR
                 | ValueFlags::EXPORT_DYNAMIC
                 | ValueFlags::COPY_RELOCATION
-                | ValueFlags::IFUNC_GOT_FOR_ADDRESS
-                | ValueFlags::IFUNC_PLT_CANONICAL,
+                | ValueFlags::IFUNC_GOT_FOR_ADDRESS,
         )
     }
 
@@ -195,11 +192,6 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn needs_direct(self) -> bool {
         self.contains(ValueFlags::DIRECT)
-    }
-
-    #[must_use]
-    pub(crate) fn ifunc_plt_is_canonical(self) -> bool {
-        self.contains(ValueFlags::IFUNC_PLT_CANONICAL)
     }
 
     #[must_use]

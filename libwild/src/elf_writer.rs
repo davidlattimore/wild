@@ -2863,7 +2863,7 @@ fn write_absolute_relocation<'data, P: Platform<'data, File = crate::elf::File<'
         && (table_writer.output_kind.needs_dynsym()
             || table_writer.output_kind.is_static_executable()
                 && !table_writer.output_kind.is_relocatable()
-                && !resolution.flags.ifunc_plt_is_canonical())
+                && !resolution.flags.needs_plt())
     {
         // For static (non-PIE) executables, a data reference to an ifunc (e.g. `void *p =
         // bar;`) must be resolved at startup via an IRELATIVE entry in .rela.plt.

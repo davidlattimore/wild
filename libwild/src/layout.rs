@@ -2889,7 +2889,7 @@ pub(crate) fn process_relocation<
             && section_is_writable
             && symbol_db.output_kind.is_static_executable()
             && !symbol_db.output_kind.is_relocatable()
-            && !flags.ifunc_plt_is_canonical()
+            && !flags.needs_plt()
         {
             // For static (non-PIE) executables, an absolute reference to an ifunc in a writable
             // data section (e.g. `void *bar2 = bar;`) needs an IRELATIVE entry in .rela.plt so
@@ -2927,7 +2927,7 @@ pub(crate) fn process_relocation<
             if relocation_needs_got
                 && !symbol_db.output_kind.is_relocatable()
                 && flags.needs_direct()
-                && flags.ifunc_plt_is_canonical()
+                && flags.needs_plt()
             {
                 flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
             }
@@ -2941,7 +2941,7 @@ pub(crate) fn process_relocation<
                     || rel_info.kind == RelocationKind::Absolute
                     || rel_info.kind == RelocationKind::Relative)
             {
-                flags_to_add |= ValueFlags::IFUNC_PLT_CANONICAL;
+                flags_to_add |= ValueFlags::PLT;
             }
         }
 
@@ -2950,7 +2950,10 @@ pub(crate) fn process_relocation<
 
         if !previous_flags.has_resolution() {
             if flags.is_ifunc() && symbol_db.output_kind.is_static_executable() {
-                atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
+                // Only auto-add GOT here; PLT is set only when an actual PltRelative or
+                // non-writable Absolute/Relative relocation is encountered, so that it
+                // correctly reflects whether the PLT stub address is canonical.
+                atomic_flags.fetch_or(ValueFlags::GOT);
             }
 
             queue.send_symbol_request::<P>(symbol_id, resources, scope);
