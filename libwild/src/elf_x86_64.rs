@@ -5,9 +5,9 @@
 
 use crate::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf::PropertyClass;
 use crate::error;
 use crate::error::Result;
-use crate::layout::PropertyClass;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -28,7 +28,7 @@ use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 
-pub(crate) struct X86_64;
+pub(crate) struct ElfX86_64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
@@ -40,10 +40,15 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for X86_64 {
-    type Relaxation = Relaxation;
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_from_raw($r_type).unwrap() }
+    };
+}
 
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::X86_64;
+impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
+    type Relaxation = Relaxation;
+    type File = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_X86_64
@@ -84,11 +89,11 @@ impl crate::arch::Arch for X86_64 {
         false
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<'data, crate::elf::File<'data>>) -> u64 {
         layout.tls_end_address()
     }
 
-    fn get_property_class(property_type: u32) -> Option<crate::layout::PropertyClass> {
+    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass> {
         match property_type {
             GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => {
                 Some(PropertyClass::And)
@@ -105,31 +110,16 @@ impl crate::arch::Arch for X86_64 {
         }
     }
 
-    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
+    fn merge_eflags(_eflags: impl Iterator<Item = u32>) -> Result<u32> {
         Ok(0)
     }
 
     fn high_part_relocations() -> &'static [u32] {
         &[]
     }
-}
 
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_from_raw($r_type).unwrap() }
-    };
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-impl crate::arch::Relaxation for Relaxation {
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -137,7 +127,8 @@ impl crate::arch::Relaxation for Relaxation {
         output_kind: OutputKind,
         section_flags: SectionFlags,
         _non_zero_address: bool,
-    ) -> Option<Self> {
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+    ) -> Option<Self::Relaxation> {
         let is_known_address = flags.is_address();
         let is_absolute = flags.is_absolute() && !flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
@@ -408,6 +399,29 @@ impl crate::arch::Relaxation for Relaxation {
         None
     }
 
+    fn get_source_info(
+        object: &Self::File,
+        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+        offset_in_section: u64,
+    ) -> Result<crate::platform::SourceInfo> {
+        crate::dwarf_address_info::get_source_info::<Self>(
+            object,
+            relocations,
+            section,
+            offset_in_section,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
@@ -461,14 +475,15 @@ impl TlsGdForm {
 
 #[test]
 fn test_relaxation() {
-    use crate::arch::Relaxation as _;
     use crate::args::RelocationModel;
+    use crate::platform::Platform as _;
+    use crate::platform::Relaxation as _;
 
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let mut offset = bytes_in.len() as u64;
-        if let Some(r) = Relaxation::new(
+        if let Some(r) = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,
@@ -476,6 +491,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
+            None,
         ) {
             r.apply(&mut out, &mut offset, &mut 0);
 
@@ -484,7 +500,7 @@ fn test_relaxation() {
                 "resolved: Expected {address:x?}, got {out:x?}"
             );
         }
-        if let Some(r) = Relaxation::new(
+        if let Some(r) = ElfX86_64::new_relaxation(
             relocation_kind,
             bytes_in,
             offset,
@@ -492,6 +508,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
+            None,
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0);

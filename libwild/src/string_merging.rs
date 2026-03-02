@@ -37,6 +37,9 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
+use crate::platform::ObjectFile;
+use crate::platform::SectionFlags;
+use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
@@ -46,10 +49,6 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
-use linker_utils::elf;
-use linker_utils::elf::shf;
-use object::LittleEndian;
-use object::read::elf::Sym as _;
 use rayon::Scope;
 use sharded_offset_map::OffsetMap;
 use sharded_offset_map::ShardedWriter;
@@ -107,10 +106,10 @@ impl StringMergeSectionSlot {
 /// Extra stuff that we don't want to put in `StringMergeSectionSlot` because like all section
 /// slots, we want to keep it as small as possible.
 #[derive(Debug)]
-pub(crate) struct StringMergeSectionExtra<'data> {
+pub(crate) struct StringMergeSectionExtra<'data, S: SectionFlags> {
     pub(crate) index: object::SectionIndex,
     pub(crate) section_data: &'data [u8],
-    pub(crate) section_flags: elf::SectionFlags,
+    pub(crate) section_flags: S,
 }
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
@@ -277,8 +276,8 @@ pub(crate) fn merge_strings<'data>(
 }
 
 impl<'data> StringMergeInputs<'data> {
-    pub(crate) fn new(
-        resolved: &mut [ResolvedGroup<'data>],
+    pub(crate) fn new<O: ObjectFile<'data>>(
+        resolved: &mut [ResolvedGroup<'data, O>],
         output_sections: &OutputSections,
     ) -> Result<Self> {
         Ok(Self {
@@ -293,8 +292,8 @@ impl<'data> StringMergeInputs<'data> {
 // Gather up all the string-merge sections, grouping them by their output section ID. We return a
 // reference to the `MergeStringsFileSection` rather than copying it because it appears to be
 // faster.
-fn group_merge_string_sections_by_output<'data>(
-    resolved: &mut [ResolvedGroup<'data>],
+fn group_merge_string_sections_by_output<'data, O: ObjectFile<'data>>(
+    resolved: &mut [ResolvedGroup<'data, O>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
     verbose_timing_phase!("Find merge sectionns");
@@ -322,7 +321,7 @@ fn group_merge_string_sections_by_output<'data>(
                     .push(StringMergeInputSection {
                         section_data: extra.section_data,
                         start_input_offset: *starting_offset,
-                        is_string: extra.section_flags.contains(shf::STRINGS),
+                        is_string: extra.section_flags.is_strings(),
                     });
 
                 *starting_offset = *starting_offset
@@ -996,10 +995,10 @@ impl<'data> MergeString<'data> {
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
 /// address in the output.
 #[inline(always)]
-pub(crate) fn get_merged_string_output_address(
+pub(crate) fn get_merged_string_output_address<'data, O: ObjectFile<'data>>(
     symbol_index: object::SymbolIndex,
     addend: i64,
-    object: &crate::elf::File,
+    object: &O,
     sections: &[SectionSlot],
     merged_strings: &OutputSectionMap<MergedStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,
@@ -1012,14 +1011,14 @@ pub(crate) fn get_merged_string_output_address(
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
-    let mut input_offset = symbol.st_value(LittleEndian);
+    let mut input_offset = symbol.value();
 
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend
     // afterward. However when the reference is to a section (a symbol without a name), we take the
     // addend into account up-front before we determine which string we're pointing at. This is a
     // bit weird, but seems to match what other linkers do.
-    let symbol_has_name = symbol.st_name(LittleEndian) != 0;
+    let symbol_has_name = symbol.has_name();
     if !symbol_has_name {
         // We're computing a resolution for an unnamed symbol, just use the value of 0 for now.
         // We'll compute the address later when we're processing relocations that reference the

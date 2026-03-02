@@ -627,11 +627,6 @@ impl SectionFlags {
     }
 
     #[must_use]
-    pub fn should_retain(&self) -> bool {
-        self.contains(shf::GNU_RETAIN)
-    }
-
-    #[must_use]
     pub fn should_exclude(&self) -> bool {
         self.contains(shf::EXCLUDE)
     }
@@ -1285,6 +1280,9 @@ pub enum RiscVInstruction {
 
     // Specifies a field as the immediate field in a CJ-type (compressed jump) instruction
     CjType,
+
+    // Encodes the immediate field of a C.LUI instruction (CI-type, 2 bytes).
+    CluiType,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]

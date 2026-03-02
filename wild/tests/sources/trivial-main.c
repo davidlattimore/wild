@@ -4,6 +4,7 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:section.data.alignment
+//#ExpectSym:main
 
 //#Config:gcc:default
 

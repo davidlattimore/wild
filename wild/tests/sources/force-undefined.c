@@ -6,6 +6,7 @@
 //#ExpectSym:foo
 //#ExpectSym:bar
 //#ExpectSym:baz
+//#TestUpdateInPlace:true
 
 // Verify that we can activate an archive entry by listing a symbol it defines
 // as undefined.
@@ -13,6 +14,8 @@
 //#Archive:archive_activation0.c
 //#CompArgs:-DEXPECT_ARCH0
 //#LinkArgs:--undefined=bar
+//#ExpectSym:bar
+//#ExpectSym:is_archive0_loaded
 
 #include "runtime.h"
 

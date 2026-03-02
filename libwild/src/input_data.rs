@@ -13,8 +13,11 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::linker_plugins::LinkerPlugin;
+use crate::linker_plugins::LtoInputInfo;
 use crate::linker_script::LinkerScript;
 use crate::parsing::ParsedInputObject;
+use crate::platform::ObjectFile;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
@@ -29,6 +32,7 @@ use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -44,13 +48,15 @@ pub(crate) struct FileLoader<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct LoadedInputs<'data> {
+pub(crate) struct LoadedInputs<'data, O: ObjectFile<'data>> {
     /// The results of parsing all the input files and archive entries. We defer checking for
     /// success until later, since otherwise a parse error would mean that the save-dir mechanism
     /// wouldn't capture all the input files.
-    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data>>>>,
+    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data, O>>>>,
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+
+    pub(crate) lto_objects: Vec<Result<Box<LtoInputInfo<'data>>>>,
 }
 
 pub(crate) struct InputBytes<'data> {
@@ -123,7 +129,7 @@ pub(crate) struct InputLinkerScript<'data> {
     pub(crate) input_file: &'data InputFile,
 }
 
-struct TemporaryState<'data> {
+struct TemporaryState<'data, O: ObjectFile<'data>> {
     args: &'data Args,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
@@ -131,25 +137,33 @@ struct TemporaryState<'data> {
 
     next_file_load_index: AtomicUsize,
 
-    files: SegQueue<LoadedFile<'data>>,
+    files: SegQueue<LoadedFile<'data, O>>,
 
     inputs_arena: &'data Arena<InputFile>,
 }
 
-struct LoadedFile<'data> {
+struct LoadedFile<'data, O: ObjectFile<'data>> {
     index: FileLoadIndex,
-    state: LoadedFileState<'data>,
+    state: LoadedFileState<'data, O>,
 }
 
-enum LoadedFileState<'data> {
-    Loaded(&'data InputFile, Result<Box<ParsedInputObject<'data>>>),
-    Archive(&'data InputFile, Vec<Result<Box<ParsedInputObject<'data>>>>),
-    ThinArchive(
-        Vec<&'data InputFile>,
-        Vec<Result<Box<ParsedInputObject<'data>>>>,
-    ),
+enum LoadedFileState<'data, O: ObjectFile<'data>> {
+    Loaded(&'data InputFile, InputRecord<'data, O>),
+    Archive(&'data InputFile, Vec<InputRecord<'data, O>>),
+    ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data, O>>),
     LinkerScript(LoadedLinkerScriptState<'data>),
     Error(Error),
+}
+
+enum InputRecord<'data, O: ObjectFile<'data>> {
+    Object(Result<Box<ParsedInputObject<'data, O>>>),
+    LtoInput(Box<UnclaimedLtoInput<'data>>),
+}
+
+struct UnclaimedLtoInput<'data> {
+    input_ref: InputRef<'data>,
+    file: Arc<std::fs::File>,
+    kind: FileKind,
 }
 
 struct LoadedLinkerScriptState<'data> {
@@ -226,11 +240,12 @@ impl<'data> FileLoader<'data> {
         }
     }
 
-    pub(crate) fn load_inputs(
+    pub(crate) fn load_inputs<O: ObjectFile<'data>>(
         &mut self,
         inputs: &[Input],
         args: &'data Args,
-    ) -> Result<LoadedInputs<'data>> {
+        plugin: &mut Option<LinkerPlugin<'data>>,
+    ) -> Result<LoadedInputs<'data, O>> {
         timing_phase!("Open input files");
 
         let mut path_to_load_index = HashMap::new();
@@ -284,7 +299,7 @@ impl<'data> FileLoader<'data> {
             );
             *entry = Some(file.state);
         }
-        self.extract_all(&mut files_by_index)
+        self.extract_all(&mut files_by_index, plugin)
     }
 
     /// Checks that the modification timestamp on all our input files hasn't changed since we opened
@@ -327,43 +342,46 @@ impl<'data> FileLoader<'data> {
     /// linker script is loaded, its files appear at the point at which the linker script appeared
     /// on the command-line, even though the FileLoadIndex for files loaded by linker scripts is
     /// later.
-    fn extract_all(
+    fn extract_all<O: ObjectFile<'data>>(
         &mut self,
-        files: &mut [Option<LoadedFileState<'data>>],
-    ) -> Result<LoadedInputs<'data>> {
+        files: &mut [Option<LoadedFileState<'data, O>>],
+        plugin: &mut Option<LinkerPlugin<'data>>,
+    ) -> Result<LoadedInputs<'data, O>> {
         let mut loaded = LoadedInputs {
             objects: Vec::with_capacity(files.len()),
             linker_scripts: Vec::new(),
+            lto_objects: Vec::new(),
         };
 
         for i in 0..files.len() {
-            self.extract_file(FileLoadIndex(i), files, &mut loaded)?;
+            self.extract_file(FileLoadIndex(i), files, &mut loaded, plugin)?;
         }
 
         Ok(loaded)
     }
 
-    fn extract_file(
+    fn extract_file<O: ObjectFile<'data>>(
         &mut self,
         index: FileLoadIndex,
-        files: &mut [Option<LoadedFileState<'data>>],
-        loaded: &mut LoadedInputs<'data>,
+        files: &mut [Option<LoadedFileState<'data, O>>],
+        loaded: &mut LoadedInputs<'data, O>,
+        plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
             None => {}
             Some(LoadedFileState::Loaded(input_file, parse_result)) => {
-                if parse_result.as_ref().is_ok_and(|obj| obj.is_dynamic()) {
+                if parse_result.is_dynamic_object() {
                     self.has_dynamic = true;
                 }
-                loaded.objects.push(parse_result);
+                loaded.add_record(parse_result, plugin);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::Archive(input_file, mut parsed_parts)) => {
-                loaded.objects.append(&mut parsed_parts);
+            Some(LoadedFileState::Archive(input_file, parsed_parts)) => {
+                loaded.add_records(parsed_parts, plugin);
                 self.loaded_files.push(input_file);
             }
-            Some(LoadedFileState::ThinArchive(mut input_files, mut parsed_parts)) => {
-                loaded.objects.append(&mut parsed_parts);
+            Some(LoadedFileState::ThinArchive(mut input_files, parsed_parts)) => {
+                loaded.add_records(parsed_parts, plugin);
                 self.loaded_files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
@@ -375,7 +393,7 @@ impl<'data> FileLoader<'data> {
                     .push(loaded_linker_script_state.script);
 
                 for i in loaded_linker_script_state.file_indexes {
-                    self.extract_file(i, files, loaded)?;
+                    self.extract_file(i, files, loaded, plugin)?;
                 }
             }
             Some(LoadedFileState::Error(error)) => {
@@ -421,51 +439,30 @@ fn process_linker_script<'data>(
     })
 }
 
-fn process_archive<'data>(
+fn process_archive<'data, O: ObjectFile<'data>>(
     input_file: &'data InputFile,
-    args: &Args,
-) -> Result<LoadedFileState<'data>> {
+    file: &Arc<std::fs::File>,
+    state: &TemporaryState<'data, O>,
+) -> Result<LoadedFileState<'data, O>> {
     let mut outputs = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
         let entry = entry?;
         match entry {
             ArchiveEntry::Regular(archive_entry) => {
-                let archive_and_member_name = || {
-                    format!(
-                        "{} @ {}",
-                        input_file.filename.to_string_lossy(),
-                        archive_entry.ident.as_path().to_string_lossy()
-                    )
-                };
-                let kind =
-                    FileKind::identify_bytes(archive_entry.entry_data).with_context(|| {
-                        format!("Failed to parse archive `{}`", archive_and_member_name())
-                    })?;
-                if kind != FileKind::ElfObject {
-                    bail!(
-                        "Archive member is not an object `{}`",
-                        archive_and_member_name()
-                    )
-                }
-
-                let input_bytes = InputBytes {
-                    kind,
-                    input: InputRef {
-                        file: input_file,
-                        entry: Some(EntryMeta {
-                            identifier: archive_entry.ident,
-                            start_offset: archive_entry.data_offset,
-                            end_offset: archive_entry.data_offset + archive_entry.entry_data.len(),
-                        }),
-                    },
-                    data: archive_entry.entry_data,
-                    modifiers: input_file.modifiers,
+                let input_ref = InputRef {
+                    file: input_file,
+                    entry: Some(EntryMeta {
+                        identifier: archive_entry.ident,
+                        start_offset: archive_entry.data_offset,
+                        end_offset: archive_entry.data_offset + archive_entry.entry_data.len(),
+                    }),
                 };
 
-                let parsed = ParsedInputObject::new(&input_bytes, args);
+                let kind = FileKind::identify_bytes(input_ref.data())
+                    .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                outputs.push(parsed);
+                outputs.push(state.process_input(input_ref, file, kind)?);
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
@@ -474,11 +471,10 @@ fn process_archive<'data>(
     Ok(LoadedFileState::Archive(input_file, outputs))
 }
 
-fn process_thin_archive<'data>(
+fn process_thin_archive<'data, O: ObjectFile<'data>>(
     input_file: &InputFile,
-    args: &Args,
-    inputs_arena: &'data Arena<InputFile>,
-) -> Result<LoadedFileState<'data>> {
+    state: &TemporaryState<'data, O>,
+) -> Result<LoadedFileState<'data, O>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
     let mut files = Vec::new();
@@ -490,8 +486,8 @@ fn process_thin_archive<'data>(
                 let path = entry.ident.as_path();
                 let entry_path = parent_path.join(path);
 
-                let file_data =
-                    FileData::new(&entry_path, args.prepopulate_maps).with_context(|| {
+                let (file_data, file) = FileData::open(&entry_path, state.args.prepopulate_maps)
+                    .with_context(|| {
                         format!(
                             "Failed to open file referenced by thin archive `{}`",
                             input_file.filename.display()
@@ -508,12 +504,17 @@ fn process_thin_archive<'data>(
                     data: Some(file_data),
                 };
 
-                let input_file = &*inputs_arena.alloc(input_file);
+                let input_file = &*state.inputs_arena.alloc(input_file);
 
-                parsed_files.push(ParsedInputObject::new(
-                    &InputBytes::from_file(input_file, FileKind::ElfObject),
-                    args,
-                ));
+                let input_ref = InputRef {
+                    file: input_file,
+                    entry: None,
+                };
+
+                let kind = FileKind::identify_bytes(input_ref.data())
+                    .with_context(|| format!("Failed process input `{input_ref}`"))?;
+
+                parsed_files.push(state.process_input(input_ref, &Arc::new(file), kind)?);
                 files.push(input_file);
             }
             ArchiveEntry::Regular(_) => {}
@@ -523,7 +524,7 @@ fn process_thin_archive<'data>(
     Ok(LoadedFileState::ThinArchive(files, parsed_files))
 }
 
-impl<'data> TemporaryState<'data> {
+impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
     fn process_and_record_open_file_request<'scope>(
         &'scope self,
         request: OpenFileRequest,
@@ -543,32 +544,36 @@ impl<'data> TemporaryState<'data> {
         &'scope self,
         request: OpenFileRequest,
         scope: &Scope<'scope>,
-    ) -> Result<LoadedFileState<'data>> {
+    ) -> Result<LoadedFileState<'data, O>> {
         verbose_timing_phase!("Open file");
 
         let absolute_path = &request.paths.absolute;
-        let result = FileData::new(absolute_path.as_path(), self.args.prepopulate_maps);
-        let data = match request.referenced_by.as_ref() {
+        let result = FileData::open(absolute_path.as_path(), self.args.prepopulate_maps);
+        let (data, file) = match request.referenced_by.as_ref() {
             Some(referenced_by) => {
                 result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
             }
             None => result,
         }?;
 
-        let kind = FileKind::identify_bytes(&data.bytes)?;
-
-        let input_file = InputFile {
+        let input_file = self.inputs_arena.alloc(InputFile {
             filename: absolute_path.to_owned(),
             original_filename: request.paths.original,
             modifiers: request.modifiers,
             data: Some(data),
+        });
+
+        let input_ref = InputRef {
+            file: input_file,
+            entry: None,
         };
 
-        let input_file = self.inputs_arena.alloc(input_file);
+        let data = input_ref.file.data.as_ref().unwrap();
+        let kind = FileKind::identify_bytes(&data.bytes)?;
 
         match kind {
-            FileKind::Archive => process_archive(input_file, self.args),
-            FileKind::ThinArchive => process_thin_archive(input_file, self.args, self.inputs_arena),
+            FileKind::Archive => process_archive(input_file, &Arc::new(file), self),
+            FileKind::ThinArchive => process_thin_archive(input_file, self),
             FileKind::Text => {
                 let script = process_linker_script(input_file, self.args)?;
 
@@ -590,8 +595,7 @@ impl<'data> TemporaryState<'data> {
                 }))
             }
             _ => {
-                let input_bytes = InputBytes::from_file(input_file, kind);
-                let parsed = ParsedInputObject::new(&input_bytes, self.args);
+                let parsed = self.process_input(input_ref, &Arc::new(file), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
             }
         }
@@ -634,6 +638,46 @@ impl<'data> TemporaryState<'data> {
         };
 
         Ok(index)
+    }
+
+    fn process_input(
+        &self,
+        input_ref: InputRef<'data>,
+        file: &Arc<std::fs::File>,
+        kind: FileKind,
+    ) -> Result<InputRecord<'data, O>> {
+        let data = input_ref.data();
+
+        // The plugin API docs say to pass files to the plugin before the linker tries to identify
+        // the them. Unfortunately the plugin API doesn't provide a fast way to identify files. The
+        // plugin API doesn't say anything about thread-safety and although the GCC plugin appears
+        // to be threadsafe, the clang plugin definitely isn't. This means that using the API to
+        // identify files is much too slow, so we do our own file identification and only pass files
+        // to the plugin if we think it can handle them. We can't rely on a plugin only being
+        // supplied when actually needed, since GCC seems to pretty much always pass a plugin to the
+        // linker.
+        if kind.is_compiler_ir() {
+            return Ok(InputRecord::LtoInput(Box::new(UnclaimedLtoInput {
+                input_ref,
+                file: Arc::clone(file),
+                kind,
+            })));
+        }
+
+        if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
+            bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
+        }
+
+        let input_bytes = InputBytes {
+            kind,
+            input: input_ref,
+            data,
+            modifiers: input_ref.file.modifiers,
+        };
+
+        let object = ParsedInputObject::new(&input_bytes, self.args);
+
+        Ok(InputRecord::Object(object))
     }
 }
 
@@ -718,6 +762,10 @@ impl Input {
 
 impl FileData {
     pub(crate) fn new(path: &Path, prepopulate_maps: bool) -> Result<Self> {
+        Self::open(path, prepopulate_maps).map(|(file_data, _file)| file_data)
+    }
+
+    fn open(path: &Path, prepopulate_maps: bool) -> Result<(Self, std::fs::File)> {
         let file = std::fs::File::open(path)
             .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
 
@@ -751,10 +799,13 @@ impl FileData {
         let bytes = unsafe { mmap_options.map(&file) }
             .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
 
-        Ok(FileData {
-            bytes,
-            modification_time,
-        })
+        Ok((
+            FileData {
+                bytes,
+                modification_time,
+            },
+            file,
+        ))
     }
 }
 
@@ -843,6 +894,18 @@ impl<'data> InputRef<'data> {
     pub(crate) fn has_archive_semantics(&self) -> bool {
         self.entry.is_some() || self.file.modifiers.archive_semantics
     }
+
+    pub(crate) fn data(&self) -> &'data [u8] {
+        if let Some(entry) = &self.entry {
+            &self.file.data()[entry.byte_range()]
+        } else {
+            self.file.data()
+        }
+    }
+
+    fn is_archive_entry(&self) -> bool {
+        self.entry.is_some()
+    }
 }
 
 impl Display for InputBytes<'_> {
@@ -851,16 +914,48 @@ impl Display for InputBytes<'_> {
     }
 }
 
-impl<'data> InputBytes<'data> {
-    pub(crate) fn from_file(
-        file: &'data crate::input_data::InputFile,
-        kind: FileKind,
-    ) -> InputBytes<'data> {
-        InputBytes {
-            input: InputRef { file, entry: None },
-            kind,
-            data: file.data(),
-            modifiers: file.modifiers,
+impl<'data, O: ObjectFile<'data>> LoadedInputs<'data, O> {
+    fn add_record(
+        &mut self,
+        record: InputRecord<'data, O>,
+        plugin: &mut Option<LinkerPlugin<'data>>,
+    ) {
+        match record {
+            InputRecord::Object(obj) => self.objects.push(obj),
+            InputRecord::LtoInput(obj) => {
+                let UnclaimedLtoInput {
+                    input_ref,
+                    file,
+                    kind,
+                } = *obj;
+                let result = plugin.as_mut()
+                    .with_context(|| {
+                        format!(
+                            "Input file {input_ref} contains {kind}, but linker plugin was not supplied"
+                        )
+                    })
+                    .and_then(|plugin| plugin.process_input(input_ref, &file, kind));
+                self.lto_objects.push(result);
+            }
+        }
+    }
+
+    fn add_records(
+        &mut self,
+        parsed_parts: Vec<InputRecord<'data, O>>,
+        plugin: &mut Option<LinkerPlugin<'data>>,
+    ) {
+        for part in parsed_parts {
+            self.add_record(part, plugin);
+        }
+    }
+}
+
+impl<'data, O: ObjectFile<'data>> InputRecord<'data, O> {
+    fn is_dynamic_object(&self) -> bool {
+        match self {
+            InputRecord::Object(Ok(obj)) => obj.is_dynamic(),
+            _ => false,
         }
     }
 }

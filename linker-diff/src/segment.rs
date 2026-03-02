@@ -17,7 +17,6 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
     ));
 }
 
-#[allow(clippy::unnecessary_wraps)]
 fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
     let e = LittleEndian;
     let mut values = FieldValues::default();

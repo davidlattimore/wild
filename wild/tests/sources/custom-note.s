@@ -5,6 +5,8 @@
 //#Contains:HELLO_WORLD
 //#DiffIgnore:section.got
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
+// Wild emits `.riscv.attributes`, but GNU ld does not
+//#DiffIgnore:riscv_attributes.*
 */
 
 .section .note.foo,"a",@note

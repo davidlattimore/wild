@@ -1,4 +1,3 @@
-pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;
@@ -8,7 +7,11 @@ pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
+pub(crate) mod elf_aarch64;
+pub(crate) mod elf_loongarch64;
+pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;
+pub(crate) mod elf_x86_64;
 pub mod error;
 pub(crate) mod export_list;
 pub(crate) mod file_kind;
@@ -21,8 +24,9 @@ pub(crate) mod identity;
 pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
+#[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
+mod linker_plugins;
 pub(crate) mod linker_script;
-pub(crate) mod loongarch64;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -44,9 +48,9 @@ pub(crate) mod perf;
 ))]
 #[path = "perf_unsupported.rs"]
 pub(crate) mod perf;
+pub(crate) mod platform;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
-pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sframe;
 pub(crate) mod sharding;
@@ -63,7 +67,6 @@ pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
-pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
 use crate::error::Context;
@@ -71,7 +74,9 @@ use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
+use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
+use crate::version_script::VersionScript;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -132,6 +137,8 @@ pub struct Linker {
     /// We store our input files here once we've read them.
     inputs_arena: Arena<InputFile>,
 
+    linker_plugin_arena: Arena<linker_plugins::LoadedPlugin>,
+
     /// Anything that doesn't need a custom Drop implementation can go in here. In practice, it's
     /// mostly just the decompressed copy of compressed string-merge sections.
     herd: bumpalo_herd::Herd,
@@ -150,16 +157,16 @@ pub struct LinkerOutput<'layout_inputs> {
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<layout::Layout<'layout_inputs>>,
+    layout: Option<layout::Layout<'layout_inputs, crate::elf::File<'layout_inputs>>>,
 }
 
 impl Linker {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let (guard_a, guard_b) = timing_guard!("Link");
 
         Self {
             inputs_arena: Arena::new(),
+            linker_plugin_arena: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
             _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
@@ -189,22 +196,24 @@ impl Linker {
         }
 
         match args.arch {
-            arch::Architecture::X86_64 => self.link_for_arch::<x86_64::X86_64>(args),
-            arch::Architecture::AArch64 => self.link_for_arch::<aarch64::AArch64>(args),
-            arch::Architecture::RISCV64 => self.link_for_arch::<riscv64::RiscV64>(args),
-            arch::Architecture::LoongArch64 => self.link_for_arch::<loongarch64::LoongArch64>(args),
+            arch::Architecture::X86_64 => self.link_for_arch::<elf_x86_64::ElfX86_64>(args),
+            arch::Architecture::AArch64 => self.link_for_arch::<elf_aarch64::ElfAArch64>(args),
+            arch::Architecture::RISCV64 => self.link_for_arch::<elf_riscv64::ElfRiscV64>(args),
+            arch::Architecture::LoongArch64 => {
+                self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)
+            }
         }
     }
 
-    fn link_for_arch<'layout_inputs, A: arch::Arch>(
-        &'layout_inputs self,
-        args: &'layout_inputs Args,
-    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+    fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+        &'data self,
+        args: &'data Args,
+    ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<P>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
@@ -224,14 +233,19 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: arch::Arch>(
+    fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
-        let loaded = file_loader.load_inputs(&args.inputs, args)?;
+        let mut plugin =
+            linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
+
+        let loaded = file_loader.load_inputs(&args.inputs, args, &mut plugin);
 
         args.save_dir.finish(file_loader, args)?;
+
+        let loaded = loaded?;
 
         let output_kind = OutputKind::new(args, file_loader);
 
@@ -253,13 +267,13 @@ impl Linker {
             loaded,
         )?;
 
+        // TODO: Doing this here means that we can't wrap symbols produced by the linker plugin.
+        // Moving it earlier or later however requires some rethought as to how this works.
         symbol_db.apply_wrapped_symbol_overrides();
 
         let mut resolver = resolution::Resolver::default();
 
         resolver.resolve_symbols_and_select_archive_entries(&mut symbol_db)?;
-
-        let layout_rules = layout_rules_builder.build();
 
         // Now that we know which archive entries are being loaded, we can resolve alternative
         // symbol definitions.
@@ -269,6 +283,27 @@ impl Linker {
             &resolver.resolved_groups,
         )?;
 
+        if let Some(plugin) = plugin.as_mut()
+            && plugin.is_initialised()
+        {
+            plugin.all_symbols_read(
+                &mut symbol_db,
+                &mut resolver,
+                file_loader,
+                &mut per_symbol_flags,
+                &mut output_sections,
+                &mut layout_rules_builder,
+            )?;
+        }
+
+        // If it's a rust version script, apply the global symbol visibility now.
+        // We previously downgraded all symbols to local visibility.
+        if let VersionScript::Rust(rust_vscript) = &symbol_db.version_script {
+            symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+        }
+
+        let layout_rules = layout_rules_builder.build();
+
         let resolved = resolver.resolve_sections_and_canonicalise_undefined(
             &mut symbol_db,
             &mut per_symbol_flags,
@@ -276,7 +311,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<A>(
+        let layout = layout::compute::<P>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -284,7 +319,7 @@ impl Linker {
             &mut output,
         )?;
 
-        output.write(&layout, elf_writer::write::<A>)?;
+        output.write(&layout, elf_writer::write::<P>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
@@ -333,6 +368,11 @@ fn write_dependency_file(
     let mut seen = std::collections::HashSet::new();
     let mut deps = Vec::new();
     for input_file in loaded_files {
+        // Skip temporary files. e.g. those generated by linker plugins.
+        if input_file.modifiers.temporary {
+            continue;
+        }
+
         let path_str = input_file.filename.display().to_string();
         if seen.insert(path_str.clone()) {
             deps.push(path_str);

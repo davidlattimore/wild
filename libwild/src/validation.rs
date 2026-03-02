@@ -4,20 +4,23 @@ use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::platform::ObjectFile as _;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
 use zerocopy::FromBytes;
 
-pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
-    let object =
-        crate::elf::File::parse(file_bytes, true).context("Failed to parse our output file")?;
+type ElfLayout<'data> = Layout<'data, crate::elf::File<'data>>;
+
+pub(crate) fn validate_bytes(layout: &ElfLayout, file_bytes: &[u8]) -> Result {
+    let object = crate::elf::File::parse_bytes(file_bytes, true)
+        .context("Failed to parse our output file")?;
     validate_object(&object, layout).context("Output validation failed")
 }
 
 /// Checks that what we actually wrote to our output file matches what we intended to write in
 /// `layout`.
-fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
+fn validate_object(object: &crate::elf::File, layout: &ElfLayout) -> Result {
     if layout.symbol_db.output_kind.is_relocatable() {
         // For now, we don't do any validation of relocatable outputs. The only thing we're
         // currently validating is GOT entries and they'll all have dynamic relocations.

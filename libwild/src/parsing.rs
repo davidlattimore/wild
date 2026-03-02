@@ -4,11 +4,8 @@ use crate::args::Args;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
-use crate::bail;
-use crate::elf::File;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::file_kind::FileKind;
 use crate::input_data::FileId;
 use crate::input_data::InputBytes;
 use crate::input_data::InputLinkerScript;
@@ -17,6 +14,7 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id;
 use crate::output_section_id::DefinitionMode;
 use crate::output_section_id::OutputSectionId;
+use crate::platform::ObjectFile;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -24,8 +22,6 @@ use crate::timing_phase;
 use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
-use object::LittleEndian;
-use object::read::elf::Dyn as _;
 
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
@@ -46,10 +42,9 @@ pub(crate) struct Prelude<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ParsedInputObject<'data> {
+pub(crate) struct ParsedInputObject<'data, O: ObjectFile<'data>> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: File<'data>,
-    pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
+    pub(crate) object: O,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -195,39 +190,26 @@ impl<'data> InternalSymDefInfo<'data> {
     }
 }
 
-impl<'data> ParsedInputObject<'data> {
+impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
     pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
-        let is_dynamic = input.kind == FileKind::ElfDynamic;
 
-        let object = File::parse(input.data, is_dynamic)
+        let object = O::parse(input, args)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
-
-        if object.arch != args.arch {
-            bail!(
-                "`{}` has incompatible architecture: {}, expecting {}",
-                input.input,
-                object.arch,
-                args.arch,
-            )
-        }
-
-        let dynamic_tag_values = is_dynamic.then(|| DynamicTagValues::read(&object));
 
         Ok(Box::new(Self {
             input: input.input,
             object,
-            dynamic_tag_values,
             modifiers: input.modifiers,
         }))
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.dynamic_tag_values.is_some()
+        self.object.is_dynamic()
     }
 
     pub(crate) fn num_symbols(&self) -> usize {
-        self.object.symbols.len()
+        self.object.num_symbols()
     }
 }
 
@@ -329,6 +311,12 @@ impl<'data> Prelude<'data> {
         }));
 
         symbol_definitions.push(InternalSymDefInfo::hidden(
+        symbol_definitions.push(InternalSymDefInfo::notype(
+            SymbolPlacement::SectionEnd(output_section_id::TEXT),
+            b"__etext",
+        ));
+
+        symbol_definitions.push(InternalSymDefInfo::notype(
             SymbolPlacement::LoadBaseAddress,
             b"__executable_start",
         ));
@@ -374,40 +362,7 @@ impl<'data> ProcessedLinkerScript<'data> {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy)]
-pub(crate) struct DynamicTagValues<'data> {
-    pub(crate) verdefnum: u64,
-    pub(crate) soname: Option<&'data [u8]>,
-}
-
-impl<'data> DynamicTagValues<'data> {
-    fn read(file: &File<'data>) -> Self {
-        let mut values = DynamicTagValues::default();
-        let Ok(dynamic_tags) = file.dynamic_tags() else {
-            return values;
-        };
-        let e = LittleEndian;
-        for entry in dynamic_tags {
-            let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
-                object::elf::DT_VERDEFNUM => {
-                    values.verdefnum = value;
-                }
-                object::elf::DT_SONAME => {
-                    values.soname = file.symbols.strings().get(value as u32).ok();
-                }
-                _ => {}
-            }
-        }
-        values
-    }
-
-    pub(crate) fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
-        self.soname.unwrap_or_else(|| input.lib_name())
-    }
-}
-
-impl std::fmt::Display for ParsedInputObject<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for ParsedInputObject<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }

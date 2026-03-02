@@ -11,6 +11,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
+use crate::platform::ObjectFile;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use anyhow::anyhow;
@@ -186,10 +187,10 @@ impl Output {
         }
     }
 
-    pub fn write<'data>(
+    pub fn write<'data, 'layout, O: ObjectFile<'data>>(
         &self,
-        layout: &Layout<'data>,
-        write_fn: impl Fn(&mut SizedOutput, &Layout) -> Result,
+        layout: &'layout Layout<'data, O>,
+        write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data, O>) -> Result,
     ) -> Result {
         timing_phase!("Write output file");
         if layout.args().write_layout {
@@ -344,11 +345,11 @@ pub(crate) fn verify_allocations_message() -> String {
     }
 }
 
-pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
-    layout: &'layout Layout<'data>,
+pub(crate) fn split_output_by_group<'layout, 'data, 'out, O: ObjectFile<'data>>(
+    layout: &'layout Layout<'data, O>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Vec<(
-    &'layout GroupLayout<'data>,
+    &'layout GroupLayout<'data, O>,
     OutputSectionPartMap<&'out mut [u8]>,
 )> {
     timing_phase!("Split output buffers by group");
@@ -359,8 +360,8 @@ pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
         .collect()
 }
 
-pub(crate) fn split_output_into_sections<'out>(
-    layout: &Layout,
+pub(crate) fn split_output_into_sections<'out, 'data, O: ObjectFile<'data>>(
+    layout: &Layout<'data, O>,
     mut data: &'out mut [u8],
 ) -> OutputSectionMap<&'out mut [u8]> {
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
@@ -394,9 +395,9 @@ pub(crate) fn split_output_into_sections<'out>(
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.
-pub(crate) fn split_buffers_by_alignment<'out>(
+pub(crate) fn split_buffers_by_alignment<'out, 'data, O: ObjectFile<'data>>(
     section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
-    layout: &Layout,
+    layout: &Layout<'data, O>,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
     layout.section_part_layouts.output_order_map(
         &layout.output_order,
@@ -419,13 +420,13 @@ pub(crate) fn split_buffers_by_alignment<'out>(
     )
 }
 
-fn write_layout(layout: &Layout) -> Result {
+fn write_layout<'data, O: ObjectFile<'data>>(layout: &Layout<'data, O>) -> Result {
     let layout_path = linker_layout::layout_path(&layout.args().output);
     write_layout_to(layout, &layout_path)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
 }
 
-fn write_layout_to(layout: &Layout, path: &Path) -> Result {
+fn write_layout_to<'data, O: ObjectFile<'data>>(layout: &Layout<'data, O>, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())

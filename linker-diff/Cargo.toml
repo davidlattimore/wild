@@ -17,6 +17,7 @@ symbolic-demangle = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 itertools = { workspace = true }
+leb128 = { workspace = true }
 gimli = { workspace = true }
 colored = { workspace = true }
 tracing = { workspace = true }

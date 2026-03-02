@@ -1,29 +1,81 @@
+use crate::Args;
+use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
+use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_kind::FileKind;
+use crate::grouping::Group;
+use crate::input_data::InputBytes;
+use crate::input_data::InputRef;
+use crate::layout;
+use crate::layout::DynamicSymbolDefinition;
+use crate::layout::OutputRecordLayout;
+use crate::output_kind::OutputKind;
+use crate::output_section_id;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
+use crate::output_section_map::OutputSectionMap;
+use crate::output_section_part_map::OutputSectionPartMap;
+use crate::part_id;
+use crate::platform;
+use crate::platform::CommonSymbol;
+use crate::platform::DynamicTagValues as _;
+use crate::platform::FrameIndex;
+use crate::platform::ObjectFile;
+use crate::platform::Platform;
+use crate::platform::Relocation;
+use crate::platform::RelocationSequence;
 use crate::resolution::LoadedMetrics;
+use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::Visibility;
+use crate::timing_phase;
+use crate::version_script::VersionScript;
+use foldhash::HashSet;
+use hashbrown::HashMap;
+use indexmap::IndexMap;
+use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
+use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_MINOR;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
+use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
+use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
+use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
+use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
 use object::read::elf::CrelIterator;
+use object::read::elf::Dyn as _;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
+use rayon::Scope;
 use rayon::prelude::*;
+use smallvec::SmallVec;
 use std::borrow::Cow;
+use std::ffi::CStr;
 use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
+use std::num::NonZeroU32;
 use std::ops::Range;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
@@ -82,18 +134,48 @@ pub(crate) struct File<'data> {
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
+
+    pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
 
-pub(crate) trait Relocation<'data> {
-    type Sequence: RelocationSequence<'data>;
+impl Relocation for Rela {
+    type Sequence<'data> = &'data [Rela];
+
+    fn symbol(&self) -> Option<object::SymbolIndex> {
+        object::read::elf::Rela::symbol(self, LittleEndian, false)
+    }
+
+    fn raw_type(&self) -> u32 {
+        object::read::elf::Rela::r_type(self, LittleEndian, false)
+    }
+
+    fn offset(&self) -> u64 {
+        object::read::elf::Rela::r_offset(self, LittleEndian)
+    }
+
+    fn addend(&self) -> i64 {
+        object::read::elf::Rela::r_addend(self, LittleEndian)
+    }
 }
 
-impl<'data> Relocation<'data> for Rela {
-    type Sequence = &'data [Rela];
-}
+impl Relocation for Crel {
+    type Sequence<'data> = Vec<Crel>;
 
-impl<'data> Relocation<'data> for Crel {
-    type Sequence = Vec<Crel>;
+    fn symbol(&self) -> Option<object::SymbolIndex> {
+        object::read::elf::Crel::symbol(self)
+    }
+
+    fn raw_type(&self) -> u32 {
+        self.r_type
+    }
+
+    fn offset(&self) -> u64 {
+        self.r_offset
+    }
+
+    fn addend(&self) -> i64 {
+        self.r_addend
+    }
 }
 
 /// A list of relocations that supports iteration.
@@ -103,15 +185,11 @@ pub(crate) enum RelocationList<'data> {
     Crel(CrelIterator<'data>),
 }
 
-pub(crate) trait RelocationSequence<'data> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
-    fn subsequence(&self, range: Range<usize>) -> Self;
-    fn num_relocations(&self) -> usize;
-}
-
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
+    type Rel = Rela;
+
+    fn rel_iter(&self) -> impl Iterator<Item = Rela> {
+        self.iter().copied()
     }
 
     fn subsequence(&self, range: Range<usize>) -> Self {
@@ -124,7 +202,9 @@ impl<'data> RelocationSequence<'data> for &'data [Rela] {
 }
 
 impl<'data> RelocationSequence<'data> for Vec<Crel> {
-    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+    type Rel = Crel;
+
+    fn rel_iter(&self) -> impl Iterator<Item = Crel> {
         self.clone().into_iter()
     }
 
@@ -141,11 +221,53 @@ impl<'data> RelocationSequence<'data> for Vec<Crel> {
 // its contents.
 const _: () = assert!(!core::mem::needs_drop::<File>());
 
-impl<'data> File<'data> {
-    /// Threshold size for using parallel copy for section data copying.
-    const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+/// Threshold size for using parallel copy for section data copying.
+const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
-    pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+impl<'data> platform::ObjectFile<'data> for File<'data> {
+    type Symbol = Symbol;
+    type SectionHeader = SectionHeader;
+    type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
+    type SectionFlags = SectionFlags;
+    type SectionAttributes = SectionAttributes;
+    type SectionType = SectionType;
+    type DynamicTagValues = crate::elf::DynamicTagValues<'data>;
+    type DynamicEntry = DynamicEntry;
+    type RelocationList = RelocationList<'data>;
+    type RelocationSections = RelocationSections;
+    type VersionNames = VersionNames<'data>;
+    type RawSymbolName = RawSymbolName<'data>;
+    type VerneedTable = VerneedTable<'data>;
+    type FileLayoutState = ElfObjectLayoutState<'data>;
+    type LayoutProperties = ElfLayoutProperties;
+    type SymbolVersionIndex = Versym;
+    type DynamicLayoutState = DynamicLayoutState<'data>;
+    type DynamicLayout = DynamicLayout<'data>;
+    type NonAddressableCounts = NonAddressableCounts;
+    type NonAddressableIndexes = NonAddressableIndexes;
+    type EpilogueLayout = EpilogueLayout;
+    type GroupLayoutExt = GroupLayoutExt;
+    type CommonGroupStateExt = CommonGroupStateExt;
+    type LayoutResourcesExt = LayoutResourcesExt<'data>;
+
+    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+        let is_dynamic = input.kind == FileKind::ElfDynamic;
+
+        let file = Self::parse_bytes(input.data, is_dynamic)?;
+
+        if file.arch != args.arch {
+            bail!(
+                "`{}` has incompatible architecture: {}, expecting {}",
+                input,
+                file.arch,
+                args.arch,
+            )
+        }
+
+        Ok(file)
+    }
+
+    fn parse_bytes(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
         let header = FileHeader::parse(data)?;
         let endian = header.endian()?;
         let architecture = header.e_machine(endian).try_into()?;
@@ -182,6 +304,9 @@ impl<'data> File<'data> {
             }
         }
 
+        let dynamic_tag_values =
+            is_dynamic.then(|| DynamicTagValues::read(&sections, data, &symbols));
+
         Ok(Self {
             arch: architecture,
             data,
@@ -192,25 +317,23 @@ impl<'data> File<'data> {
             verdefnum,
             verneed,
             eflags,
+            dynamic_tag_values,
         })
     }
 
-    pub(crate) fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
-    pub(crate) fn section_by_name(
-        &self,
-        name: &str,
-    ) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    pub(crate) fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
-    pub(crate) fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
+    fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
         self.section(index)
             .and_then(|section| self.section_name(section))
             .map_or_else(
@@ -219,14 +342,13 @@ impl<'data> File<'data> {
             )
     }
 
-    /// Returns the raw section data. Doesn't handle decompression.
-    pub(crate) fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn raw_section_data(&self, section: &Self::SectionHeader) -> Result<&'data [u8]> {
         Ok(section.data(LittleEndian, self.data)?)
     }
 
-    pub(crate) fn section_data(
+    fn section_data(
         &self,
-        section: &SectionHeader,
+        section: &Self::SectionHeader,
         member: &bumpalo_herd::Member<'data>,
         loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
@@ -251,16 +373,14 @@ impl<'data> File<'data> {
         }
     }
 
-    /// Copies the data for the specified section into `out`, which must be the correct size.
-    /// Decompresses the data if necessary.
-    pub(crate) fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
             out.fill(0);
-        } else if data.len() >= Self::SECTION_PAR_COPY_SIZE_THRESHOLD {
+        } else if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
             let threads = rayon::current_num_threads();
             let chunk_size = (data.len() / threads).max(1);
 
@@ -273,8 +393,7 @@ impl<'data> File<'data> {
         Ok(())
     }
 
-    /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
-    pub(crate) fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
+    fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
@@ -291,24 +410,24 @@ impl<'data> File<'data> {
         }
     }
 
-    pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_size(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
             || section.sh_size.get(LittleEndian),
             |compression| compression.0.ch_size(LittleEndian),
         ))
     }
 
-    pub(crate) fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+    fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
             || section.sh_addralign(LittleEndian),
             |compression| compression.0.ch_addralign(LittleEndian),
         ))
     }
 
-    pub(crate) fn relocations(
+    fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &RelocationSections,
+        relocations: &Self::RelocationSections,
     ) -> Result<RelocationList<'data>> {
         let Some(section_index) = relocations.get(index) else {
             return Ok(RelocationList::Rela(&[]));
@@ -325,37 +444,1218 @@ impl<'data> File<'data> {
         )
     }
 
-    pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    pub(crate) fn symbol_name(&self, symbol: &Symbol) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
-    pub(crate) fn symbol_section(
+    fn symbol_section(
         &self,
-        symbol: &Symbol,
+        symbol: &Self::Symbol,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
     }
 
-    pub(crate) fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
-        let e = LittleEndian;
-        if let Some(dynamic) = self.sections.dynamic(e, self.data).transpose() {
-            return dynamic
-                .map(|(dynamic, _)| dynamic)
-                .context("Failed to read dynamic table");
-        }
-        Ok(&[])
+    fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]> {
+        dynamic_tags(&self.sections, self.data)
     }
 
-    pub(crate) fn parse_relocations(&self) -> Result<RelocationSections> {
+    fn parse_relocations(&self) -> Result<Self::RelocationSections> {
         Ok(self
             .sections
             .relocation_sections(LittleEndian, self.symbols.section())?)
     }
+
+    fn num_symbols(&self) -> usize {
+        self.symbols.len()
+    }
+
+    fn is_dynamic(&self) -> bool {
+        self.dynamic_tag_values.is_some()
+    }
+
+    fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues> {
+        self.dynamic_tag_values
+    }
+
+    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
+        let endian = LittleEndian;
+        let versym = self.versym.get(symbol_index.0)?;
+        let versym = versym.0.get(endian);
+        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+        if let Some((verdefs, string_table_index)) = self.verdef.clone() {
+            let strings = self
+                .sections
+                .strings(endian, self.data, string_table_index)
+                .ok()?;
+            for r in verdefs {
+                let (verdef, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = verdef.vd_ndx.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some((verneeds, string_table_index)) = self.verneed.clone() {
+            let strings = self
+                .sections
+                .strings(endian, self.data, string_table_index)
+                .ok()?;
+            for r in verneeds {
+                let (_verneed, aux_iterator) = r.ok()?;
+                for aux in aux_iterator {
+                    let aux = aux.ok()?;
+                    let version_index = aux.vna_other.get(endian);
+                    if version_index == symbol_version_index {
+                        return Some(format!(
+                            "{}{}",
+                            if is_default { "@@" } else { "@" },
+                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn section_iter(&self) -> Self::SectionIterator {
+        self.sections.iter()
+    }
+
+    fn enumerate_sections(
+        &self,
+    ) -> impl Iterator<Item = (object::SectionIndex, &'data Self::SectionHeader)> {
+        self.sections.enumerate()
+    }
+
+    fn get_version_names(&self) -> Result<Self::VersionNames> {
+        let endian = LittleEndian;
+
+        let mut version_names = vec![None; self.verdefnum as usize + 1];
+
+        // See https://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA.junk/symversion.html
+        // for information about symbol versioning.
+
+        if let Some((verdefs, string_table_index)) = &self.verdef {
+            let strings = self
+                .sections
+                .strings(endian, self.data, *string_table_index)?;
+
+            for r in verdefs.clone() {
+                let (verdef, mut aux_iterator) = r?;
+                // Every VERDEF entry should have at least one AUX entry. We currently only care
+                // about the first one.
+                let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                let version_index = verdef.vd_ndx.get(endian);
+                let name = aux.name(endian, strings)?;
+
+                *version_names
+                    .get_mut(usize::from(version_index))
+                    .with_context(|| format!("Invalid version index {version_index}"))? =
+                    Some(name);
+            }
+        }
+
+        Ok(VersionNames {
+            names: version_names,
+        })
+    }
+
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &crate::elf::Symbol,
+        local_index: usize,
+        version_names: &VersionNames<'data>,
+    ) -> Result<Self::RawSymbolName> {
+        let name_bytes = self.symbol_name(symbol)?;
+
+        let is_default;
+        let version_name;
+
+        if let Some(versym) = self.versym.get(local_index) {
+            let versym = versym.0.get(LittleEndian);
+            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+            let version_index = versym & object::elf::VERSYM_VERSION;
+            version_name = version_names
+                .names
+                .get(usize::from(version_index))
+                .copied()
+                .flatten();
+        } else {
+            is_default = true;
+            version_name = None;
+        };
+
+        Ok(RawSymbolName {
+            name: name_bytes,
+            version_name,
+            is_default,
+        })
+    }
+
+    fn symbols(&self) -> &'data [Self::Symbol] {
+        self.symbols.symbols()
+    }
+
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
+        self.symbols.iter()
+    }
+
+    fn verneed_table(&self) -> Result<Self::VerneedTable> {
+        VerneedTable::new(self)
+    }
+
+    fn num_sections(&self) -> usize {
+        self.sections.len()
+    }
+
+    fn process_gnu_note_section(
+        &self,
+        state: &mut Self::FileLayoutState,
+        section_index: object::SectionIndex,
+    ) -> Result {
+        let section = self.section(section_index)?;
+        let e = LittleEndian;
+
+        let Some(notes) = object::read::elf::SectionHeader::notes(section, e, self.data)? else {
+            return Ok(());
+        };
+
+        for note in notes {
+            for gnu_property in note?
+                .gnu_properties(e)
+                .ok_or(error!("Invalid type of .note.gnu.property"))?
+            {
+                let gnu_property = gnu_property?;
+
+                // Right now, skip all properties other than those with size equal to 4.
+                // There are existing properties, but unused right now:
+                // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
+                // TODO: support in the future
+                if gnu_property.pr_data().len() != 4 {
+                    continue;
+                }
+                state.gnu_property_notes.push(crate::elf::GnuProperty {
+                    ptype: gnu_property.pr_type(),
+                    data: gnu_property.data_u32(e)?,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+        args: &Args,
+        objects: impl Iterator<Item = &'files Self>,
+        states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
+    ) -> Result<Self::LayoutProperties>
+    where
+        'data: 'files,
+        'data: 'states,
+    {
+        ElfLayoutProperties::new::<P>(objects, states, args)
+    }
+
+    fn symbol_versions(&self) -> &[Self::SymbolVersionIndex] {
+        self.versym
+    }
+
+    fn dynamic_symbol_used(
+        &self,
+        symbol_index: object::SymbolIndex,
+        state: &mut Self::DynamicLayoutState,
+    ) -> Result {
+        if let Some(version_index) = self.versym.get(symbol_index.0) {
+            let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+            // Versions 0 and 1 are local and global. We care about the versions after that.
+            if version_index > object::elf::VER_NDX_GLOBAL {
+                *state
+                    .symbol_versions_needed
+                    .get_mut(version_index as usize - 1)
+                    .with_context(|| format!("Invalid symbol version index {version_index}"))? =
+                    true;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn activate_dynamic(&self, state: &mut Self::DynamicLayoutState) {
+        state.symbol_versions_needed = vec![false; self.verdefnum as usize];
+    }
+
+    fn finalise_sizes_dynamic(
+        &self,
+        lib_name: &[u8],
+        state: &mut Self::DynamicLayoutState,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+    ) -> Result {
+        let e = LittleEndian;
+        let mut version_count = 0;
+
+        if let Some((mut verdef_iterator, link)) = self.verdef.clone() {
+            let defs = verdef_iterator.clone();
+
+            let strings = self.sections.strings(e, self.data, link)?;
+            let mut base_size = 0;
+            while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
+                let version_index = verdef.vd_ndx.get(e);
+
+                if version_index == 0 {
+                    bail!("Invalid version index");
+                }
+
+                let flags = verdef.vd_flags.get(e);
+                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+
+                // Keep the base version and any versions that are referenced.
+                let needed = is_base
+                    || *state
+                        .symbol_versions_needed
+                        .get(usize::from(version_index - 1))
+                        .context("Invalid version index")?;
+
+                if needed {
+                    // For the base version, we use the lib_name rather than the version name from
+                    // the input file. This matches what GNU ld appears to do. Also, if we don't do
+                    // this, then the C runtime hits an assertion failure, because it expects to be
+                    // able to find a DT_NEEDED entry that matches the base name of a version.
+                    let name = if is_base {
+                        lib_name
+                    } else {
+                        // Every VERDEF entry should have at least one AUX entry.
+                        let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                        aux.name(e, strings)?
+                    };
+
+                    let name_size = name.len() as u64 + 1;
+
+                    if is_base {
+                        // The base version doesn't count as a version, so we don't increment
+                        // version_count here. We emit it as a Verneed, whereas the actual versions
+                        // are emitted as Vernaux.
+                        base_size = name_size;
+                    } else {
+                        mem_sizes.increment(part_id::DYNSTR, name_size);
+                        version_count += 1;
+                    }
+                }
+            }
+
+            if version_count > 0 {
+                mem_sizes.increment(part_id::DYNSTR, base_size);
+                mem_sizes.increment(
+                    part_id::GNU_VERSION_R,
+                    size_of::<crate::elf::Verneed>() as u64
+                        + u64::from(version_count) * size_of::<crate::elf::Vernaux>() as u64,
+                );
+
+                state.verneed_info = Some(VerneedInfo {
+                    defs,
+                    string_table_index: link,
+                    version_count,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn finalise_layout_dynamic(
+        &self,
+        state: Self::DynamicLayoutState,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Self::DynamicLayout {
+        let mut is_last_verneed = false;
+
+        if let Some(v) = state.verneed_info.as_ref()
+            && v.version_count > 0
+        {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_R,
+                size_of::<crate::elf::Verneed>() as u64
+                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
+            );
+
+            let version_r_layout = section_layouts.get(output_section_id::GNU_VERSION_R);
+
+            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
+                == version_r_layout.mem_offset + version_r_layout.mem_size;
+        }
+
+        let version_mapping =
+            compute_version_mapping(&state.symbol_versions_needed, state.non_addressable_indexes);
+
+        DynamicLayout {
+            version_mapping,
+            verneed_info: state.verneed_info,
+            is_last_verneed,
+        }
+    }
+
+    fn apply_non_addressable_indexes_dynamic(
+        &self,
+        indexes: &mut Self::NonAddressableIndexes,
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut DynamicLayoutState,
+    ) -> Result {
+        state.non_addressable_indexes = *indexes;
+        if let Some(info) = state.verneed_info.as_ref()
+            && info.version_count > 0
+        {
+            counts.verneed_count += 1;
+            indexes.gnu_version_r_index = indexes
+                .gnu_version_r_index
+                .checked_add(info.version_count)
+                .context("Symbol versions overflowed 2**16")?;
+        }
+        Ok(())
+    }
+
+    fn new_epilogue_layout(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self::EpilogueLayout {
+        let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
+
+        EpilogueLayout {
+            sysv_hash_layout: Default::default(),
+            gnu_hash_layout,
+            verdefs: Default::default(),
+        }
+    }
+
+    fn apply_non_addressable_indexes_epilogue(
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut Self::EpilogueLayout,
+    ) {
+        counts.verdef_count += state
+            .verdefs
+            .as_ref()
+            .map(|v| v.len() as u16)
+            .unwrap_or_default();
+    }
+
+    fn apply_non_addressable_indexes<'groups>(
+        symbol_db: &SymbolDb<'data, Self>,
+        counts: &Self::NonAddressableCounts,
+        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
+    ) {
+        // If we were going to output symbol versions, but we didn't actually use any, then we drop
+        // all versym allocations. This is partly to avoid wasting unnecessary space in the output
+        // file, but mostly in order match what GNU ld does.
+        if (counts.verneed_count == 0 && counts.verdef_count == 0)
+            && symbol_db.output_kind.should_output_symbol_versions()
+        {
+            for mem_sizes in mem_sizes_iter {
+                *mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
+            }
+        }
+    }
+
+    fn finalise_sizes_epilogue(
+        state: &mut Self::EpilogueLayout,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        properties: &Self::LayoutProperties,
+        symbol_db: &SymbolDb<'data, Self>,
+    ) {
+        mem_sizes.increment(
+            part_id::NOTE_GNU_PROPERTY,
+            gnu_property_notes_section_size(&properties.gnu_property_notes),
+        );
+
+        mem_sizes.increment(
+            part_id::RISCV_ATTRIBUTES,
+            properties.riscv_attributes.section_size,
+        );
+
+        if let Some(gnu_hash_layout) = state.gnu_hash_layout {
+            gnu_hash_layout.allocate(mem_sizes);
+        }
+
+        let version_count = symbol_db.version_script.version_count();
+        if version_count > 0 {
+            // If soname is not provided, allocate space for file name as the base version
+            let base_version_name = if symbol_db.args.soname.is_none() {
+                let file_name = symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .expect("File name should be present at this point")
+                    .to_string_lossy()
+                    .to_string();
+                mem_sizes.increment(part_id::DYNSTR, file_name.len() as u64 + 1);
+                file_name
+            } else {
+                String::new()
+            };
+
+            let mut verdefs = Vec::with_capacity(version_count.into());
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_version_name.into_bytes(),
+                parent_index: None,
+            });
+
+            match &symbol_db.version_script {
+                VersionScript::Regular(version_script) => {
+                    // Take all but the base version
+                    for version in version_script.version_iter().skip(1) {
+                        verdefs.push(VersionDef {
+                            name: version.name.to_vec(),
+                            parent_index: version.parent_index,
+                        });
+                        mem_sizes.increment(part_id::DYNSTR, version.name.len() as u64 + 1);
+                    }
+                }
+                VersionScript::Rust(_) => {}
+            }
+
+            let dependencies_count = symbol_db.version_script.parent_count();
+            mem_sizes.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() as u16 * version_count
+                    + size_of::<crate::elf::Verdaux>() as u16
+                        * (version_count + dependencies_count))
+                    .into(),
+            );
+            state.verdefs.replace(verdefs);
+        }
+    }
+
+    fn finalise_layout_epilogue(
+        epilogue_state: &mut Self::EpilogueLayout,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+        common_state: &ElfLayoutProperties,
+        dynsym_start_index: u32,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result {
+        if let Some(gnu_hash_layout) = epilogue_state.gnu_hash_layout.as_mut() {
+            gnu_hash_layout.symbol_base = dynsym_start_index;
+        }
+
+        memory_offsets.increment(
+            part_id::NOTE_GNU_PROPERTY,
+            crate::elf::gnu_property_notes_section_size(&common_state.gnu_property_notes),
+        );
+
+        memory_offsets.increment(
+            part_id::RISCV_ATTRIBUTES,
+            common_state.riscv_attributes.section_size,
+        );
+
+        if let Some(sysv_hash_layout) = epilogue_state.sysv_hash_layout.as_mut() {
+            let additional = dynamic_symbol_defs.len() as u32;
+            sysv_hash_layout.chain_count = dynsym_start_index
+                .checked_add(additional)
+                .context("Too many dynamic symbols for .hash")?;
+        }
+
+        if let Some(sysv_hash_layout) = &epilogue_state.sysv_hash_layout {
+            memory_offsets.increment(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+        }
+
+        if let Some(verdefs) = &epilogue_state.verdefs {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() * verdefs.len()
+                    + size_of::<crate::elf::Verdaux>()
+                        * (verdefs.len() + symbol_db.version_script.parent_count() as usize))
+                    as u64,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn apply_late_size_adjustments_epilogue(
+        state: &mut crate::elf::EpilogueLayout,
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result {
+        allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)
+    }
+
+    fn finalise_sizes_all(
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+    ) {
+        finalise_gnu_version_size(mem_sizes, symbol_db);
+    }
+
+    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+        object: &mut crate::layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut crate::layout::CommonGroupState<'data, File<'data>>,
+        eh_frame_section_index: object::SectionIndex,
+        resources: &'scope crate::layout::GraphResources<'data, '_, File<'data>>,
+        queue: &mut crate::layout::LocalWorkQueue,
+        scope: &rayon::Scope<'scope>,
+    ) -> Result {
+        let file_symbol_id_range = object.symbol_id_range;
+        let eh_frame_section = object.object.section(eh_frame_section_index)?;
+        let data = object.object.raw_section_data(eh_frame_section)?;
+        let exception_frames = match object.relocations(eh_frame_section_index)? {
+            RelocationList::Rela(relocations) => {
+                ExceptionFrames::Rela(process_eh_frame_relocations::<P, Rela>(
+                    object,
+                    common,
+                    file_symbol_id_range,
+                    resources,
+                    queue,
+                    eh_frame_section,
+                    data,
+                    &relocations,
+                    scope,
+                )?)
+            }
+            RelocationList::Crel(crel_iterator) => {
+                ExceptionFrames::Crel(process_eh_frame_relocations::<P, Crel>(
+                    object,
+                    common,
+                    file_symbol_id_range,
+                    resources,
+                    queue,
+                    eh_frame_section,
+                    data,
+                    &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+                    scope,
+                )?)
+            }
+        };
+
+        object.format_specific_layout_state.exception_frames = exception_frames;
+        object.format_specific_layout_state.eh_frame_section = Some(eh_frame_section);
+
+        Ok(())
+    }
+
+    fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt {
+        GroupLayoutExt {
+            eh_frame_start_address: *memory_offsets.get(part_id::EH_FRAME),
+        }
+    }
+
+    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
+        queue: &mut layout::LocalWorkQueue,
+        unloaded: crate::resolution::UnloadedSection,
+        resources: &'scope layout::GraphResources<'data, 'scope, File<'data>>,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        let sizes = match &object.format_specific_layout_state.exception_frames {
+            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<P, Rela>(
+                object,
+                unloaded.last_frame_index,
+                common,
+                resources,
+                queue,
+                scope,
+                exception_frames,
+            )?,
+            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<P, Crel>(
+                object,
+                unloaded.last_frame_index,
+                common,
+                resources,
+                queue,
+                scope,
+                exception_frames,
+            )?,
+        };
+
+        object.format_specific_layout_state.eh_frame_size += sizes.eh_frame_size;
+
+        if resources.symbol_db.args.should_write_eh_frame_hdr {
+            common.allocate(
+                part_id::EH_FRAME_HDR,
+                size_of::<EhFrameHdrEntry>() as u64 * sizes.num_frames,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn finalise_find_required_sections(groups: &[layout::GroupState<'data, File<'data>>]) {
+        tracing::debug!(target: "metrics", total = groups
+            .iter()
+            .map(|g| g.common.format_specific.exception_frame_count)
+            .sum::<usize>(), "exception frames");
+
+        tracing::debug!(target: "metrics", section = "`.eh_frame`", relocations = groups
+            .iter()
+            .map(|g| g.common.format_specific.exception_frame_relocations)
+            .sum::<usize>(), "resolved relocations");
+    }
+
+    fn pre_finalise_sizes_prelude(
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
+        args: &Args,
+    ) {
+        if args.should_write_eh_frame_hdr {
+            common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
+        }
+    }
+
+    fn finalise_object_sizes(
+        object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+        common: &mut layout::CommonGroupState<'data, File<'data>>,
+    ) {
+        // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
+        // that we "won".
+        for cie in &object.format_specific_layout_state.cies {
+            object.format_specific_layout_state.eh_frame_size += cie.cie.bytes.len() as u64;
+        }
+        common.allocate(
+            part_id::EH_FRAME,
+            object.format_specific_layout_state.eh_frame_size,
+        );
+    }
+
+    fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64 {
+        // References to symbols defined in .eh_frame are a bit weird, since it's a section where
+        // we're GCing stuff, but crtbegin.o and crtend.o use them in order to find the start and
+        // end of the whole .eh_frame section.
+        *memory_offsets.get(part_id::EH_FRAME)
+    }
+
+    fn finalise_object_layout(
+        object: &layout::ObjectLayoutState<'data, File<'data>>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) {
+        memory_offsets.increment(
+            part_id::EH_FRAME,
+            object.format_specific_layout_state.eh_frame_size,
+        );
+    }
+
+    fn compute_object_addresses(
+        object: &layout::ObjectLayoutState<'data, File<'data>>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) {
+        // Note, this is currently identical to finalise_object_layout above. The two functions are
+        // however called separately and they might become different at some point.
+        memory_offsets.increment(
+            part_id::EH_FRAME,
+            object.format_specific_layout_state.eh_frame_size,
+        );
+    }
+
+    fn should_enforce_undefined(
+        &self,
+        resources: &layout::GraphResources<'data, '_, Self>,
+    ) -> bool {
+        let is_executable = resources.symbol_db.output_kind.is_executable();
+
+        !resources.symbol_db. args.allow_shlib_undefined
+            && is_executable
+            // Like lld, our behaviour for --no-allow-shlib-undefined is to only report errors for
+            // shared objects that have all their dependencies in the link. This is in contrast to
+            // GNU ld which recursively loads all transitive dependencies of shared objects and
+            // checks our shared object against those.
+            && has_complete_deps(self, resources)
+    }
+
+    fn layout_resources_ext(
+        groups: &[crate::grouping::Group<'data, Self>],
+    ) -> Self::LayoutResourcesExt {
+        LayoutResourcesExt {
+            sonames: Sonames::new(groups),
+        }
+    }
+
+    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        match state.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                state.load_section_relocations::<P, Rela>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.rel_iter(),
+                    scope,
+                )?;
+            }
+            RelocationList::Crel(relocations) => {
+                state.load_section_relocations::<P, Crel>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                    scope,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+        state: &layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        queue: &mut layout::LocalWorkQueue,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
+        section: layout::Section,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        match state.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                state.load_debug_relocations::<P, Rela>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.rel_iter(),
+                    scope,
+                )?;
+            }
+            RelocationList::Crel(relocations) => {
+                state.load_debug_relocations::<P, Crel>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                    scope,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn process_eh_frame_relocations<
+    'data,
+    'scope,
+    P: Platform<'data, File = crate::elf::File<'data>>,
+    R: Relocation,
+>(
+    object: &mut layout::ObjectLayoutState<'data, File<'data>>,
+    common: &mut layout::CommonGroupState<'data, File<'data>>,
+    file_symbol_id_range: SymbolIdRange,
+    resources: &'scope layout::GraphResources<'data, '_, File<'data>>,
+    queue: &mut layout::LocalWorkQueue,
+    eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    data: &'data [u8],
+    relocations: &R::Sequence<'data>,
+    scope: &Scope<'scope>,
+) -> Result<Vec<ExceptionFrame<'data, R>>> {
+    const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
+
+    let mut rel_iter = relocations.rel_iter().enumerate().peekable();
+    let mut offset = 0;
+    let mut exception_frames = Vec::new();
+
+    while offset + PREFIX_LEN <= data.len() {
+        // Although the section data will be aligned within the object file, there's
+        // no guarantee that the object is aligned within the archive to any more
+        // than 2 bytes, so we can't rely on alignment here. Archives are annoying!
+        // See https://www.airs.com/blog/archives/170
+        let prefix =
+            EhFrameEntryPrefix::read_from_bytes(&data[offset..offset + PREFIX_LEN]).unwrap();
+        let size = size_of_val(&prefix.length) + prefix.length as usize;
+        let next_offset = offset + size;
+
+        if next_offset > data.len() {
+            bail!("Invalid .eh_frame data");
+        }
+
+        if prefix.cie_id == 0 {
+            // This is a CIE
+            let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
+            // When deduplicating CIEs, we take into consideration the bytes of the CIE and all the
+            // symbols it references. If however, it references something other than a symbol, then,
+            // because we're not taking that into consideration, we disallow deduplication.
+            let mut eligible_for_deduplication = true;
+            while let Some((_, rel)) = rel_iter.peek() {
+                let rel_offset = rel.offset();
+                if rel_offset >= next_offset as u64 {
+                    // This relocation belongs to the next entry.
+                    break;
+                }
+
+                // We currently always load all CIEs, so any relocations found in CIEs always need
+                // to be processed.
+                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                    object,
+                    common,
+                    rel,
+                    eh_frame_section,
+                    resources,
+                    queue,
+                    false,
+                    scope,
+                )?;
+
+                if let Some(local_sym_index) = rel.symbol() {
+                    let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
+                    let definition = resources.symbol_db.definition(local_symbol_id);
+                    referenced_symbols.push(definition);
+                } else {
+                    eligible_for_deduplication = false;
+                }
+                rel_iter.next();
+            }
+
+            object.format_specific_layout_state.cies.push(CieAtOffset {
+                offset: offset as u32,
+                cie: Cie {
+                    bytes: &data[offset..next_offset],
+                    eligible_for_deduplication,
+                    referenced_symbols,
+                },
+            });
+        } else {
+            // This is an FDE
+            let mut section_index = None;
+            let rel_start_index = rel_iter.peek().map_or(0, |(i, _)| *i);
+            let mut rel_end_index = 0;
+
+            while let Some((rel_index, rel)) = rel_iter.peek() {
+                let rel_offset = rel.offset();
+                if rel_offset < next_offset as u64 {
+                    let is_pc_begin = (rel_offset as usize - offset) == FDE_PC_BEGIN_OFFSET;
+
+                    if is_pc_begin && let Some(index) = rel.symbol() {
+                        let elf_symbol = object.object.symbol(index)?;
+                        section_index = object.object.symbol_section(elf_symbol, index)?;
+                    }
+                    rel_end_index = rel_index + 1;
+                    rel_iter.next();
+                } else {
+                    break;
+                }
+            }
+
+            if let Some(section_index) = section_index
+                && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
+            {
+                let frame_index = FrameIndex::from_usize(exception_frames.len());
+
+                // Update our unloaded section to point to our new frame. Our frame will then in
+                // turn point to whatever the section pointed to before.
+                let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
+
+                exception_frames.push(ExceptionFrame {
+                    relocations: relocations.subsequence(rel_start_index..rel_end_index),
+                    frame_size: size as u32,
+                    previous_frame_for_section,
+                });
+            }
+        }
+        offset = next_offset;
+    }
+
+    common.format_specific.exception_frame_count +=
+        object.format_specific_layout_state.exception_frames.len();
+
+    // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
+    // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
+    object.format_specific_layout_state.eh_frame_size += (data.len() - offset) as u64;
+
+    Ok(exception_frames)
+}
+
+/// Processes the exception frames for a section that we're loading.
+fn process_section_exception_frames<
+    'data,
+    'scope,
+    P: Platform<'data, File = crate::elf::File<'data>>,
+    R: Relocation,
+>(
+    object: &layout::ObjectLayoutState<'data, File<'data>>,
+    frame_index: Option<FrameIndex>,
+    common: &mut layout::CommonGroupState<'data, File<'data>>,
+    resources: &'scope layout::GraphResources<'data, '_, File<'data>>,
+    queue: &mut layout::LocalWorkQueue,
+    scope: &Scope<'scope>,
+    exception_frames: &[ExceptionFrame<'data, R>],
+) -> Result<EhFrameSizes> {
+    let mut num_frames = 0;
+    let mut eh_frame_size = 0;
+    let mut next_frame_index = frame_index;
+    while let Some(frame_index) = next_frame_index {
+        let frame_data = &exception_frames[frame_index.as_usize()];
+        next_frame_index = frame_data.previous_frame_for_section;
+
+        eh_frame_size += u64::from(frame_data.frame_size);
+
+        num_frames += 1;
+
+        // Request loading of any sections/symbols referenced by the FDEs for our
+        // section.
+        if let Some(eh_frame_section) = object.format_specific_layout_state.eh_frame_section {
+            for rel in frame_data.relocations.rel_iter() {
+                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                    object,
+                    common,
+                    &rel,
+                    eh_frame_section,
+                    resources,
+                    queue,
+                    false,
+                    scope,
+                )?;
+            }
+            common.format_specific.exception_frame_relocations +=
+                frame_data.relocations.num_relocations();
+        }
+    }
+
+    Ok(EhFrameSizes {
+        num_frames,
+        eh_frame_size,
+    })
+}
+
+fn allocate_sysv_hash(
+    state: &mut EpilogueLayout,
+    current_sizes: &OutputSectionPartMap<u64>,
+    extra_sizes: &mut OutputSectionPartMap<u64>,
+    dynamic_symbol_defs: &[DynamicSymbolDefinition],
+) -> Result {
+    let num_defs = dynamic_symbol_defs.len();
+    if num_defs == 0 {
+        return Ok(());
+    }
+
+    let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
+    // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
+    // symbols, which also includes undefined dynamic symbols.
+    let num_dynsym = *current_sizes.get(part_id::DYNSYM) / SYMTAB_ENTRY_SIZE;
+    let chain_count = num_dynsym
+        .try_into()
+        .context("Too many dynamic symbols for .hash")?;
+
+    let sysv_hash_layout = SysvHashLayout {
+        bucket_count,
+        chain_count,
+    };
+
+    extra_sizes.increment(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+    state.sysv_hash_layout = Some(sysv_hash_layout);
+
+    Ok(())
+}
+
+/// Computes a mapping from input versions to output versions.
+fn compute_version_mapping(
+    symbol_versions_needed: &[bool],
+    non_addressable_indexes: NonAddressableIndexes,
+) -> Vec<u16> {
+    let mut out = vec![object::elf::VER_NDX_GLOBAL; symbol_versions_needed.len()];
+    let mut next_output_version = non_addressable_indexes.gnu_version_r_index;
+    for (input_version, needed) in symbol_versions_needed.iter().enumerate() {
+        if *needed {
+            out[input_version] = next_output_version;
+            next_output_version += 1;
+        }
+    }
+    out
+}
+
+impl<'data> platform::SectionHeader<'data, File<'data>> for SectionHeader {
+    fn flags(&self) -> SectionFlags {
+        SectionFlags::from_header(self)
+    }
+
+    fn attributes(&self) -> SectionAttributes {
+        SectionAttributes {
+            flags: SectionFlags::from_header(self),
+            ty: SectionType::from_header(self),
+            entsize: self.sh_entsize.get(LittleEndian),
+        }
+    }
+
+    fn section_type(&self) -> SectionType {
+        SectionType::from_header(self)
+    }
+}
+
+impl platform::SectionType for SectionType {
+    fn is_note(self) -> bool {
+        self == sht::NOTE
+    }
+
+    fn is_prog_bits(self) -> bool {
+        self == sht::PROGBITS
+    }
+
+    fn is_no_bits(self) -> bool {
+        self == sht::NOBITS
+    }
+}
+
+impl platform::SectionFlags for SectionFlags {
+    fn is_alloc(self) -> bool {
+        self.contains(shf::ALLOC)
+    }
+
+    fn is_writable(self) -> bool {
+        self.contains(shf::WRITE)
+    }
+
+    fn is_executable(self) -> bool {
+        self.contains(shf::EXECINSTR)
+    }
+
+    fn is_merge_section(self) -> bool {
+        self.contains(shf::MERGE)
+    }
+
+    fn is_strings(self) -> bool {
+        self.contains(shf::STRINGS)
+    }
+
+    fn should_retain(self) -> bool {
+        self.contains(shf::GNU_RETAIN)
+    }
+
+    fn should_exclude(&self) -> bool {
+        self.contains(shf::EXCLUDE)
+    }
+
+    fn is_group(self) -> bool {
+        self.contains(shf::GROUP)
+    }
+
+    fn is_tls(self) -> bool {
+        self.contains(shf::TLS)
+    }
+}
+
+impl platform::Symbol for Symbol {
+    fn as_common(&self) -> Option<CommonSymbol> {
+        let e = LittleEndian;
+        if !object::read::elf::Sym::is_common(self, e) {
+            return None;
+        }
+
+        // Common symbols misuse the value field (which we access via `address()`) to store the
+        // alignment.
+        let Ok(alignment) = Alignment::new(object::read::elf::Sym::st_value(self, e)) else {
+            return None;
+        };
+        let size = alignment.align_up(object::read::elf::Sym::st_size(self, e));
+
+        let output_section_id = if self.st_type() == object::elf::STT_TLS {
+            output_section_id::TBSS
+        } else {
+            output_section_id::BSS
+        };
+
+        let part_id = output_section_id.part_id_with_alignment(alignment);
+
+        Some(CommonSymbol { size, part_id })
+    }
+
+    fn is_undefined(&self) -> bool {
+        object::read::elf::Sym::is_undefined(self, LittleEndian)
+    }
+
+    fn is_local(&self) -> bool {
+        object::read::elf::Sym::is_local(self)
+    }
+
+    fn visibility(&self) -> Visibility {
+        Visibility::from_elf_st_visibility(self.st_visibility())
+    }
+
+    fn is_absolute(&self) -> bool {
+        object::read::elf::Sym::is_absolute(self, LittleEndian)
+    }
+
+    fn is_weak(&self) -> bool {
+        object::read::elf::Sym::is_weak(self)
+    }
+
+    fn value(&self) -> u64 {
+        object::read::elf::Sym::st_value(self, LittleEndian)
+    }
+
+    fn size(&self) -> u64 {
+        object::read::elf::Sym::st_size(self, LittleEndian)
+    }
+
+    fn section_index(&self) -> object::SectionIndex {
+        object::SectionIndex(usize::from(object::read::elf::Sym::st_shndx(
+            self,
+            LittleEndian,
+        )))
+    }
+
+    fn has_name(&self) -> bool {
+        object::read::elf::Sym::st_name(self, LittleEndian) != 0
+    }
+
+    fn debug_string(&self) -> String {
+        SymDebug(self).to_string()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.st_type() == object::elf::STT_TLS
+    }
+
+    fn is_interposable(&self) -> bool {
+        self.st_visibility() == object::elf::STV_DEFAULT
+    }
+
+    fn is_func(&self) -> bool {
+        self.st_type() == object::elf::STT_FUNC
+    }
+
+    fn is_ifunc(&self) -> bool {
+        self.st_type() == object::elf::STT_GNU_IFUNC
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.st_visibility() == object::elf::STV_HIDDEN
+    }
+
+    fn is_gnu_unique(&self) -> bool {
+        self.st_bind() == object::elf::STB_GNU_UNIQUE
+    }
+}
+
+fn dynamic_tags<'data>(
+    sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+    data: &'data [u8],
+) -> Result<&'data [object::elf::Dyn64<LittleEndian>]> {
+    let e = LittleEndian;
+    if let Some(dynamic) = sections.dynamic(e, data).transpose() {
+        return dynamic
+            .map(|(dynamic, _)| dynamic)
+            .context("Failed to read dynamic table");
+    }
+    Ok(&[])
 }
 
 fn decompress_into(
@@ -566,6 +1866,999 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
         .0
 }
 
-pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
-    symbol.st_visibility() == object::elf::STV_HIDDEN
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct DynamicTagValues<'data> {
+    pub(crate) verdefnum: u64,
+    pub(crate) soname: Option<&'data [u8]>,
+}
+
+impl<'data> DynamicTagValues<'data> {
+    fn read(
+        sections: &object::read::elf::SectionTable<'data, object::elf::FileHeader64<LittleEndian>>,
+        data: &'data [u8],
+        symbols: &SymbolTable<'data>,
+    ) -> Self {
+        let mut values = DynamicTagValues::default();
+        let Ok(dynamic_tags) = dynamic_tags(sections, data) else {
+            return values;
+        };
+        let e = LittleEndian;
+        for entry in dynamic_tags {
+            let value = entry.d_val(e);
+            match entry.d_tag(e) as u32 {
+                object::elf::DT_VERDEFNUM => {
+                    values.verdefnum = value;
+                }
+                object::elf::DT_SONAME => {
+                    values.soname = symbols.strings().get(value as u32).ok();
+                }
+                _ => {}
+            }
+        }
+        values
+    }
+}
+
+impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
+    fn lib_name(&self, input: &InputRef<'data>) -> &'data [u8] {
+        self.soname.unwrap_or_else(|| input.lib_name())
+    }
+}
+
+struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
+
+impl std::fmt::Display for SymDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let e = LittleEndian;
+        let sym = self.0;
+
+        let vis = if object::read::elf::Sym::is_local(sym) {
+            "Local"
+        } else if object::read::elf::Sym::is_weak(sym) {
+            "Weak"
+        } else {
+            "Global"
+        };
+
+        let kind = if object::read::elf::Sym::is_undefined(sym, e) {
+            "Undefined"
+        } else {
+            match sym.st_type() {
+                object::elf::STT_FUNC => "Func",
+                object::elf::STT_GNU_IFUNC => "IFunc",
+                object::elf::STT_OBJECT => "Data",
+                object::elf::STT_COMMON => "Common",
+                object::elf::STT_SECTION => "Section",
+                object::elf::STT_FILE => "File",
+                object::elf::STT_NOTYPE => "NoType",
+                object::elf::STT_TLS => "Tls",
+                _ => "Unknown",
+            }
+        };
+
+        write!(f, "{vis} {kind}")
+    }
+}
+
+pub(crate) enum PropertyClass {
+    // A bit in the output pr_data is set if it is set in any relocatable input.
+    // If all bits in the output pr_data field are zero, this property should be removed from
+    // output.
+    Or,
+    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
+    // fields. If all bits in the output pr_data field are zero, this property should be
+    // removed from output.
+    And,
+    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
+    // fields and this property is present in all relocatable input files. When all bits in
+    // the output pr_data field are zero, this property should not be removed from output to
+    // indicate it has zero in all bits.
+    AndOr,
+}
+
+#[derive(Debug)]
+pub(crate) struct GnuProperty {
+    pub(crate) ptype: u32,
+    pub(crate) data: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct RiscVArch {
+    map: IndexMap<String, (u64, u64)>,
+}
+
+impl RiscVArch {
+    pub(crate) fn to_attribute_string(&self) -> String {
+        self.map
+            .iter()
+            .map(|(arch, (major, minor))| format!("{arch}{major}p{minor}"))
+            .join("_")
+            .clone()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Eflags(pub(crate) u32);
+
+#[derive(Debug)]
+pub(crate) struct RiscVAttributes {
+    pub(crate) attributes: Vec<RiscVAttribute>,
+    pub(crate) section_size: u64,
+}
+
+#[derive(Debug)]
+pub(crate) enum RiscVAttribute {
+    /// Indicates the stack alignment requirement in bytes.
+    StackAlign(u64),
+    /// Indicates the target architecture of this object.
+    Arch(RiscVArch),
+    /// Indicates whether to impose unaligned memory accesses in code generation.
+    UnalignedAccess(bool),
+    /// Indicates the major version of the privileged specification.
+    PrivilegedSpecMajor(u64),
+    /// Indicates the major version of the privileged specification.
+    PrivilegedSpecMinor(u64),
+    /// Indicates the revision version of the privileged specification.
+    PrivilegedSpecRevision(u64),
+}
+
+#[derive(Default)]
+pub(crate) struct ElfObjectLayoutState<'data> {
+    gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) riscv_attributes: Vec<RiscVAttribute>,
+
+    cies: SmallVec<[CieAtOffset<'data>; 2]>,
+
+    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
+    eh_frame_size: u64,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: ExceptionFrames<'data>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ElfLayoutProperties {
+    pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) riscv_attributes: RiscVAttributes,
+    pub(crate) eflags: Eflags,
+}
+
+impl ElfLayoutProperties {
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
+        objects: impl Iterator<Item = &'files File<'data>>,
+        states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
+        args: &Args,
+    ) -> Result<Self> {
+        let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<P>(states)?;
+        let eflags = merge_eflags::<P>(objects)?;
+
+        Ok(Self {
+            gnu_property_notes,
+            riscv_attributes,
+            eflags,
+        })
+    }
+}
+
+fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
+    states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
+    isa_needed: Option<NonZeroU32>,
+) -> Result<Vec<GnuProperty>> {
+    timing_phase!("Merge GNU property notes");
+
+    let properties_per_file = states.map(|state| &state.gnu_property_notes).collect_vec();
+
+    // Merge bits of each property type based on type: OR or AND operation.
+    let mut property_map = HashMap::new();
+
+    for file_props in &properties_per_file {
+        for prop in *file_props {
+            let property_class = P::get_property_class(prop.ptype)
+                .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
+            property_map
+                .entry(prop.ptype)
+                .and_modify(|entry: &mut (u32, PropertyClass)| {
+                    if matches!(property_class, PropertyClass::And) {
+                        entry.0 &= prop.data;
+                    } else {
+                        entry.0 |= prop.data;
+                    }
+                })
+                .or_insert_with(|| (prop.data, property_class));
+        }
+    }
+
+    // Merge needed ISA from CLI if set.
+    if let Some(isa_needed) = isa_needed {
+        property_map
+            .entry(object::elf::GNU_PROPERTY_X86_ISA_1_NEEDED)
+            .or_insert((0, PropertyClass::Or))
+            .0 |= isa_needed.get();
+    }
+
+    // Iterate the properties sorted by property_type so that we have a stable output!
+    let output_properties = property_map
+        .into_iter()
+        .sorted_by_key(|x| x.0)
+        .filter_map(|(property_type, (property_value, property_class))| {
+            let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
+                props_per_file
+                    .iter()
+                    .any(|prop| prop.ptype == property_type)
+            });
+            if match property_class {
+                PropertyClass::Or => property_value != 0,
+                PropertyClass::And => type_present_in_all && property_value != 0,
+                PropertyClass::AndOr => type_present_in_all,
+            } {
+                Some(GnuProperty {
+                    ptype: property_type,
+                    data: property_value,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
+    Ok(output_properties)
+}
+
+fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
+    objects: impl Iterator<Item = &'files File<'data>>,
+) -> Result<Eflags> {
+    timing_phase!("Merge e_flags");
+
+    Ok(Eflags(P::merge_eflags(
+        objects.map(|object| object.eflags),
+    )?))
+}
+
+fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform<'data>>(
+    states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
+) -> Result<RiscVAttributes> {
+    timing_phase!("Merge .riscv.attributes sections");
+
+    let attributes = states
+        .map(|state| &state.riscv_attributes)
+        // Sort by the number of ISAs: better output ordering
+        .sorted_by_key(|x| x.len())
+        .rev()
+        .flatten()
+        .collect_vec();
+
+    let mut merged = Vec::new();
+
+    let mut arch_components = IndexMap::new();
+    for (name, version) in attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::Arch(arch) = a {
+                Some(&arch.map)
+            } else {
+                None
+            }
+        })
+        .flatten()
+    {
+        arch_components
+            .entry(name.clone())
+            .and_modify(|v: &mut (u64, u64)| *v = (*v).max(*version))
+            .or_insert(*version);
+    }
+
+    verify_riscv_ext_conflicts(&arch_components)?;
+
+    if !arch_components.is_empty() {
+        merged.push(RiscVAttribute::Arch(RiscVArch {
+            map: arch_components,
+        }));
+    }
+
+    if let Some(align) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::StackAlign(align) = a {
+                Some(align)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::StackAlign(*align));
+    }
+    if let Some(access) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::UnalignedAccess(access) = a {
+                Some(access)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::UnalignedAccess(*access));
+    }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecMajor(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecMajor(*version));
+    }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecMinor(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecMinor(*version));
+    }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecRevision(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecRevision(*version));
+    }
+
+    let section_size = riscv_attributes_section_size(&merged);
+
+    Ok(RiscVAttributes {
+        attributes: merged,
+        section_size,
+    })
+}
+
+/// Conflicting pairs of RISC-V ISA extensions.
+const RISCV_CONFLICTING_EXT_PAIRS: &[(&str, &str)] = &[
+    ("f", "zfinx"),
+    ("d", "zdinx"),
+    ("q", "zqinx"),
+    ("zfh", "zhinx"),
+    ("zfhmin", "zhinxmin"),
+];
+
+fn verify_riscv_ext_conflicts(arch_components: &IndexMap<String, (u64, u64)>) -> Result {
+    if arch_components.is_empty() {
+        return Ok(());
+    }
+
+    let mut conflicts = Vec::new();
+    for &(std_ext, inx_ext) in RISCV_CONFLICTING_EXT_PAIRS {
+        if arch_components.contains_key(std_ext) && arch_components.contains_key(inx_ext) {
+            conflicts.push(format!("'{std_ext}' is incompatible with '{inx_ext}'"));
+        }
+    }
+
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "Conflicting RISC-V ISA extensions in merged .riscv.attributes:\n  - {}",
+            conflicts.join("\n  - ")
+        );
+    }
+}
+
+pub(crate) fn gnu_property_notes_section_size(gnu_property_notes: &[GnuProperty]) -> u64 {
+    if gnu_property_notes.is_empty() {
+        0
+    } else {
+        (size_of::<NoteHeader>()
+            + GNU_NOTE_NAME.len()
+            + gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
+    }
+}
+
+fn riscv_attributes_section_size(riscv_attributes: &[RiscVAttribute]) -> u64 {
+    let size_of_uleb_encoded = |value| {
+        let mut cursor = Cursor::new([0u8; 10]);
+        leb128::write::unsigned(&mut cursor, value).unwrap()
+    };
+
+    (if riscv_attributes.is_empty() {
+        0
+    } else {
+        1 // 'A'
+            + 4 // sizeof(u32)
+            + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
+            + 4 // sizeof(u32)
+            + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
+            + riscv_attributes.iter().map(|attr| {
+                match attr {
+                    RiscVAttribute::StackAlign(align) => {
+                                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
+                                        size_of_uleb_encoded(*align)
+                                    }
+                    RiscVAttribute::Arch(arch) => {
+                                        size_of_uleb_encoded(TAG_RISCV_ARCH)
+                                        +arch.to_attribute_string().len() + 1
+                                    }
+                    RiscVAttribute::UnalignedAccess(_) => {
+                                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
+                                    }
+                    RiscVAttribute::PrivilegedSpecMajor(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC) +
+                                        size_of_uleb_encoded(*version)
+                    },
+                    RiscVAttribute::PrivilegedSpecMinor(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_MINOR) +
+                                        size_of_uleb_encoded(*version)
+                    }
+                    RiscVAttribute::PrivilegedSpecRevision(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_REVISION) +
+                                        size_of_uleb_encoded(*version)
+                    }
+                                    }
+            }).sum::<usize>()
+    }) as u64
+}
+
+pub(crate) fn process_riscv_attributes(
+    object: &File,
+    riscv_attributes_section_index: object::SectionIndex,
+) -> Result<Vec<RiscVAttribute>> {
+    let section = object.section(riscv_attributes_section_index)?;
+    let e = LittleEndian;
+
+    let content = section.data(e, object.data)?;
+    ensure!(content.starts_with(b"A"), "Header must start with 'A'");
+    let mut content = &content[1..];
+
+    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
+    let read_string = |content: &mut &[u8]| -> Result<String> {
+        let string = CStr::from_bytes_until_nul(content)?;
+        *content = &content[string.count_bytes() + 1..];
+        Ok(string.to_string_lossy().to_string())
+    };
+    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
+        let value = u32::from_le_bytes(content[..4].try_into()?);
+        *content = &content[4..];
+        Ok(value)
+    };
+
+    // Expect only one subsection
+    let _size = read_u32(&mut content)?;
+    let vendor = read_string(&mut content).context("Cannot read vendor string")?;
+    ensure!(
+        vendor == RISCV_ATTRIBUTE_VENDOR_NAME,
+        "Unsupported vendor ('{vendor:?}') subsection"
+    );
+
+    // Assume only one sub-sub-section
+    let tag = read_uleb128(&mut content).context("Cannot read tag of subsection")?;
+    ensure!(tag == TAG_RISCV_WHOLE_FILE, "Whole file tag expected");
+    let _size = read_u32(&mut content)?;
+    let mut attributes = Vec::new();
+
+    while !content.is_empty() {
+        let tag = read_uleb128(&mut content).context("Cannot read tag of sub-subsection")?;
+        let attribute = match tag {
+            TAG_RISCV_STACK_ALIGN => {
+                let align = read_uleb128(&mut content).context("Cannot read stack alignment")?;
+                RiscVAttribute::StackAlign(align)
+            }
+            TAG_RISCV_ARCH => {
+                let arch = read_string(&mut content).context("Cannot read arch attributes")?;
+                let components = arch
+                    .split('_')
+                    .map(|part| {
+                        let mut it = part.chars().rev();
+                        let minor = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse minor"))?
+                            .to_string();
+                        let p = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse 'p' separator"))?;
+                        ensure!(p == 'p', "Separator expected");
+                        let major = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse major"))?
+                            .to_string();
+                        let name = String::from_iter(it.rev());
+                        Ok((name, (major.parse()?, minor.parse()?)))
+                    })
+                    .collect::<Result<IndexMap<_, _>>>()?;
+
+                RiscVAttribute::Arch(RiscVArch { map: components })
+            }
+            TAG_RISCV_UNALIGNED_ACCESS => {
+                let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
+                RiscVAttribute::UnalignedAccess(access > 0)
+            }
+            TAG_RISCV_PRIV_SPEC => {
+                let version =
+                    read_uleb128(&mut content).context("Cannot read privileged major version")?;
+                RiscVAttribute::PrivilegedSpecMajor(version)
+            }
+            TAG_RISCV_PRIV_SPEC_MINOR => {
+                let version =
+                    read_uleb128(&mut content).context("Cannot read privileged minor version")?;
+                RiscVAttribute::PrivilegedSpecMinor(version)
+            }
+            TAG_RISCV_PRIV_SPEC_REVISION => {
+                let version = read_uleb128(&mut content)
+                    .context("Cannot read privileged revision version")?;
+                RiscVAttribute::PrivilegedSpecRevision(version)
+            }
+            TAG_RISCV_ATOMIC_ABI => {
+                let _abi = read_uleb128(&mut content).context("Cannot read atomic ABI")?;
+                bail!("TAG_RISCV_ATOMIC_ABI is not supported yet");
+            }
+            TAG_RISCV_X3_REG_USAGE => {
+                let _x3 = read_uleb128(&mut content).context("Cannot read x3 register usage")?;
+                bail!("TAG_RISCV_X3_REG_USAGE is not supported yet");
+            }
+            _ => {
+                bail!("Unsupported tag: {tag}");
+            }
+        };
+        attributes.push(attribute);
+    }
+
+    ensure!(content.is_empty(), "Unexpected multiple sub-sections");
+
+    Ok(attributes)
+}
+
+/// Attributes that we'll take from an input section and apply to the output section into which it's
+/// placed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SectionAttributes {
+    flags: SectionFlags,
+    ty: SectionType,
+    entsize: u64,
+}
+
+/// Section flags that should be propagated from input sections to the output section in which they
+/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
+    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+
+impl platform::SectionAttributes for SectionAttributes {
+    fn merge(&mut self, rhs: Self) {
+        self.flags |= rhs.flags;
+
+        // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
+        // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
+        self.ty = self.ty.max(rhs.ty);
+
+        // If all input sections specify the same entsize, then we use that. If there's any
+        // inconsistency, then we set entsize to 0.
+        if self.entsize != rhs.entsize {
+            self.entsize = 0;
+        }
+    }
+
+    fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
+        let info = output_sections.section_infos.get_mut(section_id);
+
+        info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+
+        info.entsize = self.entsize;
+
+        info.ty = info.ty.max(self.ty);
+    }
+}
+
+pub(crate) struct VersionNames<'data> {
+    pub(crate) names: Vec<Option<&'data [u8]>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RawSymbolName<'data> {
+    pub(crate) name: &'data [u8],
+
+    pub(crate) version_name: Option<&'data [u8]>,
+
+    /// Whether the symbol can be referred to without a version.
+    pub(crate) is_default: bool,
+}
+
+impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
+    fn parse(mut name_bytes: &'data [u8]) -> Self {
+        let mut version_name = None;
+        let mut is_default = true;
+
+        // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
+        // with double-at specifies that it's the default version.
+        if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
+            if name_bytes[at_offset..].starts_with(b"@@") {
+                version_name = Some(&name_bytes[at_offset + 2..]);
+            } else {
+                version_name = Some(&name_bytes[at_offset + 1..]);
+                is_default = false;
+            }
+
+            name_bytes = &name_bytes[..at_offset];
+        }
+
+        RawSymbolName {
+            name: name_bytes,
+            version_name,
+            is_default,
+        }
+    }
+
+    fn name(&self) -> &'data [u8] {
+        self.name
+    }
+
+    fn version_name(&self) -> Option<&'data [u8]> {
+        self.version_name
+    }
+
+    fn is_default(&self) -> bool {
+        self.is_default
+    }
+}
+
+pub(crate) struct VerneedTable<'data> {
+    versym: &'data [Versym],
+    version_names_by_index: Vec<Option<&'data [u8]>>,
+}
+
+impl<'data> VerneedTable<'data> {
+    fn new(file: &File<'data>) -> Result<Self> {
+        Ok(Self {
+            versym: file.versym,
+            version_names_by_index: verneed_names_by_index(file)?,
+        })
+    }
+}
+
+impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
+    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+        let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
+        self.version_names_by_index
+            .get(usize::from(version_index))
+            .copied()
+            .flatten()
+    }
+}
+
+fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+    let mut version_names = Vec::new();
+    let endian = LittleEndian;
+
+    if let Some((verneeds, string_table_index)) = &file.verneed {
+        let strings = file
+            .sections
+            .strings(endian, file.data, *string_table_index)?;
+
+        for r in verneeds.clone() {
+            let (_verneed, aux_iterator) = r?;
+            for aux in aux_iterator {
+                let aux = aux?;
+                let version_index = usize::from(aux.vna_other.get(endian));
+                let name = aux.name(endian, strings)?;
+
+                if version_names.len() <= version_index {
+                    version_names.resize_with(version_index + 1, || None);
+                }
+                version_names[version_index] = Some(name);
+            }
+        }
+    }
+
+    Ok(version_names)
+}
+
+#[derive(Debug)]
+pub(crate) struct VerneedInfo<'data> {
+    pub(crate) defs: VerdefIterator<'data>,
+    pub(crate) string_table_index: object::SectionIndex,
+
+    /// Number of symbol versions that we're going to emit. This is the number of entries in
+    /// `symbol_versions_needed` that are true. Computed after graph traversal.
+    pub(crate) version_count: u16,
+}
+
+#[derive(Default)]
+pub(crate) struct DynamicLayoutState<'data> {
+    /// Which symbol versions are needed. A symbol version is needed if a symbol with that version
+    /// has been loaded. The first version has index 1, so we store it at offset 0.
+    symbol_versions_needed: Vec<bool>,
+
+    verneed_info: Option<VerneedInfo<'data>>,
+
+    non_addressable_indexes: NonAddressableIndexes,
+}
+
+#[derive(Debug)]
+pub(crate) struct DynamicLayout<'data> {
+    /// Mapping from input versions to output versions. Input version 1 is at index 0.
+    pub(crate) version_mapping: Vec<u16>,
+
+    pub(crate) verneed_info: Option<VerneedInfo<'data>>,
+
+    /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
+    pub(crate) is_last_verneed: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct NonAddressableIndexes {
+    gnu_version_r_index: u16,
+}
+
+impl platform::NonAddressableIndexes for NonAddressableIndexes {
+    fn new<'data, O: platform::ObjectFile<'data>>(
+        symbol_db: &crate::symbol_db::SymbolDb<'data, O>,
+    ) -> Self {
+        Self {
+            // Allocate version indexes starting from after the local and global indexes and any
+            // versions defined by a version script.
+            gnu_version_r_index: object::elf::VER_NDX_GLOBAL
+                + 1.max(symbol_db.version_script.version_count()),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct NonAddressableCounts {
+    /// The number of shared objects that want to emit a verneed record.
+    pub(crate) verneed_count: u64,
+    /// The number of verdef records provided in version script.
+    pub(crate) verdef_count: u16,
+}
+
+#[derive(Debug)]
+pub(crate) struct EpilogueLayout {
+    pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
+    pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
+    pub(crate) verdefs: Option<Vec<VersionDef>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GnuHashLayout {
+    pub(crate) num_defs: u32,
+    pub(crate) bucket_count: u32,
+    pub(crate) bloom_shift: u32,
+    pub(crate) bloom_count: u32,
+    pub(crate) symbol_base: u32,
+}
+
+fn create_gnu_hash_layout(
+    args: &Args,
+    output_kind: OutputKind,
+    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+) -> Option<GnuHashLayout> {
+    if !args.hash_style.includes_gnu() || !output_kind.needs_dynamic() {
+        return None;
+    }
+
+    // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
+    // symbols per bucket, but then we round up to a power of two.
+    let num_defs = dynamic_symbol_definitions.len();
+    let gnu_hash_layout = GnuHashLayout {
+        num_defs: dynamic_symbol_definitions.len() as u32,
+        bucket_count: (num_defs / 2).next_power_of_two() as u32,
+        bloom_shift: 6,
+        bloom_count: 1,
+        // `symbol_base` is set later in `finalise_layout`.
+        symbol_base: 0,
+    };
+
+    // If we're going to emit .gnu.hash, then we need to stort the dynamic symbols by bucket.
+    // Tie-break by name for determinism. We can use an unstable sort because names should be
+    // unique. We use a parallel sort because we're processing symbols from potentially many
+    // input objects, so there can be a lot.
+    dynamic_symbol_definitions
+        .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+
+    Some(gnu_hash_layout)
+}
+
+impl GnuHashLayout {
+    /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
+    /// bucket as required by .gnu.hash.
+    fn allocate(&self, mem_sizes: &mut OutputSectionPartMap<u64>) {
+        let num_blume = 1;
+        mem_sizes.increment(
+            part_id::GNU_HASH,
+            (size_of::<GnuHashHeader>()
+                + size_of::<u64>() * num_blume
+                + size_of::<u32>() * self.bucket_count as usize
+                + size_of::<u32>() * self.num_defs as usize) as u64,
+        );
+    }
+
+    pub(crate) fn bucket_for_hash(&self, hash: u32) -> u32 {
+        hash % self.bucket_count
+    }
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SysvHashLayout {
+    pub(crate) bucket_count: u32,
+    pub(crate) chain_count: u32,
+}
+
+#[derive(derive_more::Debug)]
+pub(crate) struct VersionDef {
+    #[debug("{}", String::from_utf8_lossy(name))]
+    pub(crate) name: Vec<u8>,
+    pub(crate) parent_index: Option<u16>,
+}
+
+impl SysvHashLayout {
+    fn byte_size(self) -> Result<u64> {
+        let words = 2u64
+            .checked_add(u64::from(self.bucket_count))
+            .and_then(|v| v.checked_add(u64::from(self.chain_count)))
+            .context("Too many dynamic symbols for .hash")?;
+        Ok(words * size_of::<u32>() as u64)
+    }
+}
+
+fn finalise_gnu_version_size<'data>(
+    mem_sizes: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+) {
+    if symbol_db.output_kind.should_output_symbol_versions() {
+        let num_dynamic_symbols = mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+        // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
+        // multiple files in our group, we'll update this same value multiple times, each time
+        // with a possibly revised dynamic symbol count. The important thing is that when we're
+        // done finalising the group sizes, the GNU_VERSION size should be consistent with the
+        // DYNSYM size.
+        *mem_sizes.get_mut(part_id::GNU_VERSION) =
+            num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
+    }
+}
+
+/// A "common information entry". This is part of the .eh_frame data in ELF.
+#[derive(PartialEq, Eq, Hash)]
+struct Cie<'data> {
+    bytes: &'data [u8],
+    eligible_for_deduplication: bool,
+    referenced_symbols: SmallVec<[SymbolId; 1]>,
+}
+
+struct CieAtOffset<'data> {
+    // TODO: Use or remove. I think we need this when we implement deduplication of CIEs.
+    /// Offset within .eh_frame
+    #[allow(dead_code)]
+    offset: u32,
+    cie: Cie<'data>,
+}
+
+enum ExceptionFrames<'data> {
+    Rela(Vec<ExceptionFrame<'data, Rela>>),
+    Crel(Vec<ExceptionFrame<'data, Crel>>),
+}
+
+impl<'data> Default for ExceptionFrames<'data> {
+    fn default() -> Self {
+        ExceptionFrames::Rela(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct ExceptionFrame<'data, R: Relocation> {
+    /// The relocations that need to be processed if we load this frame.
+    relocations: R::Sequence<'data>,
+
+    /// Number of bytes required to store this frame.
+    frame_size: u32,
+
+    /// The index of the previous frame that is for the same section.
+    previous_frame_for_section: Option<FrameIndex>,
+}
+
+struct EhFrameSizes {
+    num_frames: u64,
+    eh_frame_size: u64,
+}
+
+impl<'data> ExceptionFrames<'data> {
+    fn len(&self) -> usize {
+        match self {
+            ExceptionFrames::Rela(f) => f.len(),
+            ExceptionFrames::Crel(f) => f.len(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct GroupLayoutExt {
+    pub(crate) eh_frame_start_address: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CommonGroupStateExt {
+    pub(crate) exception_frame_relocations: usize,
+    pub(crate) exception_frame_count: usize,
+}
+
+/// Return whether all DT_NEEDED entries for this shared object correspond to input files that
+/// we have loaded.
+fn has_complete_deps<'data>(
+    file: &File<'data>,
+    resources: &layout::GraphResources<'data, '_, File<'data>>,
+) -> bool {
+    let Ok(dynamic_tags) = file.dynamic_tags() else {
+        return true;
+    };
+
+    let e = LittleEndian;
+    for entry in dynamic_tags {
+        let value = entry.d_val(e);
+        match entry.d_tag(e) as u32 {
+            object::elf::DT_NEEDED => {
+                let Ok(name) = file.symbols.strings().get(value as u32) else {
+                    return false;
+                };
+                if !resources.layout_resources_ext.sonames.contains(name) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    true
+}
+
+#[derive(Debug)]
+pub(crate) struct LayoutResourcesExt<'data> {
+    sonames: Sonames<'data>,
+}
+
+#[derive(Debug)]
+struct Sonames<'data>(HashSet<&'data [u8]>);
+
+impl<'data> Sonames<'data> {
+    /// Builds an index of the DT_SONAMEs of the input dynamic objects. Note, that we include
+    /// --as-needed shared objects that we're not actually linking against. This means that we can
+    /// report --no-shlib-undefined errors for shared libraries that have all of their dependencies
+    /// as inputs, even if we weren't going to add them as direct dependencies of our output file.
+    fn new(groups: &[Group<'data, crate::elf::File<'data>>]) -> Self {
+        timing_phase!("Build SONAME index");
+
+        Sonames(
+            groups
+                .iter()
+                .flat_map(|group| {
+                    let objects = match group {
+                        Group::Objects(objects) => *objects,
+                        _ => &[],
+                    };
+                    objects.iter().filter_map(|input| {
+                        input
+                            .parsed
+                            .object
+                            .dynamic_tag_values()
+                            .map(|tag_values| tag_values.lib_name(&input.parsed.input))
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn contains(&self, name: &[u8]) -> bool {
+        self.0.contains(name)
+    }
 }

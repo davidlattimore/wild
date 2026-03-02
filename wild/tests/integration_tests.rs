@@ -105,6 +105,11 @@
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
+//! RequiresLinkerPlugin:{bool} Requires the linker driver to have linker-plugin support. This
+//! checks that a simple C program can be compiled with `-flto` and skips the test if that fails.
+//! This can be used for both C and Rust tests. In the case of Rust tests, the clang compiler will
+//! be checked. Also checks that wild was not statically linked.
+//!
 //! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
 //! line. Defaults to true.
 //!
@@ -151,6 +156,9 @@
 //! Requires that section is also specified.
 //!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
+//!
+//! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
+//! size-changing relaxations (e.g. RISC-V call relaxation) were applied.
 
 mod external_tests;
 
@@ -198,6 +206,10 @@ use std::time::Instant;
 use strum::Display;
 use strum::EnumString;
 use wait_timeout::ChildExt;
+
+/// Set this variable to a non-empty value to check that the current platform meets the requirements
+/// for running all tests.
+const FULL_PLATFORM_REQUIRED_VAR: &str = "WILD_VERIFY_PLATFORM_REQUIREMENTS";
 
 type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
@@ -507,6 +519,7 @@ struct Config {
     remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
+    requires_linker_plugin: bool,
     test_update_in_place: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
@@ -879,6 +892,8 @@ struct SymtabAssertions {
 
     #[serde(rename = "address")]
     absolute_address: Option<u64>,
+
+    size: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
@@ -973,6 +988,7 @@ impl Config {
             requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
+            requires_linker_plugin: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
@@ -1232,6 +1248,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "RequiresRustMusl" => {
                     config.requires_rust_musl = arg.to_lowercase().parse()?;
+                }
+                "RequiresLinkerPlugin" => {
+                    config.requires_linker_plugin = arg.to_lowercase().parse()?;
                 }
                 "TestUpdateInPlace" => {
                     config.test_update_in_place = arg.to_lowercase().parse()?;
@@ -1731,7 +1750,7 @@ fn build_linker_input(
         InputType::Archive | InputType::ThinArchive => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
-                make_archive(&archive_path, &objects, thin)?;
+                make_archive(&archive_path, &objects, thin, &config)?;
             }
             LinkerInput::new(archive_path)
         }
@@ -1767,7 +1786,7 @@ fn build_linker_input(
     Ok(linker_input)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 enum CompilerKind {
     C,
     Rust,
@@ -1886,16 +1905,9 @@ fn build_obj(
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
 
-            let rustc_channel = match config.rustc_channel {
-                RustcChannel::Stable => Some("+stable"),
-                RustcChannel::Beta => Some("+beta"),
-                RustcChannel::Nightly => Some("+nightly"),
-                RustcChannel::Default => None,
-            };
-
             command
                 .env("WILD_SAVE_SKIP_LINKING", "1")
-                .args(rustc_channel)
+                .args(config.rustc_channel.as_arg())
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
 
@@ -2014,6 +2026,17 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+impl RustcChannel {
+    fn as_arg(&self) -> Option<&'static str> {
+        match self {
+            RustcChannel::Stable => Some("+stable"),
+            RustcChannel::Beta => Some("+beta"),
+            RustcChannel::Nightly => Some("+nightly"),
+            RustcChannel::Default => None,
+        }
+    }
 }
 
 /// Determines which compiler to use to for the supplied file. Returns None if the file is an object
@@ -2230,9 +2253,25 @@ impl Linker {
     }
 }
 
-fn make_archive(archive_path: &Path, objects: &[BuiltObject], thin: bool) -> Result {
+fn make_archive(
+    archive_path: &Path,
+    objects: &[BuiltObject],
+    thin: bool,
+    config: &Config,
+) -> Result {
     let _ = std::fs::remove_file(archive_path);
-    let mut cmd = Command::new("ar");
+    // At least on NixOS, trying to use plain "ar" to create an archive containing GCC objects
+    // fails, presumably because it's trying to index the symbols.
+    let ar_cmd = if config.requires_linker_plugin
+        && matches!(
+            config.linker_driver,
+            LinkerDriver::Compiler(Compiler::Gcc(_))
+        ) {
+        "gcc-ar"
+    } else {
+        "ar"
+    };
+    let mut cmd = Command::new(ar_cmd);
     cmd.arg("cr");
 
     if thin {
@@ -2917,6 +2956,16 @@ fn verify_symbol_assertions(
                 );
             }
         }
+
+        if let Some(expected_size) = exp.assertions.size {
+            let actual_size = sym.size();
+            if expected_size != actual_size {
+                bail!(
+                    "Expected symbol `{name}` to have size {expected_size}, \
+                                but it actually had size {actual_size}"
+                );
+            }
+        }
     }
 
     let missing: Vec<&str> = missing.into_keys().collect();
@@ -3438,6 +3487,7 @@ fn integration_test(
         "tls.c",
         "tlsdesc.c",
         "tls-variant.c",
+        "weak-entry.c",
         "no_start.c",
         "old_init.c",
         "custom_section.c",
@@ -3460,6 +3510,7 @@ fn integration_test(
         "backtrace.c",
         "eh_frame.c",
         "symbol-priority.c",
+        "symbol-binding.c",
         "hidden-ref.c",
         "trivial_asm.s",
         "non-alloc.s",
@@ -3499,13 +3550,14 @@ fn integration_test(
         "shared.c",
         "duplicate_strong_symbols.c",
         "linker-plugin-lto.c",
+        "lto-no-plugin.c",
+        "lto-integration.c",
         "preinit-array.c",
         "exception.cc",
         "z-defs.c",
         "export-dynamic.c",
         "unresolved-symbols-object.c",
         "unresolved-symbols-shared.c",
-        "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
         "symver-shared.c",
@@ -3527,7 +3579,12 @@ fn integration_test(
         "undefined-weak-sym.c",
         "auxiliary.c",
         "new-dtags.c",
-        "riscv-attr-conflict.s"
+        "riscv-attr-conflict.s",
+        "riscv-call-relaxation.s",
+        "riscv-cross-object-call-relaxation.s",
+        "riscv-hi20-relaxation.s",
+        "segment-end-syms.c",
+        "linker-script-filename-match.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -3558,16 +3615,21 @@ fn integration_test(
         let config_it = configs.iter().filter(|config| !config.should_skip(arch));
 
         for config in config_it {
+            let mut config = config.clone();
+            config.rustc_channel = test_config.rustc_channel;
+
             if !test_config.allow_rust_musl_target && config.requires_rust_musl {
                 continue;
             }
 
-            if !platform_meets_requirements(config, cross_arch, Path::new(filename))? {
+            if let Err(error) =
+                verify_platform_requirements(&config, cross_arch, Path::new(filename))
+            {
+                if full_test_platform_required() {
+                    return Err(error);
+                }
                 continue;
             }
-
-            let mut config = config.clone();
-            config.rustc_channel = test_config.rustc_channel;
 
             let arch_name = cross_name(cross_arch);
             config.build_dir = config
@@ -3587,39 +3649,119 @@ fn integration_test(
     Ok(())
 }
 
-/// Returns whether the platform that we're running on meets the requirements for the supplied test
+/// Verifies that the platform that we're running on meets the requirements for the supplied test
 /// config.
-fn platform_meets_requirements(
+fn verify_platform_requirements(
     config: &Config,
     cross_arch: Option<Architecture>,
     src_path: &Path,
-) -> Result<bool> {
+) -> Result {
+    if config.requires_linker_plugin {
+        verify_linker_plugin_requirements(config, cross_arch, src_path)?;
+    }
+
     if config.requires_compiler_flags.is_empty() {
-        return Ok(true);
+        return Ok(());
     }
 
     let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
-        bail!("RequiresCompilerFlag isn't valid when a compiler isn't being used");
+        return Ok(());
     };
 
-    let output = Command::new(compiler)
-        .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
-        .args(&config.requires_compiler_flags)
+    verify_command_success(
+        Command::new(&compiler)
+            .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+            .args(&config.requires_compiler_flags),
+    )
+}
+
+fn verify_linker_plugin_requirements(
+    config: &Config,
+    cross_arch: Option<Architecture>,
+    src: &Path,
+) -> Result {
+    if !cfg!(feature = "plugins") {
+        bail!("The `plugins` feature is disabled");
+    }
+
+    let (compiler, compiler_kind) = compiler_for_file(src, cross_arch, config)?
+        .with_context(|| format!("Config in {} does not use a linker driver", src.display()))?;
+
+    match compiler_kind {
+        CompilerKind::Rust => {
+            // Check that rustc can use linker-plugin-lto with the installed clang. This eliminates
+            // platforms where the LLVM version used by clang doesn't match the version used by
+            // rustc.
+            let mut command = Command::new(&compiler);
+            command.args(config.rustc_channel.as_arg());
+            command.arg(src_path("lto-verifier.rs"));
+            command.args([
+                "-Clinker=clang",
+                "-Clinker-plugin-lto",
+                "-Clink-arg=-flto",
+                "-o",
+                "/tmp/rust.out",
+            ]);
+            verify_command_success(&mut command).context(
+                "Can't use rust+clang with linker plugin. LLVM version mismatch? \
+                Check that clang --version matches LLVM version reported by `rustc -vV`.",
+            )?;
+        }
+        CompilerKind::C => {
+            // Verify that the linker-driver can use a linker plugin with the default linker. This
+            // helps us to skip for example clang on openSUSE which doesn't bundle the linker
+            // plugin.
+            let LinkerDriver::Compiler(linker_driver) = config.linker_driver else {
+                bail!("A linker driver is required for LTO");
+            };
+            let linker_driver_string =
+                get_c_compiler(linker_driver.name(), linker_driver.c_language(), cross_arch)?;
+
+            let mut command = Command::new(&linker_driver_string);
+            command.args([
+                "-shared",
+                "-nostdlib",
+                "-flto",
+                "-x",
+                "c",
+                "-fuse-ld=bfd",
+                "-",
+                "-o",
+                "/dev/null",
+            ]);
+
+            verify_command_success(&mut command)
+                .context("Can't use compiler with linker-plugin")?;
+        }
+    }
+
+    // Check that we're not statically linked. Plugins can't be loaded if we're statically linked.
+    ensure!(
+        !cfg!(target_feature = "crt-static"),
+        "Cannot run linker-plugin tests when static linking is enabled"
+    );
+
+    Ok(())
+}
+
+fn verify_command_success(command: &mut Command) -> Result {
+    let output = command
         .stdin(Stdio::null())
         .output()
-        .context("Failed to run gcc")?;
+        .with_context(|| format!("Failed to run {command:?}"))?;
 
-    let is_ok = output.status.success();
-
-    // Provide a way to verify that our system meets the requirements for all tests.
-    if !is_ok && std::env::var("WILD_VERIFY_PLATFORM_REQUIREMENTS").is_ok_and(|v| !v.is_empty()) {
+    if !output.status.success() {
         bail!(
-            "Failed platform test requirements: {}",
+            "Failed platform test requirements. {command:?}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
-    Ok(is_ok)
+    Ok(())
+}
+
+fn full_test_platform_required() -> bool {
+    std::env::var(FULL_PLATFORM_REQUIRED_VAR).is_ok_and(|v| !v.is_empty())
 }
 
 fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {

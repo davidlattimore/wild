@@ -44,6 +44,7 @@ mod header_diff;
 mod init_order;
 mod loongarch64;
 mod riscv64;
+mod riscv_attributes;
 pub(crate) mod section_map;
 mod segment;
 mod symbol_diff;
@@ -225,6 +226,9 @@ impl Config {
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
+                // LLD does some different relaxations to us
+                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.dynamic-pie",
+                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.dynamic-pie",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
@@ -271,6 +275,7 @@ impl Config {
         match arch {
             ArchKind::Aarch64 => self.ignore.extend(
                 [
+                    "section.ARM.attributes",
                     // Other linkers have a bigger initial PLT entry, thus the entsize is set to
                     // zero: https://sourceware.org/bugzilla/show_bug.cgi?id=26312
                     "section.plt.entsize",
@@ -671,6 +676,7 @@ impl Report {
 
             ArchKind::RISCV64 => {
                 self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
+                riscv_attributes::report_diffs(self, objects);
             }
             ArchKind::LoongArch64 => {
                 self.report_arch_specific_diffs::<crate::loongarch64::LoongArch64>(objects);

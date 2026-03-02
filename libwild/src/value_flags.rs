@@ -1,3 +1,4 @@
+use crate::platform;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use bitflags::bitflags;
@@ -168,6 +169,13 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn is_downgraded_to_local(self) -> bool {
         self.contains(ValueFlags::DOWNGRADE_TO_LOCAL)
+    }
+
+    /// Returns true if a symbol should be treated as local in the symbol table.
+    /// This includes both originally-local symbols and symbols downgraded by version scripts.
+    #[must_use]
+    pub(crate) fn is_symtab_local<S: platform::Symbol>(self, sym: &S) -> bool {
+        sym.is_local() || self.is_downgraded_to_local()
     }
 
     #[must_use]

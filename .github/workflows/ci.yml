@@ -25,8 +25,10 @@ jobs:
         container:
           - 'ubuntu:24.04'
           - 'opensuse/tumbleweed:latest'
-          - 'rust:1.92-alpine'
+          - 'rust:1.93-alpine'
         test-qemu:
+          - false
+        test-plugins:
           - false
         include:
           - runs-on: ubuntu-24.04
@@ -35,6 +37,7 @@ jobs:
           - runs-on: ubuntu-24.04-arm
             container: 'ubuntu:25.10'
             test-qemu: false
+            test-plugins: true
           - runs-on: ubuntu-24.04
             container: 'ubuntu:26.04'
             test-qemu: true
@@ -43,7 +46,7 @@ jobs:
             test-qemu: false
         exclude: # TODO: https://github.com/actions/runner/issues/1637
           - runs-on: ubuntu-24.04-arm
-            container: 'rust:1.92-alpine'
+            container: 'rust:1.93-alpine'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -79,6 +82,8 @@ jobs:
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
       - run: cargo build --profile ci --workspace --no-default-features
+      - run: cargo test --profile ci --features plugins
+        if: ${{ matrix.test-plugins }}
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   minimal-versions:
@@ -107,7 +112,7 @@ jobs:
         persist-credentials: false
     # This is where we check that we're not using features from a more recent rust version. When
     # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-    - uses: dtolnay/rust-toolchain@1.92.0
+    - uses: dtolnay/rust-toolchain@1.93.0
       id: rust-toolchain
       with:
         components: clippy
@@ -175,7 +180,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.43.4
+        uses: crate-ci/typos@v1.43.5
 
   calc-matrix:
     name: Find Nix checks

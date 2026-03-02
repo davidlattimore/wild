@@ -6,27 +6,30 @@ use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
+use crate::platform::ObjectFile;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::SymbolStrength;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use object::LittleEndian;
 use std::fmt::Display;
 
 #[derive(Debug)]
-pub(crate) enum Group<'data> {
+pub(crate) enum Group<'data, O: ObjectFile<'data>> {
     Prelude(Prelude<'data>),
-    Objects(&'data [SequencedInputObject<'data>]),
+    Objects(&'data [SequencedInputObject<'data, O>]),
     LinkerScripts(Vec<SequencedLinkerScript<'data>>),
     SyntheticSymbols(SyntheticSymbols),
+    #[cfg(feature = "plugins")]
+    LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
 }
 
 #[derive(Debug)]
-pub(crate) struct SequencedInputObject<'data> {
-    pub(crate) parsed: Box<ParsedInputObject<'data>>,
+pub(crate) struct SequencedInputObject<'data, O: ObjectFile<'data>> {
+    pub(crate) parsed: Box<ParsedInputObject<'data, O>>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -39,22 +42,25 @@ pub(crate) struct SequencedLinkerScript<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) enum SequencedInput<'data> {
-    Prelude(&'data Prelude<'data>),
-    Object(&'data SequencedInputObject<'data>),
-    LinkerScript(&'data SequencedLinkerScript<'data>),
-    SyntheticSymbols(&'data SyntheticSymbols),
+pub(crate) enum SequencedInput<'db, 'data, O: ObjectFile<'data>> {
+    Prelude(&'db Prelude<'data>),
+    Object(&'data SequencedInputObject<'data, O>),
+    LinkerScript(&'db SequencedLinkerScript<'data>),
+    SyntheticSymbols(&'db SyntheticSymbols),
+    #[cfg(feature = "plugins")]
+    LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
 }
 
-impl Group<'_> {
+impl<'data, O: ObjectFile<'data>> Group<'data, O> {
     // This is used when the verbose-ttttiming feature is enabled.
-    #[allow(dead_code)]
     pub(crate) fn group_id(&self) -> usize {
         match self {
             Group::Prelude(_) => 0,
             Group::Objects(objects) => objects[0].file_id.group(),
             Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
             Group::SyntheticSymbols(s) => s.file_id.group(),
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(s) => s[0].file_id.group(),
         }
     }
 
@@ -80,6 +86,11 @@ impl Group<'_> {
                 }
             }
             Group::SyntheticSymbols(o) => o.symbol_id_range,
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(objects) => SymbolIdRange::covering(
+                objects[0].symbol_id_range,
+                objects[objects.len() - 1].symbol_id_range,
+            ),
         }
     }
 
@@ -88,9 +99,9 @@ impl Group<'_> {
     }
 }
 
-pub(crate) fn create_groups<'data>(
-    symbol_db: &mut SymbolDb<'data>,
-    parsed_objects: Vec<Box<ParsedInputObject<'data>>>,
+pub(crate) fn create_groups<'data, O: ObjectFile<'data>>(
+    symbol_db: &mut SymbolDb<'data, O>,
+    parsed_objects: Vec<Box<ParsedInputObject<'data, O>>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
 ) {
     timing_phase!("Group files");
@@ -112,7 +123,7 @@ pub(crate) fn create_groups<'data>(
 
     while let Some(parsed) = objects.next() {
         let file_id = FileId::new(symbol_db.next_group_index(), group_objects.len() as u32);
-        let num_symbols_in_file = parsed.object.symbols.len();
+        let num_symbols_in_file = parsed.object.num_symbols();
 
         group_objects.push(SequencedInputObject {
             parsed,
@@ -128,7 +139,7 @@ pub(crate) fn create_groups<'data>(
         // this is the last file or if the next file would put us over the per-group symbol limit.
         let finish_group = group_objects.len() >= max_files_per_group
             || objects.peek().is_none_or(|next_obj| {
-                num_symbols_in_group + next_obj.object.symbols.len() > symbols_per_group
+                num_symbols_in_group + next_obj.object.num_symbols() > symbols_per_group
             });
 
         if finish_group {
@@ -166,7 +177,15 @@ pub(crate) fn create_groups<'data>(
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
 
-    tracing::trace!("GROUPS:\n{}", GroupsDisplay(&symbol_db.groups));
+    tracing::trace!(
+        "GROUPS:\n{}",
+        std::fmt::from_fn(|f| {
+            for (i, group) in symbol_db.groups.iter().enumerate() {
+                writeln!(f, "{i}: {group}")?;
+            }
+            Ok(())
+        })
+    );
 }
 
 /// Decides after how many symbols, we should start a new group.
@@ -205,15 +224,15 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 }
 
 /// Compute the total number of symbols in the supplied objects.
-fn count_symbols(objects: &[Box<ParsedInputObject>]) -> usize {
+fn count_symbols<'data, O: ObjectFile<'data>>(
+    objects: &[Box<ParsedInputObject<'data, O>>],
+) -> usize {
     verbose_timing_phase!("Count symbols");
 
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()
 }
 
-struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);
-
-impl<'data> SequencedInputObject<'data> {
+impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
     pub(crate) fn symbol_name(
         &self,
         symbol_id: crate::symbol_db::SymbolId,
@@ -231,60 +250,9 @@ impl<'data> SequencedInputObject<'data> {
         &self,
         symbol_id: crate::symbol_db::SymbolId,
     ) -> Option<String> {
-        let object = &self.parsed.object;
-        let endian = LittleEndian;
-        let local_index = symbol_id.to_input(self.symbol_id_range);
-
-        let versym = object.versym.get(local_index.0)?;
-        let versym = versym.0.get(endian);
-        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
-
-        if let Some((verdefs, string_table_index)) = self.parsed.object.verdef.clone() {
-            let strings = object
-                .sections
-                .strings(endian, object.data, string_table_index)
-                .ok()?;
-
-            for r in verdefs {
-                let (verdef, aux_iterator) = r.ok()?;
-                for aux in aux_iterator {
-                    let aux = aux.ok()?;
-                    let version_index = verdef.vd_ndx.get(endian);
-                    if version_index == symbol_version_index {
-                        return Some(format!(
-                            "{}{}",
-                            if is_default { "@@" } else { "@" },
-                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
-                        ));
-                    }
-                }
-            }
-        }
-
-        if let Some((verneeds, string_table_index)) = self.parsed.object.verneed.clone() {
-            let strings = object
-                .sections
-                .strings(endian, object.data, string_table_index)
-                .ok()?;
-
-            for r in verneeds {
-                let (_verneed, aux_iterator) = r.ok()?;
-                for aux in aux_iterator {
-                    let aux = aux.ok()?;
-                    let version_index = aux.vna_other.get(endian);
-                    if version_index == symbol_version_index {
-                        return Some(format!(
-                            "{}{}",
-                            if is_default { "@@" } else { "@" },
-                            String::from_utf8_lossy(aux.name(endian, strings).ok()?)
-                        ));
-                    }
-                }
-            }
-        }
-
-        None
+        self.parsed
+            .object
+            .symbol_version_debug(symbol_id.to_input(self.symbol_id_range))
     }
 
     /// Returns whether this input should be skipped if there are no non-weak references to symbols
@@ -296,7 +264,15 @@ impl<'data> SequencedInputObject<'data> {
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        self.parsed.dynamic_tag_values.is_some()
+        self.parsed.object.is_dynamic()
+    }
+
+    pub(crate) fn symbol_strength(&self, symbol_id: crate::symbol_db::SymbolId) -> SymbolStrength {
+        let local_index = symbol_id.to_input(self.symbol_id_range);
+        let Ok(obj_symbol) = self.parsed.object.symbol(local_index) else {
+            return SymbolStrength::Undefined;
+        };
+        SymbolStrength::of(obj_symbol)
     }
 }
 
@@ -307,13 +283,15 @@ impl<'data> SequencedLinkerScript<'data> {
     }
 }
 
-impl SequencedInput<'_> {
+impl<'db, 'data, O: ObjectFile<'data>> SequencedInput<'db, 'data, O> {
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             SequencedInput::Object(o) => o.symbol_id_range,
             SequencedInput::LinkerScript(o) => o.symbol_id_range,
             SequencedInput::SyntheticSymbols(o) => o.symbol_id_range,
+            #[cfg(feature = "plugins")]
+            SequencedInput::LtoInput(o) => o.symbol_id_range,
         }
     }
 
@@ -324,24 +302,23 @@ impl SequencedInput<'_> {
             false
         }
     }
-}
 
-impl Display for GroupsDisplay<'_, '_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (i, group) in self.0.iter().enumerate() {
-            writeln!(f, "{i}: {group}")?;
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        if let SequencedInput::Object(o) = self {
+            o.symbol_strength(symbol_id)
+        } else {
+            SymbolStrength::Undefined
         }
-        Ok(())
     }
 }
 
-impl std::fmt::Display for SequencedInputObject<'_> {
+impl<'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInputObject<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.parsed.input, f)
     }
 }
 
-impl Display for Group<'_> {
+impl<'data, O: ObjectFile<'data>> Display for Group<'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Group::Prelude(_) => write!(f, "<prelude>"),
@@ -359,17 +336,21 @@ impl Display for Group<'_> {
             }
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::SyntheticSymbols(_) => write!(f, "<epilogue>"),
+            #[cfg(feature = "plugins")]
+            Group::LtoInputs(lto_inputs) => write!(f, "<{} lto inputs>", lto_inputs.len()),
         }
     }
 }
 
-impl std::fmt::Display for SequencedInput<'_> {
+impl<'db, 'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInput<'db, 'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             SequencedInput::Object(o) => std::fmt::Display::fmt(o, f),
             SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
             SequencedInput::SyntheticSymbols(_) => std::fmt::Display::fmt("<epilogue>", f),
+            #[cfg(feature = "plugins")]
+            SequencedInput::LtoInput(o) => std::fmt::Display::fmt(o, f),
         }
     }
 }

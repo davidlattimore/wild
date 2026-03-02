@@ -1,10 +1,11 @@
-use crate::arch::Arch;
+use crate::elf;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::elf::PropertyClass;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::PropertyClass;
+use crate::platform::ObjectFile as _;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::elf::AArch64Instruction;
@@ -18,7 +19,7 @@ use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
 
-pub(crate) struct AArch64;
+pub(crate) struct ElfAArch64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x10, 0x00, 0x00, 0x90, // adrp x16, page(&(.got.plt[n]))
@@ -31,10 +32,15 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for AArch64 {
-    type Relaxation = Relaxation;
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
-    const KIND: crate::arch::Architecture = crate::arch::Architecture::AArch64;
+impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
+    type Relaxation = Relaxation;
+    type File = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_AARCH64
@@ -92,7 +98,7 @@ impl crate::arch::Arch for AArch64 {
         false
     }
 
-    fn tp_offset_start(layout: &Layout<'_>) -> u64 {
+    fn tp_offset_start(layout: &Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 
@@ -103,40 +109,16 @@ impl crate::arch::Arch for AArch64 {
         }
     }
 
-    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
+    fn merge_eflags(_eflags: impl Iterator<Item = u32>) -> Result<u32> {
         Ok(0)
     }
 
     fn high_part_relocations() -> &'static [u32] {
         &[]
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    rel_info: RelocationKindInfo,
-    mandatory: bool,
-}
-
-const TLSDESC_ADR_PAGE21_INSN_SEQUENCE: &[u8] = &[
-    0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
-];
-
-const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
-    0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
-];
-
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl crate::arch::Relaxation for Relaxation {
-    #[allow(unused_variables)]
     #[inline(always)]
-    fn new(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -144,11 +126,12 @@ impl crate::arch::Relaxation for Relaxation {
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
-    ) -> Option<Self>
+        _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
+    ) -> Option<Self::Relaxation>
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
+        let mut relocation = ElfAArch64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = flags.is_interposable();
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
@@ -303,6 +286,43 @@ impl crate::arch::Relaxation for Relaxation {
         None
     }
 
+    fn is_symbol_variant_pcs(object: &Self::File, symbol_index: object::SymbolIndex) -> bool {
+        object
+            .symbol(symbol_index)
+            .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
+    }
+
+    fn get_source_info(
+        object: &Self::File,
+        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+        offset_in_section: u64,
+    ) -> Result<crate::platform::SourceInfo> {
+        crate::dwarf_address_info::get_source_info::<Self>(
+            object,
+            relocations,
+            section,
+            offset_in_section,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+const TLSDESC_ADR_PAGE21_INSN_SEQUENCE: &[u8] = &[
+    0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
+];
+
+const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
+    0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
+];
+
+impl crate::platform::Relaxation for Relaxation {
     fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }

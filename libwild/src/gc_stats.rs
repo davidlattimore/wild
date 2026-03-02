@@ -22,12 +22,16 @@ use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
+use crate::platform::ObjectFile;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use std::path::PathBuf;
 
-pub(crate) fn maybe_write_gc_stats(group_layouts: &[GroupLayout], args: &Args) -> Result {
+pub(crate) fn maybe_write_gc_stats<'data, O: ObjectFile<'data>>(
+    group_layouts: &[GroupLayout<'data, O>],
+    args: &Args,
+) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
         return Ok(());
     };
@@ -42,8 +46,8 @@ struct InputFile<'data> {
     discarded_names: Vec<&'data [u8]>,
 }
 
-fn write_gc_stats(
-    group_layouts: &[GroupLayout],
+fn write_gc_stats<'data, O: ObjectFile<'data>>(
+    group_layouts: &[GroupLayout<'data, O>],
     stats_file: &std::path::Path,
     args: &Args,
 ) -> Result {
@@ -80,22 +84,22 @@ fn write_gc_stats(
 
             let mut file_kept = 0;
             let mut file_discarded = 0;
-            for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
+            for (slot, section) in obj.sections.iter().zip(obj.object.section_iter()) {
                 match slot {
-                    SectionSlot::Unloaded(unloaded) => {
-                        if unloaded.part_id.output_section_id() == output_section_id::TEXT {
-                            file_discarded += obj.object.section_size(section)?;
-                            if args.verbose_gc_stats {
-                                file_record
-                                    .discarded_names
-                                    .push(obj.object.section_name(section)?);
-                            }
+                    SectionSlot::Unloaded(unloaded)
+                        if unloaded.part_id.output_section_id() == output_section_id::TEXT =>
+                    {
+                        file_discarded += obj.object.section_size(section)?;
+                        if args.verbose_gc_stats {
+                            file_record
+                                .discarded_names
+                                .push(obj.object.section_name(section)?);
                         }
                     }
-                    SectionSlot::Loaded(s) => {
-                        if s.part_id.output_section_id() == output_section_id::TEXT {
-                            file_kept += obj.object.section_size(section)?;
-                        }
+                    SectionSlot::Loaded(s)
+                        if s.part_id.output_section_id() == output_section_id::TEXT =>
+                    {
+                        file_kept += obj.object.section_size(section)?;
                     }
                     _ => {}
                 }

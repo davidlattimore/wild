@@ -9,6 +9,15 @@ use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 
+/// JAL instruction range: signed 21-bit immediate, 2-byte aligned.
+pub const JAL_RANGE: std::ops::RangeInclusive<i64> = -(1i64 << 20)..=((1i64 << 20) - 1);
+
+#[inline]
+#[must_use]
+pub fn distance_fits_jal(distance: i64) -> bool {
+    JAL_RANGE.contains(&distance)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -16,6 +25,12 @@ pub enum RelaxationKind {
 
     /// Replace with nop
     ReplaceWithNop,
+
+    /// Rewrite auipc+jalr to jal.
+    CallToJal,
+
+    /// Rewrite 4-byte `lui rd, imm` to 2-byte `c.lui rd, nzimm`.
+    Hi20ToCLui,
 }
 
 impl RelaxationKind {
@@ -29,12 +44,58 @@ impl RelaxationKind {
                     0x01, 0x0, // nop
                 ]);
             }
+            RelaxationKind::CallToJal => {
+                let auipc_word = u32_from_slice(&section_bytes[offset..]);
+                let rd = (auipc_word >> 7) & 0x1f;
+                let jal_base = 0x6fu32 | (rd << 7);
+                section_bytes[offset..offset + 4].copy_from_slice(&jal_base.to_le_bytes());
+            }
+            RelaxationKind::Hi20ToCLui => {
+                let lui_lo = u16::from_le_bytes([section_bytes[offset], section_bytes[offset + 1]]);
+                let rd = (lui_lo >> 7) & 0x1f;
+                let clui_base: u16 = 0x6001 | (rd << 7);
+                section_bytes[offset..offset + 2].copy_from_slice(&clui_base.to_le_bytes());
+            }
         }
     }
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        match self {
+            RelaxationKind::CallToJal => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
+        }
+    }
+
+    /// Returns true if the HI20 value (i.e. `(value + 0x800) >> 12`) fits in the
+    /// c.lui 6-bit signed non-zero immediate range: [-32, -1] ∪ [1, 31].
+    #[must_use]
+    pub fn hi20_fits_clui(value: u64) -> bool {
+        let hi20 = value.wrapping_add(0x800) >> 12;
+        let hi20_signed = hi20 as i64;
+        // The 6-bit signed immediate excludes 0, and wraps around for large values.
+        // Check that the sign-extended 6-bit value equals the full hi20.
+        let as_6bit = ((hi20_signed as i8) << 2) >> 2; // sign-extend from 6 bits
+        i64::from(as_6bit) == hi20_signed && hi20_signed != 0
+    }
+
+    /// Returns true if the rd register is valid for c.lui.
+    #[must_use]
+    pub fn rd_valid_for_clui(rd: u32) -> bool {
+        rd != 0 && rd != 2
+    }
+
+    /// Returns the `RelocationKindInfo` to use when a HI20 relocation has been relaxed to c.lui.
+    #[must_use]
+    pub fn clui_rel_info() -> RelocationKindInfo {
+        RelocationKindInfo {
+            kind: RelocationKind::Absolute,
+            size: RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::CluiType),
+            mask: None,
+            range: AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            alignment: 1,
+            bias: 0,
+        }
     }
 }
 
@@ -358,6 +419,8 @@ const JTYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_0000_0000_1111_1111_1111;
 
 const CBTYPE_IMMEDIATE_MASK: u16 = 0b1110_0011_1000_0011;
 const CJTYPE_IMMEDIATE_MASK: u16 = 0b1110_0000_0000_0011;
+// c.lui: [15:13]=funct3 [12]=nzimm[5] [11:7]=rd [6:2]=nzimm[4:0] [1:0]=op
+const CLUITYPE_IMMEDIATE_MASK: u16 = 0b1110_1111_1000_0011;
 
 impl RiscVInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
@@ -435,6 +498,13 @@ impl RiscVInstruction {
                 // The compressed instruction only takes 2 bytes.
                 and_from_slice(dest, CJTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
+            }
+            RiscVInstruction::CluiType => {
+                let hi20 = extracted_value.wrapping_add(0x800) >> 12;
+                let mut mask = (hi20 & 0x1f) << 2; // nzimm[4:0]
+                mask |= ((hi20 >> 5) & 1) << 12; // nzimm[5]
+                and_from_slice(dest, CLUITYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
+                or_from_slice(dest, &(mask as u16).to_le_bytes());
             }
         };
     }
@@ -524,6 +594,15 @@ impl RiscVInstruction {
                     | (imm1_3 << 1);
                 let sign_extended = (i32::from(imm) << 20) >> 20;
                 (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::CluiType => {
+                let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+                let nzimm4_0 = (value >> 2) & 0x1f;
+                let nzimm5 = (value >> 12) & 0x1;
+                let nzimm = (nzimm5 << 5) | nzimm4_0;
+                let hi20 = ((i32::from(nzimm) << 26) >> 26) as u64;
+                let extracted = (hi20 << 12).wrapping_sub(0x800);
+                (extracted, (hi20 as i64) < 0)
             }
         }
     }
