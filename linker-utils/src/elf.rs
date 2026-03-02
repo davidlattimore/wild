@@ -39,7 +39,7 @@ macro_rules! elf_constant_newtype {
             $const:ident $(= $value:expr)?
         ),* $(,)?
     ) => {
-        #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
         #[debug("{}", self.as_str())]
         pub struct $name($inner_type);
 

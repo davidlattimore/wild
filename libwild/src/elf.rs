@@ -29,6 +29,7 @@ use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionFlags as _;
 use crate::resolution::LoadedMetrics;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -50,6 +51,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentType;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -233,6 +235,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
     type SectionType = SectionType;
+    type SegmentType = SegmentType;
     type DynamicTagValues = crate::elf::DynamicTagValues<'data>;
     type DynamicEntry = DynamicEntry;
     type RelocationList = RelocationList<'data>;
@@ -1278,6 +1281,41 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(layout::DynamicSymbolDefinition::new(
             symbol_id, name, version,
         ))
+    }
+
+    fn validate_section(
+        section_info: &output_section_id::SectionOutputInfo,
+        section_flags: SectionFlags,
+        section_layout: &OutputRecordLayout,
+        merge_target: OutputSectionId,
+        output_sections: &OutputSections<'data>,
+        section_id: OutputSectionId,
+    ) -> Result {
+        // TODO: Remove the NOTE exception. Non-alloc sections should be placed outside of program
+        // segments. NOTE sections are sometimes alloc and sometimes not. Alloc NOTE sections should
+        // be placed within a LOAD segment and within a NOTE segment. Non-alloc NOTE sections
+        // shouldn't be in any segment.
+
+        // The .riscv.attributes section is non-alloc but is expected to be put into a
+        // RISCV_ATTRIBUTES segment.
+        if [sht::NOTE, sht::RISCV_ATTRIBUTES].contains(&section_info.ty) {
+        } else {
+            // All segments should only cover sections that are allocated and have a non-zero
+            // address.
+            ensure!(
+                section_layout.mem_offset != 0 || merge_target == output_section_id::FILE_HEADER,
+                "Missing memory offset for section {} present in a program segment.",
+                output_sections.section_debug(section_id),
+            );
+            ensure!(
+                section_flags.is_alloc(),
+                "Missing SHF_ALLOC section flag for section {} present in a program \
+                         segment.",
+                output_sections.section_debug(section_id)
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -2891,3 +2929,5 @@ impl<'data> Sonames<'data> {
         self.0.contains(name)
     }
 }
+
+impl platform::SegmentType for SegmentType {}

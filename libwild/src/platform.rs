@@ -150,6 +150,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type SectionHeader: SectionHeader<'data, Self>;
     type SectionFlags: SectionFlags;
     type SectionType: SectionType;
+    type SegmentType: SegmentType;
     type SectionAttributes: SectionAttributes;
     type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues: DynamicTagValues<'data>;
@@ -454,6 +455,15 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
     ) -> Result<layout::DynamicSymbolDefinition<'data>>;
+
+    fn validate_section(
+        section_info: &crate::output_section_id::SectionOutputInfo,
+        section_flags: Self::SectionFlags,
+        section_layout: &OutputRecordLayout,
+        merge_target: OutputSectionId,
+        output_sections: &OutputSections<'data>,
+        section_id: OutputSectionId,
+    ) -> Result;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
@@ -466,7 +476,9 @@ pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
     fn section_type(&self) -> O::SectionType;
 }
 
-pub(crate) trait SectionType: Copy {
+pub(crate) trait SectionType:
+    Default + Copy + Send + Sync + std::fmt::Debug + 'static
+{
     fn is_note(self) -> bool;
 
     fn is_prog_bits(self) -> bool;
@@ -475,7 +487,14 @@ pub(crate) trait SectionType: Copy {
     fn is_no_bits(self) -> bool;
 }
 
-pub(crate) trait SectionFlags: Copy + std::fmt::Debug + Send + Sync + 'static {
+pub(crate) trait SegmentType:
+    Default + Copy + Send + Sync + std::fmt::Debug + 'static
+{
+}
+
+pub(crate) trait SectionFlags:
+    Default + Copy + std::fmt::Debug + Send + Sync + 'static
+{
     fn is_alloc(self) -> bool;
 
     fn is_writable(self) -> bool;

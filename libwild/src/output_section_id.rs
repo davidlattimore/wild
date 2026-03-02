@@ -443,6 +443,7 @@ impl<'data> OutputSections<'data> {
     }
 }
 
+// TODO: There's also a type with this name in layout_rules. Rename one of them to avoid confusion.
 #[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) kind: SectionKind<'data>,
