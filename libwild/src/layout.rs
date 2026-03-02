@@ -11,7 +11,6 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::RawSymbolName;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -79,9 +78,7 @@ use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::pt;
 use linker_utils::elf::secnames;
-use linker_utils::elf::shf;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -791,7 +788,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
             // weak symbol.
             if flags.is_dynamic() && flags.has_resolution() {
                 let name = symbol_db.symbol_name(symbol_id)?;
-                let name = RawSymbolName::parse(name.bytes()).name;
+                let name = O::RawSymbolName::parse(name.bytes()).name();
 
                 if flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
@@ -813,7 +810,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
 
             if symbol_db.args.got_plt_syms && flags.needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
-                let name = RawSymbolName::parse(name.bytes()).name;
+                let name = O::RawSymbolName::parse(name.bytes()).name();
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
                 let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -3432,7 +3429,7 @@ impl<'data> InternalSymbols<'data> {
             };
             sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name;
+            let symbol_name = O::RawSymbolName::parse(symbol_name.bytes()).name();
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
@@ -3523,7 +3520,7 @@ fn create_start_end_symbol_resolution<'data, O: ObjectFile<'data>>(
             .segment_layouts
             .segments
             .iter()
-            .find(|seg| resources.program_segments.segment_def(seg.id).segment_type == pt::LOAD)
+            .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
     };
 
@@ -4083,7 +4080,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                 } else {
                     num_globals += 1;
                 }
-                let name = RawSymbolName::parse(info.name).name;
+                let name = O::RawSymbolName::parse(info.name).name();
                 strings_size += name.len() + 1;
             }
         }
@@ -5074,7 +5071,7 @@ fn layout_section_parts(
                         // start at an unaligned address.
                         file_offset = alignment.align_up_usize(file_offset);
 
-                        if section_flags.contains(shf::ALLOC) {
+                        if section_flags.is_alloc() {
                             mem_offset = alignment.align_up(mem_offset);
 
                             let file_size = if output_sections.has_data_in_file(merge_target) {
@@ -5704,7 +5701,7 @@ fn test_no_disallowed_overlaps() {
         };
 
         let section_flags = output_sections.section_flags(section_id);
-        if !section_flags.contains(shf::ALLOC) {
+        if !section_flags.is_alloc() {
             return;
         }
 
@@ -5737,7 +5734,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut section_index = 0;
     output_sections.section_infos.for_each(|_, info| {
-        if info.section_flags.contains(shf::ALLOC) {
+        if info.section_flags.is_alloc() {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));
