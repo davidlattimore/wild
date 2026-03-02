@@ -18,6 +18,7 @@ use crate::part_id::PartId;
 use crate::resolution::LoadedMetrics;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -448,6 +449,11 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result;
+
+    fn create_dynamic_symbol_definition(
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_id: SymbolId,
+    ) -> Result<layout::DynamicSymbolDefinition<'data>>;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
