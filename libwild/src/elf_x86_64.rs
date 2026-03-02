@@ -279,7 +279,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                         return Some(Relaxation {
                             kind: RelaxationKind::RexMovIndirectToAbsolute,
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
-                            mandatory: false,
+                            mandatory: output_kind.is_static_executable(),
                         });
                     }
                     _ => {}
