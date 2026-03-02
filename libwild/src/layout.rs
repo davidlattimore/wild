@@ -3495,6 +3495,8 @@ impl<'data> InternalSymbols<'data> {
                 continue;
             }
 
+            // Mark the section referenced by this symbol so that empty sections
+            // defined by the linker script are still emitted.
             if let Some(section_id) = def_info.section_id() {
                 resources
                     .must_keep_sections
@@ -3502,6 +3504,7 @@ impl<'data> InternalSymbols<'data> {
                     .fetch_or(true, atomic::Ordering::Relaxed);
             }
 
+            // PROVIDE_HIDDEN symbols should not be exported to dynsym.
             if def_info.is_hidden {
                 continue;
             }

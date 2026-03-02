@@ -231,6 +231,7 @@ impl<'data> Prelude<'data> {
             {
                 continue;
             }
+            // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
             if output_kind == OutputKind::StaticExecutable(RelocationModel::Relocatable)
                 && section_id == output_section_id::RELA_PLT
             {

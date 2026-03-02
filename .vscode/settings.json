@@ -4,5 +4,5 @@
     ],
     "search.exclude": {
         "/external_test_suites/": true
-    },
+    }
 }
