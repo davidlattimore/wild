@@ -1717,12 +1717,14 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("help")
         .help("Show this help message")
         .execute(|_args, _modifier_stack| {
+            use std::io::Write as _;
             let parser = setup_argument_parser();
-            println!("{}", parser.generate_help());
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "{}", parser.generate_help())?;
 
             // The following listing is something autoconf detection relies on.
-            println!("wild: supported targets:elf64 -x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch");
-            println!("wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch");
+            writeln!(stdout, "wild: supported targets:elf64 -x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch")?;
+            writeln!(stdout, "wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch")?;
 
             std::process::exit(0);
         });
