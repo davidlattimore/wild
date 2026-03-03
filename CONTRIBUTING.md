@@ -6,8 +6,8 @@ you're trying to do easier.
 
 ## Options for communicating
 
-Feel free to start a [discussion](https://github.com/davidlattimore/wild/discussions) or open an
-[issue](https://github.com/davidlattimore/wild/issues).
+Feel free to start a [discussion](https://github.com/wild-linker/wild/discussions) or open an
+[issue](https://github.com/wild-linker/wild/issues).
 
 You're also welcome to reach out directly to the following people:
 
@@ -302,7 +302,7 @@ linkers need to do.
   an update in a while, feel free to politely ask if they're still working on it and mention that if
   they're not, you'd like to have a go.
 * We may on occasion tag issues as [good first
-  issue](https://github.com/davidlattimore/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+  issue](https://github.com/wild-linker/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
   One person's good-first-issue might be too hard or too easy for another person, so this is a
   somewhat hard judgement to make.
 * You're welcome to help out with other unassigned issues too, even if they don't have tags. If

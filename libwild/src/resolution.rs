@@ -1387,7 +1387,7 @@ fn resolve_symbol<'data, 'scope, O: ObjectFile<'data>>(
                 // objects, however the rules for whether this should result in a DT_NEEDED entry
                 // are kind of subtle, so for now, we don't activate shared objects from shared
                 // objects. See
-                // https://github.com/davidlattimore/wild/issues/930#issuecomment-3007027924 for
+                // https://github.com/wild-linker/wild/issues/930#issuecomment-3007027924 for
                 // more details. TODO: Fix this.
                 if !is_dynamic || !resources.symbol_db.file(symbol_file_id).is_dynamic() {
                     resources.try_request_file_id(symbol_file_id, scope);

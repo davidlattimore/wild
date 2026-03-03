@@ -9,7 +9,7 @@ already pretty fast even without incremental linking.
 
 ### From GitHub releases
 
-Download a tarball from the [releases page](https://github.com/davidlattimore/wild/releases). Unpack
+Download a tarball from the [releases page](https://github.com/wild-linker/wild/releases). Unpack
 it and copy the `wild` binary somewhere on your path.
 
 ### Cargo binstall
@@ -32,7 +32,7 @@ cargo install --locked wild-linker
 To build and install the latest, unreleased code:
 
 ```sh
-cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild-linker
+cargo install --locked --bin wild --git https://github.com/wild-linker/wild.git wild-linker
 ```
 
 ### Nix
@@ -98,7 +98,7 @@ rustflags = [
 ## Using wild in CI
 
 If you'd like to use Wild as your linker for Rust code in CI, see
-[wild-action](https://github.com/davidlattimore/wild-action).
+[wild-action](https://github.com/wild-linker/wild-action).
 
 ## Q&A
 

@@ -86,9 +86,9 @@ craneLib.buildPackage (
     versionCheckProgramArg = "--version";
 
     meta = {
-      changelog = "https://github.com/davidlattimore/wild/blob/${commonArgs.version}/CHANGELOG.md";
+      changelog = "https://github.com/wild-linker/wild/blob/${commonArgs.version}/CHANGELOG.md";
       description = "A very fast linker for Linux";
-      homepage = "https://github.com/davidlattimore/wild";
+      homepage = "https://github.com/wild-linker/wild";
       license = [
         lib.licenses.asl20 # or
         lib.licenses.mit

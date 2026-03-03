@@ -63,7 +63,7 @@ tests = [
 
 [skipped_groups.gdb_index]
 reason = "GDB index support"
-tracking_issue = "https://github.com/davidlattimore/wild/issues/811"
+tracking_issue = "https://github.com/wild-linker/wild/issues/811"
 tests = [
   "gdb-index-compress-output.sh",
   "gdb-index-dwarf2.sh",
