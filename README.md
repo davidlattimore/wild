@@ -250,6 +250,12 @@ If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore)
 much appreciated. The more sponsorship I get the longer I can continue to work on this project full
 time.
 
+# Code of Conduct
+
+The Wild project adheres to the [Rust code of
+conduct](https://rust-lang.org/policies/code-of-conduct/). If you have any moderation concerns or
+queries, please email wild-mod@googlegroups.com.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
