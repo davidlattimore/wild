@@ -366,7 +366,9 @@ fn create_symlink(target: &Path, dest_path: &Path, _source_path: &Path) -> Resul
 
 #[cfg(windows)]
 fn create_symlink(target: &Path, dest_path: &Path, source_path: &Path) -> Result {
-    let is_dir = std::fs::metadata(source_path).map(|meta| meta.is_dir()).unwrap_or(false);
+    let is_dir = std::fs::metadata(source_path)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
     let result = if is_dir {
         std::os::windows::fs::symlink_dir(target, dest_path)
     } else {
