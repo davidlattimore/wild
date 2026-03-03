@@ -98,7 +98,7 @@ rustflags = [
 ## Using wild in CI
 
 If you'd like to use Wild as your linker for Rust code in CI, see
-[wild-action](https://github.com/wild-linker/wild-action).
+[wild-action](https://github.com/wild-linker/action).
 
 ## Q&A
 
