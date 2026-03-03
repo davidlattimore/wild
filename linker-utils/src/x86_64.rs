@@ -17,13 +17,16 @@ pub enum RelaxationKind {
 
     /// Transforms a mov instruction that would have loaded an absolute value to not use the GOT.
     /// The transformation will look like `mov *x(%rip), reg` ->  `mov x, reg`.
-    RexMovIndirectToAbsolute,
+    RexMovIndirectToAbsolute(u8),
+
+    // Transforms an indirect add to an absolute add.
+    RexAddIndirectToAbsolute(u8),
 
     // Transforms an indirect sub to an absolute sub.
-    RexSubIndirectToAbsolute,
+    RexSubIndirectToAbsolute(u8),
 
     // Transforms an indirect cmp to an absolute cmp.
-    RexCmpIndirectToAbsolute,
+    RexCmpIndirectToAbsolute(u8),
 
     /// Transform a call instruction like `call *x(%rip)` -> `call x(%rip)`.
     CallIndirectToRelative,
@@ -55,7 +58,7 @@ pub enum RelaxationKind {
     TlsGdToInitialExec,
 
     // Transform TLSDESC to local exec for a statically linked executables.
-    TlsDescToLocalExec,
+    TlsDescToLocalExec(u8),
 
     // Transform TLSDESC to initial exec.
     TlsDescToInitialExec,
@@ -80,28 +83,60 @@ impl RelaxationKind {
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
                 *addend = 0;
             }
-            RelaxationKind::RexMovIndirectToAbsolute => {
+            RelaxationKind::RexMovIndirectToAbsolute(inst_offset) => {
                 // Turn a PC-relative mov into an absolute mov.
                 let rex = section_bytes[offset - 3];
-                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                if inst_offset == 3 {
+                    section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                } else if inst_offset == 4 {
+                    section_bytes[offset - 3] = (rex & !0x44) | ((rex & 0x44) >> 2);
+                }
                 section_bytes[offset - 2] = 0xc7;
                 let mod_rm = &mut section_bytes[offset - 1];
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
                 *addend = 0;
             }
-            RelaxationKind::RexSubIndirectToAbsolute => {
+            RelaxationKind::RexAddIndirectToAbsolute(inst_offset) => {
+                let rex = section_bytes[offset - 3];
+                if inst_offset == 3 {
+                    section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                } else if inst_offset == 4 {
+                    section_bytes[offset - 3] = (rex & !0x44) | ((rex & 0x44) >> 2);
+                } else if inst_offset == 6 {
+                    let l5 = &mut section_bytes[offset - 5];
+                    if (*l5 & (1 << 7)) == 0 {
+                        *l5 = (*l5 | (1 << 7)) & !(1 << 5);
+                    }
+                    if (*l5 & (1 << 4)) == 0 {
+                        *l5 = *l5 | (1 << 4) | (1 << 3);
+                    }
+                }
+                section_bytes[offset - 2] = 0x81;
+                let mod_rm = &mut section_bytes[offset - 1];
+                *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
+                *addend = 0;
+            }
+            RelaxationKind::RexSubIndirectToAbsolute(inst_offset) => {
                 // Turn a PC-relative sub into an absolute sub.
                 let rex = section_bytes[offset - 3];
-                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                if inst_offset == 3 {
+                    section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                } else if inst_offset == 4 {
+                    section_bytes[offset - 3] = (rex & !0x44) | ((rex & 0x44) >> 2);
+                }
                 section_bytes[offset - 2] = 0x81;
                 let mod_rm = &mut section_bytes[offset - 1];
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xe8;
                 *addend = 0;
             }
-            RelaxationKind::RexCmpIndirectToAbsolute => {
+            RelaxationKind::RexCmpIndirectToAbsolute(inst_offset) => {
                 // Turn a PC-relative cmp into an absolute cmp.
                 let rex = section_bytes[offset - 3];
-                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                if inst_offset == 3 {
+                    section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                } else if inst_offset == 4 {
+                    section_bytes[offset - 3] = (rex & !0x44) | ((rex & 0x44) >> 2);
+                }
                 section_bytes[offset - 2] = 0x81;
                 let mod_rm = &mut section_bytes[offset - 1];
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xf8;
@@ -162,7 +197,7 @@ impl RelaxationKind {
                 ]);
                 *offset_in_section += 15;
             }
-            RelaxationKind::TlsDescToLocalExec => {
+            RelaxationKind::TlsDescToLocalExec(inst_offset) => {
                 let rex = section_bytes[offset - 3];
                 let modrm = section_bytes[offset - 1];
 
@@ -170,7 +205,13 @@ impl RelaxationKind {
                 let rex_r = (rex >> 2) & 1;
                 let reg = (modrm >> 3) & 0x7;
 
-                let rex = if rex_r == 0 { 0x48 } else { 0x49 };
+                let rex = if inst_offset == 3 {
+                    if rex_r == 0 { 0x48 } else { 0x49 }
+                } else if inst_offset == 4 {
+                    if rex_r == 0 { 0x18 } else { 0x19 }
+                } else {
+                    return;
+                };
                 section_bytes[offset - 3..offset + 4].copy_from_slice(&[
                     // mov {offset},%{reg}
                     rex,
@@ -224,12 +265,13 @@ impl RelaxationKind {
             | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
             RelaxationKind::MovIndirectToLea
             | RelaxationKind::MovIndirectToAbsolute
-            | RelaxationKind::RexMovIndirectToAbsolute
-            | RelaxationKind::RexSubIndirectToAbsolute
-            | RelaxationKind::RexCmpIndirectToAbsolute
+            | RelaxationKind::RexMovIndirectToAbsolute(_)
+            | RelaxationKind::RexAddIndirectToAbsolute(_)
+            | RelaxationKind::RexSubIndirectToAbsolute(_)
+            | RelaxationKind::RexCmpIndirectToAbsolute(_)
             | RelaxationKind::CallIndirectToRelative
             | RelaxationKind::JmpIndirectToRelative
-            | RelaxationKind::TlsDescToLocalExec
+            | RelaxationKind::TlsDescToLocalExec(_)
             | RelaxationKind::TlsDescToInitialExec
             | RelaxationKind::NoOp
             | RelaxationKind::SkipTlsDescCall => RelocationModifier::Normal,
@@ -305,6 +347,11 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
         object::elf::R_X86_64_GOTPC32_TLSDESC => (RelocationKind::TlsDesc, RELOC_4_BYTE_SIGNED),
         object::elf::R_X86_64_TLSDESC_CALL => (RelocationKind::TlsDescCall, RELOC_NONE),
         object::elf::R_X86_64_NONE => (RelocationKind::None, RELOC_NONE),
+
+        0x2b => (RelocationKind::GotRelative, RELOC_4_BYTE_SIGNED),
+        0x2c => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
+        0x32 => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
+        0x2d => (RelocationKind::TlsDesc, RELOC_4_BYTE_SIGNED),
         _ => return None,
     };
 
