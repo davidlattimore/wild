@@ -4859,6 +4859,10 @@ impl Resolution {
 /// happens in 2–3 passes.
 const MAX_RELAXATION_ITERATIONS: usize = 5;
 
+/// Sentinel value stored in `SymbolOutputInfos::addresses` for symbols whose output address is
+/// unknown.
+const SYMBOL_ADDRESS_UNRESOLVED: u64 = u64::MAX;
+
 /// Stores precomputed output-address information for every symbol.
 struct SymbolOutputInfos {
     addresses: Vec<u64>,
@@ -4871,7 +4875,7 @@ impl SymbolOutputInfos {
         per_symbol_flags: &PerSymbolFlags,
     ) -> Option<RelaxSymbolInfo> {
         let addr = *self.addresses.get(symbol_id.as_usize())?;
-        if addr == 0 {
+        if addr == SYMBOL_ADDRESS_UNRESOLVED {
             return None;
         }
         Some(RelaxSymbolInfo {
@@ -4895,7 +4899,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
     let symbol_addresses: Vec<AtomicU64> = (0..symbol_db.num_symbols())
-        .map(|_| AtomicU64::new(0))
+        .map(|_| AtomicU64::new(SYMBOL_ADDRESS_UNRESOLVED))
         .collect();
 
     let section_addresses: Vec<Vec<Vec<u64>>> = group_states
@@ -4953,7 +4957,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
                                     symbol_addresses[sym_id.as_usize()]
                                         .store(sec_addr + sym.value(), Relaxed);
                                 }
-                                Ok(None) if sym.is_absolute() && sym.value() != 0 => {
+                                Ok(None) if sym.is_absolute() => {
                                     symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
                                 }
                                 _ => continue,
