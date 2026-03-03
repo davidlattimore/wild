@@ -953,13 +953,6 @@ fn allocate_resolution(
         }
     }
 
-    if flags.needs_ifunc_got_for_address() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if output_kind.is_relocatable() {
-            mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-        }
-    }
-
     if flags.needs_got_tls_offset() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if flags.is_interposable() || output_kind.is_shared_object() {
@@ -2918,18 +2911,9 @@ pub(crate) fn process_relocation<
         // this extra entry will contain the PLT stub address so that all references to the
         // ifunc return the same address.
 
-        let relocation_needs_got = flags_to_add.needs_got();
-
         if flags.is_ifunc() {
             if !symbol_db.output_kind.is_static_executable() {
                 flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
-            }
-            if relocation_needs_got
-                && !symbol_db.output_kind.is_relocatable()
-                && flags.needs_direct()
-                && flags.needs_plt()
-            {
-                flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
             }
             // Track when the PLT stub address becomes canonical: either a PltRelative relocation
             // (e.g. R_X86_64_PLT32) or an Absolute/Relative relocation from a non-writable
@@ -4713,15 +4697,7 @@ fn create_resolution(
         if flags.is_dynamic() {
             resolution.raw_value = plt_address.get();
         }
-        // For ifunc with address equality needs, allocate 2 GOT entries
-        // - First entry: Used by PLT
-        // - Second entry: Used by GOT-relative references
-        let num_got_entries = if flags.needs_ifunc_got_for_address() {
-            2
-        } else {
-            1
-        };
-        resolution.got_address = Some(allocate_got(num_got_entries, memory_offsets));
+        resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else if flags.is_tls() {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
@@ -4780,14 +4756,6 @@ impl<'data> resolution::ResolvedFile<'data, crate::elf::File<'data>> {
 impl Resolution {
     pub(crate) fn got_address(&self) -> Result<u64> {
         Ok(self.got_address.context("Missing GOT address")?.get())
-    }
-
-    pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
-        let mut got_address = self.got_address()?;
-        if self.flags.needs_ifunc_got_for_address() {
-            got_address += elf::GOT_ENTRY_SIZE;
-        }
-        Ok(got_address)
     }
 
     pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
