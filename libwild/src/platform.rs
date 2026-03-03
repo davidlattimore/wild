@@ -1,4 +1,5 @@
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::OutputKind;
 use crate::Result;
 use crate::bail;
@@ -183,7 +184,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
     /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self>;
+    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self>;
 
     fn is_dynamic(&self) -> bool;
 
@@ -267,7 +268,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Self::DynamicLayout;
 
     fn new_epilogue_layout(
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout;
@@ -368,7 +369,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -401,7 +402,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState]);
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &ElfArgs);
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<ElfArgs>);
 
     fn finalise_object_sizes(
         object: &mut layout::ObjectLayoutState<'data>,

@@ -18,7 +18,8 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
@@ -1016,7 +1017,7 @@ impl<'data> OutputSections<'data> {
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
     ) {
         for custom in custom_sections {
             let name_str = std::str::from_utf8(custom.name.bytes()).ok();

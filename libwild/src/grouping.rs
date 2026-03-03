@@ -1,4 +1,5 @@
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
@@ -189,7 +190,7 @@ pub(crate) fn create_groups<'data, O: ObjectFile<'data>>(
 }
 
 /// Decides after how many symbols, we should start a new group.
-fn determine_symbols_per_group(num_symbols: usize, args: &ElfArgs) -> usize {
+fn determine_symbols_per_group(num_symbols: usize, args: &Args<ElfArgs>) -> usize {
     let num_threads = args.available_threads.get();
 
     // If we're running with a single thread, then we might as well put everything into a single
@@ -213,7 +214,7 @@ fn determine_symbols_per_group(num_symbols: usize, args: &ElfArgs) -> usize {
 }
 
 /// Decides the maximum number of files that we'll put into one group.
-fn determine_max_files_per_group(args: &ElfArgs) -> usize {
+fn determine_max_files_per_group(args: &Args<ElfArgs>) -> usize {
     if let Some(v) = args.files_per_group {
         return v as usize;
     }

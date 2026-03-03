@@ -16,7 +16,8 @@
 //! cargo rustc --bin rg -- -Clinker=/usr/bin/clang-15 -Clink-arg=--ld-path=wild -Clink-arg=-Wl,--write-gc-stats=/tmp/gc-stats.txt -Clink-arg=-Wl,--verbose-gc-stats
 //! ```
 
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::FileLayout;
@@ -28,7 +29,7 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use std::path::PathBuf;
 
-pub(crate) fn maybe_write_gc_stats(group_layouts: &[GroupLayout], args: &ElfArgs) -> Result {
+pub(crate) fn maybe_write_gc_stats(group_layouts: &[GroupLayout], args: &Args<ElfArgs>) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
         return Ok(());
     };
@@ -46,7 +47,7 @@ struct InputFile<'data> {
 fn write_gc_stats(
     group_layouts: &[GroupLayout],
     stats_file: &std::path::Path,
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
 ) -> Result {
     use std::io::Write as _;
 

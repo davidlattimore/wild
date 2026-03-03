@@ -79,7 +79,7 @@ use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 pub use args::Args;
-use args::ElfArgs;
+use args::linux::ElfArgs;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
@@ -91,40 +91,21 @@ use output_section_id::OutputSections;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
+pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Runs the linker. Dispatches to the appropriate format-specific linker based on `target_args`.
+/// Runs the linker and cleans up associated resources.
 pub fn run(args: args::Args) -> error::Result {
-    match args.target_args {
-        args::TargetArgs::Elf(elf_args) => run_elf(elf_args),
-        args::TargetArgs::Pe(_) => Err(anyhow::anyhow!("PE linking not yet implemented").into()),
-    }
-}
-
-/// # Safety
-/// Must not be called once threads have been spawned.
-pub unsafe fn run_in_subprocess(args: args::Args) -> ! {
-    match args.target_args {
-        args::TargetArgs::Elf(elf_args) => unsafe { subprocess::run_in_subprocess(elf_args) },
-        args::TargetArgs::Pe(_) => {
-            eprintln!("PE linking does not support fork mode");
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Runs the ELF linker and cleans up associated resources.
-pub(crate) fn run_elf(args: ElfArgs) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
-    linker.run(&args)?;
+    linker.run(args)?;
     drop(linker);
     timing::finalise_perfetto_trace()?;
     Ok(())
@@ -133,7 +114,7 @@ pub(crate) fn run_elf(args: ElfArgs) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &ElfArgs) -> Result<(), AlreadyInitialised> {
+pub fn setup_tracing(args: &args::Args) -> Result<(), AlreadyInitialised> {
     if let Some(opts) = args.time_phase_options.as_ref() {
         timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
@@ -193,18 +174,13 @@ impl Linker {
         }
     }
 
-    /// Runs the linker. The returned value isn't useful for anything, but is somewhat expensive to
-    /// drop, so we leave it up to the caller to decide when to drop it. At the point at which we
-    /// return, the output file should be usable.
-    pub fn run<'layout_inputs>(
-        &'layout_inputs self,
-        args: &'layout_inputs ActivatedArgs,
-    ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let args = &args.args;
-        match args.version_mode {
+    /// Runs the linker. Takes ownership of the activated args so it can dispatch
+    /// to the appropriate format-specific linker internally.
+    pub fn run(&self, args: ActivatedArgs) -> error::Result {
+        match args.args.version_mode {
             args::VersionMode::ExitAfterPrint => {
                 println!("{}", linker_identity());
-                return Ok(LinkerOutput { layout: None });
+                return Ok(());
             }
             args::VersionMode::Verbose => {
                 println!("{}", linker_identity());
@@ -215,19 +191,43 @@ impl Linker {
             }
         }
 
-        match args.arch {
-            arch::Architecture::X86_64 => self.link_for_arch::<elf_x86_64::ElfX86_64>(args),
-            arch::Architecture::AArch64 => self.link_for_arch::<elf_aarch64::ElfAArch64>(args),
-            arch::Architecture::RISCV64 => self.link_for_arch::<elf_riscv64::ElfRiscV64>(args),
-            arch::Architecture::LoongArch64 => {
-                self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)
+        match args.args.target_args {
+            args::TargetArgs::Elf(_) => {
+                let args = args.map_target(|t| match t {
+                    args::TargetArgs::Elf(e) => e,
+                    _ => unreachable!(),
+                });
+                let args = &args.args;
+                match args.arch {
+                    arch::Architecture::X86_64 => {
+                        self.link_for_arch::<elf_x86_64::ElfX86_64>(args)?;
+                    }
+                    arch::Architecture::AArch64 => {
+                        self.link_for_arch::<elf_aarch64::ElfAArch64>(args)?;
+                    }
+                    arch::Architecture::RISCV64 => {
+                        self.link_for_arch::<elf_riscv64::ElfRiscV64>(args)?;
+                    }
+                    arch::Architecture::LoongArch64 => {
+                        self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)?;
+                    }
+                }
+            }
+            args::TargetArgs::Pe(_) => {
+                crate::bail!("PE linking not yet implemented");
             }
         }
+
+        // We've finished linking. We consider everything from this point onwards as shutdown.
+        let (g1, g2) = timing_guard!("Shutdown");
+        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
+
+        Ok(())
     }
 
     fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
-        args: &'data ElfArgs,
+        args: &'data args::Args<ElfArgs>,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
@@ -256,7 +256,7 @@ impl Linker {
     fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data ElfArgs,
+        args: &'data args::Args<ElfArgs>,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin =
             linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;

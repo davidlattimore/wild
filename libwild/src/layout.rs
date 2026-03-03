@@ -8,8 +8,9 @@ use self::elf::Symbol;
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::args::ElfArgs;
-use crate::args::BuildIdOption;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
+use crate::args::linux::BuildIdOption;
 use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
@@ -1456,7 +1457,7 @@ impl<'data> Layout<'data> {
         i
     }
 
-    pub(crate) fn args(&self) -> &'data ElfArgs {
+    pub(crate) fn args(&self) -> &'data Args<ElfArgs> {
         self.symbol_db.args
     }
 
@@ -1737,7 +1738,7 @@ fn compute_segment_layout(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments,
     header_info: &HeaderInfo,
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -2666,7 +2667,7 @@ impl std::fmt::Display for GroupLayout<'_> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::FILES_PER_GROUP_ENV
+                crate::args::consts::FILES_PER_GROUP_ENV
             )
         }
     }
@@ -2681,7 +2682,7 @@ impl std::fmt::Display for GroupState<'_> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::FILES_PER_GROUP_ENV
+                crate::args::consts::FILES_PER_GROUP_ENV
             )
         }
     }
@@ -3171,7 +3172,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState,
         uses_tlsld: &AtomicBool,
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
@@ -3649,7 +3650,7 @@ fn should_emit_undefined_error(
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
 ) -> bool {
     if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
@@ -3722,7 +3723,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
 
 impl EpilogueLayoutState {
     fn new(
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> EpilogueLayoutState {
@@ -5215,7 +5216,7 @@ fn layout_section_parts(
     output_sections: &OutputSections,
     program_segments: &ProgramSegments,
     output_order: &OutputOrder,
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments =
         compute_segment_alignments(sizes, program_segments, output_order, args);
@@ -5332,7 +5333,7 @@ fn compute_segment_alignments(
     sizes: &OutputSectionPartMap<u64>,
     program_segments: &ProgramSegments,
     output_order: &OutputOrder,
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
 
@@ -5917,7 +5918,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut output_sections = OutputSections::with_base_address(0x1000);
     let (output_order, program_segments) = output_sections.output_order();
-    let args = ElfArgs::default();
+    let args = Args::<ElfArgs>::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts(

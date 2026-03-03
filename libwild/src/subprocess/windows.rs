@@ -1,4 +1,4 @@
-use crate::args::ElfArgs as OsArgs;
+use crate::args::Args;
 use crate::bail;
 use crate::error::Result;
 use phnt::ffi::HANDLE;
@@ -35,7 +35,7 @@ use windows_sys::Win32::System::Threading::THREAD_ALL_ACCESS;
 /// # Safety
 /// Must not be called once threads have been spawned. Calling this function from main is generally
 /// the best way to ensure this.
-pub unsafe fn run_in_subprocess(args: OsArgs) -> ! {
+pub unsafe fn run_in_subprocess(args: Args) -> ! {
     let exit_code = match subprocess_result(args) {
         Ok(code) => code,
         Err(error) => crate::error::report_error_and_exit(&error),
@@ -46,7 +46,7 @@ pub unsafe fn run_in_subprocess(args: OsArgs) -> ! {
 #[allow(non_upper_case_globals)]
 pub const NtCurrentProcess: HANDLE = -1isize as *mut std::ffi::c_void;
 
-fn subprocess_result(args: OsArgs) -> Result<i32> {
+fn subprocess_result(args: Args) -> Result<i32> {
     let (read_end, write_end) = make_pipe()?;
 
     let mut hprocess: HANDLE = std::ptr::null_mut();
@@ -65,7 +65,7 @@ fn subprocess_result(args: OsArgs) -> Result<i32> {
             crate::setup_tracing(&args)?;
             let args = args.activate_thread_pool()?;
             let linker = crate::Linker::new();
-            let _outputs = linker.run(&args)?;
+            linker.run(args)?;
             inform_parent_done(write_end);
             unsafe { NtTerminateProcess(NtCurrentProcess, STATUS_PROCESS_CLONED) };
             Ok(0)
@@ -76,7 +76,7 @@ fn subprocess_result(args: OsArgs) -> Result<i32> {
         }
         _ => {
             // Fork failure in the parent - Fallback to running linker in this process
-            crate::run_elf(args)?;
+            crate::run(args)?;
             Ok(0)
         }
     }

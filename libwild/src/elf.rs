@@ -1,4 +1,5 @@
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
@@ -246,7 +247,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
 
-    fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
@@ -655,7 +656,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -824,7 +825,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn new_epilogue_layout(
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout {
@@ -1103,7 +1104,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .sum::<usize>(), "resolved relocations");
     }
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &ElfArgs) {
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<ElfArgs>) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
@@ -1929,7 +1930,7 @@ impl ElfLayoutProperties {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
-        args: &ElfArgs,
+        args: &Args<ElfArgs>,
     ) -> Result<Self> {
         let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<P>(states)?;
@@ -2543,7 +2544,7 @@ pub(crate) struct GnuHashLayout {
 }
 
 fn create_gnu_hash_layout(
-    args: &ElfArgs,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
     dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
 ) -> Option<GnuHashLayout> {

@@ -1,6 +1,7 @@
 use crate::OutputKind;
 use crate::OutputSections;
-use crate::args::ElfArgs;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
@@ -190,7 +191,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Box<Self>> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
         let object = O::parse(input, args)
@@ -213,7 +214,7 @@ impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new(args: &'data ElfArgs, output_kind: OutputKind) -> Self {
+    pub(crate) fn new(args: &'data Args<ElfArgs>, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         // The undefined symbol must always be symbol 0.

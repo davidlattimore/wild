@@ -1,6 +1,17 @@
-use super::*;
+use super::ArgumentParser;
+use super::Input;
+use super::InputSpec;
+use super::Modifiers;
+use super::add_default_flags;
+use super::add_silently_ignored_flags;
+use super::consts::FILES_PER_GROUP_ENV;
+use super::consts::REFERENCE_LINKER_ENV;
+use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
+use crate::error::Result;
+use crate::output_kind::OutputKind;
+use crate::save_dir::SaveDir;
 use jobserver::Client;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -20,33 +31,17 @@ pub enum WindowsSubsystem {
     EfiRuntimeDriver,
 }
 
+/// PE/COFF-specific linker arguments. Common fields (output, arch, inputs, etc.)
+/// live on `Args<PeArgs>`. Access them via direct field access on `Args`,
+/// and PE-specific fields are accessible via `Deref`/`DerefMut`.
 pub struct PeArgs {
-    pub num_threads: Option<NonZeroUsize>,
-    pub(crate) save_dir: SaveDir,
-    pub(crate) inputs: Vec<Input>,
-    pub(crate) unrecognized_options: Vec<String>,
-    pub(crate) jobserver_client: Option<Client>,
-    pub(crate) files_per_group: Option<u32>,
-    pub(crate) write_layout: bool,
-    pub(crate) write_trace: bool,
-    pub(crate) output_kind: OutputKind,
-    pub(crate) allow_copy_relocations: bool,
-    /// The number of actually available threads (considering jobserver)
-    pub(crate) available_threads: NonZeroUsize,
-    should_fork: bool,
-
     // Windows-specific fields
-    pub(crate) output: Arc<Path>,
-    pub(crate) arch: Architecture,
-    pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) base_address: Option<u64>,
     pub(crate) subsystem: Option<WindowsSubsystem>,
-    pub(crate) entry_point: Option<String>,
     pub(crate) heap_size: Option<u64>,
     pub(crate) stack_size: Option<u64>,
     pub(crate) is_dll: bool,
     pub(crate) debug_info: bool,
-    pub(crate) strip_symbols: bool,
     pub(crate) def_file: Option<PathBuf>,
     pub(crate) import_lib: Option<PathBuf>,
     pub(crate) manifest_file: Option<PathBuf>,
@@ -65,31 +60,12 @@ pub struct PeArgs {
 impl Default for PeArgs {
     fn default() -> Self {
         Self {
-            save_dir: SaveDir::default(),
-            inputs: Vec::new(),
-            num_threads: None,
-            unrecognized_options: Vec::new(),
-            jobserver_client: None,
-            files_per_group: None,
-            write_layout: false,
-            write_trace: false,
-            output_kind: OutputKind::StaticExecutable(RelocationModel::NonRelocatable),
-            allow_copy_relocations: true,
-            available_threads: NonZeroUsize::new(1).unwrap(),
-            should_fork: false,
-
-            // Windows-specific defaults
-            output: Arc::from(Path::new("a.exe")),
-            arch: Architecture::X86_64,
-            lib_search_path: Vec::new(),
             base_address: None,
             subsystem: None,
-            entry_point: None,
             heap_size: None,
             stack_size: None,
             is_dll: false,
             debug_info: false,
-            strip_symbols: false,
             def_file: None,
             import_lib: None,
             manifest_file: None,
@@ -107,66 +83,14 @@ impl Default for PeArgs {
     }
 }
 
-impl super::PrivateArgs for PeArgs {
-    fn new_default() -> Self {
-        Self::default()
-    }
 
-    fn save_dir_mut(&mut self) -> &mut SaveDir {
-        &mut self.save_dir
-    }
-
-    fn inputs_mut(&mut self) -> &mut Vec<Input> {
-        &mut self.inputs
-    }
-
-    fn unrecognized_options_mut(&mut self) -> &mut Vec<String> {
-        &mut self.unrecognized_options
-    }
-
-    fn files_per_group_mut(&mut self) -> &mut Option<u32> {
-        &mut self.files_per_group
-    }
-
-    fn jobserver_client_mut(&mut self) -> &mut Option<Client> {
-        &mut self.jobserver_client
-    }
-
-    fn write_layout_mut(&mut self) -> &mut bool {
-        &mut self.write_layout
-    }
-
-    fn write_trace_mut(&mut self) -> &mut bool {
-        &mut self.write_trace
-    }
-
-    fn setup_argument_parser() -> ArgumentParser<Self>
-    where
-        Self: Sized,
-    {
-        setup_windows_argument_parser()
-    }
-
-    fn has_option_prefix(arg: &str) -> bool {
-        arg.starts_with('/') || arg.starts_with('-')
-    }
-
-    fn strip_option<'a>(arg: &'a str) -> Option<&'a str> {
-        arg.strip_prefix('/').or(arg.strip_prefix('-'))
-    }
-
-    fn find_separator(stripped: &str) -> Option<usize> {
-        stripped.find(':')
-    }
-}
-
-impl PeArgs {
-    pub fn should_fork(&self) -> bool {
-        self.should_fork
-    }
-
+impl super::Args<PeArgs> {
     pub fn output_kind(&self) -> OutputKind {
-        self.output_kind
+        if !self.should_output_executable {
+            OutputKind::SharedObject
+        } else {
+            OutputKind::StaticExecutable(self.relocation_model)
+        }
     }
 
     /// Check if a specific library should be ignored due to /NODEFAULTLIB
@@ -188,7 +112,7 @@ impl PeArgs {
 /// Parse Windows linker arguments from the given input iterator.
 pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
     input: F,
-) -> Result<PeArgs> {
+) -> Result<super::Args<PeArgs>> {
     use crate::input_data::MAX_FILES_PER_GROUP;
 
     // SAFETY: Should be called early before other descriptors are opened.
@@ -206,7 +130,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         );
     }
 
-    let mut args = PeArgs {
+    let mut args = super::Args::<PeArgs> {
+        output: Arc::from(Path::new("a.exe")),
+        should_write_linker_identity: false,
         files_per_group,
         jobserver_client,
         ..Default::default()
@@ -249,7 +175,7 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .declare_with_param()
         .long("ALIGN")
         .help("/ALIGN - Specifies the alignment of each section.")
-        .execute(|_args: &mut PeArgs, _modifier_stack, _value| {
+        .execute(|_args: &mut super::Args<PeArgs>, _modifier_stack, _value| {
             unimplemented_option("/ALIGN")
         });
     // /ALLOWBIND - Specifies that a DLL can't be bound.
@@ -454,7 +380,7 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .help("/DLL - Builds a DLL.")
         .execute(|args, _modifier_stack| {
             args.is_dll = true;
-            args.output_kind = OutputKind::SharedObject;
+            args.should_output_executable = false;
             Ok(())
         });
     // /DRIVER - Creates a kernel mode driver.
@@ -497,7 +423,7 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .long("ENTRY")
         .help("/ENTRY - Sets the starting address.")
         .execute(|args, _modifier_stack, value| {
-            args.entry_point = Some(value.to_string());
+            args.entry = Some(value.to_string());
             Ok(())
         });
     // /ERRORREPORT - Deprecated. Error reporting is controlled by Windows Error Reporting (WER) settings.
@@ -1212,7 +1138,7 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .declare_with_optional_param()
         .long("WX")
         .help("/WX - Treats linker warnings as errors.")
-        .execute(|_args: &mut PeArgs, _modifier_stack, _value| {
+        .execute(|_args: &mut super::Args<PeArgs>, _modifier_stack, _value| {
             unimplemented_option("/WX")
         });
 
@@ -1277,13 +1203,16 @@ mod tests {
         }));
     }
 
-    /// Extract PeArgs from unified Args, panicking if it's not the Pe variant.
+    /// Extract Args<PeArgs> from unified Args, panicking if it's not the Pe variant.
     #[track_caller]
-    fn unwrap_pe(args: crate::args::Args) -> PeArgs {
-        match args.target_args {
+    fn unwrap_pe(args: crate::args::Args) -> crate::args::Args<PeArgs> {
+        args.map_target(|t| match t {
             crate::args::TargetArgs::Pe(pe) => pe,
-            other => panic!("Expected Pe variant, got {:?}", std::mem::discriminant(&other)),
-        }
+            other => panic!(
+                "Expected Pe variant, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        })
     }
 
     #[test]
@@ -1500,21 +1429,21 @@ mod tests {
         let args_upper = &["--target=x86_64-pc-windows-msvc","/ENTRY:main", "/OUT:test.exe"];
         let result_upper = unwrap_pe(crate::args::parse(|| args_upper.iter())
             .unwrap());
-        assert_eq!(result_upper.entry_point, Some("main".to_string()));
+        assert_eq!(result_upper.entry, Some("main".to_string()));
         assert_eq!(result_upper.output.as_ref(), Path::new("test.exe"));
 
         // Test lowercase /entry:main and /out:test.exe
         let args_lower = &["--target=x86_64-pc-windows-msvc","/entry:main", "/out:test.exe"];
         let result_lower = unwrap_pe(crate::args::parse(|| args_lower.iter())
             .unwrap());
-        assert_eq!(result_lower.entry_point, Some("main".to_string()));
+        assert_eq!(result_lower.entry, Some("main".to_string()));
         assert_eq!(result_lower.output.as_ref(), Path::new("test.exe"));
 
         // Test mixed case /Entry:main and /Out:test.exe
         let args_mixed = &["--target=x86_64-pc-windows-msvc","/Entry:main", "/Out:test.exe"];
         let result_mixed = unwrap_pe(crate::args::parse(|| args_mixed.iter())
             .unwrap());
-        assert_eq!(result_mixed.entry_point, Some("main".to_string()));
+        assert_eq!(result_mixed.entry, Some("main".to_string()));
         assert_eq!(result_mixed.output.as_ref(), Path::new("test.exe"));
     }
 
