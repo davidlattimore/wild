@@ -215,12 +215,43 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
             object::elf::R_RISCV_HI20 => {
                 if let Some(deltas) = relax_deltas {
                     let input_offset = deltas.output_to_input_offset(offset_in_section);
+                    if deltas.has_delta_at(input_offset) {
+                        // The entire lui was deleted. Emit R_RISCV_NONE and skip the following
+                        // R_RISCV_RELAX.
+                        return Some(Relaxation {
+                            kind: RelaxationKind::Hi20Delete,
+                            rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
+                            mandatory: false,
+                        });
+                    }
                     if deltas.has_delta_at(input_offset + 2) {
                         return Some(Relaxation {
                             kind: RelaxationKind::Hi20ToCLui,
                             rel_info: RelaxationKind::clui_rel_info(),
                             mandatory: false,
                         });
+                    }
+                }
+            }
+            object::elf::R_RISCV_LO12_I | object::elf::R_RISCV_LO12_S => {
+                if let Some(deltas) = relax_deltas {
+                    let input_offset = deltas.output_to_input_offset(offset_in_section);
+                    if input_offset >= 4 && deltas.delta_bytes_at(input_offset - 4) == 4 {
+                        let off = offset_in_section as usize;
+                        if off + 4 <= section_bytes.len() {
+                            let word =
+                                u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
+                            let rd = (word >> 7) & 0x1f;
+                            let rs1 = (word >> 15) & 0x1f;
+                            if rd == rs1 {
+                                return Some(Relaxation {
+                                    kind: RelaxationKind::Lo12Rs1ToZero,
+                                    rel_info: ElfRiscV64::relocation_from_raw(relocation_kind)
+                                        .unwrap(),
+                                    mandatory: false,
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -386,24 +417,25 @@ fn collect_relaxation_deltas<R: Relocation>(
                     }
                 } else if let Some((hi20_offset, sym_idx, addend)) = prev_hi20
                     && rel.offset() == hi20_offset
-                    && !existing_deltas.is_some_and(|d| d.has_delta_at(hi20_offset + 2))
+                    && !existing_deltas.is_some_and(|d| {
+                        d.has_delta_at(hi20_offset) || d.has_delta_at(hi20_offset + 2)
+                    })
                     && let Some(info) = resolve_symbol(sym_idx)
                     && !info.is_interposable
                 {
+                    let output_address = info.output_address;
                     let off = hi20_offset as usize;
                     if off + 4 <= section_bytes.len() {
                         let lui_word =
                             u32::from_le_bytes(section_bytes[off..off + 4].try_into().unwrap());
                         let rd = (lui_word >> 7) & 0x1f;
-                        if RelaxationKind::rd_valid_for_clui(rd) {
-                            let value = (info.output_address as i64 + addend) as u64;
+                        let value = (output_address as i64 + addend) as u64;
+                        if RelaxationKind::hi20_is_zero(value) {
+                            raw_deltas.push((hi20_offset, 4));
+                        } else if RelaxationKind::rd_valid_for_clui(rd) {
                             if RelaxationKind::hi20_fits_clui(value) {
-                                // Delete the last 2 bytes of the 4-byte lui instruction.
                                 raw_deltas.push((hi20_offset + 2, 2));
                             } else {
-                                // Compute how far the hi20 value is from the c.lui immediate range
-                                // ([-32, -1] ∪ [1, 31]). The hi20 field changes by 1 for every
-                                // 0x1000 change in value.
                                 let hi20 = value.wrapping_add(0x800) >> 12;
                                 let hi20_signed = hi20 as i64;
                                 let margin = if hi20_signed > 31 {

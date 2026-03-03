@@ -3581,6 +3581,7 @@ fn integration_test(
         "riscv-call-relaxation.s",
         "riscv-cross-object-call-relaxation.s",
         "riscv-hi20-relaxation.s",
+        "riscv-hi20-lui-deletion.s",
         "segment-end-syms.c",
         "linker-script-filename-match.c"
     )]
