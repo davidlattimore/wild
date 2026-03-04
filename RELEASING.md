@@ -26,4 +26,4 @@ Maintainers can then edit the release notes associated with the release.
 
 If everything looks good, publish the release.
 
-Update [wild-action](https://github.com/wild-linker/wild-action).
+Update [wild-action](https://github.com/wild-linker/action).

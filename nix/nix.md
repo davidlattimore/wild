@@ -15,7 +15,7 @@ until NixOS 25.11 is branched, unstable Nixpkgs is required.
 
     # Include Wild
     wild = {
-      url = "github:davidlattimore/wild";
+      url = "github:wild-linker/wild";
       # If using the Wild Flake (not required)
       # inputs.nixpkgs.follows = "nixpkgs";
       #
