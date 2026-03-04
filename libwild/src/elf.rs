@@ -32,6 +32,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
+use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -54,6 +55,7 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentType;
+use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -1403,6 +1405,21 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             mem_sizes,
             resolution,
         )
+    }
+
+    fn update_segment_keep_list(
+        program_segments: &ProgramSegments,
+        keep_segments: &mut [bool],
+        args: &Args,
+    ) {
+        // If relro is disabled, then discard the relro segment.
+        if !args.relro {
+            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+                if segment_def.segment_type == pt::GNU_RELRO {
+                    *keep = false;
+                }
+            }
+        }
     }
 }
 

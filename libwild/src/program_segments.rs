@@ -93,6 +93,10 @@ impl ProgramSegmentDef {
     pub(crate) fn always_keep(self) -> bool {
         self.segment_type == pt::PHDR
     }
+
+    pub(crate) fn is_loadable(self) -> bool {
+        self.segment_type == pt::LOAD
+    }
 }
 
 impl ProgramSegments {
