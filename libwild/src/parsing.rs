@@ -319,9 +319,9 @@ impl<'data> Prelude<'data> {
             b"__executable_start",
         ));
 
-        // etext aliases
+        // etext alias
         symbol_definitions.push(InternalSymDefInfo::notype(
-            SymbolPlacement::SectionEnd(output_section_id::RODATA),
+            SymbolPlacement::SectionEnd(output_section_id::TEXT),
             b"etext",
         ));
 
