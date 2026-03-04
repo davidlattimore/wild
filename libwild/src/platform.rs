@@ -1,5 +1,4 @@
 use crate::args::Args;
-use crate::args::linux::ElfArgs;
 use crate::OutputKind;
 use crate::Result;
 use crate::bail;
@@ -63,7 +62,7 @@ pub(crate) trait Platform<'data>: 'data {
     fn tp_offset_start(layout: &Layout<'data>) -> u64;
 
     // Classify a GNU property note.
-    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
+    fn get_property_class(property_type: u32) -> Option<PropertyClass>;
 
     // Merge e_flags of the input files and provide an error
     // if the flags are not compatible.
@@ -89,7 +88,7 @@ pub(crate) trait Platform<'data>: 'data {
     fn collect_relaxation_deltas(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        // TODO: Change to be non-ELF specific.
+        // TODO: Change to be non-ELF specific once layout.rs is genericised.
         _relocations: crate::elf::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
@@ -180,11 +179,14 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VersionNames;
 
+    /// The format-specific args type (e.g. `ElfArgs` or `PeArgs`).
+    type ArgsType: Send + Sync + 'static;
+
     fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> Result<Self>;
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
     /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self>;
+    fn parse(input: &InputBytes<'data>, args: &Args<Self::ArgsType>) -> Result<Self>;
 
     fn is_dynamic(&self) -> bool;
 
@@ -268,7 +270,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Self::DynamicLayout;
 
     fn new_epilogue_layout(
-        args: &Args<ElfArgs>,
+        args: &Args<Self::ArgsType>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout;
@@ -297,7 +299,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut crate::elf::EpilogueLayout,
+        state: &mut Self::EpilogueLayout,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
@@ -307,7 +309,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         epilogue_state: &mut Self::EpilogueLayout,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &crate::elf::ElfLayoutProperties,
+        common_state: &Self::LayoutProperties,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result;
@@ -369,7 +371,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &Args<ElfArgs>,
+        args: &Args<Self::ArgsType>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -402,7 +404,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState]);
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<ElfArgs>);
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<Self::ArgsType>);
 
     fn finalise_object_sizes(
         object: &mut layout::ObjectLayoutState<'data>,
@@ -562,6 +564,22 @@ pub(crate) trait SectionAttributes: std::fmt::Debug + Send + Sync + 'static {
 }
 
 pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);
+
+pub(crate) enum PropertyClass {
+    // A bit in the output pr_data is set if it is set in any relocatable input.
+    // If all bits in the output pr_data field are zero, this property should be removed from
+    // output.
+    Or,
+    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
+    // fields. If all bits in the output pr_data field are zero, this property should be
+    // removed from output.
+    And,
+    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
+    // fields and this property is present in all relocatable input files. When all bits in
+    // the output pr_data field are zero, this property should not be removed from output to
+    // indicate it has zero in all bits.
+    AndOr,
+}
 
 #[derive(Debug)]
 pub(crate) struct SourceInfoDetails {

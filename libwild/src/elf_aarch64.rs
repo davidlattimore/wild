@@ -1,5 +1,5 @@
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::elf::PropertyClass;
+use crate::platform::PropertyClass;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;

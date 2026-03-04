@@ -131,7 +131,7 @@ pub(crate) struct InputLinkerScript<'data> {
 }
 
 struct TemporaryState<'data, O: ObjectFile<'data>> {
-    args: &'data Args<ElfArgs>,
+    args: &'data Args<O::ArgsType>,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
     path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
@@ -244,7 +244,7 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn load_inputs<O: ObjectFile<'data>>(
         &mut self,
         inputs: &[Input],
-        args: &'data Args<ElfArgs>,
+        args: &'data Args<O::ArgsType>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, O>> {
         timing_phase!("Open input files");
@@ -407,9 +407,9 @@ impl<'data> FileLoader<'data> {
     }
 }
 
-fn process_linker_script<'data>(
+fn process_linker_script<'data, T>(
     input_file: &'data InputFile,
-    args: &Args<ElfArgs>,
+    args: &Args<T>,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
@@ -699,7 +699,7 @@ fn read_script_data<'data>(
 }
 
 impl Input {
-    fn path(&self, args: &Args<ElfArgs>) -> Result<InputPath> {
+    fn path<T>(&self, args: &Args<T>) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()

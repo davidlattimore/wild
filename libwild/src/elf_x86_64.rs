@@ -5,7 +5,7 @@
 
 use crate::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::elf::PropertyClass;
+use crate::platform::PropertyClass;
 use crate::error;
 use crate::error::Result;
 use crate::value_flags::ValueFlags;
@@ -93,7 +93,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         layout.tls_end_address()
     }
 
-    fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass> {
+    fn get_property_class(property_type: u32) -> Option<PropertyClass> {
         match property_type {
             GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => {
                 Some(PropertyClass::And)

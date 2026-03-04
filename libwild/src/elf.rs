@@ -22,6 +22,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::platform;
 use crate::platform::CommonSymbol;
+use crate::platform::PropertyClass;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
@@ -223,6 +224,7 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
+    type ArgsType = ElfArgs;
     type Symbol = Symbol;
     type SectionHeader = SectionHeader;
     type SectionIterator = core::slice::Iter<'data, Self::SectionHeader>;
@@ -1841,22 +1843,6 @@ impl std::fmt::Display for SymDebug<'_> {
 
         write!(f, "{vis} {kind}")
     }
-}
-
-pub(crate) enum PropertyClass {
-    // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the output pr_data field are zero, this property should be removed from
-    // output.
-    Or,
-    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
-    // fields. If all bits in the output pr_data field are zero, this property should be
-    // removed from output.
-    And,
-    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
-    // fields and this property is present in all relocatable input files. When all bits in
-    // the output pr_data field are zero, this property should not be removed from output to
-    // indicate it has zero in all bits.
-    AndOr,
 }
 
 #[derive(Debug)]
