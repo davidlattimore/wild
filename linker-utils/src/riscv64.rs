@@ -31,6 +31,13 @@ pub enum RelaxationKind {
 
     /// Rewrite 4-byte `lui rd, imm` to 2-byte `c.lui rd, nzimm`.
     Hi20ToCLui,
+
+    /// Delete the `lui` instruction entirely when `%hi(value)` is zero.
+    Hi20Delete,
+
+    /// Rewrite the `rs1` field of an I-type or S-type instruction from the deleted `lui`'s `rd` to
+    /// `x0`.
+    Lo12Rs1ToZero,
 }
 
 impl RelaxationKind {
@@ -56,15 +63,32 @@ impl RelaxationKind {
                 let clui_base: u16 = 0x6001 | (rd << 7);
                 section_bytes[offset..offset + 2].copy_from_slice(&clui_base.to_le_bytes());
             }
+            RelaxationKind::Hi20Delete => {}
+            RelaxationKind::Lo12Rs1ToZero => {
+                let word = u32_from_slice(&section_bytes[offset..]);
+                let word = word & !RS1_MASK;
+                section_bytes[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
+            }
         }
     }
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
         match self {
-            RelaxationKind::CallToJal => RelocationModifier::SkipNextRelocation,
+            RelaxationKind::CallToJal | RelaxationKind::Hi20Delete => {
+                RelocationModifier::SkipNextRelocation
+            }
             _ => RelocationModifier::Normal,
         }
+    }
+
+    /// Returns true if the HI20 value is zero, meaning the `lui` instruction can be deleted
+    /// entirely and the following LO12 instruction's rs1 changed to x0.
+    #[must_use]
+    pub fn hi20_is_zero(value: u64) -> bool {
+        let hi20 = value.wrapping_add(0x800) >> 12;
+
+        (hi20 & 0xf_ffff) == 0
     }
 
     /// Returns true if the HI20 value (i.e. `(value + 0x800) >> 12`) fits in the
@@ -410,6 +434,9 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         bias: 0,
     })
 }
+
+/// Mask for the rs1 field (bits [19:15]) in R/I/S/B-type instructions.
+const RS1_MASK: u32 = 0x1f << 15;
 
 const UTYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_0000_0000_1111_1111_1111;
 const ITYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_1111_1111_1111_1111_1111;

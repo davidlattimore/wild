@@ -88,6 +88,14 @@ impl SectionRelaxDeltas {
             .is_ok()
     }
 
+    /// Returns the number of bytes deleted at `offset`, or 0 if there is no delta at that offset.
+    #[must_use]
+    pub fn delta_bytes_at(&self, offset: u64) -> u32 {
+        self.deltas
+            .binary_search_by_key(&offset, |d| d.input_offset)
+            .map_or(0, |i| self.deltas[i].bytes_deleted)
+    }
+
     // Converts an input section offset to the corresponding output section offset by subtracting
     // the cumulative bytes deleted strictly before `input_offset`.
     #[must_use]
