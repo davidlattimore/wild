@@ -665,7 +665,11 @@ impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
             })));
         }
 
-        if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
+        if input_ref.is_archive_entry()
+            && kind != FileKind::ElfObject
+            && kind != FileKind::CoffObject
+            && kind != FileKind::CoffImport
+        {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
 
