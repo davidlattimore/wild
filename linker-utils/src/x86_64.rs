@@ -97,10 +97,11 @@ impl RelaxationKind {
                 *addend = 0;
             }
             RelaxationKind::RexAddIndirectToAbsolute(inst_offset) => {
-                let rex = section_bytes[offset - 3];
                 if inst_offset == 3 {
+                    let rex = section_bytes[offset - 3];
                     section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
                 } else if inst_offset == 4 {
+                    let rex = section_bytes[offset - 3];
                     section_bytes[offset - 3] = (rex & !0x44) | ((rex & 0x44) >> 2);
                 } else if inst_offset == 6 {
                     let l5 = &mut section_bytes[offset - 5];

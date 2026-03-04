@@ -204,8 +204,10 @@ impl Config {
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
                 "section.eh_frame.flags",
+                "rel.R_X86_64_32.R_X86_64_32",
                 // TLSDESC relaxations aren't yet implemented.
                 "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
+                "rel.match_failed.R_X86_64_CODE_4_GOTPC32_TLSDESC",
                 "rel.missing-opt.R_X86_64_TLSDESC_CALL.SkipTlsDescCall.*",
                 // Wild eliminates GOTPCRELX in statically linked executables even for undefined
                 // symbols, whereas other linkers don't. This is a valid optimisation that other

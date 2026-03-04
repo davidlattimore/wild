@@ -26,7 +26,7 @@ impl Arch for X86_64 {
 
     type RawInstruction = iced_x86::Instruction;
 
-    const MAX_RELAX_MODIFY_BEFORE: u64 = 4;
+    const MAX_RELAX_MODIFY_BEFORE: u64 = 6;
     const MAX_RELAX_MODIFY_AFTER: u64 = 19;
 
     fn next_relocation_modifier(
@@ -40,6 +40,7 @@ impl Arch for X86_64 {
             Self::RelaxationKind::MovIndirectToLea => RelaxationByteRange::new(2, 6),
             Self::RelaxationKind::MovIndirectToAbsolute => RelaxationByteRange::new(2, 6),
             Self::RelaxationKind::RexMovIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexAddIndirectToAbsolute(6) => RelaxationByteRange::new(6, 10),
             Self::RelaxationKind::RexAddIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::RexSubIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::RexCmpIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
