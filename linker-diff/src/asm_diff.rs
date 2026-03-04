@@ -835,10 +835,16 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .reference
         .referent
         .matches(resolutions[1].reference.referent)
-        && resolutions[0].reference.indirection == Indirection::Got
-        && resolutions[1].reference.indirection == Indirection::GotPltGot
     {
-        return "rel.missing-got-plt-got".to_owned();
+        if resolutions[0].reference.indirection == Indirection::Got
+            && resolutions[1].reference.indirection == Indirection::GotPltGot
+        {
+            return "rel.missing-got-plt-got".to_owned();
+        } else if resolutions[0].reference.indirection == Indirection::GotPltGot
+            && resolutions[1].reference.indirection == Indirection::Got
+        {
+            return "rel.extra-got-plt-got".to_owned();
+        }
     }
 
     // We might have failed to match one of the reference linker outputs, so find the first
@@ -2098,7 +2104,11 @@ impl<'data> RelaxationTester<'data> {
                         }
                     }
 
-                    value_kind = ValueKind::Unwrapped(inner_kind);
+                    if inner_kind == BasicValueKind::Pointer && referent.is_none() {
+                        value_kind = ValueKind::OptionalPlt;
+                    } else {
+                        value_kind = ValueKind::Unwrapped(inner_kind);
+                    }
                 }
                 ValueKind::Unwrapped(_) => break,
             }
