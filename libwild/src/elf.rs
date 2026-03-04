@@ -10,7 +10,7 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
-use crate::layout;
+use crate::elf_layout;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::OutputRecordLayout;
 use crate::output_kind::OutputKind;
@@ -25,7 +25,7 @@ use crate::platform::CommonSymbol;
 use crate::platform::PropertyClass;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
-use crate::platform::Platform;
+use crate::platform::ElfPlatform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::resolution::LoadedMetrics;
@@ -657,7 +657,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, P: ElfPlatform<'data>>(
         args: &Args<ElfArgs>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -1001,12 +1001,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data>,
-        common: &mut crate::layout::CommonGroupState<'data>,
+    fn load_exception_frame_data<'scope, P: ElfPlatform<'data>>(
+        object: &mut crate::elf_layout::ObjectLayoutState<'data>,
+        common: &mut crate::elf_layout::CommonGroupState<'data>,
         eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_>,
-        queue: &mut crate::layout::LocalWorkQueue,
+        resources: &'scope crate::elf_layout::GraphResources<'data, '_>,
+        queue: &mut crate::elf_layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
         let file_symbol_id_range = object.symbol_id_range;
@@ -1053,12 +1053,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
-        queue: &mut layout::LocalWorkQueue,
+    fn non_empty_section_loaded<'scope, P: ElfPlatform<'data>>(
+        object: &mut elf_layout::ObjectLayoutState<'data>,
+        common: &mut elf_layout::CommonGroupState<'data>,
+        queue: &mut elf_layout::LocalWorkQueue,
         unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope>,
+        resources: &'scope elf_layout::GraphResources<'data, 'scope>,
         scope: &Scope<'scope>,
     ) -> Result {
         let sizes = match &object.format_specific_layout_state.exception_frames {
@@ -1094,7 +1094,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn finalise_find_required_sections(groups: &[layout::GroupState]) {
+    fn finalise_find_required_sections(groups: &[elf_layout::GroupState]) {
         tracing::debug!(target: "metrics", total = groups
             .iter()
             .map(|g| g.common.format_specific.exception_frame_count)
@@ -1106,15 +1106,15 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             .sum::<usize>(), "resolved relocations");
     }
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<ElfArgs>) {
+    fn pre_finalise_sizes_prelude(common: &mut elf_layout::CommonGroupState, args: &Args<ElfArgs>) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
     }
 
     fn finalise_object_sizes(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState,
+        object: &mut elf_layout::ObjectLayoutState<'data>,
+        common: &mut elf_layout::CommonGroupState,
     ) {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
@@ -1135,7 +1135,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn finalise_object_layout(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &elf_layout::ObjectLayoutState<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         memory_offsets.increment(
@@ -1145,7 +1145,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn compute_object_addresses(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &elf_layout::ObjectLayoutState<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         // Note, this is currently identical to finalise_object_layout above. The two functions are
@@ -1160,14 +1160,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 fn process_eh_frame_relocations<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    P: ElfPlatform<'data>,
     R: Relocation,
 >(
-    object: &mut layout::ObjectLayoutState<'data>,
-    common: &mut layout::CommonGroupState<'data>,
+    object: &mut elf_layout::ObjectLayoutState<'data>,
+    common: &mut elf_layout::CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
-    resources: &'scope layout::GraphResources<'data, '_>,
-    queue: &mut layout::LocalWorkQueue,
+    resources: &'scope elf_layout::GraphResources<'data, '_>,
+    queue: &mut elf_layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
     relocations: &R::Sequence<'data>,
@@ -1209,7 +1209,7 @@ fn process_eh_frame_relocations<
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                elf_layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     rel,
@@ -1293,14 +1293,14 @@ fn process_eh_frame_relocations<
 fn process_section_exception_frames<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    P: ElfPlatform<'data>,
     R: Relocation,
 >(
-    object: &layout::ObjectLayoutState<'data>,
+    object: &elf_layout::ObjectLayoutState<'data>,
     frame_index: Option<FrameIndex>,
-    common: &mut layout::CommonGroupState<'data>,
-    resources: &'scope layout::GraphResources<'data, '_>,
-    queue: &mut layout::LocalWorkQueue,
+    common: &mut elf_layout::CommonGroupState<'data>,
+    resources: &'scope elf_layout::GraphResources<'data, '_>,
+    queue: &mut elf_layout::LocalWorkQueue,
     scope: &Scope<'scope>,
     exception_frames: &[ExceptionFrame<'data, R>],
 ) -> Result<EhFrameSizes> {
@@ -1319,7 +1319,7 @@ fn process_section_exception_frames<
         // section.
         if let Some(eh_frame_section) = object.format_specific_layout_state.eh_frame_section {
             for rel in frame_data.relocations.rel_iter() {
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                elf_layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     &rel,
@@ -1913,7 +1913,7 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: ElfPlatform<'data>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
         args: &Args<ElfArgs>,
@@ -1930,7 +1930,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
+fn merge_gnu_property_notes<'states, 'data: 'states, P: ElfPlatform<'data>>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -1994,7 +1994,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
+fn merge_eflags<'files, 'data: 'files, P: ElfPlatform<'data>>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
@@ -2004,7 +2004,7 @@ fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
     )?))
 }
 
-fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform<'data>>(
+fn merge_riscv_attributes<'groups, 'data: 'groups, P: ElfPlatform<'data>>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");

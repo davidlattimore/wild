@@ -10,7 +10,7 @@ use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::InputBytes;
-use crate::layout;
+use crate::elf_layout;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::OutputRecordLayout;
 use crate::output_section_id::OutputSectionId;
@@ -29,13 +29,43 @@ use object::read::coff::ImageSymbol;
 use rayon::Scope;
 use std::borrow::Cow;
 
-// ── PE architecture marker types ────────────────────────────────────────────
+// ── PE Platform ─────────────────────────────────────────────────────────────
 
-/// Marker type for PE/COFF linking targeting x86_64.
-pub(crate) struct CoffX86_64;
+pub(crate) struct PePlatform;
 
-/// Marker type for PE/COFF linking targeting AArch64.
-pub(crate) struct CoffAArch64;
+impl<'data> platform::Platform<'data> for PePlatform {
+    type File = CoffObjectFile<'data>;
+
+    fn finish_link(
+        _file_loader: &mut crate::input_data::FileLoader<'data>,
+        args: &'data Args<PeArgs>,
+        _plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+        mut symbol_db: SymbolDb<'data, CoffObjectFile<'data>>,
+        mut per_symbol_flags: crate::value_flags::PerSymbolFlags,
+        resolver: crate::resolution::Resolver<'data, CoffObjectFile<'data>>,
+        mut output_sections: OutputSections<'data>,
+        layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+        output_kind: crate::OutputKind,
+    ) -> Result<Option<crate::layout::Layout<'data>>> {
+        let layout_rules = layout_rules_builder.build();
+        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
+            &mut symbol_db,
+            &mut per_symbol_flags,
+            &mut output_sections,
+            &layout_rules,
+        )?;
+
+        let pe_layout = crate::pe_writer::compute_layout(&symbol_db, &resolved, args)?;
+
+        let mut output = crate::file_writer::Output::new(args, output_kind);
+        output.set_size(pe_layout.file_size);
+        output.write(&pe_layout, |sized_output, layout| {
+            crate::pe_writer::write(sized_output, layout)
+        })?;
+
+        Ok(Some(pe_layout.into_erased()))
+    }
+}
 
 // ── Core COFF object file type ──────────────────────────────────────────────
 
@@ -525,23 +555,18 @@ impl<'data> platform::ObjectFile<'data> for CoffObjectFile<'data> {
     fn enumerate_symbols(
         &self,
     ) -> impl Iterator<Item = (object::SymbolIndex, &'data CoffSymbol)> {
-        let mut i = 0;
-        let symbols = self.symbols;
-        std::iter::from_fn(move || {
-            while i < symbols.len() {
-                let idx = i;
-                let sym = &symbols[idx];
-                i += 1 + sym.number_of_aux_symbols as usize;
-                if sym.storage_class != pe::IMAGE_SYM_CLASS_NULL || idx == 0 {
-                    return Some((object::SymbolIndex(idx), sym));
-                }
-            }
-            None
-        })
+        // We must yield one entry per symbol table slot (including auxiliary symbol
+        // padding entries) so that the count matches `num_symbols()`. Auxiliary
+        // entries have storage_class == IMAGE_SYM_CLASS_NULL and section_number == 0,
+        // so they are treated as harmless local symbols by the symbol loading code.
+        self.symbols
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (object::SymbolIndex(i), s))
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data CoffSymbol> {
-        self.enumerate_symbols().map(|(_, s)| s)
+        self.symbols.iter()
     }
 
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data CoffSymbol> {
@@ -831,7 +856,7 @@ impl<'data> platform::ObjectFile<'data> for CoffObjectFile<'data> {
         Ok(())
     }
 
-    fn create_layout_properties<'states, 'files, P: platform::Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, P: platform::ElfPlatform<'data>>(
         _args: &Args<PeArgs>,
         _objects: impl Iterator<Item = &'files Self>,
         _states: impl Iterator<Item = &'states ()> + Clone,
@@ -843,23 +868,23 @@ impl<'data> platform::ObjectFile<'data> for CoffObjectFile<'data> {
         Ok(())
     }
 
-    fn load_exception_frame_data<'scope, P: platform::Platform<'data, File = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data>,
-        _common: &mut layout::CommonGroupState<'data>,
+    fn load_exception_frame_data<'scope, P: platform::ElfPlatform<'data>>(
+        _object: &mut elf_layout::ObjectLayoutState<'data>,
+        _common: &mut elf_layout::CommonGroupState<'data>,
         _eh_frame_section_index: object::SectionIndex,
-        _resources: &'scope layout::GraphResources<'data, '_>,
-        _queue: &mut layout::LocalWorkQueue,
+        _resources: &'scope elf_layout::GraphResources<'data, '_>,
+        _queue: &mut elf_layout::LocalWorkQueue,
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
     }
 
-    fn non_empty_section_loaded<'scope, P: platform::Platform<'data, File = Self>>(
-        _object: &mut layout::ObjectLayoutState<'data>,
-        _common: &mut layout::CommonGroupState<'data>,
-        _queue: &mut layout::LocalWorkQueue,
+    fn non_empty_section_loaded<'scope, P: platform::ElfPlatform<'data>>(
+        _object: &mut elf_layout::ObjectLayoutState<'data>,
+        _common: &mut elf_layout::CommonGroupState<'data>,
+        _queue: &mut elf_layout::LocalWorkQueue,
         _unloaded: UnloadedSection,
-        _resources: &'scope layout::GraphResources<'data, 'scope>,
+        _resources: &'scope elf_layout::GraphResources<'data, 'scope>,
         _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
@@ -867,28 +892,28 @@ impl<'data> platform::ObjectFile<'data> for CoffObjectFile<'data> {
 
     fn finalise_group_layout(_memory_offsets: &OutputSectionPartMap<u64>) {}
 
-    fn finalise_find_required_sections(_groups: &[layout::GroupState]) {}
+    fn finalise_find_required_sections(_groups: &[elf_layout::GroupState]) {}
 
     fn pre_finalise_sizes_prelude(
-        _common: &mut layout::CommonGroupState,
+        _common: &mut elf_layout::CommonGroupState,
         _args: &Args<PeArgs>,
     ) {
     }
 
     fn finalise_object_sizes(
-        _object: &mut layout::ObjectLayoutState<'data>,
-        _common: &mut layout::CommonGroupState,
+        _object: &mut elf_layout::ObjectLayoutState<'data>,
+        _common: &mut elf_layout::CommonGroupState,
     ) {
     }
 
     fn finalise_object_layout(
-        _object: &layout::ObjectLayoutState<'data>,
+        _object: &elf_layout::ObjectLayoutState<'data>,
         _memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
     }
 
     fn compute_object_addresses(
-        _object: &layout::ObjectLayoutState<'data>,
+        _object: &elf_layout::ObjectLayoutState<'data>,
         _memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
     }

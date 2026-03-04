@@ -4,10 +4,9 @@ use crate::Result;
 use crate::bail;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
-use crate::layout;
+use crate::elf_layout;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
-use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -30,8 +29,38 @@ use std::path::PathBuf;
 
 /// Represents a supported object file format + architecture combination.
 pub(crate) trait Platform<'data>: 'data {
-    type Relaxation: Relaxation;
     type File: ObjectFile<'data>;
+
+    fn create_plugin(
+        _linker: &'data crate::Linker,
+        _args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
+    ) -> crate::Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        Ok(None)
+    }
+
+    fn load_auxiliary(
+        _linker: &'data crate::Linker,
+        _args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
+    ) -> crate::Result<crate::input_data::AuxiliaryFiles<'data>> {
+        Ok(crate::input_data::AuxiliaryFiles::empty())
+    }
+
+    fn finish_link(
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
+        plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+        symbol_db: crate::symbol_db::SymbolDb<'data, Self::File>,
+        per_symbol_flags: crate::value_flags::PerSymbolFlags,
+        resolver: crate::resolution::Resolver<'data, Self::File>,
+        output_sections: crate::output_section_id::OutputSections<'data>,
+        layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+        output_kind: crate::OutputKind,
+    ) -> crate::Result<Option<crate::layout::Layout<'data>>>;
+}
+
+/// ELF-specific platform methods. Only implemented by ELF architecture backends.
+pub(crate) trait ElfPlatform<'data>: Platform<'data, File = crate::elf::File<'data>> {
+    type Relaxation: Relaxation;
 
     // Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
@@ -59,7 +88,7 @@ pub(crate) trait Platform<'data>: 'data {
     // Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     // a different place based on the following article:
     // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start(layout: &Layout<'data>) -> u64;
+    fn tp_offset_start(layout: &Layout<'data, elf_layout::ElfLayout<'data>>) -> u64;
 
     // Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<PropertyClass>;
@@ -79,16 +108,15 @@ pub(crate) trait Platform<'data>: 'data {
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as ObjectFile<'data>>::SectionHeader,
+        object: &crate::elf::File<'data>,
+        relocations: &<crate::elf::File<'data> as ObjectFile<'data>>::RelocationSections,
+        section: &<crate::elf::File<'data> as ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<SourceInfo>;
 
     fn collect_relaxation_deltas(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        // TODO: Change to be non-ELF specific once layout.rs is genericised.
         _relocations: crate::elf::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
@@ -98,7 +126,10 @@ pub(crate) trait Platform<'data>: 'data {
         unreachable!();
     }
 
-    fn is_symbol_variant_pcs(_object: &Self::File, _symbol_index: object::SymbolIndex) -> bool {
+    fn is_symbol_variant_pcs(
+        _object: &crate::elf::File<'data>,
+        _symbol_index: object::SymbolIndex,
+    ) -> bool {
         false
     }
 
@@ -110,17 +141,70 @@ pub(crate) trait Platform<'data>: 'data {
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <Self::File as ObjectFile<'data>>::SectionFlags,
+        section_flags: <crate::elf::File<'data> as ObjectFile<'data>>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
 
     fn process_riscv_attributes(
-        _object: &Self::File,
-        _format_specific: &mut <Self::File as ObjectFile<'data>>::FileLayoutState,
+        _object: &crate::elf::File<'data>,
+        _format_specific: &mut <crate::elf::File<'data> as ObjectFile<'data>>::FileLayoutState,
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
+    }
+
+    /// ELF finish_link: handles plugin, version script, layout computation and writing.
+    fn finish_link(
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        args: &'data crate::args::Args<crate::args::linux::ElfArgs>,
+        plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+        mut symbol_db: crate::symbol_db::SymbolDb<'data, crate::elf::File<'data>>,
+        mut per_symbol_flags: crate::value_flags::PerSymbolFlags,
+        mut resolver: crate::resolution::Resolver<'data, crate::elf::File<'data>>,
+        mut output_sections: crate::output_section_id::OutputSections<'data>,
+        mut layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+        output_kind: OutputKind,
+    ) -> Result<Option<Layout<'data>>> where Self: Sized {
+        if let Some(plugin) = plugin.as_mut()
+            && plugin.is_initialised()
+        {
+            plugin.all_symbols_read(
+                &mut symbol_db,
+                &mut resolver,
+                file_loader,
+                &mut per_symbol_flags,
+                &mut output_sections,
+                &mut layout_rules_builder,
+            )?;
+        }
+
+        if let crate::version_script::VersionScript::Rust(rust_vscript) = &symbol_db.version_script
+        {
+            symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+        }
+
+        let layout_rules = layout_rules_builder.build();
+        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
+            &mut symbol_db,
+            &mut per_symbol_flags,
+            &mut output_sections,
+            &layout_rules,
+        )?;
+
+        let mut output = crate::file_writer::Output::new(args, output_kind);
+
+        let layout = crate::elf_layout::compute::<Self>(
+            symbol_db,
+            per_symbol_flags,
+            resolved,
+            output_sections,
+            &mut output,
+        )?;
+
+        output.write(&layout, crate::elf_writer::write::<Self>)?;
+
+        Ok(Some(layout.into_erased()))
     }
 }
 
@@ -370,54 +454,61 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section_index: object::SectionIndex,
     ) -> Result;
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &Args<Self::ArgsType>,
-        objects: impl Iterator<Item = &'files Self>,
-        states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
+    fn create_layout_properties<'states, 'files, P: ElfPlatform<'data>>(
+        _args: &Args<Self::ArgsType>,
+        _objects: impl Iterator<Item = &'files Self>,
+        _states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
     where
         'data: 'files,
-        'data: 'states;
+        'data: 'states,
+    {
+        unreachable!()
+    }
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
-        object: &mut ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope layout::GraphResources<'data, '_>,
-        queue: &mut layout::LocalWorkQueue,
-        scope: &Scope<'scope>,
-    ) -> Result;
+    fn load_exception_frame_data<'scope, P: ElfPlatform<'data>>(
+        _object: &mut elf_layout::ObjectLayoutState<'data>,
+        _common: &mut elf_layout::CommonGroupState<'data>,
+        _eh_frame_section_index: object::SectionIndex,
+        _resources: &'scope elf_layout::GraphResources<'data, '_>,
+        _queue: &mut elf_layout::LocalWorkQueue,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        unreachable!()
+    }
 
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState<'data>,
-        queue: &mut layout::LocalWorkQueue,
-        unloaded: UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope>,
-        scope: &Scope<'scope>,
-    ) -> Result;
+    fn non_empty_section_loaded<'scope, P: ElfPlatform<'data>>(
+        _object: &mut elf_layout::ObjectLayoutState<'data>,
+        _common: &mut elf_layout::CommonGroupState<'data>,
+        _queue: &mut elf_layout::LocalWorkQueue,
+        _unloaded: UnloadedSection,
+        _resources: &'scope elf_layout::GraphResources<'data, 'scope>,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        unreachable!()
+    }
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
 
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
-    fn finalise_find_required_sections(groups: &[layout::GroupState]);
+    fn finalise_find_required_sections(groups: &[elf_layout::GroupState]);
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState, args: &Args<Self::ArgsType>);
+    fn pre_finalise_sizes_prelude(common: &mut elf_layout::CommonGroupState, args: &Args<Self::ArgsType>);
 
     fn finalise_object_sizes(
-        object: &mut layout::ObjectLayoutState<'data>,
-        common: &mut layout::CommonGroupState,
+        object: &mut elf_layout::ObjectLayoutState<'data>,
+        common: &mut elf_layout::CommonGroupState,
     );
 
     fn finalise_object_layout(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &elf_layout::ObjectLayoutState<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 
     fn compute_object_addresses(
-        object: &layout::ObjectLayoutState<'data>,
+        object: &elf_layout::ObjectLayoutState<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 

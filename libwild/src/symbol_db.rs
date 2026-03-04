@@ -1,7 +1,7 @@
 //! Reads global symbols for each input file and builds a map from symbol names to IDs together with
 //! information about where each symbol can be obtained.
 
-use crate::InputLinkerScript;
+use crate::input_data::InputLinkerScript;
 use crate::OutputKind;
 use crate::args;
 use crate::args::Args;

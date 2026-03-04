@@ -5,7 +5,7 @@ use crate::elf::File;
 use crate::elf::Rela;
 use crate::error::Result;
 use crate::platform::ObjectFile as _;
-use crate::platform::Platform;
+use crate::platform::ElfPlatform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
 use crate::platform::SourceInfo;
@@ -29,7 +29,7 @@ use std::path::PathBuf;
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<'data, P: Platform<'data>>(
+pub(crate) fn get_source_info<'data, P: ElfPlatform<'data>>(
     object: &File,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -112,7 +112,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<'data, P: Platform<'data>>(
+fn section_data_with_relocations<'data, P: ElfPlatform<'data>>(
     object: &File,
     relocations: &RelocationSections,
     id: gimli::SectionId,
@@ -150,7 +150,7 @@ fn section_data_with_relocations<'data, P: Platform<'data>>(
     Ok(data)
 }
 
-fn apply_section_relocations<'data, P: Platform<'data>, R: Relocation>(
+fn apply_section_relocations<'data, P: ElfPlatform<'data>, R: Relocation>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],

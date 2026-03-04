@@ -2,11 +2,13 @@ use crate::OutputKind;
 use crate::args::Args;
 use crate::args::FileWriteMode;
 use crate::args::consts::WRITE_VERIFY_ALLOCATIONS_ENV;
+use crate::elf_layout::ElfLayout;
+use crate::elf_layout::GroupLayout;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::layout::GroupLayout;
 use crate::layout::Layout;
+use crate::layout::LayoutTarget;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -186,10 +188,10 @@ impl Output {
         }
     }
 
-    pub fn write<'data, 'layout>(
+    pub fn write<'data, 'layout, T: crate::layout::LayoutTarget<'data>>(
         &self,
-        layout: &'layout Layout<'data>,
-        write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data>) -> Result,
+        layout: &'layout Layout<'data, T>,
+        write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data, T>) -> Result,
     ) -> Result {
         timing_phase!("Write output file");
         if layout.args().write_layout {
@@ -345,7 +347,7 @@ pub(crate) fn verify_allocations_message() -> String {
 }
 
 pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
-    layout: &'layout Layout<'data>,
+    layout: &'layout Layout<'data, ElfLayout<'data>>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Vec<(
     &'layout GroupLayout<'data>,
@@ -359,8 +361,8 @@ pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
         .collect()
 }
 
-pub(crate) fn split_output_into_sections<'out>(
-    layout: &Layout,
+pub(crate) fn split_output_into_sections<'data, 'out>(
+    layout: &Layout<'data, ElfLayout<'data>>,
     mut data: &'out mut [u8],
 ) -> OutputSectionMap<&'out mut [u8]> {
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
@@ -394,9 +396,9 @@ pub(crate) fn split_output_into_sections<'out>(
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.
-pub(crate) fn split_buffers_by_alignment<'out>(
+pub(crate) fn split_buffers_by_alignment<'data, 'out>(
     section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
-    layout: &Layout,
+    layout: &Layout<'data, ElfLayout<'data>>,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
     layout.section_part_layouts.output_order_map(
         &layout.output_order,
@@ -419,13 +421,13 @@ pub(crate) fn split_buffers_by_alignment<'out>(
     )
 }
 
-fn write_layout(layout: &Layout) -> Result {
+fn write_layout<'data>(layout: &Layout<'data, impl LayoutTarget<'data>>) -> Result {
     let layout_path = linker_layout::layout_path(&layout.args().output);
     write_layout_to(layout, &layout_path)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
 }
 
-fn write_layout_to(layout: &Layout, path: &Path) -> Result {
+fn write_layout_to<'data>(layout: &Layout<'data, impl LayoutTarget<'data>>, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())

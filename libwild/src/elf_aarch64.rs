@@ -3,6 +3,7 @@ use crate::platform::PropertyClass;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::elf_layout::ElfLayout;
 use crate::layout::Layout;
 use crate::platform::ObjectFile as _;
 use linker_utils::aarch64::RelaxationKind;
@@ -38,8 +39,42 @@ macro_rules! rel_info_from_type {
 }
 
 impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
-    type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
+
+    fn create_plugin(
+        linker: &'data crate::Linker,
+        args: &'data crate::Args<crate::args::linux::ElfArgs>,
+    ) -> crate::error::Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        crate::linker_plugins::LinkerPlugin::from_args(args, &linker.linker_plugin_arena, &linker.herd)
+    }
+
+    fn load_auxiliary(
+        linker: &'data crate::Linker,
+        args: &'data crate::Args<crate::args::linux::ElfArgs>,
+    ) -> crate::error::Result<crate::input_data::AuxiliaryFiles<'data>> {
+        crate::input_data::AuxiliaryFiles::new(args, &linker.inputs_arena)
+    }
+
+    fn finish_link(
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        args: &'data crate::Args<crate::args::linux::ElfArgs>,
+        plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+        symbol_db: crate::symbol_db::SymbolDb<'data, crate::elf::File<'data>>,
+        per_symbol_flags: crate::value_flags::PerSymbolFlags,
+        resolver: crate::resolution::Resolver<'data, crate::elf::File<'data>>,
+        output_sections: crate::output_section_id::OutputSections<'data>,
+        layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+        output_kind: crate::OutputKind,
+    ) -> crate::error::Result<Option<crate::layout::Layout<'data>>> {
+        <Self as crate::platform::ElfPlatform>::finish_link(
+            file_loader, args, plugin, symbol_db, per_symbol_flags,
+            resolver, output_sections, layout_rules_builder, output_kind,
+        )
+    }
+}
+
+impl<'data> crate::platform::ElfPlatform<'data> for ElfAArch64 {
+    type Relaxation = Relaxation;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_AARCH64
@@ -97,7 +132,7 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         false
     }
 
-    fn tp_offset_start(layout: &Layout<'_>) -> u64 {
+    fn tp_offset_start(layout: &Layout<'data, ElfLayout<'data>>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 

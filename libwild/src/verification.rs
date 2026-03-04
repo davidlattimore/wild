@@ -3,7 +3,7 @@
 
 use crate::bail;
 use crate::error::Result;
-use crate::layout::FileLayout;
+use crate::elf_layout::FileLayout;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;

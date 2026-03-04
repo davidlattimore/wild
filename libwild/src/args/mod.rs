@@ -1430,16 +1430,6 @@ impl<T> Args<T> {
     }
 }
 
-impl<T: 'static> Args<T> {
-    pub(crate) fn is_elf(&self) -> bool {
-        std::any::TypeId::of::<T>() == std::any::TypeId::of::<linux::ElfArgs>()
-    }
-
-    pub(crate) fn is_pe(&self) -> bool {
-        std::any::TypeId::of::<T>() == std::any::TypeId::of::<windows::PeArgs>()
-    }
-}
-
 /// Linker args with an activated thread pool. Holds jobserver tokens for the
 /// duration of the link to keep the threads available.
 pub struct ActivatedArgs<T = TargetArgs> {

@@ -2,7 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
-use crate::LayoutRules;
+use crate::layout_rules::LayoutRules;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::bail;

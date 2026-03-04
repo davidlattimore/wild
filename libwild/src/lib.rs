@@ -24,6 +24,7 @@ pub(crate) mod hash;
 pub(crate) mod identity;
 pub(crate) mod input_data;
 pub(crate) mod layout;
+pub(crate) mod elf_layout;
 pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
@@ -35,6 +36,7 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
+pub(crate) mod pe_writer;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -79,16 +81,12 @@ use crate::output_kind::OutputKind;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
-use crate::version_script::VersionScript;
 pub use args::Args;
-use args::linux::ElfArgs;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::FileLoader;
 use input_data::InputFile;
-use input_data::InputLinkerScript;
-use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use std::io::BufWriter;
 use std::io::Write;
@@ -98,155 +96,6 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-
-/// A target architecture for linking. Each implementor provides the linking
-/// pipeline for a specific format + CPU architecture combination.
-pub(crate) trait LinkTarget<'data> {
-    type File: ObjectFile<'data>;
-
-    /// Create a linker plugin for this target. Returns None for formats without plugin support.
-    fn create_plugin(
-        _linker: &'data Linker,
-        _args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
-    ) -> error::Result<Option<linker_plugins::LinkerPlugin<'data>>> {
-        Ok(None)
-    }
-
-    /// Load auxiliary files (version scripts, export lists). Returns empty by default.
-    fn load_auxiliary(
-        _linker: &'data Linker,
-        _args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
-    ) -> error::Result<input_data::AuxiliaryFiles<'data>> {
-        Ok(input_data::AuxiliaryFiles::empty())
-    }
-
-    /// Format-specific post-resolve processing: layout computation and output writing.
-    fn finish_link(
-        linker: &'data Linker,
-        file_loader: &mut FileLoader<'data>,
-        args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
-        plugin: &mut Option<linker_plugins::LinkerPlugin<'data>>,
-        symbol_db: symbol_db::SymbolDb<'data, Self::File>,
-        per_symbol_flags: PerSymbolFlags,
-        resolver: resolution::Resolver<'data, Self::File>,
-        output_sections: OutputSections<'data>,
-        layout_rules_builder: LayoutRulesBuilder<'data>,
-        output_kind: OutputKind,
-    ) -> error::Result<Option<layout::Layout<'data>>>;
-}
-
-/// Blanket impl: every ELF Platform is a LinkTarget.
-impl<'data, P: Platform<'data, File = crate::elf::File<'data>>> LinkTarget<'data> for P {
-    type File = crate::elf::File<'data>;
-
-    fn create_plugin(
-        linker: &'data Linker,
-        args: &'data Args<ElfArgs>,
-    ) -> error::Result<Option<linker_plugins::LinkerPlugin<'data>>> {
-        linker_plugins::LinkerPlugin::from_args(args, &linker.linker_plugin_arena, &linker.herd)
-    }
-
-    fn load_auxiliary(
-        linker: &'data Linker,
-        args: &'data Args<ElfArgs>,
-    ) -> error::Result<input_data::AuxiliaryFiles<'data>> {
-        input_data::AuxiliaryFiles::new(args, &linker.inputs_arena)
-    }
-
-    fn finish_link(
-        _linker: &'data Linker,
-        file_loader: &mut FileLoader<'data>,
-        args: &'data Args<ElfArgs>,
-        plugin: &mut Option<linker_plugins::LinkerPlugin<'data>>,
-        mut symbol_db: symbol_db::SymbolDb<'data, crate::elf::File<'data>>,
-        mut per_symbol_flags: PerSymbolFlags,
-        mut resolver: resolution::Resolver<'data, crate::elf::File<'data>>,
-        mut output_sections: OutputSections<'data>,
-        mut layout_rules_builder: LayoutRulesBuilder<'data>,
-        output_kind: OutputKind,
-    ) -> error::Result<Option<layout::Layout<'data>>> {
-        if let Some(plugin) = plugin.as_mut()
-            && plugin.is_initialised()
-        {
-            plugin.all_symbols_read(
-                &mut symbol_db,
-                &mut resolver,
-                file_loader,
-                &mut per_symbol_flags,
-                &mut output_sections,
-                &mut layout_rules_builder,
-            )?;
-        }
-
-        // If it's a rust version script, apply the global symbol visibility now.
-        // We previously downgraded all symbols to local visibility.
-        if let VersionScript::Rust(rust_vscript) = &symbol_db.version_script {
-            symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
-        }
-
-        let layout_rules = layout_rules_builder.build();
-
-        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
-            &mut symbol_db,
-            &mut per_symbol_flags,
-            &mut output_sections,
-            &layout_rules,
-        )?;
-
-        let mut output = file_writer::Output::new(args, output_kind);
-
-        let layout = layout::compute::<P>(
-            symbol_db,
-            per_symbol_flags,
-            resolved,
-            output_sections,
-            &mut output,
-        )?;
-
-        output.write(&layout, elf_writer::write::<P>)?;
-
-        Ok(Some(layout))
-    }
-}
-
-/// PE LinkTarget impls.
-impl<'data> LinkTarget<'data> for coff::CoffX86_64 {
-    type File = coff::CoffObjectFile<'data>;
-
-    fn finish_link(
-        _linker: &'data Linker,
-        _file_loader: &mut FileLoader<'data>,
-        _args: &'data Args<args::windows::PeArgs>,
-        _plugin: &mut Option<linker_plugins::LinkerPlugin<'data>>,
-        _symbol_db: symbol_db::SymbolDb<'data, coff::CoffObjectFile<'data>>,
-        _per_symbol_flags: PerSymbolFlags,
-        _resolver: resolution::Resolver<'data, coff::CoffObjectFile<'data>>,
-        _output_sections: OutputSections<'data>,
-        _layout_rules_builder: LayoutRulesBuilder<'data>,
-        _output_kind: OutputKind,
-    ) -> error::Result<Option<layout::Layout<'data>>> {
-        crate::bail!("PE layout and output writing not yet implemented");
-    }
-}
-
-impl<'data> LinkTarget<'data> for coff::CoffAArch64 {
-    type File = coff::CoffObjectFile<'data>;
-
-    fn finish_link(
-        _linker: &'data Linker,
-        _file_loader: &mut FileLoader<'data>,
-        _args: &'data Args<args::windows::PeArgs>,
-        _plugin: &mut Option<linker_plugins::LinkerPlugin<'data>>,
-        _symbol_db: symbol_db::SymbolDb<'data, coff::CoffObjectFile<'data>>,
-        _per_symbol_flags: PerSymbolFlags,
-        _resolver: resolution::Resolver<'data, coff::CoffObjectFile<'data>>,
-        _output_sections: OutputSections<'data>,
-        _layout_rules_builder: LayoutRulesBuilder<'data>,
-        _output_kind: OutputKind,
-    ) -> error::Result<Option<layout::Layout<'data>>> {
-        crate::bail!("PE layout and output writing not yet implemented");
-    }
-}
 
 /// Runs the linker and cleans up associated resources.
 pub fn run(args: args::Args) -> error::Result {
@@ -371,11 +220,8 @@ impl Linker {
                 });
                 let args = &args.args;
                 match args.arch {
-                    arch::Architecture::X86_64 => {
-                        self.link_for_arch::<coff::CoffX86_64>(args)?;
-                    }
-                    arch::Architecture::AArch64 => {
-                        self.link_for_arch::<coff::CoffAArch64>(args)?;
+                    arch::Architecture::X86_64 | arch::Architecture::AArch64 => {
+                        self.link_for_arch::<coff::PePlatform>(args)?;
                     }
                     _ => {
                         crate::bail!("PE format only supports x86_64 and aarch64");
@@ -384,22 +230,18 @@ impl Linker {
             }
         }
 
-        // We've finished linking. We consider everything from this point onwards as shutdown.
-        let (g1, g2) = timing_guard!("Shutdown");
-        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
-
         Ok(())
     }
 
-    fn link_for_arch<'data, T: LinkTarget<'data>>(
+    fn link_for_arch<'data, P: Platform<'data>>(
         &'data self,
-        args: &'data args::Args<<T::File as ObjectFile<'data>>::ArgsType>,
+        args: &'data Args<<P::File as ObjectFile<'data>>::ArgsType>,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
-        // Note, we propagate errors from `link_with_input_data` after we've checked if any files
+        // Note, we propagate errors from `load_inputs_and_link` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<T>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<P>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
@@ -419,14 +261,15 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, T: LinkTarget<'data>>(
+    fn load_inputs_and_link<'data, P: Platform<'data>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data args::Args<<T::File as ObjectFile<'data>>::ArgsType>,
+        args: &'data Args<<P::File as ObjectFile<'data>>::ArgsType>,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut plugin = T::create_plugin(self, args)?;
+        let mut plugin = P::create_plugin(self, args)?;
+        let auxiliary = P::load_auxiliary(self, args)?;
 
-        let loaded = file_loader.load_inputs::<T::File>(&args.inputs, args, &mut plugin);
+        let loaded = file_loader.load_inputs::<P::File>(&args.inputs, args, &mut plugin);
 
         args.save_dir.finish(file_loader, args)?;
 
@@ -437,8 +280,6 @@ impl Linker {
         let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
-
-        let auxiliary = T::load_auxiliary(self, args)?;
 
         let mut symbol_db = symbol_db::SymbolDb::new(args, output_kind, &auxiliary, &self.herd)?;
         let mut per_symbol_flags = PerSymbolFlags::new();
@@ -466,8 +307,7 @@ impl Linker {
             &resolver.resolved_groups,
         )?;
 
-        let layout = T::finish_link(
-            self,
+        let layout = P::finish_link(
             file_loader,
             args,
             &mut plugin,
@@ -479,9 +319,7 @@ impl Linker {
             output_kind,
         )?;
 
-        if args.is_elf() {
-            diff::maybe_diff()?;
-        }
+        diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
         let (g1, g2) = timing_guard!("Shutdown");
@@ -508,7 +346,7 @@ impl Drop for Linker {
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
         timing_phase!("Drop layout");
-        self.layout.take();
+        let _ = self.layout.take();
     }
 }
 

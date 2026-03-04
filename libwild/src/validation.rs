@@ -3,6 +3,7 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::elf_layout::ElfLayout;
 use crate::layout::Layout;
 use crate::platform::ObjectFile as _;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
@@ -10,7 +11,7 @@ use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
 use zerocopy::FromBytes;
 
-pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
+pub(crate) fn validate_bytes<'data>(layout: &Layout<'data, ElfLayout<'data>>, file_bytes: &[u8]) -> Result {
     let object = crate::elf::File::parse_bytes(file_bytes, true)
         .context("Failed to parse our output file")?;
     validate_object(&object, layout).context("Output validation failed")
@@ -18,7 +19,7 @@ pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
 
 /// Checks that what we actually wrote to our output file matches what we intended to write in
 /// `layout`.
-fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
+fn validate_object<'data>(object: &crate::elf::File, layout: &Layout<'data, ElfLayout<'data>>) -> Result {
     if layout.symbol_db.output_kind.is_relocatable() {
         // For now, we don't do any validation of relocatable outputs. The only thing we're
         // currently validating is GOT entries and they'll all have dynamic relocations.
@@ -41,7 +42,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
     for group in &layout.group_layouts {
         for file in &group.files {
             match file {
-                crate::layout::FileLayout::Object(obj) => {
+                crate::elf_layout::FileLayout::Object(obj) => {
                     for (sec_index, sec) in obj.object.sections.enumerate() {
                         if let Some(resolution) =
                             obj.section_resolutions[sec_index.0].full_resolution()
