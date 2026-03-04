@@ -114,7 +114,7 @@ impl Arch for X86_64 {
                     object::elf::R_X86_64_PC32,
                 );
             }
-            (SectionKind::Text, 0x2b) => {
+            (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTPCRELX) => {
                 relax(
                     Self::RelaxationKind::RexMovIndirectToAbsolute(4),
                     object::elf::R_X86_64_32,
@@ -158,7 +158,7 @@ impl Arch for X86_64 {
                     object::elf::R_X86_64_TPOFF32,
                 );
             }
-            (SectionKind::Text, 0x2c) => {
+            (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTTPOFF) => {
                 relax(
                     Self::RelaxationKind::RexMovIndirectToAbsolute(4),
                     object::elf::R_X86_64_TPOFF32,
@@ -168,7 +168,7 @@ impl Arch for X86_64 {
                     object::elf::R_X86_64_TPOFF32,
                 );
             }
-            (SectionKind::Text, 0x32) => {
+            (SectionKind::Text, object::elf::R_X86_64_CODE_6_GOTTPOFF) => {
                 relax(
                     Self::RelaxationKind::RexAddIndirectToAbsolute(6),
                     object::elf::R_X86_64_TPOFF32,

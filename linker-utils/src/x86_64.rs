@@ -339,19 +339,26 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
         object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, RELOC_4_BYTE_SIGNED),
         object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, RELOC_4_BYTE_SIGNED),
         object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, RELOC_8_BYTE_SIGNED),
-        object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
-        object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
+        object::elf::R_X86_64_GOTTPOFF
+        | object::elf::R_X86_64_CODE_4_GOTTPOFF
+        | object::elf::R_X86_64_CODE_5_GOTTPOFF
+        | object::elf::R_X86_64_CODE_6_GOTTPOFF => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
+        object::elf::R_X86_64_GOTPCRELX
+        | object::elf::R_X86_64_REX_GOTPCRELX
+        | object::elf::R_X86_64_CODE_4_GOTPCRELX
+        | object::elf::R_X86_64_CODE_5_GOTPCRELX
+        | object::elf::R_X86_64_CODE_6_GOTPCRELX => {
             (RelocationKind::GotRelative, RELOC_4_BYTE_SIGNED)
         }
         object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, RELOC_4_BYTE_SIGNED),
-        object::elf::R_X86_64_GOTPC32_TLSDESC => (RelocationKind::TlsDesc, RELOC_4_BYTE_SIGNED),
+        object::elf::R_X86_64_GOTPC32_TLSDESC
+        | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+        | object::elf::R_X86_64_CODE_5_GOTPC32_TLSDESC
+        | object::elf::R_X86_64_CODE_6_GOTPC32_TLSDESC => {
+            (RelocationKind::TlsDesc, RELOC_4_BYTE_SIGNED)
+        }
         object::elf::R_X86_64_TLSDESC_CALL => (RelocationKind::TlsDescCall, RELOC_NONE),
         object::elf::R_X86_64_NONE => (RelocationKind::None, RELOC_NONE),
-
-        0x2b => (RelocationKind::GotRelative, RELOC_4_BYTE_SIGNED),
-        0x2c => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
-        0x32 => (RelocationKind::GotTpOff, RELOC_4_BYTE_SIGNED),
-        0x2d => (RelocationKind::TlsDesc, RELOC_4_BYTE_SIGNED),
         _ => return None,
     };
 

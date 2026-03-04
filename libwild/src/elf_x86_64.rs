@@ -161,10 +161,11 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
-            object::elf::R_X86_64_REX_GOTPCRELX | 0x2b => { // R_X86_64_CODE_4_GOTPCRELX
-                if (relocation_kind == 0x2b && offset < 4) || offset < 3 {
-                    return None;
-                }
+            object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_CODE_4_GOTPCRELX
+                if ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPCRELX
+                    && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                    || offset >= 3) =>
+            {
                 let b1 = section_bytes[offset - 2];
                 let rex = section_bytes[offset - 3];
 
@@ -277,13 +278,13 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTTPOFF | 0x2c // R_X86_64_CODE_4_GOTTPOFF
-                if output_kind.is_executable() && !interposable =>
+            object::elf::R_X86_64_GOTTPOFF | object::elf::R_X86_64_CODE_4_GOTTPOFF
+                if output_kind.is_executable()
+                    && !interposable
+                    && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTTPOFF
+                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        || offset >= 3) =>
             {
-                if (relocation_kind == 0x2c && offset < 4) || offset < 3 {
-                    return None;
-                }
-
                 let inst_offset = if relocation_kind == object::elf::R_X86_64_GOTTPOFF {
                     3
                 } else {
@@ -310,8 +311,9 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                     _ => {}
                 }
             }
-            // R_X86_64_CODE_6_GOTTPOFF
-            0x32 if output_kind.is_executable() && !interposable && offset >= 6 => {
+            object::elf::R_X86_64_CODE_6_GOTTPOFF
+                if output_kind.is_executable() && !interposable && offset >= 6 =>
+            {
                 match section_bytes.get(offset - 6..offset - 1)? {
                     [0x62, l5, l4, l3, 0x1 | 0x3]
                         if (l5 & 0x47) == 0x44 && l4 & 0x87 == 0x84 && l3 & 0x14 != 0 =>
@@ -397,12 +399,14 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                     }
                 }
             }
-            object::elf::R_X86_64_GOTPC32_TLSDESC | 0x2d // R_X86_64_CODE_4_GOTPC32_TLSDESC
-                if !interposable && output_kind.is_executable() =>
+            object::elf::R_X86_64_GOTPC32_TLSDESC
+            | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+                if !interposable
+                    && output_kind.is_executable()
+                    && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        || offset >= 3) =>
             {
-                if (relocation_kind == 0x2d && offset < 4) || offset < 3 {
-                    return None;
-                }
                 // We require that the instruction that this relocation applies to is a LEA
                 // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
