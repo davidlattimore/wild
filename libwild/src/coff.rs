@@ -29,6 +29,14 @@ use object::read::coff::ImageSymbol;
 use rayon::Scope;
 use std::borrow::Cow;
 
+// ── PE architecture marker types ────────────────────────────────────────────
+
+/// Marker type for PE/COFF linking targeting x86_64.
+pub(crate) struct CoffX86_64;
+
+/// Marker type for PE/COFF linking targeting AArch64.
+pub(crate) struct CoffAArch64;
+
 // ── Core COFF object file type ──────────────────────────────────────────────
 
 /// A parsed COFF object file that implements the `ObjectFile` trait.

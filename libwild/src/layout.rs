@@ -4991,7 +4991,7 @@ type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
-fn relaxation_scan_pass<'data, P: Platform<'data>>(
+fn relaxation_scan_pass<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     group_states: &mut [GroupState<'data>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, P::File>,
@@ -5144,7 +5144,7 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
     (total_deleted, next_rescan_candidates)
 }
 
-fn perform_iterative_relaxation<'data, P: Platform<'data>>(
+fn perform_iterative_relaxation<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
     group_states: &mut [GroupState<'data>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,

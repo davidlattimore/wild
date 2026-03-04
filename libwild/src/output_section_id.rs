@@ -19,7 +19,6 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
-use crate::args::linux::ElfArgs;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
@@ -1013,11 +1012,11 @@ impl<'data> OutputSections<'data> {
     pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
         self.section_infos.get(id).secondary_order
     }
-    pub(crate) fn add_sections(
+    pub(crate) fn add_sections<T>(
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
-        args: &Args<ElfArgs>,
+        args: &Args<T>,
     ) {
         for custom in custom_sections {
             let name_str = std::str::from_utf8(custom.name.bytes()).ok();

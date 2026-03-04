@@ -1182,9 +1182,12 @@ pub struct Args<T = TargetArgs> {
     pub(crate) undefined: Vec<String>,
     pub(crate) copy_relocations: CopyRelocations,
     pub(crate) sysroot: Option<Box<Path>>,
+    pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) entry: Option<String>,
     pub(crate) wrap: Vec<String>,
     pub(crate) exclude_libs: ExcludeLibs,
+    pub(crate) b_symbolic: BSymbolicKind,
+    pub(crate) export_list: Vec<String>,
     pub(crate) defsym: Vec<(String, DefsymValue)>,
     pub(crate) section_start: HashMap<String, u64>,
     pub(crate) max_page_size: Option<Alignment>,
@@ -1249,9 +1252,12 @@ impl<T: Default> Default for Args<T> {
             undefined: Vec::new(),
             copy_relocations: CopyRelocations::Allowed,
             sysroot: None,
+            dynamic_linker: None,
             entry: None,
             wrap: Vec::new(),
             exclude_libs: ExcludeLibs::None,
+            b_symbolic: BSymbolicKind::None,
+            export_list: Vec::new(),
             defsym: Vec::new(),
             section_start: HashMap::new(),
             max_page_size: None,
@@ -1333,9 +1339,12 @@ impl<T> Args<T> {
             undefined: self.undefined,
             copy_relocations: self.copy_relocations,
             sysroot: self.sysroot,
+            dynamic_linker: self.dynamic_linker,
             entry: self.entry,
             wrap: self.wrap,
             exclude_libs: self.exclude_libs,
+            b_symbolic: self.b_symbolic,
+            export_list: self.export_list,
             defsym: self.defsym,
             section_start: self.section_start,
             max_page_size: self.max_page_size,
@@ -1418,6 +1427,16 @@ impl<T> Args<T> {
 
     pub(crate) fn strip_debug(&self) -> bool {
         matches!(self.strip, Strip::All | Strip::Debug)
+    }
+}
+
+impl<T: 'static> Args<T> {
+    pub(crate) fn is_elf(&self) -> bool {
+        std::any::TypeId::of::<T>() == std::any::TypeId::of::<linux::ElfArgs>()
+    }
+
+    pub(crate) fn is_pe(&self) -> bool {
+        std::any::TypeId::of::<T>() == std::any::TypeId::of::<windows::PeArgs>()
     }
 }
 

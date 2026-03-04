@@ -1,7 +1,6 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
-use crate::args::linux::ElfArgs;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
@@ -58,10 +57,10 @@ pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 /// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-pub(crate) fn should_merge_sections<S: platform::SectionFlags>(
+pub(crate) fn should_merge_sections<S: platform::SectionFlags, T>(
     section_flags: S,
     section_alignment: u64,
-    args: &Args<ElfArgs>,
+    args: &Args<T>,
 ) -> bool {
     if !args.merge_sections {
         return false;

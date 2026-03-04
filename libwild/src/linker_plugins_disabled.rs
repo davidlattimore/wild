@@ -34,8 +34,8 @@ impl<'data> LinkerPlugin<'data> {
         unreachable!();
     }
 
-    pub(crate) fn from_args(
-        _args: &'data crate::args::Args<crate::args::linux::ElfArgs>,
+    pub(crate) fn from_args<T>(
+        _args: &'data crate::args::Args<T>,
         _linker_plugin_arena: &colosseum::sync::Arena<LoadedPlugin>,
         _herd: &bumpalo_herd::Herd,
     ) -> Result<Option<Self>> {

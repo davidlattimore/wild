@@ -10,7 +10,6 @@ use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
 use crate::error::Result;
-use crate::output_kind::OutputKind;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
 use std::num::NonZeroUsize;
@@ -85,14 +84,6 @@ impl Default for PeArgs {
 
 
 impl super::Args<PeArgs> {
-    pub fn output_kind(&self) -> OutputKind {
-        if !self.should_output_executable {
-            OutputKind::SharedObject
-        } else {
-            OutputKind::StaticExecutable(self.relocation_model)
-        }
-    }
-
     /// Check if a specific library should be ignored due to /NODEFAULTLIB
     pub fn should_ignore_default_lib(&self, lib_name: &str) -> bool {
         self.ignore_all_default_libs || self.no_default_libs.contains(&lib_name.to_string())

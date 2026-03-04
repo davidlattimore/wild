@@ -63,7 +63,6 @@ use std::sync::atomic::AtomicI64;
 /// and ELF-specific fields are accessible via `Deref`/`DerefMut`.
 #[derive(Debug)]
 pub struct ElfArgs {
-    pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) rpath: Option<String>,
@@ -73,8 +72,6 @@ pub struct ElfArgs {
     pub(crate) needs_origin_handling: bool,
     pub(crate) needs_nodelete_handling: bool,
     pub(crate) relro: bool,
-    pub(crate) b_symbolic: BSymbolicKind,
-    pub(crate) export_list: Vec<String>,
     pub(crate) export_list_path: Option<PathBuf>,
     pub(crate) auxiliary: Vec<String>,
     pub(crate) got_plt_syms: bool,
@@ -120,7 +117,6 @@ use super::consts::*;
 impl Default for ElfArgs {
     fn default() -> Self {
         ElfArgs {
-            dynamic_linker: None,
             version_script_path: None,
             should_write_eh_frame_hdr: false,
             rpath: None,
@@ -130,8 +126,6 @@ impl Default for ElfArgs {
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             relro: true,
-            b_symbolic: BSymbolicKind::None,
-            export_list: Vec::new(),
             export_list_path: None,
             auxiliary: Vec::new(),
             got_plt_syms: false,

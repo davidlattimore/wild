@@ -206,6 +206,15 @@ pub(crate) struct AuxiliaryFiles<'data> {
 }
 
 impl<'data> AuxiliaryFiles<'data> {
+    // TODO: When .def file parsing is added, make `new` generic and load .def export lists into
+    // `export_list_data` so the PE path can use the shared export list pipeline.
+    pub(crate) fn empty() -> Self {
+        Self {
+            version_script_data: None,
+            export_list_data: None,
+        }
+    }
+
     pub(crate) fn new(args: &'data Args<ElfArgs>, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if path.exists() {

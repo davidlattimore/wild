@@ -5,7 +5,6 @@ use crate::InputLinkerScript;
 use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
-use crate::args::linux::ElfArgs;
 use crate::bail;
 use crate::elf::RawSymbolName;
 use crate::error;
@@ -70,9 +69,12 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use symbolic_demangle::demangle;
 
+/// The `A` parameter exists to work around Rust's variance analysis treating associated type
+/// projections as invariant. By making it a separate type parameter (defaulting to
+/// `O::ArgsType`), the struct remains covariant in `'data`.
 #[derive(Debug)]
-pub struct SymbolDb<'data, O: ObjectFile<'data>> {
-    pub(crate) args: &'data Args<ElfArgs>,
+pub struct SymbolDb<'data, O: ObjectFile<'data>, A: Send + Sync + 'static = <O as ObjectFile<'data>>::ArgsType> {
+    pub(crate) args: &'data Args<A>,
 
     pub(crate) groups: Vec<Group<'data, O>>,
 
@@ -322,7 +324,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
     }
 
     pub(crate) fn new(
-        args: &'data Args<ElfArgs>,
+        args: &'data Args<O::ArgsType>,
         output_kind: OutputKind,
         auxiliary: &AuxiliaryFiles<'data>,
         herd: &'data bumpalo_herd::Herd,
@@ -1394,7 +1396,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 fn read_symbols<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, O>],
-    args: &Args<ElfArgs>,
+    args: &Args<O::ArgsType>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
@@ -1422,7 +1424,7 @@ fn read_symbols_for_group<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
-    args: &Args<ElfArgs>,
+    args: &Args<O::ArgsType>,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
     verbose_timing_phase!(
@@ -1559,7 +1561,7 @@ fn load_symbols_from_file<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
     outputs: &mut SymbolLoadOutputs<'data>,
-    args: &Args<ElfArgs>,
+    args: &Args<O::ArgsType>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
@@ -1686,7 +1688,7 @@ trait SymbolLoader<'data, O: ObjectFile<'data>> {
 
 struct RegularObjectSymbolLoader<'a, 'data, O: ObjectFile<'data>> {
     object: &'a O,
-    args: &'a Args<ElfArgs>,
+    args: &'a Args<O::ArgsType>,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],
@@ -2071,7 +2073,7 @@ impl<'data> PendingVersionedSymbol<'data> {
 }
 
 /// Decides how many buckets we should use for symbol names.
-fn num_symbol_hash_buckets(args: &Args<ElfArgs>) -> usize {
+fn num_symbol_hash_buckets<T>(args: &Args<T>) -> usize {
     args.available_threads.get()
 }
 
