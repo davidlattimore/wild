@@ -836,14 +836,23 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .referent
         .matches(resolutions[1].reference.referent)
     {
-        if resolutions[0].reference.indirection == Indirection::Got
-            && resolutions[1].reference.indirection == Indirection::GotPltGot
-        {
-            return "rel.missing-got-plt-got".to_owned();
-        } else if resolutions[0].reference.indirection == Indirection::GotPltGot
-            && resolutions[1].reference.indirection == Indirection::Got
-        {
-            return "rel.extra-got-plt-got".to_owned();
+        match (
+            resolutions[0].reference.indirection,
+            resolutions[1].reference.indirection,
+        ) {
+            (Indirection::Got, Indirection::GotPltGot) => {
+                return "rel.missing-got-plt-got".to_owned();
+            }
+            (Indirection::GotPltGot, Indirection::Got) => {
+                return "rel.extra-got-plt-got".to_owned();
+            }
+            (Indirection::Direct, Indirection::PltGot) => {
+                return "rel.missing-plt-got".to_owned();
+            }
+            (Indirection::PltGot, Indirection::Direct) => {
+                return "rel.extra-plt-got".to_owned();
+            }
+            _ => {}
         }
     }
 
