@@ -3,6 +3,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BuildIdOption;
 use crate::bail;
+use crate::elf_writer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -886,9 +887,42 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
+        if symbol_db.output_kind.needs_dynamic() {
+            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
+            mem_sizes.increment(
+                part_id::DYNAMIC,
+                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
+            );
+            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+                mem_sizes.increment(part_id::DYNSTR, rpath.len() as u64 + 1);
+            }
+            if let Some(soname) = symbol_db.args.soname.as_ref() {
+                mem_sizes.increment(part_id::DYNSTR, soname.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+            for aux in &symbol_db.args.auxiliary {
+                mem_sizes.increment(part_id::DYNSTR, aux.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+
+            mem_sizes.increment(
+                part_id::DYNSTR,
+                dynamic_symbol_definitions
+                    .iter()
+                    .map(|n| n.name.len() + 1)
+                    .sum::<usize>() as u64,
+            );
+            mem_sizes.increment(
+                part_id::DYNSYM,
+                (dynamic_symbol_definitions.len() * size_of::<SymtabEntry>()) as u64,
+            );
+        }
+
         if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size() {
             mem_sizes.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
