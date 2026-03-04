@@ -65,6 +65,9 @@ use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::utils::read_string;
+use linker_utils::utils::read_u32;
+use linker_utils::utils::read_uleb128;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
@@ -77,7 +80,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::ffi::CStr;
 use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
@@ -2018,12 +2020,6 @@ pub(crate) fn write_relocation_to_buffer(
     Ok(())
 }
 
-pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
-    object::slice_from_bytes_mut(data, data.len() / size_of::<T>())
-        .unwrap()
-        .0
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     pub(crate) verdefnum: u64,
@@ -2483,18 +2479,6 @@ pub(crate) fn process_riscv_attributes(
     let content = section.data(e, object.data)?;
     ensure!(content.starts_with(b"A"), "Header must start with 'A'");
     let mut content = &content[1..];
-
-    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
-    let read_string = |content: &mut &[u8]| -> Result<String> {
-        let string = CStr::from_bytes_until_nul(content)?;
-        *content = &content[string.count_bytes() + 1..];
-        Ok(string.to_string_lossy().to_string())
-    };
-    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
-        let value = u32::from_le_bytes(content[..4].try_into()?);
-        *content = &content[4..];
-        Ok(value)
-    };
 
     // Expect only one subsection
     let _size = read_u32(&mut content)?;

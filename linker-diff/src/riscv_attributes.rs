@@ -14,9 +14,11 @@ use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::secnames::RISCV_ATTRIBUTES_SECTION_NAME_STR;
+use linker_utils::utils::read_string;
+use linker_utils::utils::read_u32;
+use linker_utils::utils::read_uleb128;
 use object::ObjectSection;
 use std::collections::BTreeMap;
-use std::ffi::CStr;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
     report.add_diffs(crate::header_diff::diff_fields(
@@ -185,23 +187,4 @@ fn normalize_arch_string(arch: &str) -> String {
     }
 
     result
-}
-
-fn read_uleb128(content: &mut &[u8]) -> Result<u64> {
-    leb128::read::unsigned(content).context("Failed to read ULEB128 value")
-}
-
-fn read_string(content: &mut &[u8]) -> Result<String> {
-    let cstr = CStr::from_bytes_until_nul(content).context("No null terminator found in string")?;
-    let len = cstr.count_bytes() + 1; // include the null terminator
-    let s = cstr.to_string_lossy().to_string();
-    *content = &content[len..];
-    Ok(s)
-}
-
-fn read_u32(content: &mut &[u8]) -> Result<u32> {
-    ensure!(content.len() >= 4, "Not enough bytes to read u32");
-    let value = u32::from_le_bytes(content[..4].try_into()?);
-    *content = &content[4..];
-    Ok(value)
 }
