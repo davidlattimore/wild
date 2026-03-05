@@ -3,6 +3,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BuildIdOption;
 use crate::bail;
+use crate::elf_writer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -31,6 +32,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
+use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -53,6 +55,7 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentType;
+use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -886,9 +889,42 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
+        if symbol_db.output_kind.needs_dynamic() {
+            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
+            mem_sizes.increment(
+                part_id::DYNAMIC,
+                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
+            );
+            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+                mem_sizes.increment(part_id::DYNSTR, rpath.len() as u64 + 1);
+            }
+            if let Some(soname) = symbol_db.args.soname.as_ref() {
+                mem_sizes.increment(part_id::DYNSTR, soname.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+            for aux in &symbol_db.args.auxiliary {
+                mem_sizes.increment(part_id::DYNSTR, aux.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+
+            mem_sizes.increment(
+                part_id::DYNSTR,
+                dynamic_symbol_definitions
+                    .iter()
+                    .map(|n| n.name.len() + 1)
+                    .sum::<usize>() as u64,
+            );
+            mem_sizes.increment(
+                part_id::DYNSYM,
+                (dynamic_symbol_definitions.len() * size_of::<SymtabEntry>()) as u64,
+            );
+        }
+
         if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size() {
             mem_sizes.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
@@ -1369,6 +1405,21 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             mem_sizes,
             resolution,
         )
+    }
+
+    fn update_segment_keep_list(
+        program_segments: &ProgramSegments,
+        keep_segments: &mut [bool],
+        args: &Args,
+    ) {
+        // If relro is disabled, then discard the relro segment.
+        if !args.relro {
+            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+                if segment_def.segment_type == pt::GNU_RELRO {
+                    *keep = false;
+                }
+            }
+        }
     }
 }
 

@@ -16,6 +16,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
+use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
@@ -290,6 +291,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     );
@@ -483,6 +485,13 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution,
     ) -> Result;
+
+    /// Updates the list of segments to keep.
+    fn update_segment_keep_list(
+        program_segments: &ProgramSegments,
+        keep_segments: &mut [bool],
+        args: &Args,
+    );
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:

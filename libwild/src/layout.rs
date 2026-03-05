@@ -11,8 +11,6 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::RawSymbolName;
-use crate::elf_writer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -80,9 +78,6 @@ use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::pt;
-use linker_utils::elf::secnames;
-use linker_utils::elf::shf;
 use linker_utils::relaxation::RelaxDeltaMap;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -792,7 +787,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
             // weak symbol.
             if flags.is_dynamic() && flags.has_resolution() {
                 let name = symbol_db.symbol_name(symbol_id)?;
-                let name = RawSymbolName::parse(name.bytes()).name;
+                let name = O::RawSymbolName::parse(name.bytes()).name();
 
                 if flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
@@ -814,7 +809,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
 
             if symbol_db.args.got_plt_syms && flags.needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
-                let name = RawSymbolName::parse(name.bytes()).name;
+                let name = O::RawSymbolName::parse(name.bytes()).name();
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
                 let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -2666,32 +2661,6 @@ impl Section {
     fn alignment(&self) -> Alignment {
         self.part_id.alignment()
     }
-
-    /// Returns whether to reverse the contents of this section. This is true for .ctors/.dtors
-    /// sections.
-    pub(crate) fn should_reverse_contents(
-        &self,
-        file: &crate::elf::File,
-        output_sections: &OutputSections,
-    ) -> bool {
-        // Getting the section name is expensive, so we only do it when the output section is
-        // .init_array / .fini_array.
-        let section_id = output_sections.primary_output_section(self.part_id.output_section_id());
-        if section_id != output_section_id::INIT_ARRAY
-            && section_id != output_section_id::FINI_ARRAY
-        {
-            return false;
-        }
-
-        file.section(self.index)
-            .and_then(|header| file.section_name(header))
-            .is_ok_and(|section_name| {
-                // .ctors and .dtors sections need their contents reversed when merged into
-                // .init_array/.fini_array
-                section_name.starts_with(secnames::CTORS_SECTION_NAME)
-                    || section_name.starts_with(secnames::DTORS_SECTION_NAME)
-            })
-    }
 }
 
 #[inline(always)]
@@ -3313,14 +3282,11 @@ impl<'data> PreludeLayoutState<'data> {
         // Always keep the program headers segment even though we don't emit any sections in it.
         keep_segments[0] = true;
 
-        // If relro is disabled, then discard the relro segment.
-        if !resources.symbol_db.args.relro {
-            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
-                if segment_def.segment_type == pt::GNU_RELRO {
-                    *keep = false;
-                }
-            }
-        }
+        O::update_segment_keep_list(
+            program_segments,
+            &mut keep_segments,
+            resources.symbol_db.args,
+        );
 
         let active_segment_ids = (0..program_segments.len())
             .map(ProgramSegmentId::new)
@@ -3436,7 +3402,7 @@ impl<'data> InternalSymbols<'data> {
             };
             sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name;
+            let symbol_name = O::RawSymbolName::parse(symbol_name.bytes()).name();
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
@@ -3527,7 +3493,7 @@ fn create_start_end_symbol_resolution<'data, O: ObjectFile<'data>>(
             .segment_layouts
             .segments
             .iter()
-            .find(|seg| resources.program_segments.segment_def(seg.id).segment_type == pt::LOAD)
+            .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
     };
 
@@ -3658,42 +3624,10 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
     ) {
         let symbol_db = resources.symbol_db;
 
-        if symbol_db.output_kind.needs_dynamic() {
-            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
-            common.allocate(
-                part_id::DYNAMIC,
-                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
-            );
-            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-                common.allocate(part_id::DYNSTR, rpath.len() as u64 + 1);
-            }
-            if let Some(soname) = symbol_db.args.soname.as_ref() {
-                common.allocate(part_id::DYNSTR, soname.len() as u64 + 1);
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-            }
-            for aux in &symbol_db.args.auxiliary {
-                common.allocate(part_id::DYNSTR, aux.len() as u64 + 1);
-                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
-            }
-
-            common.allocate(
-                part_id::DYNSTR,
-                resources
-                    .dynamic_symbol_definitions
-                    .iter()
-                    .map(|n| n.name.len() + 1)
-                    .sum::<usize>() as u64,
-            );
-            common.allocate(
-                part_id::DYNSYM,
-                (resources.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
-            );
-        }
-
         O::finalise_sizes_epilogue(
             &mut self.format_specific,
             &mut common.mem_sizes,
+            resources.dynamic_symbol_definitions,
             resources.format_specific,
             symbol_db,
         );
@@ -4119,7 +4053,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                 } else {
                     num_globals += 1;
                 }
-                let name = RawSymbolName::parse(info.name).name;
+                let name = O::RawSymbolName::parse(info.name).name();
                 strings_size += name.len() + 1;
             }
         }
@@ -4687,6 +4621,10 @@ impl Resolution {
 /// happens in 2–3 passes.
 const MAX_RELAXATION_ITERATIONS: usize = 5;
 
+/// Sentinel value stored in `SymbolOutputInfos::addresses` for symbols whose output address is
+/// unknown.
+const SYMBOL_ADDRESS_UNRESOLVED: u64 = u64::MAX;
+
 /// Stores precomputed output-address information for every symbol.
 struct SymbolOutputInfos {
     addresses: Vec<u64>,
@@ -4699,7 +4637,7 @@ impl SymbolOutputInfos {
         per_symbol_flags: &PerSymbolFlags,
     ) -> Option<RelaxSymbolInfo> {
         let addr = *self.addresses.get(symbol_id.as_usize())?;
-        if addr == 0 {
+        if addr == SYMBOL_ADDRESS_UNRESOLVED {
             return None;
         }
         Some(RelaxSymbolInfo {
@@ -4723,7 +4661,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
     let starting_offsets = compute_start_offsets_by_group(group_states, mem_offsets);
 
     let symbol_addresses: Vec<AtomicU64> = (0..symbol_db.num_symbols())
-        .map(|_| AtomicU64::new(0))
+        .map(|_| AtomicU64::new(SYMBOL_ADDRESS_UNRESOLVED))
         .collect();
 
     let section_addresses: Vec<Vec<Vec<u64>>> = group_states
@@ -4778,7 +4716,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
                                     symbol_addresses[sym_id.as_usize()]
                                         .store(sec_addr + sym.value(), Relaxed);
                                 }
-                                Ok(None) if sym.is_absolute() && sym.value() != 0 => {
+                                Ok(None) if sym.is_absolute() => {
                                     symbol_addresses[sym_id.as_usize()].store(sym.value(), Relaxed);
                                 }
                                 _ => continue,
@@ -5106,7 +5044,7 @@ fn layout_section_parts(
                         // start at an unaligned address.
                         file_offset = alignment.align_up_usize(file_offset);
 
-                        if section_flags.contains(shf::ALLOC) {
+                        if section_flags.is_alloc() {
                             mem_offset = alignment.align_up(mem_offset);
 
                             let file_size = if output_sections.has_data_in_file(merge_target) {
@@ -5736,7 +5674,7 @@ fn test_no_disallowed_overlaps() {
         };
 
         let section_flags = output_sections.section_flags(section_id);
-        if !section_flags.contains(shf::ALLOC) {
+        if !section_flags.is_alloc() {
             return;
         }
 
@@ -5769,7 +5707,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut section_index = 0;
     output_sections.section_infos.for_each(|_, info| {
-        if info.section_flags.contains(shf::ALLOC) {
+        if info.section_flags.is_alloc() {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));

@@ -41,6 +41,7 @@ use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::layout;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -100,6 +101,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
 use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
+use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
@@ -1365,7 +1367,7 @@ fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
-    if section.should_reverse_contents(object.object, &layout.output_sections) {
+    if should_reverse_contents(section, object.object, &layout.output_sections) {
         return write_section_reversed::<P>(object, layout, section, table_writer, trace, out);
     }
 
@@ -4864,4 +4866,27 @@ impl<R> Default for RelocationCache<R> {
             high_part_symbols: Default::default(),
         }
     }
+}
+
+/// Returns whether to reverse the contents of a section. This is true for .ctors/.dtors sections.
+fn should_reverse_contents(
+    section: &layout::Section,
+    file: &crate::elf::File,
+    output_sections: &OutputSections,
+) -> bool {
+    // Getting the section name is expensive, so we only do it when the output section is
+    // .init_array / .fini_array.
+    let section_id = output_sections.primary_output_section(section.part_id.output_section_id());
+    if section_id != output_section_id::INIT_ARRAY && section_id != output_section_id::FINI_ARRAY {
+        return false;
+    }
+
+    file.section(section.index)
+        .and_then(|header| file.section_name(header))
+        .is_ok_and(|section_name| {
+            // .ctors and .dtors sections need their contents reversed when merged into
+            // .init_array/.fini_array
+            section_name.starts_with(secnames::CTORS_SECTION_NAME)
+                || section_name.starts_with(secnames::DTORS_SECTION_NAME)
+        })
 }

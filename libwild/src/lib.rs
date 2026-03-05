@@ -183,11 +183,13 @@ impl Linker {
         let args = &args.args;
         match args.version_mode {
             args::VersionMode::ExitAfterPrint => {
-                println!("{}", linker_identity());
+                let mut stdout = std::io::stdout().lock();
+                writeln!(stdout, "{}", linker_identity())?;
                 return Ok(LinkerOutput { layout: None });
             }
             args::VersionMode::Verbose => {
-                println!("{}", linker_identity());
+                let mut stdout = std::io::stdout().lock();
+                writeln!(stdout, "{}", linker_identity())?;
                 // Continue linking
             }
             args::VersionMode::None => {

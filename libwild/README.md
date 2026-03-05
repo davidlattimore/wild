@@ -10,4 +10,4 @@ Alternative APIs may be added in future based on actual use-cases. Until such us
 though, it's hard to determine what those APIs should look like.
 
 For more details about the wild linker, see the [wild
-repository](https://github.com/davidlattimore/wild).
+repository](https://github.com/wild-linker/wild).

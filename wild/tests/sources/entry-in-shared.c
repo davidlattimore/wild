@@ -1,4 +1,4 @@
-// https://github.com/davidlattimore/wild/issues/1137
+// https://github.com/wild-linker/wild/issues/1137
 //#Config:entry-in-shared
 //#LinkArgs:-shared -z now
 //#RunEnabled:false
