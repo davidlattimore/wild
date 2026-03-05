@@ -204,7 +204,6 @@ impl Config {
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
                 "section.eh_frame.flags",
-                "rel.R_X86_64_32.R_X86_64_32",
                 // TLSDESC relaxations aren't yet implemented.
                 "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
                 "rel.match_failed.R_X86_64_CODE_4_GOTPC32_TLSDESC",

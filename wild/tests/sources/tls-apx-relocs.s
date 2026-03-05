@@ -9,14 +9,14 @@
 tls:
 .zero 1024
 
+.section .text
+.globl _start
 .type foo, @function
 foo:
     endbr64
     mov     $2, %rax
     ret
 
-.section .text
-.globl _start
 _start:
 
 # R_X86_64_CODE_4_GOTTPOFF
