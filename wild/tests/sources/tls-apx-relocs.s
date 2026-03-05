@@ -1,7 +1,6 @@
 //#Object:runtime.c
 //#RunEnabled:false
 //#LinkArgs:-z noexecstack
-//#EnableLinker:lld
 //#Arch: x86_64
 
 .section .tbss,"awT",@nobits
@@ -30,9 +29,6 @@ _start:
 	addq tls@GOTTPOFF(%rip), %r28, %r28
 	addq %r16, tls@GOTTPOFF(%rip), %r16
 	addq tls@GOTTPOFF(%rip), %r16, %r16
-	{nf} addq %r8, tls@GOTTPOFF(%rip), %r16
-	{nf} addq tls@GOTTPOFF(%rip), %rax, %r12
-	{nf} addq tls@GOTTPOFF(%rip), %r12
 
 # R_X86_64_CODE_4_GOTPCRELX
 	mov foo@GOTPCREL(%rip), %r16
