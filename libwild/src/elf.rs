@@ -54,7 +54,9 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentFlags;
 use linker_utils::elf::SegmentType;
+use linker_utils::elf::pf;
 use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
@@ -260,6 +262,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
+    type ProgramSegmentDef = ProgramSegmentDef;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -1410,7 +1413,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn update_segment_keep_list(
-        program_segments: &ProgramSegments,
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
         args: &Args,
     ) {
@@ -1422,6 +1425,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 }
             }
         }
+    }
+
+    fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        PROGRAM_SEGMENT_DEFS
+    }
+
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        &[STACK_SEGMENT_DEF]
     }
 }
 
@@ -3028,5 +3039,146 @@ impl platform::SegmentType for SegmentType {}
 impl EpilogueLayout {
     fn gnu_build_id_note_section_size(&self) -> Option<u64> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProgramSegmentDef {
+    pub(crate) segment_type: SegmentType,
+    pub(crate) segment_flags: SegmentFlags,
+}
+
+/// The different kinds of program segments that we generate based on section properties. Note, this
+/// doesn't include the PT_GNU_STACK segment, since it isn't generated in response to any sections
+/// because it doesn't contain any.
+const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+    ProgramSegmentDef {
+        segment_type: pt::PHDR,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::INTERP,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::NOTE,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_PROPERTY,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::EXECUTABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::TLS,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_EH_FRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_SFRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::DYNAMIC,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_RELRO,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::RISCV_ATTRIBUTES,
+        segment_flags: pf::READABLE,
+    },
+];
+
+pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    segment_type: pt::GNU_STACK,
+    segment_flags: pf::READABLE.with(pf::WRITABLE),
+};
+
+impl platform::ProgramSegmentDef for ProgramSegmentDef {
+    fn is_writable(self) -> bool {
+        self.segment_flags.contains(pf::WRITABLE)
+    }
+
+    fn is_executable(self) -> bool {
+        self.segment_flags.contains(pf::EXECUTABLE)
+    }
+
+    fn always_keep(self) -> bool {
+        self.segment_type == pt::PHDR
+    }
+
+    fn is_loadable(self) -> bool {
+        self.segment_type == pt::LOAD
+    }
+
+    fn is_stack(self) -> bool {
+        self.segment_type == pt::GNU_STACK
+    }
+
+    fn is_tls(self) -> bool {
+        self.segment_type == pt::TLS
+    }
+
+    fn order_key(self) -> usize {
+        // Segment types that we put first. Other types
+        const TYPE_ORDER: &[SegmentType] = &[pt::PHDR, pt::INTERP, pt::LOAD, pt::DYNAMIC];
+
+        TYPE_ORDER
+            .iter()
+            .position(|t| *t == self.segment_type)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+    }
+
+    fn should_include_section(
+        self,
+        info: &crate::output_section_id::SectionOutputInfo,
+        section_id: OutputSectionId,
+    ) -> bool {
+        match self.segment_type {
+            pt::NOTE => info.ty == sht::NOTE,
+            pt::TLS => info.section_flags.contains(shf::TLS),
+            pt::LOAD => {
+                info.section_flags.contains(shf::ALLOC)
+                    && info.section_flags.contains(shf::WRITE) == self.is_writable()
+                    && info.section_flags.contains(shf::EXECINSTR) == self.is_executable()
+            }
+            pt::GNU_RELRO => {
+                info.section_flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
+    }
+
+    fn should_cut_rw_segment_when_ending(self) -> bool {
+        self.segment_type == pt::GNU_RELRO
+    }
+}
+
+impl std::fmt::Display for ProgramSegmentDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, {}", self.segment_type, self.segment_flags)
     }
 }

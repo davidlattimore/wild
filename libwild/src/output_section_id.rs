@@ -30,11 +30,10 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::program_segments::PROGRAM_SEGMENT_DEFS;
-use crate::program_segments::ProgramSegmentDef;
+use crate::platform::ObjectFile;
+use crate::platform::ProgramSegmentDef;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
-use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use core::slice;
@@ -154,16 +153,16 @@ pub(crate) struct OutputOrder {
     events: Vec<OrderEvent>,
 }
 
-pub(crate) struct OutputOrderDisplay<'a, 'data> {
+pub(crate) struct OutputOrderDisplay<'a, 'data, O: ObjectFile<'data>> {
     order: &'a OutputOrder,
     sections: &'a OutputSections<'data>,
-    program_segments: &'a ProgramSegments,
+    program_segments: &'a ProgramSegments<O::ProgramSegmentDef>,
 }
 
-struct OutputOrderBuilder<'scope, 'data> {
+struct OutputOrderBuilder<'scope, 'data, O: ObjectFile<'data>> {
     events: Vec<OrderEvent>,
 
-    program_segments: ProgramSegments,
+    program_segments: ProgramSegments<O::ProgramSegmentDef>,
 
     /// Indexes correspond to elements of `PROGRAM_SEGMENT_DEFS`.
     active_segment_kinds: Vec<Option<ProgramSegmentId>>,
@@ -172,7 +171,7 @@ struct OutputOrderBuilder<'scope, 'data> {
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
 }
 
-impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
+impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
     fn new(
         output_sections: &'scope OutputSections<'data>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
@@ -181,7 +180,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
             events: Vec::new(),
             program_segments: ProgramSegments::empty(),
             output_sections,
-            active_segment_kinds: vec![None; PROGRAM_SEGMENT_DEFS.len()],
+            active_segment_kinds: vec![None; O::program_segment_defs().len()],
             secondary,
         }
     }
@@ -189,7 +188,7 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
     fn add_section(&mut self, section_id: OutputSectionId) {
         // When RELRO segment ends, also end the RW LOAD segment so that subsequent non-RELRO
         // sections go into a new LOAD segment.
-        if self.relro_segment_will_end(section_id) {
+        if self.should_end_current_rw_segment(section_id) {
             self.end_rw_load_segment();
         }
 
@@ -244,25 +243,25 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
     }
 
     /// Returns true if processing the given section will cause the RELRO segment to end.
-    fn relro_segment_will_end(&self, section_id: OutputSectionId) -> bool {
+    fn should_end_current_rw_segment(&self, section_id: OutputSectionId) -> bool {
         self.active_segment_kinds
             .iter()
-            .zip(PROGRAM_SEGMENT_DEFS)
+            .zip(O::program_segment_defs())
             .any(|(id, def)| {
                 id.is_some()
-                    && def.segment_type == pt::GNU_RELRO
+                    && def.should_cut_rw_segment_when_ending()
                     && !self
                         .output_sections
-                        .should_include_in_segment(section_id, *def)
+                        .should_include_in_segment::<O>(section_id, *def)
             })
     }
 
     /// Ends the currently active RW LOAD segment, if any. This is used when the RELRO segment
     /// ends to force .data and other non-RELRO sections into a new LOAD segment.
     fn end_rw_load_segment(&mut self) {
-        let rw_load_def_index = PROGRAM_SEGMENT_DEFS.iter().position(|def| {
-            def.segment_type == pt::LOAD && def.is_writable() && !def.is_executable()
-        });
+        let rw_load_def_index = O::program_segment_defs()
+            .iter()
+            .position(|def| def.is_loadable() && def.is_writable() && !def.is_executable());
 
         if let Some(def_index) = rw_load_def_index
             && let Some(segment_id) = self.active_segment_kinds[def_index].take()
@@ -299,13 +298,13 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
             }
         }
 
-        PROGRAM_SEGMENT_DEFS
+        O::program_segment_defs()
             .iter()
             .zip(self.active_segment_kinds.iter_mut())
             .for_each(|(segment_def, active_id)| {
                 let should_be_active = self
                     .output_sections
-                    .should_include_in_segment(section_id, *segment_def);
+                    .should_include_in_segment::<O>(section_id, *segment_def);
 
                 match (active_id.as_ref().copied(), should_be_active) {
                     // Remain inactive
@@ -338,14 +337,16 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
     }
 
-    fn build(mut self) -> (OutputOrder, ProgramSegments) {
+    fn build(mut self) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
         for segment_id in self.active_segment_kinds.into_iter().flatten() {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        let segment_id = self.program_segments.add_segment(STACK_SEGMENT_DEF);
-        self.events.push(OrderEvent::SegmentStart(segment_id));
-        self.events.push(OrderEvent::SegmentEnd(segment_id));
+        for def in O::unconditional_segment_defs() {
+            let segment_id = self.program_segments.add_segment(*def);
+            self.events.push(OrderEvent::SegmentStart(segment_id));
+            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        }
 
         (
             OutputOrder {
@@ -414,32 +415,13 @@ impl<'data> OutputSections<'data> {
 
     /// Returns whether we should include the specified section in a program segment with the
     /// supplied properties.
-    fn should_include_in_segment(
+    fn should_include_in_segment<O: ObjectFile<'data>>(
         &self,
         section_id: OutputSectionId,
-        segment_def: ProgramSegmentDef,
+        segment_def: O::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
-
-        match segment_def.segment_type {
-            pt::NOTE => info.ty == sht::NOTE,
-            pt::TLS => info.section_flags.contains(shf::TLS),
-            pt::LOAD => {
-                info.section_flags.contains(shf::ALLOC)
-                    && info.section_flags.contains(shf::WRITE) == segment_def.is_writable()
-                    && info.section_flags.contains(shf::EXECINSTR) == segment_def.is_executable()
-            }
-            pt::GNU_RELRO => {
-                info.section_flags.contains(shf::TLS)
-                    || section_id
-                        .opt_built_in_details()
-                        .is_some_and(|details| details.is_relro)
-            }
-            other => section_id
-                .opt_built_in_details()
-                .and_then(|details| details.target_segment_type)
-                .is_some_and(|target_segment_type| target_segment_type == other),
-        }
+        segment_def.should_include_section(info, section_id)
     }
 }
 
@@ -468,8 +450,8 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
-    is_relro: bool,
-    target_segment_type: Option<SegmentType>,
+    pub(crate) is_relro: bool,
+    pub(crate) target_segment_type: Option<SegmentType>,
 }
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
@@ -952,12 +934,12 @@ pub(crate) enum SecondaryOrder {
 }
 
 impl CustomSectionIds {
-    fn build_output_order_and_program_segments(
+    fn build_output_order_and_program_segments<'data, O: ObjectFile<'data>>(
         &self,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<'data>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
-    ) -> (OutputOrder, ProgramSegments) {
-        let mut builder = OutputOrderBuilder::new(output_sections, secondary);
+    ) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
+        let mut builder = OutputOrderBuilder::<O>::new(output_sections, secondary);
 
         builder.add_section(FILE_HEADER);
         builder.add_section(PROGRAM_HEADERS);
@@ -1131,7 +1113,9 @@ impl<'data> OutputSections<'data> {
         sid
     }
 
-    pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments) {
+    pub(crate) fn output_order<O: ObjectFile<'data>>(
+        &self,
+    ) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
         timing_phase!("Compute output order");
 
         let mut custom = CustomSectionIds::default();
@@ -1168,7 +1152,7 @@ impl<'data> OutputSections<'data> {
             }
         });
 
-        custom.build_output_order_and_program_segments(self, &secondary)
+        custom.build_output_order_and_program_segments::<O>(self, &secondary)
     }
 
     #[must_use]
@@ -1288,11 +1272,11 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
-    pub(crate) fn display<'a, 'data>(
+    pub(crate) fn display<'a, 'data, O: ObjectFile<'data>>(
         &'a self,
         sections: &'a OutputSections<'data>,
-        program_segments: &'a ProgramSegments,
-    ) -> OutputOrderDisplay<'a, 'data> {
+        program_segments: &'a ProgramSegments<O::ProgramSegmentDef>,
+    ) -> OutputOrderDisplay<'a, 'data, O> {
         OutputOrderDisplay {
             order: self,
             sections,
@@ -1301,7 +1285,7 @@ impl OutputOrder {
     }
 }
 
-impl Display for OutputOrderDisplay<'_, '_> {
+impl<'data, O: ObjectFile<'data>> Display for OutputOrderDisplay<'_, 'data, O> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for event in &self.order.events {
             match event {
