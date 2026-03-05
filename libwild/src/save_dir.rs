@@ -273,7 +273,7 @@ impl SaveDirState {
                 self.copy_file(&absolute_target, parsed_args)?;
             }
 
-            create_symlink(&target, &dest_path, source_path)?;
+            create_symlink(&target, &dest_path)?;
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
@@ -353,7 +353,7 @@ impl SaveDirState {
 }
 
 #[cfg(unix)]
-fn create_symlink(target: &Path, dest_path: &Path, _source_path: &Path) -> Result {
+fn create_symlink(target: &Path, dest_path: &Path) -> Result {
     std::os::unix::fs::symlink(target, dest_path).with_context(|| {
         format!(
             "Failed to symlink {} to {}",
@@ -365,8 +365,8 @@ fn create_symlink(target: &Path, dest_path: &Path, _source_path: &Path) -> Resul
 }
 
 #[cfg(windows)]
-fn create_symlink(target: &Path, dest_path: &Path, source_path: &Path) -> Result {
-    let is_dir = std::fs::metadata(source_path)
+fn create_symlink(target: &Path, dest_path: &Path) -> Result {
+    let is_dir = std::fs::metadata(target)
         .map(|meta| meta.is_dir())
         .unwrap_or(false);
     let result = if is_dir {
