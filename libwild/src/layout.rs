@@ -38,6 +38,7 @@ use crate::part_id::PartId;
 use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relaxation as _;
@@ -195,11 +196,11 @@ pub fn compute<'data, P: Platform<'data>>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order();
+    let (output_order, program_segments) = output_sections.output_order::<P::File>();
 
     tracing::trace!(
         "Output order:\n{}",
-        output_order.display(&output_sections, &program_segments)
+        output_order.display::<P::File>(&output_sections, &program_segments)
     );
 
     let mut section_part_sizes = compute_total_section_part_sizes(
@@ -212,7 +213,7 @@ pub fn compute<'data, P: Platform<'data>>(
         &finalise_sizes_resources,
     )?;
 
-    let mut section_part_layouts = layout_section_parts(
+    let mut section_part_layouts = layout_section_parts::<P::File>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -245,7 +246,7 @@ pub fn compute<'data, P: Platform<'data>>(
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
-    let segment_layouts = compute_segment_layout(
+    let segment_layouts = compute_segment_layout::<P::File>(
         &section_layouts,
         &output_sections,
         &output_order,
@@ -562,7 +563,7 @@ pub struct Layout<'data, O: ObjectFile<'data>> {
     pub(crate) group_layouts: Vec<GroupLayout<'data, O>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
-    pub(crate) program_segments: ProgramSegments,
+    pub(crate) program_segments: ProgramSegments<O::ProgramSegmentDef>,
     pub(crate) output_order: OutputOrder,
     pub(crate) non_addressable_counts: O::NonAddressableCounts,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
@@ -1321,7 +1322,7 @@ struct FinaliseLayoutResources<'scope, 'data, O: ObjectFile<'data>> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
     segment_layouts: &'scope SegmentLayouts,
-    program_segments: &'scope ProgramSegments,
+    program_segments: &'scope ProgramSegments<O::ProgramSegmentDef>,
     format_specific: &'scope O::LayoutProperties,
 }
 
@@ -1649,11 +1650,11 @@ fn compute_symbols_and_layouts<'data, O: ObjectFile<'data>>(
         .collect()
 }
 
-fn compute_segment_layout(
+fn compute_segment_layout<'data, O: ObjectFile<'data>>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
     output_order: &OutputOrder,
-    program_segments: &ProgramSegments,
+    program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     header_info: &HeaderInfo,
     args: &Args,
 ) -> Result<SegmentLayouts> {
@@ -1798,7 +1799,7 @@ fn compute_total_section_part_sizes<'data, O: ObjectFile<'data>>(
     group_states: &mut [GroupState<'data, O>],
     output_sections: &mut OutputSections,
     output_order: &OutputOrder,
-    program_segments: &ProgramSegments,
+    program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     per_symbol_flags: &mut PerSymbolFlags,
     must_keep_sections: OutputSectionMap<bool>,
     resources: &FinaliseSizesResources<'data, '_, O>,
@@ -3078,7 +3079,7 @@ impl<'data> PreludeLayoutState<'data> {
         must_keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         output_order: &OutputOrder,
-        program_segments: &ProgramSegments,
+        program_segments: &ProgramSegments<O::ProgramSegmentDef>,
         per_symbol_flags: &mut PerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
@@ -3165,7 +3166,7 @@ impl<'data> PreludeLayoutState<'data> {
         extra_sizes: &mut OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
-        program_segments: &ProgramSegments,
+        program_segments: &ProgramSegments<O::ProgramSegmentDef>,
         output_order: &OutputOrder,
         resources: &FinaliseSizesResources<'data, '_, O>,
         symbol_flags: &PerSymbolFlags,
@@ -4909,7 +4910,7 @@ fn perform_iterative_relaxation<'data, P: Platform<'data>>(
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
-    program_segments: &ProgramSegments,
+    program_segments: &ProgramSegments<<P::File as ObjectFile<'data>>::ProgramSegmentDef>,
     output_order: &OutputOrder,
     symbol_db: &SymbolDb<'data, P::File>,
     per_symbol_flags: &PerSymbolFlags,
@@ -4961,7 +4962,7 @@ fn perform_iterative_relaxation<'data, P: Platform<'data>>(
                 .collect(),
         );
 
-        *section_part_layouts = layout_section_parts(
+        *section_part_layouts = layout_section_parts::<P::File>(
             section_part_sizes,
             output_sections,
             program_segments,
@@ -4971,15 +4972,15 @@ fn perform_iterative_relaxation<'data, P: Platform<'data>>(
     }
 }
 
-fn layout_section_parts(
+fn layout_section_parts<'data, O: ObjectFile<'data>>(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections,
-    program_segments: &ProgramSegments,
+    program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
     args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments =
-        compute_segment_alignments(sizes, program_segments, output_order, args);
+        compute_segment_alignments::<O>(sizes, program_segments, output_order, args);
 
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
@@ -5089,9 +5090,9 @@ fn layout_section_parts(
 
 /// Computes the maximum alignment for each LOAD segment by examining the alignments of all sections
 /// that will be placed in that segment.
-fn compute_segment_alignments(
+fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
     sizes: &OutputSectionPartMap<u64>,
-    program_segments: &ProgramSegments,
+    program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
     args: &Args,
 ) -> HashMap<ProgramSegmentId, Alignment> {
@@ -5647,11 +5648,11 @@ fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections = OutputSections::with_base_address(0x1000);
-    let (output_order, program_segments) = output_sections.output_order();
+    let (output_order, program_segments) = output_sections.output_order::<crate::elf::File>();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
-    let section_part_layouts = layout_section_parts(
+    let section_part_layouts = layout_section_parts::<crate::elf::File>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -5717,7 +5718,7 @@ fn test_no_disallowed_overlaps() {
         }
     });
 
-    let segment_layouts = compute_segment_layout(
+    let segment_layouts = compute_segment_layout::<crate::elf::File>(
         &section_layouts,
         &output_sections,
         &output_order,
@@ -5761,7 +5762,7 @@ fn verify_consistent_allocation_handling<'data, O: ObjectFile<'data>>(
     output_kind: OutputKind,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
-    let (output_order, _program_segments) = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order::<O>();
     let mut mem_sizes = output_sections.new_part_map();
     allocate_symbol_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();
