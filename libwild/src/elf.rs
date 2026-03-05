@@ -2,6 +2,7 @@ use crate::Args;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BuildIdOption;
+use crate::args::RelocationModel;
 use crate::bail;
 use crate::elf_writer;
 use crate::ensure;
@@ -21,6 +22,8 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::InternalSymDefInfo;
+use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::platform;
 use crate::platform::CommonSymbol;
@@ -69,6 +72,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::stt;
 use linker_utils::utils::read_string;
 use linker_utils::utils::read_u32;
 use linker_utils::utils::read_uleb128;
@@ -1433,6 +1437,101 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[STACK_SEGMENT_DEF]
+    }
+
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+        output_kind: OutputKind,
+    ) {
+        // The undefined symbol must always be symbol 0.
+        symbols
+            .add_symbol(InternalSymDefInfo::new(SymbolPlacement::Undefined, b""))
+            .hide();
+
+        symbols
+            .section_start(output_section_id::FILE_HEADER, "__ehdr_start")
+            .hide();
+
+        symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
+
+        // .rela.plt start/stop symbols are only emitted for non-relocatable executables. Emitting
+        // them for relocatable binaries causes glibc to try to call the resolver functions without
+        // taking into account that the binary has been relocated.
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::Relocatable) {
+            symbols
+                .section_start(output_section_id::RELA_PLT, "__rela_iplt_start")
+                .hide();
+            symbols
+                .section_end(output_section_id::RELA_PLT, "__rela_iplt_end")
+                .hide();
+        }
+
+        symbols
+            .section_start(output_section_id::PREINIT_ARRAY, "__preinit_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::PREINIT_ARRAY, "__preinit_array_end")
+            .hide();
+
+        symbols
+            .section_start(output_section_id::INIT_ARRAY, "__init_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::INIT_ARRAY, "__init_array_end")
+            .hide();
+
+        symbols
+            .section_start(output_section_id::FINI_ARRAY, "__fini_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::FINI_ARRAY, "__fini_array_end")
+            .hide();
+
+        symbols.section_end(output_section_id::TEXT, "etext");
+        symbols.section_end(output_section_id::TEXT, "_etext");
+        symbols.section_end(output_section_id::TEXT, "__etext");
+
+        symbols.section_end(output_section_id::BSS, "end");
+        symbols.section_end(output_section_id::BSS, "_end");
+        symbols.section_end(output_section_id::BSS, "__end").hide();
+
+        // TODO: define the symbol only on RISC-V target
+        symbols.section_start(
+            output_section_id::DATA,
+            crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+        );
+
+        symbols.section_end(output_section_id::DATA, "edata");
+        symbols.section_end(output_section_id::DATA, "_edata");
+
+        symbols
+            .section_start(output_section_id::TDATA, "__tdata_start")
+            .hide();
+
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable) {
+            symbols.section_start(output_section_id::DYNAMIC, "_DYNAMIC");
+        }
+
+        symbols
+            .add_symbol(InternalSymDefInfo::new(
+                SymbolPlacement::LoadBaseAddress,
+                b"__executable_start",
+            ))
+            .hide();
+
+        // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
+        // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
+        // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
+        symbols.add_symbol(InternalSymDefInfo {
+            placement: if output_kind == OutputKind::SharedObject {
+                SymbolPlacement::SectionStart(output_section_id::TDATA)
+            } else {
+                SymbolPlacement::SectionEnd(output_section_id::TBSS)
+            },
+            name: b"_TLS_MODULE_BASE_",
+            elf_symbol_type: stt::TLS,
+            is_hidden: false,
+        });
     }
 }
 
