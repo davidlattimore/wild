@@ -370,7 +370,7 @@ fn create_symlink(target: &Path, dest_path: &Path, source_path: &Path) -> Result
         .map(|meta| meta.is_dir())
         .unwrap_or(false);
     let result = if is_dir {
-        std::os::windows::fs::symlink_dir(target, dest_path)
+        std::os::windows::fs::junction_point(target, dest_path)
     } else {
         std::os::windows::fs::symlink_file(target, dest_path)
     };
