@@ -3378,6 +3378,44 @@ impl<'data> PreludeLayoutState<'data> {
 }
 
 impl<'data> InternalSymbols<'data> {
+    fn activate_symbols<O: ObjectFile<'data>>(
+        &self,
+        common: &mut CommonGroupState<'data, O>,
+        resources: &GraphResources<'data, '_, O>,
+    ) -> Result {
+        for (offset, def_info) in self.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.start_symbol_id.add_usize(offset);
+            if !resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
+            // Mark the section referenced by this symbol so that empty sections
+            // defined by the linker script are still emitted.
+            if let Some(section_id) = def_info.section_id() {
+                resources
+                    .must_keep_sections
+                    .get(section_id)
+                    .fetch_or(true, atomic::Ordering::Relaxed);
+            }
+
+            // PROVIDE_HIDDEN symbols should not be exported to dynsym.
+            if def_info.is_hidden {
+                continue;
+            }
+
+            resources
+                .per_symbol_flags
+                .get_atomic(symbol_id)
+                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+
+            if resources.symbol_db.output_kind.needs_dynsym() {
+                export_dynamic(common, symbol_id, resources.symbol_db)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn allocate_symbol_table_sizes<O: ObjectFile<'data>>(
         &self,
         sizes: &mut OutputSectionPartMap<u64>,
@@ -5462,37 +5500,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
         common: &mut CommonGroupState<'data, O>,
         resources: &GraphResources<'data, '_, O>,
     ) -> Result {
-        for (offset, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
-            let symbol_id = self.symbol_id_range.offset_to_id(offset);
-            if !resources.symbol_db.is_canonical(symbol_id) {
-                continue;
-            }
-
-            // Mark the section referenced by this symbol so that empty sections
-            // defined by the linker script are still emitted.
-            if let Some(section_id) = def_info.section_id() {
-                resources
-                    .must_keep_sections
-                    .get(section_id)
-                    .fetch_or(true, atomic::Ordering::Relaxed);
-            }
-
-            // PROVIDE_HIDDEN symbols should not be exported to dynsym.
-            if def_info.is_hidden {
-                continue;
-            }
-
-            resources
-                .per_symbol_flags
-                .get_atomic(symbol_id)
-                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
-
-            if resources.symbol_db.output_kind.needs_dynsym() {
-                export_dynamic(common, symbol_id, resources.symbol_db)?;
-            }
-        }
-
-        Ok(())
+        self.internal_symbols.activate_symbols(common, resources)
     }
 
     fn finalise_sizes<O: ObjectFile<'data>>(

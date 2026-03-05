@@ -3587,40 +3587,8 @@ fn write_linker_script_dynsym(
         .internal_symbols
         .symbol_id_range()
         .id_to_offset(symbol_id);
-
     let info = &script.internal_symbols.symbol_definitions[local_index];
-
-    if matches!(
-        info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
-    }
-
-    let section_id = info
-        .section_id()
-        .context("Tried to export dynamic symbol not associated with a section")?;
-
-    let section_id = layout.output_sections.primary_output_section(section_id);
-
-    let shndx = layout
-        .output_sections
-        .output_index_of_section(section_id)
-        .context("Tried to write dynamic symbol in section that's not being output")?;
-
-    let resolution = layout
-        .local_symbol_resolution(symbol_id)
-        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
-
-    let address = resolution.address()?;
-    let name = layout.symbol_db.symbol_name(symbol_id)?;
-
-    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
-
-    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
-
-    Ok(())
+    write_internal_dynsym(dynsym_writer, layout, symbol_id, info)
 }
 
 /// Get the section index and type for a symbol.
@@ -3679,8 +3647,28 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
-        _ => {
-            // For non-object files (e.g., prelude, epilogue), default to ABS
+        crate::grouping::SequencedInput::Prelude(prelude) => {
+            let offset = symbol_id.offset_from(SymbolId::undefined());
+            let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
+                format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
+            })?;
+            let shndx = def_info
+                .section_id()
+                .map_or(object::elf::SHN_ABS, |section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .unwrap_or(object::elf::SHN_ABS)
+                });
+            Ok((shndx, def_info.elf_symbol_type.raw()))
+        }
+        crate::grouping::SequencedInput::SyntheticSymbols(_) => {
+            // For other non-object files (e.g. epilogue), default to ABS
+            Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
+        }
+        #[cfg(feature = "plugins")]
+        crate::grouping::SequencedInput::LtoInput(_) => {
             Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
         }
     }
@@ -3698,8 +3686,45 @@ fn write_prelude_dynsym(
         .symbol_definitions
         .get(offset)
         .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
+    write_internal_dynsym(dynsym_writer, layout, symbol_id, def_info)
+}
 
-    write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info)
+fn write_internal_dynsym(
+    dynsym_writer: &mut SymbolTableWriter,
+    layout: &ElfLayout,
+    symbol_id: SymbolId,
+    def_info: &crate::parsing::InternalSymDefInfo,
+) -> Result {
+    if matches!(
+        def_info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ) {
+        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
+    }
+
+    let section_id = def_info
+        .section_id()
+        .context("Tried to export dynamic symbol not associated with a section")?;
+
+    let section_id = layout.output_sections.primary_output_section(section_id);
+
+    let shndx = layout
+        .output_sections
+        .output_index_of_section(section_id)
+        .context("Tried to write dynamic symbol in section that's not being output")?;
+
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+
+    let address = resolution.address()?;
+    let name = layout.symbol_db.symbol_name(symbol_id)?;
+
+    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
+    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
+
+    Ok(())
 }
 
 /// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
