@@ -3725,6 +3725,7 @@ fn write_internal_dynsym(
     Ok(())
 }
 
+/// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
 fn write_defsym_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,

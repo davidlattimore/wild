@@ -230,6 +230,8 @@ impl<'data> Prelude<'data> {
                 continue;
             }
             // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
+            // Emitting them for relocatable binaries causes glibc to try to call the resolver
+            // functions without taking into account that the binary has been relocated.
             if output_kind == OutputKind::StaticExecutable(RelocationModel::Relocatable)
                 && section_id == output_section_id::RELA_PLT
             {
