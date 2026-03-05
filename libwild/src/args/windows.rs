@@ -408,10 +408,11 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .long("DYNAMICDEOPT")
         .help("/DYNAMICDEOPT - Enable C++ Dynamic Debugging (Preview) and step in anywhere with on-demand function deoptimization.")
         .execute(|_, _, _| unimplemented_option("/DYNAMICDEOPT"));
-    // /ENTRY - Sets the starting address.
+    // /ENTRY - Sets the starting address. Also accepts -e (used by clang driver).
     parser
         .declare_with_param()
         .long("ENTRY")
+        .short("e")
         .help("/ENTRY - Sets the starting address.")
         .execute(|args, _modifier_stack, value| {
             args.entry = Some(value.to_string());
@@ -800,7 +801,7 @@ pub(crate) fn setup_windows_argument_parser() -> ArgumentParser<PeArgs> {
         .declare_with_optional_param()
         .long("NOLOGO")
         .help("/NOLOGO - Suppresses the startup banner.")
-        .execute(|_, _, _| unimplemented_option("/NOLOGO"));
+        .execute(|_, _, _| Ok(()));
     // /NXCOMPAT - Marks an executable as verified to be compatible with the Windows Data Execution Prevention feature.
     parser
         .declare_with_optional_param()
