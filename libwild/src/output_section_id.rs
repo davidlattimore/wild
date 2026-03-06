@@ -442,7 +442,6 @@ pub(crate) struct BuiltInSectionDetails {
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
     pub(crate) min_alignment: Alignment,
-    pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
     pub(crate) is_relro: bool,
@@ -454,7 +453,6 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     section_flags: SectionFlags::empty(),
     link: &[],
     min_alignment: alignment::MIN,
-    mark_zero_sized_input_as_content: true,
     element_size: 0,
     ty: sht::NULL,
     is_relro: false,
@@ -537,7 +535,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         target_segment_type: Some(pt::GNU_SFRAME),
-        mark_zero_sized_input_as_content: false,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -813,14 +810,6 @@ impl OutputSectionId {
 
     pub(crate) fn min_alignment(self, output_sections: &OutputSections) -> Alignment {
         output_sections.section_infos.get(self).min_alignment
-    }
-
-    pub(crate) fn marks_zero_sized_inputs_as_content(self) -> bool {
-        if let Some(details) = self.opt_built_in_details() {
-            details.mark_zero_sized_input_as_content
-        } else {
-            true
-        }
     }
 
     pub(crate) fn is_regular(self) -> bool {

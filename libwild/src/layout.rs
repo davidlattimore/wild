@@ -3929,7 +3929,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
 
         if section.size > 0 {
             O::non_empty_section_loaded::<P>(self, common, queue, unloaded, resources, scope)?;
-        } else if section_id.marks_zero_sized_inputs_as_content() {
+        } else if O::is_zero_sized_section_content(section_id) {
             resources.keep_section(section_id);
         }
 

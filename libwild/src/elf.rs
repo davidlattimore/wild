@@ -1555,6 +1555,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             *keep_sections.get_mut(output_section_id::RELRO_PADDING) = true;
         }
     }
+
+    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool {
+        // We always consider empty sections as content except for sframe sections.
+        section_id != output_section_id::SFRAME
+    }
 }
 
 fn process_eh_frame_relocations<
