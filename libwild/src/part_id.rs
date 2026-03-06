@@ -1,10 +1,10 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
-use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::platform;
 use std::fmt::Debug;
 
@@ -88,10 +88,6 @@ impl PartId {
         self.0 as usize
     }
 
-    pub(crate) fn built_in_details(self) -> &'static BuiltInSectionDetails {
-        self.output_section_id().built_in_details()
-    }
-
     pub(crate) fn offset(self, offset: usize) -> PartId {
         PartId(self.0 + offset as u32)
     }
@@ -100,13 +96,13 @@ impl PartId {
         PartId(value)
     }
 
-    pub(crate) fn alignment(self) -> Alignment {
+    pub(crate) fn alignment(self, output_sections: &OutputSections<'_>) -> Alignment {
         if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
             }
         } else {
-            self.built_in_details().min_alignment
+            self.output_section_id().min_alignment(output_sections)
         }
     }
 }
@@ -141,10 +137,11 @@ mod tests {
 
     #[test]
     fn test_conversion_consistency() {
+        let output_sections = OutputSections::for_testing();
         for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
             let part_id = PartId::from_u32(i);
             let section_id = part_id.output_section_id();
-            let alignment = part_id.alignment();
+            let alignment = part_id.alignment(&output_sections);
             let part_id2 = section_id.part_id_with_alignment(alignment);
             assert_eq!(part_id, part_id2);
         }

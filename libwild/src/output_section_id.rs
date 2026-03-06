@@ -814,6 +814,7 @@ impl OutputSectionId {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn built_in_details(self) -> &'static BuiltInSectionDetails {
         &SECTION_DEFINITIONS[self.as_usize()]
     }
@@ -822,10 +823,8 @@ impl OutputSectionId {
         SECTION_DEFINITIONS.get(self.as_usize())
     }
 
-    pub(crate) fn min_alignment(self) -> Alignment {
-        SECTION_DEFINITIONS
-            .get(self.as_usize())
-            .map_or(alignment::MIN, |d| d.min_alignment)
+    pub(crate) fn min_alignment(self, output_sections: &OutputSections) -> Alignment {
+        output_sections.section_infos.get(self).min_alignment
     }
 
     pub(crate) fn marks_zero_sized_inputs_as_content(self) -> bool {
