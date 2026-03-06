@@ -129,7 +129,6 @@ The following is working with the caveat that there may be bugs:
 * GNU jobserver support
 * Very basic linker script support (section mapping, keeping sections, alignment, defining start /
   stop symbols).
-* Linker plugin LTO (requires building Wild with `--features=plugins`)
 
 ### What isn't yet supported?
 
@@ -142,6 +141,8 @@ priority:
 * More complex linker scripts
 * Mac support
 * Windows support
+* Linker plugin LTO (initial experimental support is behind `--features=plugins` but it doesn't yet
+  work very well).
 
 ### How can I verify that Wild was used to link a binary?
 
