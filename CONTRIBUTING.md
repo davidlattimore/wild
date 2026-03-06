@@ -247,6 +247,13 @@ you'll need to format with nightly. Before you upload your PR, you should run th
 cargo +nightly fmt
 ```
 
+YAML files are formatted with [`yamlfmt`](https://github.com/google/yamlfmt). If you change any
+workflow or other YAML files, run:
+
+```sh
+yamlfmt .
+```
+
 ### Naming
 
 When in doubt, do what is done in the Rust standard library. e.g. when making a name CamelCase, only

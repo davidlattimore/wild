@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ 'main' ]
+    branches: ['main']
   pull_request:
-    branches: [ '**' ]
+    branches: ['**']
   workflow_dispatch:
 
 permissions: {}
@@ -107,50 +107,65 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-    # This is where we check that we're not using features from a more recent rust version. When
-    # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-    - uses: dtolnay/rust-toolchain@1.93.0
-      id: rust-toolchain
-      with:
-        components: clippy
-    - uses: wild-linker/action@latest
-      with:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # This is where we check that we're not using features from a more recent rust version. When
+      # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
+      - uses: dtolnay/rust-toolchain@1.93.0
+        id: rust-toolchain
+        with:
+          components: clippy
+      - uses: wild-linker/action@latest
+        with:
           wild-version: "0.8.0"
-    - uses: Swatinem/rust-cache@v2
-    - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
 
   rustfmt:
     name: Check formatting
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-    - uses: dtolnay/rust-toolchain@nightly
-      with:
-        components: rustfmt
-    - run: cargo fmt --all -- --check
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  yamlfmt:
+    name: yamlfmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.0'
+      - run: go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
+      - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - run: yamlfmt -lint .
 
   riscv-build:
     name: RISC-V build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-    - uses: dtolnay/rust-toolchain@stable
-      id: rust-toolchain
-      with:
-        targets: riscv64gc-unknown-linux-gnu
-    - uses: Swatinem/rust-cache@v2
-    - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
-    - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
-    - run: cargo build --target riscv64gc-unknown-linux-gnu
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+      - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
+      - run: cargo build --target riscv64gc-unknown-linux-gnu
 
   loongarch64-build:
     name: LoongArch64 build
@@ -159,17 +174,17 @@ jobs:
     container:
       image: ubuntu:25.10
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false    
-    - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
-    - uses: dtolnay/rust-toolchain@stable
-      id: rust-toolchain
-      with:
-        targets: loongarch64-unknown-linux-gnu
-    - uses: Swatinem/rust-cache@v2
-    - run: cp .cargo/config.toml.cross-loongarch64 .cargo/config.toml
-    - run: cargo build --target loongarch64-unknown-linux-gnu
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: loongarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cp .cargo/config.toml.cross-loongarch64 .cargo/config.toml
+      - run: cargo build --target loongarch64-unknown-linux-gnu
 
   spelling:
     name: Spell Check with Typos
