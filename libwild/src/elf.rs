@@ -1,7 +1,8 @@
 use crate::Args;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
-use crate::args::BuildIdOption;
+use crate::args::linux::BuildIdOption;
+use crate::args::linux::ElfArgs;
 use crate::bail;
 use crate::elf_writer;
 use crate::ensure;
@@ -263,8 +264,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type CommonGroupStateExt = CommonGroupStateExt;
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
     type ProgramSegmentDef = ProgramSegmentDef;
+    type ArgsType = crate::args::linux::ElfArgs;
 
-    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &Args<Self::ArgsType>) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
@@ -673,7 +675,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &Args,
+        args: &Args<Self::ArgsType>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -842,7 +844,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn new_epilogue_layout(
-        args: &Args,
+        args: &Args<Self::ArgsType>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout {
@@ -1172,7 +1174,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn pre_finalise_sizes_prelude(
         common: &mut layout::CommonGroupState<'data, File<'data>>,
-        args: &Args,
+        args: &Args<Self::ArgsType>,
     ) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
@@ -1415,7 +1417,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args,
+        args: &Args<Self::ArgsType>,
     ) {
         // If relro is disabled, then discard the relro segment.
         if !args.relro {
@@ -1433,6 +1435,22 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
         &[STACK_SEGMENT_DEF]
+    }
+
+    fn wants_got_plt_syms(args: &Args<ElfArgs>) -> bool {
+        args.got_plt_syms
+    }
+
+    fn stack_size(args: &Args<ElfArgs>) -> u64 {
+        args.z_stack_size.map_or(0, |size| size.get())
+    }
+
+    fn wants_relro(args: &Args<ElfArgs>) -> bool {
+        args.relro
+    }
+
+    fn hash_includes_sysv(args: &Args<ElfArgs>) -> bool {
+        args.hash_style.includes_sysv()
     }
 }
 
@@ -2209,7 +2227,7 @@ impl ElfLayoutProperties {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) -> Result<Self> {
         let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<P>(states)?;
@@ -2812,7 +2830,7 @@ pub(crate) struct GnuHashLayout {
 }
 
 fn create_gnu_hash_layout(
-    args: &Args,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
     dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
 ) -> Option<GnuHashLayout> {

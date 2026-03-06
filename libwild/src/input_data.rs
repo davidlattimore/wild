@@ -83,11 +83,11 @@ pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
 
     /// The filename prior to path search. If this is absolute, then `filename` will be the same.
-    original_filename: PathBuf,
+    pub(crate) original_filename: PathBuf,
 
     pub(crate) modifiers: Modifiers,
 
-    data: Option<FileData>,
+    pub(crate) data: Option<FileData>,
 }
 
 #[derive(Debug)]
@@ -130,7 +130,7 @@ pub(crate) struct InputLinkerScript<'data> {
 }
 
 struct TemporaryState<'data, O: ObjectFile<'data>> {
-    args: &'data Args,
+    args: &'data Args<O::ArgsType>,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
     path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
@@ -205,7 +205,7 @@ pub(crate) struct AuxiliaryFiles<'data> {
 }
 
 impl<'data> AuxiliaryFiles<'data> {
-    pub(crate) fn new(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+    pub(crate) fn new<T>(args: &'data Args<T>, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if path.exists() {
                 path.to_owned()
@@ -243,7 +243,7 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn load_inputs<O: ObjectFile<'data>>(
         &mut self,
         inputs: &[Input],
-        args: &'data Args,
+        args: &'data Args<O::ArgsType>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, O>> {
         timing_phase!("Open input files");
@@ -406,9 +406,9 @@ impl<'data> FileLoader<'data> {
     }
 }
 
-fn process_linker_script<'data>(
+fn process_linker_script<'data, T>(
     input_file: &'data InputFile,
-    args: &Args,
+    args: &Args<T>,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
@@ -664,7 +664,11 @@ impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
             })));
         }
 
-        if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
+        if input_ref.is_archive_entry()
+            && kind != FileKind::ElfObject
+            && kind != FileKind::CoffObject
+            && kind != FileKind::CoffImport
+        {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
 
@@ -698,7 +702,7 @@ fn read_script_data<'data>(
 }
 
 impl Input {
-    fn path(&self, args: &Args) -> Result<InputPath> {
+    fn path<T>(&self, args: &Args<T>) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()

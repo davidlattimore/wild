@@ -1,6 +1,15 @@
 use crate::error::Result;
 use std::fs::File;
 
+#[inline(always)]
+#[cfg(windows)]
+/// On Windows, we don't need to do anything special to make a file executable.
+pub(crate) fn make_executable(_: &File) -> Result {
+    Ok(())
+}
+
+#[inline(always)]
+#[cfg(unix)]
 pub(crate) fn make_executable(file: &File) -> Result {
     use std::os::unix::prelude::PermissionsExt;
 

@@ -5,7 +5,8 @@ use self::elf::get_page_mask;
 use crate::OutputKind;
 use crate::alignment;
 use crate::args::Args;
-use crate::args::BuildIdOption;
+use crate::args::linux::BuildIdOption;
+use crate::args::linux::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -149,6 +150,56 @@ struct RelocationCache<R> {
     /// A cache mapping symbol addresses to their relocation entries, optimizing
     /// lookups for relocations involving the high parts of address.
     high_part_symbols: HashMap<u64, R>,
+}
+
+/// Shared ELF finish_link: resolve, compute layout, write output.
+pub(crate) fn finish_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+    file_loader: &mut crate::input_data::FileLoader<'data>,
+    args: &'data Args<ElfArgs>,
+    plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+    mut symbol_db: crate::symbol_db::SymbolDb<'data, crate::elf::File<'data>>,
+    mut per_symbol_flags: crate::value_flags::PerSymbolFlags,
+    mut resolver: crate::resolution::Resolver<'data, crate::elf::File<'data>>,
+    mut output_sections: crate::output_section_id::OutputSections<'data>,
+    mut layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+    output_kind: OutputKind,
+) -> crate::Result<Option<crate::layout::Layout<'data, crate::elf::File<'data>>>> {
+    if let Some(plugin) = plugin.as_mut()
+        && plugin.is_initialised()
+    {
+        plugin.all_symbols_read(
+            &mut symbol_db,
+            &mut resolver,
+            file_loader,
+            &mut per_symbol_flags,
+            &mut output_sections,
+            &mut layout_rules_builder,
+        )?;
+    }
+
+    if let crate::version_script::VersionScript::Rust(rust_vscript) = &symbol_db.version_script {
+        symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+    }
+
+    let layout_rules = layout_rules_builder.build();
+    let resolved = resolver.resolve_sections_and_canonicalise_undefined(
+        &mut symbol_db,
+        &mut per_symbol_flags,
+        &mut output_sections,
+        &layout_rules,
+    )?;
+
+    let mut output = crate::file_writer::Output::new(args, output_kind);
+    let layout = crate::layout::compute::<P>(
+        symbol_db,
+        per_symbol_flags,
+        resolved,
+        output_sections,
+        &mut output,
+    )?;
+
+    output.write(&layout, write::<P>)?;
+    Ok(Some(layout))
 }
 
 pub(crate) fn write<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
@@ -1580,7 +1631,7 @@ fn write_section_raw<'out, 'data>(
 fn write_symbols<'data>(
     object: &ObjectLayout<'data, crate::elf::File<'data>>,
     symbol_writer: &mut SymbolTableWriter,
-    layout: &ElfLayout,
+    layout: &ElfLayout<'data>,
 ) -> Result {
     for ((sym_index, sym), flags) in object
         .object
@@ -4261,7 +4312,7 @@ struct DynamicEntryWriter {
 }
 
 struct DynamicEntryInputs<'layout> {
-    args: &'layout Args,
+    args: &'layout Args<ElfArgs>,
     has_static_tls: bool,
     has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,

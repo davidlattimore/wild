@@ -212,10 +212,10 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
-pub(crate) fn merge_strings<'data>(
+pub(crate) fn merge_strings<'data, T>(
     inputs: &StringMergeInputs<'data>,
     output_sections: &OutputSections,
-    args: &Args,
+    args: &Args<T>,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
     timing_phase!("Merge strings");
 
@@ -422,11 +422,11 @@ fn process_input_section<'data, 'offsets>(
 }
 
 impl<'data> MergedStringsSection<'data> {
-    fn add_input_sections(
+    fn add_input_sections<T>(
         &mut self,
         input_sections: &[StringMergeInputSection<'data>],
         reuse_pool: &ReusePool,
-        args: &Args,
+        args: &Args<T>,
     ) -> Result {
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
@@ -583,11 +583,11 @@ enum StringsSlot<'data, 'offsets> {
     Strings(Vec<StringToMerge<'data, 'offsets>>),
 }
 
-fn create_split_resources<'data, 'offsets, 'scope>(
+fn create_split_resources<'data, 'offsets, 'scope, T>(
     string_offsets: &'offsets mut OffsetMap<BucketOffset, MAP_BLOCK_SIZE>,
     input_sections: &'scope [StringMergeInputSection<'data>],
     reuse_pool: &'scope ReusePool,
-    args: &Args,
+    args: &Args<T>,
 ) -> SplitResources<'data, 'offsets, 'scope> {
     verbose_timing_phase!("Create input section groups");
 

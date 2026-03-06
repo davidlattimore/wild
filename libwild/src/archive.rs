@@ -3,8 +3,10 @@
 //! dependency in our tests so that we can verify consistency.
 
 use crate::error::Result;
+#[cfg(unix)]
 use std::ffi::OsStr;
 use std::ops::Range;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
@@ -94,7 +96,17 @@ impl<'data> Identifier<'data> {
     }
 
     pub(crate) fn as_path(&self) -> &'data std::path::Path {
-        Path::new(OsStr::from_bytes(self.as_slice()))
+        #[cfg(unix)]
+        {
+            Path::new(OsStr::from_bytes(self.as_slice()))
+        }
+        #[cfg(not(unix))]
+        {
+            // Archive member names are essentially always UTF-8/ASCII.
+            let s = std::str::from_utf8(self.as_slice())
+                .expect("archive member name is not valid UTF-8");
+            Path::new(s)
+        }
     }
 }
 

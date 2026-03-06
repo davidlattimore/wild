@@ -38,6 +38,37 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
 
+    fn create_plugin(
+        linker: &'data crate::Linker,
+        args: &'data crate::Args<crate::args::linux::ElfArgs>,
+    ) -> crate::Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        crate::linker_plugins::LinkerPlugin::from_args(args, &linker.linker_plugin_arena, &linker.herd)
+    }
+
+    fn finish_link(
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        args: &'data crate::Args<crate::args::linux::ElfArgs>,
+        plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
+        symbol_db: crate::symbol_db::SymbolDb<'data, Self::File>,
+        per_symbol_flags: crate::value_flags::PerSymbolFlags,
+        resolver: crate::resolution::Resolver<'data, Self::File>,
+        output_sections: crate::output_section_id::OutputSections<'data>,
+        layout_rules_builder: crate::layout_rules::LayoutRulesBuilder<'data>,
+        output_kind: crate::OutputKind,
+    ) -> crate::Result<Option<crate::layout::Layout<'data, Self::File>>> {
+        crate::elf_writer::finish_link::<Self>(
+            file_loader,
+            args,
+            plugin,
+            symbol_db,
+            per_symbol_flags,
+            resolver,
+            output_sections,
+            layout_rules_builder,
+            output_kind,
+        )
+    }
+
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_LOONGARCH
     }

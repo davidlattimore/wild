@@ -11,6 +11,8 @@ use object::read::elf::SectionHeader;
 pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
+    CoffObject,
+    CoffImport,
     Archive,
     ThinArchive,
     Text,
@@ -47,6 +49,12 @@ impl FileKind {
                 }
                 object::elf::ET_DYN => Ok(FileKind::ElfDynamic),
                 t => bail!("Unsupported ELF kind {t}"),
+            }
+        } else if let Ok(kind) = object::FileKind::parse(bytes) {
+            match kind {
+                object::FileKind::Coff | object::FileKind::CoffBig => Ok(FileKind::CoffObject),
+                object::FileKind::CoffImport => Ok(FileKind::CoffImport),
+                _ => bail!("Couldn't identify file type"),
             }
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
@@ -94,6 +102,8 @@ impl std::fmt::Display for FileKind {
         let s = match self {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
+            FileKind::CoffObject => "COFF object",
+            FileKind::CoffImport => "COFF import",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

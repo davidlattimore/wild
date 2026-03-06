@@ -17,9 +17,23 @@ use object::read::elf::RelocationSections;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fmt::Display;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Convert bytes to OsStr, handling both Unix and non-Unix platforms.
+fn os_str_from_bytes(bytes: &[u8]) -> &OsStr {
+    #[cfg(unix)]
+    {
+        os_str_from_bytes(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        // On non-Unix, assume UTF-8 encoding
+        OsStr::new(std::str::from_utf8(bytes).unwrap_or(""))
+    }
+}
 
 /// The address at which we'll pretend that we loaded the section we're interested in. This value is
 /// arbitrary, but should be larger than the largest input section we expect to encounter and small
@@ -60,7 +74,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
         let comp_dir = unit
             .comp_dir
             .as_ref()
-            .map(|dir| Path::new(OsStr::from_bytes(dir)).to_owned())
+            .map(|dir| Path::new(os_str_from_bytes(dir)).to_owned())
             .unwrap_or_default();
 
         let mut rows = program.rows();
@@ -78,7 +92,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
             if let Some(file) = row.file(header) {
                 path = comp_dir.clone();
 
-                path.push(OsStr::from_bytes(
+                path.push(os_str_from_bytes(
                     &dwarf.attr_string(&unit, file.path_name())?,
                 ));
             }

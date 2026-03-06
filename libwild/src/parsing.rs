@@ -191,7 +191,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<O::ArgsType>) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
         let object = O::parse(input, args)
@@ -214,7 +214,7 @@ impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new(args: &'data Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<T: Send + Sync>(args: &'data Args<T>, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         // The undefined symbol must always be symbol 0.
