@@ -3192,16 +3192,7 @@ impl<'data> PreludeLayoutState<'data> {
         });
 
         // Keep any sections that we've said we want to keep regardless.
-        for section_id in output_section_id::built_in_section_ids() {
-            if section_id.built_in_details().keep_if_empty {
-                // Don't keep .relro_padding if relro is disabled.
-                if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
-                {
-                    continue;
-                }
-                *keep_sections.get_mut(section_id) = true;
-            }
-        }
+        O::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags

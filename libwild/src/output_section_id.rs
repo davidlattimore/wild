@@ -442,7 +442,6 @@ pub(crate) struct BuiltInSectionDetails {
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
     pub(crate) min_alignment: Alignment,
-    pub(crate) keep_if_empty: bool,
     pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
@@ -455,7 +454,6 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     section_flags: SectionFlags::empty(),
     link: &[],
     min_alignment: alignment::MIN,
-    keep_if_empty: false,
     mark_zero_sized_input_as_content: true,
     element_size: 0,
     ty: sht::NULL,
@@ -468,27 +466,23 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
-        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PROGRAM_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
-        keep_if_empty: true,
         target_segment_type: Some(pt::PHDR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SECTION_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
-        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SHSTRTAB_SECTION_NAME)),
         ty: sht::STRTAB,
-        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -673,7 +667,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
-        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     // Start of regular sections
@@ -777,11 +770,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
 ];
-
-pub(crate) fn built_in_section_ids()
--> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
-    (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u32))
-}
 
 impl OutputSectionId {
     pub(crate) const fn regular(offset: u32) -> OutputSectionId {

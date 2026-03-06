@@ -1533,6 +1533,28 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             is_hidden: false,
         });
     }
+
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args) {
+        // Some of these sections aren't really empty, but we just haven't allocated space for them
+        // yet. e.g. we don't allocate space for section headers until we know which sections we're
+        // keeping, which by inherently needs to be after this method is called.
+        const FORCE_KEEP_SECTIONS: &[OutputSectionId] = &[
+            output_section_id::FILE_HEADER,
+            output_section_id::PROGRAM_HEADERS,
+            output_section_id::SECTION_HEADERS,
+            output_section_id::SHSTRTAB,
+            output_section_id::RELRO_PADDING,
+        ];
+
+        for section_id in FORCE_KEEP_SECTIONS {
+            *keep_sections.get_mut(*section_id) = true;
+        }
+
+        // Keep .relro_padding unless relro is disabled.
+        if args.relro {
+            *keep_sections.get_mut(output_section_id::RELRO_PADDING) = true;
+        }
+    }
 }
 
 fn process_eh_frame_relocations<
