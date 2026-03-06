@@ -3,17 +3,15 @@
 //! * Add a new constant `PartId` to `part_id.rs`.
 //! * Update `NUM_SINGLE_PART_SECTIONS` in `part_id.rs`.
 //! * Define a constant `OutputSectionId` below.
-//! * Add the section definition info to `SECTION_DEFINITIONS`, most likely inserting it just before
-//!   the multi-part sections.
-//! * Add the section to `test_constant_ids` to make sure the ID is consistent with its position in
-//!   `SECTION_DEFINITIONS`.
+//! * Add the section definition info to `SECTION_DEFINITIONS`, most likely inserting at the end of
+//!   the single-part sections.
 //! * Insert the new section into the output order in `sections_and_segments_events`. The position
 //!   needs to be consistent with the access flags on the section. e.g. if the section is read-only
 //!   data, it should go between the start and end of the read-only segment.
 //!
 //! Adding a new alignment-base (regular) section is similar to the above, but skip the steps
-//! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,
-//! update `NUM_BUILT_IN_REGULAR_SECTIONS`.
+//! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS`, probably at the end so that
+//! you don't have to renumber. Also, update `NUM_BUILT_IN_REGULAR_SECTIONS`.
 
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -24,6 +22,7 @@ use crate::elf::DynamicEntry;
 use crate::elf::Versym;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
+use crate::output_section_id;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -436,6 +435,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) secondary_order: Option<SecondaryOrder>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
@@ -459,36 +459,39 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     target_segment_type: None,
 };
 
-const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
+const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
+    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
+        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+
     // A section into which we write headers.
-    BuiltInSectionDetails {
+    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::PROGRAM_HEADERS.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PROGRAM_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         target_segment_type: Some(pt::PHDR),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SECTION_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SHSTRTAB_SECTION_NAME)),
         ty: sht::STRTAB,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(STRTAB_SECTION_NAME)),
         ty: sht::STRTAB,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GOT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC),
@@ -496,16 +499,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::GOT_ENTRY,
         is_relro: true,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PLT_GOT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         element_size: crate::elf::PLT_ENTRY_SIZE,
         min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::RELA_PLT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RELA_PLT_SECTION_NAME)),
         ty: sht::RELA,
         section_flags: shf::ALLOC.with(shf::INFO_LINK),
@@ -513,31 +516,31 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         link: &[DYNSYM, SYMTAB_LOCAL],
         min_alignment: alignment::RELA_ENTRY,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::EH_FRAME.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(EH_FRAME_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::EH_FRAME_HDR.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(EH_FRAME_HDR_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
         target_segment_type: Some(pt::GNU_EH_FRAME),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::SFRAME.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
         ty: sht::GNU_SFRAME,
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         target_segment_type: Some(pt::GNU_SFRAME),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::DYNAMIC.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DYNAMIC_SECTION_NAME)),
         ty: sht::DYNAMIC,
         section_flags: shf::ALLOC.with(shf::WRITE),
@@ -547,24 +550,24 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         is_relro: true,
         target_segment_type: Some(pt::DYNAMIC),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::HASH.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(HASH_SECTION_NAME)),
         ty: sht::HASH,
         section_flags: shf::ALLOC,
         link: &[DYNSYM],
         min_alignment: alignment::SYSV_HASH,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GNU_HASH.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GNU_HASH_SECTION_NAME)),
         ty: sht::GNU_HASH,
         section_flags: shf::ALLOC,
         link: &[DYNSYM],
         min_alignment: alignment::GNU_HASH,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::DYNSYM.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DYNSYM_SECTION_NAME)),
         ty: sht::DYNSYM,
         section_flags: shf::ALLOC,
@@ -572,22 +575,22 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         link: &[DYNSTR],
         min_alignment: alignment::SYMTAB_ENTRY,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::DYNSTR.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DYNSTR_SECTION_NAME)),
         ty: sht::STRTAB,
         section_flags: shf::ALLOC,
         min_alignment: alignment::MIN,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         target_segment_type: Some(pt::INTERP),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GNU_VERSION.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GNU_VERSION_SECTION_NAME)),
         ty: sht::GNU_VERSYM,
         section_flags: shf::ALLOC,
@@ -595,52 +598,52 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::VERSYM,
         link: &[DYNSYM],
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GNU_VERSION_D.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GNU_VERSION_D_SECTION_NAME)),
         ty: sht::GNU_VERDEF,
         section_flags: shf::ALLOC,
         min_alignment: alignment::VERSION_D,
         link: &[DYNSTR],
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GNU_VERSION_R.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GNU_VERSION_R_SECTION_NAME)),
         ty: sht::GNU_VERNEED,
         section_flags: shf::ALLOC,
         min_alignment: alignment::VERSION_R,
         link: &[DYNSTR],
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::NOTE_GNU_PROPERTY.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(NOTE_GNU_PROPERTY_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_PROPERTY,
         target_segment_type: Some(pt::GNU_PROPERTY),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::NOTE_GNU_BUILD_ID.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_BUILD_ID,
         ..DEFAULT_DEFS
-    },
+    };
     // Multi-part generated sections
-    BuiltInSectionDetails {
+    defs[output_section_id::SYMTAB_LOCAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SYMTAB_SECTION_NAME)),
         ty: sht::SYMTAB,
         element_size: size_of::<elf::SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
         link: &[STRTAB],
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Secondary(SYMTAB_LOCAL),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::RELA_DYN_RELATIVE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RELA_DYN_SECTION_NAME)),
         ty: sht::RELA,
         section_flags: shf::ALLOC,
@@ -648,32 +651,32 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::RELA_ENTRY,
         link: &[DYNSYM],
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::RELA_DYN_GENERAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Secondary(RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
         ty: sht::RISCV_ATTRIBUTES,
         target_segment_type: Some(pt::RISCV_ATTRIBUTES),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::RELRO_PADDING.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RELRO_PADDING_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
         ..DEFAULT_DEFS
-    },
+    };
     // Start of regular sections
-    BuiltInSectionDetails {
+    defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::INIT_ARRAY.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(INIT_ARRAY_SECTION_NAME)),
         ty: sht::INIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
@@ -681,8 +684,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::FINI_ARRAY.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(FINI_ARRAY_SECTION_NAME)),
         ty: sht::FINI_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
@@ -690,90 +693,92 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::PREINIT_ARRAY.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
         ty: sht::PREINIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::INIT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(INIT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::FINI.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(FINI_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::TDATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::TBSS.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(TBSS_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(BSS_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::COMMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(COMMENT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::STRINGS.with(shf::MERGE),
         element_size: 1,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::GCC_EXCEPT_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GCC_EXCEPT_TABLE_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::NOTE_ABI_TAG.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(NOTE_ABI_TAG_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
+    };
+    defs[output_section_id::DATA_REL_RO.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DATA_REL_RO_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
         ..DEFAULT_DEFS
-    },
-];
+    };
+
+    defs
+};
 
 impl OutputSectionId {
     pub(crate) const fn regular(offset: u32) -> OutputSectionId {
         OutputSectionId(NUM_SINGLE_PART_SECTIONS + offset)
     }
 
-    pub(crate) fn as_usize(self) -> usize {
+    pub(crate) const fn as_usize(self) -> usize {
         self.0 as usize
     }
 
@@ -797,11 +802,6 @@ impl OutputSectionId {
         } else {
             NUM_ALIGNMENTS
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn built_in_details(self) -> &'static BuiltInSectionDetails {
-        &SECTION_DEFINITIONS[self.as_usize()]
     }
 
     pub(crate) fn opt_built_in_details(self) -> Option<&'static BuiltInSectionDetails> {
@@ -1285,64 +1285,4 @@ impl Display for SectionKind<'_> {
             SectionKind::Secondary(primary_id) => write!(f, "Secondary to {primary_id}"),
         }
     }
-}
-
-/// Verifies that our constants for section IDs match their respective offsets in
-/// `SECTION_DEFINITIONS`.
-#[test]
-fn test_constant_ids() {
-    let check = &[
-        (FILE_HEADER, FILEHEADER_SECTION_NAME),
-        (RODATA, RODATA_SECTION_NAME),
-        (TEXT, TEXT_SECTION_NAME),
-        (INIT_ARRAY, INIT_ARRAY_SECTION_NAME),
-        (FINI_ARRAY, FINI_ARRAY_SECTION_NAME),
-        (PREINIT_ARRAY, PREINIT_ARRAY_SECTION_NAME),
-        (DATA, DATA_SECTION_NAME),
-        (EH_FRAME, EH_FRAME_SECTION_NAME),
-        (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
-        (SFRAME, SFRAME_SECTION_NAME),
-        (SHSTRTAB, SHSTRTAB_SECTION_NAME),
-        (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
-        (SYMTAB_GLOBAL, &[]),
-        (STRTAB, STRTAB_SECTION_NAME),
-        (TDATA, TDATA_SECTION_NAME),
-        (TBSS, TBSS_SECTION_NAME),
-        (BSS, BSS_SECTION_NAME),
-        (GOT, GOT_SECTION_NAME),
-        (INIT, INIT_SECTION_NAME),
-        (FINI, FINI_SECTION_NAME),
-        (RELA_PLT, RELA_PLT_SECTION_NAME),
-        (COMMENT, COMMENT_SECTION_NAME),
-        (DYNAMIC, DYNAMIC_SECTION_NAME),
-        (DYNSYM, DYNSYM_SECTION_NAME),
-        (DYNSTR, DYNSTR_SECTION_NAME),
-        (RELA_DYN_RELATIVE, RELA_DYN_SECTION_NAME),
-        (RELA_DYN_GENERAL, &[]),
-        (RISCV_ATTRIBUTES, RISCV_ATTRIBUTES_SECTION_NAME),
-        (GCC_EXCEPT_TABLE, GCC_EXCEPT_TABLE_SECTION_NAME),
-        (INTERP, INTERP_SECTION_NAME),
-        (HASH, HASH_SECTION_NAME),
-        (GNU_VERSION, GNU_VERSION_SECTION_NAME),
-        (GNU_VERSION_D, GNU_VERSION_D_SECTION_NAME),
-        (GNU_VERSION_R, GNU_VERSION_R_SECTION_NAME),
-        (PROGRAM_HEADERS, PROGRAM_HEADERS_SECTION_NAME),
-        (SECTION_HEADERS, SECTION_HEADERS_SECTION_NAME),
-        (GNU_HASH, GNU_HASH_SECTION_NAME),
-        (PLT_GOT, PLT_GOT_SECTION_NAME),
-        (NOTE_ABI_TAG, NOTE_ABI_TAG_SECTION_NAME),
-        (NOTE_GNU_PROPERTY, NOTE_GNU_PROPERTY_SECTION_NAME),
-        (NOTE_GNU_BUILD_ID, NOTE_GNU_BUILD_ID_SECTION_NAME),
-        (DATA_REL_RO, DATA_REL_RO_SECTION_NAME),
-        (RELRO_PADDING, RELRO_PADDING_SECTION_NAME),
-    ];
-    for (id, name) in check {
-        match id.built_in_details().kind {
-            SectionKind::Primary(section_name) => {
-                assert_eq!(section_name.to_string(), String::from_utf8_lossy(name));
-            }
-            SectionKind::Secondary(_) => assert!(name.is_empty()),
-        }
-    }
-    assert_eq!(NUM_BUILT_IN_SECTIONS, check.len());
 }
