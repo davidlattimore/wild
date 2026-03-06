@@ -22,6 +22,7 @@ use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
+use linker_utils::utils::slice_from_all_bytes;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
@@ -939,12 +940,6 @@ impl<'data> NameIndex<'data> {
             dynamic_by_name,
         }
     }
-}
-
-fn slice_from_all_bytes<T: object::Pod>(data: &[u8]) -> &[T] {
-    object::slice_from_bytes(data, data.len() / size_of::<T>())
-        .unwrap()
-        .0
 }
 
 fn parse_string_equality(

@@ -3,6 +3,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BuildIdOption;
 use crate::bail;
+use crate::elf_writer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -31,6 +32,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
+use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -52,7 +54,10 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentFlags;
 use linker_utils::elf::SegmentType;
+use linker_utils::elf::pf;
+use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -64,6 +69,9 @@ use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::utils::read_string;
+use linker_utils::utils::read_u32;
+use linker_utils::utils::read_uleb128;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
@@ -76,7 +84,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::ffi::CStr;
 use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
@@ -255,6 +262,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
+    type ProgramSegmentDef = ProgramSegmentDef;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -886,9 +894,42 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
+        if symbol_db.output_kind.needs_dynamic() {
+            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
+            mem_sizes.increment(
+                part_id::DYNAMIC,
+                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
+            );
+            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+                mem_sizes.increment(part_id::DYNSTR, rpath.len() as u64 + 1);
+            }
+            if let Some(soname) = symbol_db.args.soname.as_ref() {
+                mem_sizes.increment(part_id::DYNSTR, soname.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+            for aux in &symbol_db.args.auxiliary {
+                mem_sizes.increment(part_id::DYNSTR, aux.len() as u64 + 1);
+                mem_sizes.increment(part_id::DYNAMIC, dynamic_entry_size as u64);
+            }
+
+            mem_sizes.increment(
+                part_id::DYNSTR,
+                dynamic_symbol_definitions
+                    .iter()
+                    .map(|n| n.name.len() + 1)
+                    .sum::<usize>() as u64,
+            );
+            mem_sizes.increment(
+                part_id::DYNSYM,
+                (dynamic_symbol_definitions.len() * size_of::<SymtabEntry>()) as u64,
+            );
+        }
+
         if let Some(build_id_sec_size) = state.gnu_build_id_note_section_size() {
             mem_sizes.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
@@ -1369,6 +1410,29 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             mem_sizes,
             resolution,
         )
+    }
+
+    fn update_segment_keep_list(
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
+        keep_segments: &mut [bool],
+        args: &Args,
+    ) {
+        // If relro is disabled, then discard the relro segment.
+        if !args.relro {
+            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+                if segment_def.segment_type == pt::GNU_RELRO {
+                    *keep = false;
+                }
+            }
+        }
+    }
+
+    fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        PROGRAM_SEGMENT_DEFS
+    }
+
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        &[STACK_SEGMENT_DEF]
     }
 }
 
@@ -1984,12 +2048,6 @@ pub(crate) fn write_relocation_to_buffer(
     Ok(())
 }
 
-pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
-    object::slice_from_bytes_mut(data, data.len() / size_of::<T>())
-        .unwrap()
-        .0
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     pub(crate) verdefnum: u64,
@@ -2449,18 +2507,6 @@ pub(crate) fn process_riscv_attributes(
     let content = section.data(e, object.data)?;
     ensure!(content.starts_with(b"A"), "Header must start with 'A'");
     let mut content = &content[1..];
-
-    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
-    let read_string = |content: &mut &[u8]| -> Result<String> {
-        let string = CStr::from_bytes_until_nul(content)?;
-        *content = &content[string.count_bytes() + 1..];
-        Ok(string.to_string_lossy().to_string())
-    };
-    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
-        let value = u32::from_le_bytes(content[..4].try_into()?);
-        *content = &content[4..];
-        Ok(value)
-    };
 
     // Expect only one subsection
     let _size = read_u32(&mut content)?;
@@ -2993,5 +3039,146 @@ impl platform::SegmentType for SegmentType {}
 impl EpilogueLayout {
     fn gnu_build_id_note_section_size(&self) -> Option<u64> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProgramSegmentDef {
+    pub(crate) segment_type: SegmentType,
+    pub(crate) segment_flags: SegmentFlags,
+}
+
+/// The different kinds of program segments that we generate based on section properties. Note, this
+/// doesn't include the PT_GNU_STACK segment, since it isn't generated in response to any sections
+/// because it doesn't contain any.
+const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+    ProgramSegmentDef {
+        segment_type: pt::PHDR,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::INTERP,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::NOTE,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_PROPERTY,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::EXECUTABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::TLS,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_EH_FRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_SFRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::DYNAMIC,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_RELRO,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::RISCV_ATTRIBUTES,
+        segment_flags: pf::READABLE,
+    },
+];
+
+pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    segment_type: pt::GNU_STACK,
+    segment_flags: pf::READABLE.with(pf::WRITABLE),
+};
+
+impl platform::ProgramSegmentDef for ProgramSegmentDef {
+    fn is_writable(self) -> bool {
+        self.segment_flags.contains(pf::WRITABLE)
+    }
+
+    fn is_executable(self) -> bool {
+        self.segment_flags.contains(pf::EXECUTABLE)
+    }
+
+    fn always_keep(self) -> bool {
+        self.segment_type == pt::PHDR
+    }
+
+    fn is_loadable(self) -> bool {
+        self.segment_type == pt::LOAD
+    }
+
+    fn is_stack(self) -> bool {
+        self.segment_type == pt::GNU_STACK
+    }
+
+    fn is_tls(self) -> bool {
+        self.segment_type == pt::TLS
+    }
+
+    fn order_key(self) -> usize {
+        // Segment types that we put first. Other types
+        const TYPE_ORDER: &[SegmentType] = &[pt::PHDR, pt::INTERP, pt::LOAD, pt::DYNAMIC];
+
+        TYPE_ORDER
+            .iter()
+            .position(|t| *t == self.segment_type)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+    }
+
+    fn should_include_section(
+        self,
+        info: &crate::output_section_id::SectionOutputInfo,
+        section_id: OutputSectionId,
+    ) -> bool {
+        match self.segment_type {
+            pt::NOTE => info.ty == sht::NOTE,
+            pt::TLS => info.section_flags.contains(shf::TLS),
+            pt::LOAD => {
+                info.section_flags.contains(shf::ALLOC)
+                    && info.section_flags.contains(shf::WRITE) == self.is_writable()
+                    && info.section_flags.contains(shf::EXECINSTR) == self.is_executable()
+            }
+            pt::GNU_RELRO => {
+                info.section_flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
+    }
+
+    fn should_cut_rw_segment_when_ending(self) -> bool {
+        self.segment_type == pt::GNU_RELRO
+    }
+}
+
+impl std::fmt::Display for ProgramSegmentDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, {}", self.segment_type, self.segment_flags)
     }
 }

@@ -26,7 +26,7 @@
 //#DiffIgnore:riscv_attributes.*
 // GNU ld behaves strangely when a symbol referenced in a linker script is
 // empty. See this:
-// https://github.com/davidlattimore/wild/pull/1525#discussion_r2785478582
+// https://github.com/wild-linker/wild/pull/1525#discussion_r2785478582
 //#DiffIgnore:dynsym.__data_start.section
 //#DiffIgnore:dynsym.__data_end.section
 

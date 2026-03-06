@@ -1997,7 +1997,7 @@ impl<'data> Prelude<'data> {
     ) {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
-            let flags = match definition.placement {
+            let mut flags = match definition.placement {
                 SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
                     ValueFlags::ABSOLUTE
                 }
@@ -2014,6 +2014,9 @@ impl<'data> Prelude<'data> {
                     ValueFlags::NON_INTERPOSABLE
                 }
             };
+            if definition.is_hidden {
+                flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
+            }
             symbols_out.set_next(flags, symbol_id, PRELUDE_FILE_ID);
         }
     }

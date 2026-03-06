@@ -29,7 +29,6 @@ use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::VersionDef;
 use crate::elf::Versym;
-use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::write_relocation_to_buffer;
 use crate::ensure;
 use crate::error;
@@ -41,6 +40,7 @@ use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::layout;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -100,6 +100,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
 use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
+use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
@@ -110,6 +111,7 @@ use linker_utils::loongarch64::highest_relocation_with_bias;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::relaxation::opt_input_to_output;
+use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
@@ -1365,7 +1367,7 @@ fn write_object_section<'data, P: Platform<'data, File = crate::elf::File<'data>
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
-    if section.should_reverse_contents(object.object, &layout.output_sections) {
+    if should_reverse_contents(section, object.object, &layout.output_sections) {
         return write_section_reversed::<P>(object, layout, section, table_writer, trace, out);
     }
 
@@ -3585,40 +3587,8 @@ fn write_linker_script_dynsym(
         .internal_symbols
         .symbol_id_range()
         .id_to_offset(symbol_id);
-
     let info = &script.internal_symbols.symbol_definitions[local_index];
-
-    if matches!(
-        info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
-    }
-
-    let section_id = info
-        .section_id()
-        .context("Tried to export dynamic symbol not associated with a section")?;
-
-    let section_id = layout.output_sections.primary_output_section(section_id);
-
-    let shndx = layout
-        .output_sections
-        .output_index_of_section(section_id)
-        .context("Tried to write dynamic symbol in section that's not being output")?;
-
-    let resolution = layout
-        .local_symbol_resolution(symbol_id)
-        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
-
-    let address = resolution.address()?;
-    let name = layout.symbol_db.symbol_name(symbol_id)?;
-
-    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
-
-    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
-
-    Ok(())
+    write_internal_dynsym(dynsym_writer, layout, symbol_id, info)
 }
 
 /// Get the section index and type for a symbol.
@@ -3677,8 +3647,28 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
-        _ => {
-            // For non-object files (e.g., prelude, epilogue), default to ABS
+        crate::grouping::SequencedInput::Prelude(prelude) => {
+            let offset = symbol_id.offset_from(SymbolId::undefined());
+            let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
+                format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
+            })?;
+            let shndx = def_info
+                .section_id()
+                .map_or(object::elf::SHN_ABS, |section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .unwrap_or(object::elf::SHN_ABS)
+                });
+            Ok((shndx, def_info.elf_symbol_type.raw()))
+        }
+        crate::grouping::SequencedInput::SyntheticSymbols(_) => {
+            // For other non-object files (e.g. epilogue), default to ABS
+            Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
+        }
+        #[cfg(feature = "plugins")]
+        crate::grouping::SequencedInput::LtoInput(_) => {
             Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
         }
     }
@@ -3696,8 +3686,45 @@ fn write_prelude_dynsym(
         .symbol_definitions
         .get(offset)
         .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
+    write_internal_dynsym(dynsym_writer, layout, symbol_id, def_info)
+}
 
-    write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info)
+fn write_internal_dynsym(
+    dynsym_writer: &mut SymbolTableWriter,
+    layout: &ElfLayout,
+    symbol_id: SymbolId,
+    def_info: &crate::parsing::InternalSymDefInfo,
+) -> Result {
+    if matches!(
+        def_info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ) {
+        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
+    }
+
+    let section_id = def_info
+        .section_id()
+        .context("Tried to export dynamic symbol not associated with a section")?;
+
+    let section_id = layout.output_sections.primary_output_section(section_id);
+
+    let shndx = layout
+        .output_sections
+        .output_index_of_section(section_id)
+        .context("Tried to write dynamic symbol in section that's not being output")?;
+
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+
+    let address = resolution.address()?;
+    let name = layout.symbol_db.symbol_name(symbol_id)?;
+
+    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
+    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
+
+    Ok(())
 }
 
 /// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
@@ -4864,4 +4891,27 @@ impl<R> Default for RelocationCache<R> {
             high_part_symbols: Default::default(),
         }
     }
+}
+
+/// Returns whether to reverse the contents of a section. This is true for .ctors/.dtors sections.
+fn should_reverse_contents(
+    section: &layout::Section,
+    file: &crate::elf::File,
+    output_sections: &OutputSections,
+) -> bool {
+    // Getting the section name is expensive, so we only do it when the output section is
+    // .init_array / .fini_array.
+    let section_id = output_sections.primary_output_section(section.part_id.output_section_id());
+    if section_id != output_section_id::INIT_ARRAY && section_id != output_section_id::FINI_ARRAY {
+        return false;
+    }
+
+    file.section(section.index)
+        .and_then(|header| file.section_name(header))
+        .is_ok_and(|section_name| {
+            // .ctors and .dtors sections need their contents reversed when merged into
+            // .init_array/.fini_array
+            section_name.starts_with(secnames::CTORS_SECTION_NAME)
+                || section_name.starts_with(secnames::DTORS_SECTION_NAME)
+        })
 }

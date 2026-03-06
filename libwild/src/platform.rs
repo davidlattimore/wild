@@ -16,6 +16,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
+use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
@@ -27,6 +28,7 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use rayon::Scope;
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::num::NonZeroU32;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -167,6 +169,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
+    type ProgramSegmentDef: ProgramSegmentDef;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -290,6 +293,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn finalise_sizes_epilogue(
         state: &mut Self::EpilogueLayout,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
         properties: &Self::LayoutProperties,
         symbol_db: &SymbolDb<'data, Self>,
     );
@@ -483,6 +487,18 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution,
     ) -> Result;
+
+    /// Updates the list of segments to keep.
+    fn update_segment_keep_list(
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
+        keep_segments: &mut [bool],
+        args: &Args,
+    );
+
+    fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
+
+    /// Returns segment definitions that should be unconditionally emitted without content.
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
@@ -654,5 +670,36 @@ impl FrameIndex {
 
     pub(crate) fn as_usize(self) -> usize {
         self.0.get() as usize - 1
+    }
+}
+
+pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
+    fn is_writable(self) -> bool;
+
+    fn is_executable(self) -> bool;
+
+    fn always_keep(self) -> bool;
+
+    fn is_loadable(self) -> bool;
+
+    fn is_stack(self) -> bool;
+
+    fn is_tls(self) -> bool;
+
+    /// Returns a numeric value that can be used to sort the segments as they should appear in the
+    /// program headers table. Segments with lower values will appear first.
+    fn order_key(self) -> usize;
+
+    /// Returns whether we should include the specified section in a segment with the properties of
+    /// `self`
+    fn should_include_section(
+        self,
+        section_info: &crate::output_section_id::SectionOutputInfo,
+        section_id: OutputSectionId,
+    ) -> bool;
+
+    /// Returns whether the current RW segment should end when this segment ends.
+    fn should_cut_rw_segment_when_ending(self) -> bool {
+        false
     }
 }

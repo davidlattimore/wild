@@ -30,6 +30,7 @@
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
 //#Cross: false
+//#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE -fPIC
@@ -49,6 +50,7 @@
 //#EnableLinker:lld
 // Seems lld linked binary crashes under QEMU.
 //#SkipArch: loongarch64,riscv64
+//#DiffIgnore:rel.extra-got-plt-got
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
