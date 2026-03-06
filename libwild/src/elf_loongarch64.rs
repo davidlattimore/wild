@@ -11,7 +11,6 @@ use linker_utils::elf::SIZE_2KB;
 use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::loongarch64::RelaxationKind;
-
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::or_from_slice;
 

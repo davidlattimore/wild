@@ -290,6 +290,7 @@ impl Config {
                     // bl 0x0 so that if the call site is reached, it will crash rather than
                     // silently continuing execution.
                     "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.*",
+                    "rel.missing-opt.R_AARCH64_JUMP26.ReplaceWithNop.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
