@@ -15,16 +15,25 @@ use object::LittleEndian;
 use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use std::borrow::Cow;
-use std::ffi::OsStr;
 use std::fmt::Display;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::path::PathBuf;
 
 /// The address at which we'll pretend that we loaded the section we're interested in. This value is
 /// arbitrary, but should be larger than the largest input section we expect to encounter and small
 /// enough to fit comfortably in a u32.
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
+#[cfg(unix)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt as _;
+    std::path::Path::new(OsStr::from_bytes(bytes)).to_owned()
+}
+
+#[cfg(windows)]
+fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
+    PathBuf::from(path)
+}
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
 pub(crate) fn get_source_info<'data, P: Platform<'data>>(
@@ -60,7 +69,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
         let comp_dir = unit
             .comp_dir
             .as_ref()
-            .map(|dir| Path::new(OsStr::from_bytes(dir)).to_owned())
+            .map(|dir| path_from_bytes(dir))
             .unwrap_or_default();
 
         let mut rows = program.rows();
@@ -78,7 +87,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
             if let Some(file) = row.file(header) {
                 path = comp_dir.clone();
 
-                path.push(OsStr::from_bytes(
+                path.push(path_from_bytes(
                     &dwarf.attr_string(&unit, file.path_name())?,
                 ));
             }
