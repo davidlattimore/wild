@@ -215,6 +215,15 @@ pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_X86_64_RELATIVE64,
         R_X86_64_GOTPCRELX,
         R_X86_64_REX_GOTPCRELX,
+        R_X86_64_CODE_4_GOTPCRELX,
+        R_X86_64_CODE_4_GOTTPOFF,
+        R_X86_64_CODE_4_GOTPC32_TLSDESC,
+        R_X86_64_CODE_5_GOTPCRELX,
+        R_X86_64_CODE_5_GOTTPOFF,
+        R_X86_64_CODE_5_GOTPC32_TLSDESC,
+        R_X86_64_CODE_6_GOTPCRELX,
+        R_X86_64_CODE_6_GOTTPOFF,
+        R_X86_64_CODE_6_GOTPC32_TLSDESC,
     ] {
         Cow::Borrowed(name)
     } else {

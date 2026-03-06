@@ -161,10 +161,11 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         let offset = offset_in_section as usize;
 
         match relocation_kind {
-            object::elf::R_X86_64_REX_GOTPCRELX => {
-                if offset < 3 {
-                    return None;
-                }
+            object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_CODE_4_GOTPCRELX
+                if ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPCRELX
+                    && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                    || offset >= 3) =>
+            {
                 let b1 = section_bytes[offset - 2];
                 let rex = section_bytes[offset - 3];
 
@@ -174,11 +175,16 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                 }
 
                 if is_absolute || is_absolute_address {
+                    let inst_offset = if relocation_kind == object::elf::R_X86_64_REX_GOTPCRELX {
+                        3
+                    } else {
+                        4
+                    };
                     match b1 {
                         // mov *x(%rip), reg
                         0x8b => {
                             return Some(Relaxation {
-                                kind: RelaxationKind::RexMovIndirectToAbsolute,
+                                kind: RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
                                 mandatory: output_kind.is_static_executable(),
                             });
@@ -186,7 +192,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                         // sub *x(%rip), reg
                         0x2b => {
                             return Some(Relaxation {
-                                kind: RelaxationKind::RexSubIndirectToAbsolute,
+                                kind: RelaxationKind::RexSubIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
                                 mandatory: output_kind.is_static_executable(),
                             });
@@ -194,7 +200,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                         // cmp *x(%rip), reg
                         0x3b => {
                             return Some(Relaxation {
-                                kind: RelaxationKind::RexCmpIndirectToAbsolute,
+                                kind: RelaxationKind::RexCmpIndirectToAbsolute(inst_offset),
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
                                 mandatory: output_kind.is_static_executable(),
                             });
@@ -272,12 +278,48 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTTPOFF if output_kind.is_executable() && !interposable => {
+            object::elf::R_X86_64_GOTTPOFF | object::elf::R_X86_64_CODE_4_GOTTPOFF
+                if output_kind.is_executable()
+                    && !interposable
+                    && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTTPOFF
+                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        || offset >= 3) =>
+            {
+                let inst_offset = if relocation_kind == object::elf::R_X86_64_GOTTPOFF {
+                    3
+                } else {
+                    4
+                };
+
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
                     [0x48 | 0x4c, 0x8b] => {
                         return Some(Relaxation {
-                            kind: RelaxationKind::RexMovIndirectToAbsolute,
+                            kind: RelaxationKind::RexMovIndirectToAbsolute(inst_offset),
+                            rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                            mandatory: false,
+                        });
+                    }
+                    // add *x(%rip), reg1, reg2
+                    [0x48 | 0x4c, 0x03] => {
+                        return Some(Relaxation {
+                            kind: RelaxationKind::RexAddIndirectToAbsolute(inst_offset),
+                            rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                            mandatory: false,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            object::elf::R_X86_64_CODE_6_GOTTPOFF
+                if output_kind.is_executable() && !interposable && offset >= 6 =>
+            {
+                match section_bytes.get(offset - 6..offset - 1)? {
+                    [0x62, l5, l4, l3, 0x1 | 0x3]
+                        if (l5 & 0x47) == 0x44 && l4 & 0x87 == 0x84 && l3 & 0x14 != 0 =>
+                    {
+                        return Some(Relaxation {
+                            kind: RelaxationKind::RexAddIndirectToAbsolute(6),
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
                             mandatory: false,
                         });
@@ -358,14 +400,25 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                 }
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if !interposable && output_kind.is_executable() =>
+            | object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+                if !interposable
+                    && output_kind.is_executable()
+                    && ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPC32_TLSDESC
+                        && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
+                        || offset >= 3) =>
             {
                 // We require that the instruction that this relocation applies to is a LEA
                 // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
                 if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
                     return Some(Relaxation {
-                        kind: RelaxationKind::TlsDescToLocalExec,
+                        kind: RelaxationKind::TlsDescToLocalExec(
+                            if relocation_kind == object::elf::R_X86_64_GOTPC32_TLSDESC {
+                                3
+                            } else {
+                                4
+                            },
+                        ),
                         rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
                         mandatory: output_kind.is_static_executable(),
                     });
