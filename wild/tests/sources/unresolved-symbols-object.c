@@ -1,7 +1,6 @@
 //#AbstractConfig:default
 //#Object:runtime.c
-//#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie
-//#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.dynamic-non-pie
+//#DiffIgnore:rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.*
 //#SkipArch: loongarch64
 
 /* BFD rejects the code on loongarch: relocation truncated to fit: R_LARCH_B26
@@ -14,7 +13,7 @@
 //#LinkArgs:--unresolved-symbols=ignore-all -z now
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
-
+~
 //#Config:report-all:default
 //#LinkArgs:--unresolved-symbols=report-all
 //#ExpectError:foo

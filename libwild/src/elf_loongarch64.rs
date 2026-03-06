@@ -11,7 +11,7 @@ use linker_utils::elf::SIZE_2KB;
 use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::loongarch64::RelaxationKind;
-use linker_utils::loongarch64::relocation_type_from_raw;
+
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::or_from_slice;
 
@@ -28,11 +28,6 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
 
 impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     type Relaxation = Relaxation;
@@ -133,21 +128,12 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
 
         match relocation_kind {
             object::elf::R_LARCH_B26 if !interposable => {
-                return if non_zero_address {
-                    relocation.kind = RelocationKind::Relative;
-                    Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                } else {
-                    // GNU ld replaces: 'bl 0' with 'nop'
-                    Some(Relaxation {
-                        kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_LARCH_NONE),
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                };
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
 
             _ => (),
