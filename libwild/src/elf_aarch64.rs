@@ -125,7 +125,7 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         flags: crate::value_flags::ValueFlags,
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
-        non_zero_address: bool,
+        _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>
     where
@@ -159,21 +159,12 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
 
         match relocation_kind {
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if !interposable => {
-                return if non_zero_address {
-                    relocation.kind = RelocationKind::Relative;
-                    Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                } else {
-                    // GNU ld replaces: 'bl 0' with 'nop'
-                    Some(Relaxation {
-                        kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_AARCH64_NONE),
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                };
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
 
             // Relax TLSDESC to local exec

@@ -287,6 +287,11 @@ impl Config {
                     // Also on Alpine Linux, aarch64, it seems that GNU ld is emitting an
                     // unnecessary GLOB_DAT relocation in a GOT entry.
                     "rel.missing-got-dynamic.executable",
+                    // GNU ld replaces calls to undefined symbols with nop. Wild instead encodes
+                    // bl 0x0 so that if the call site is reached, it will crash rather than
+                    // silently continuing execution.
+                    "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.*",
+                    "rel.missing-opt.R_AARCH64_JUMP26.ReplaceWithNop.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -318,6 +323,10 @@ impl Config {
                     "literal-byte-mismatch*",
                     "error.*",
                     "section-diff-failed*",
+                    // GNU ld replaces calls to undefined symbols with nop. Wild instead encodes
+                    // bl 0x0 so that if the call site is reached, it will crash rather than
+                    // silently continuing execution.
+                    "rel.missing-opt.R_LARCH_B26.ReplaceWithNop.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
