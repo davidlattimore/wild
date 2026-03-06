@@ -548,7 +548,7 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
-#[derive(Debug)]
+// Note: Manual Debug impl below to avoid requiring O::ArgsType: Debug
 pub struct Layout<'data, O: ObjectFile<'data>> {
     pub(crate) symbol_db: SymbolDb<'data, O>,
     pub(crate) symbol_resolutions: SymbolResolutions,
@@ -574,6 +574,18 @@ pub struct Layout<'data, O: ObjectFile<'data>> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) properties_and_attributes: O::LayoutProperties,
+}
+
+impl<'data, O: ObjectFile<'data>> std::fmt::Debug for Layout<'data, O> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Layout")
+            .field("symbol_resolutions", &self.symbol_resolutions)
+            .field("section_part_layouts", &self.section_part_layouts)
+            .field("section_layouts", &self.section_layouts)
+            .field("segment_layouts", &self.segment_layouts)
+            .field("has_static_tls", &self.has_static_tls)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -808,7 +820,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
 
             allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
-            if symbol_db.args.got_plt_syms && flags.needs_got() {
+            if O::wants_got_plt_syms(symbol_db.args) && flags.needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 let name = O::RawSymbolName::parse(name.bytes()).name();
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
@@ -1375,7 +1387,7 @@ impl<'data, O: ObjectFile<'data>> Layout<'data, O> {
         i
     }
 
-    pub(crate) fn args(&self) -> &'data Args {
+    pub(crate) fn args(&self) -> &'data Args<O::ArgsType> {
         self.symbol_db.args
     }
 
@@ -1656,7 +1668,7 @@ fn compute_segment_layout<'data, O: ObjectFile<'data>>(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     header_info: &HeaderInfo,
-    args: &Args,
+    args: &Args<O::ArgsType>,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -1684,7 +1696,7 @@ fn compute_segment_layout<'data, O: ObjectFile<'data>>(
                         file_start: 0,
                         file_end: 0,
                         mem_start: 0,
-                        mem_end: args.z_stack_size.map_or(0, |size| size.get()),
+                        mem_end: O::stack_size(args),
                         alignment: alignment::MIN,
                     });
                 } else {
@@ -3037,7 +3049,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         uses_tlsld: &AtomicBool,
-        args: &Args,
+        args: &Args<O::ArgsType>,
         output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
@@ -3189,7 +3201,8 @@ impl<'data> PreludeLayoutState<'data> {
         for section_id in output_section_id::built_in_section_ids() {
             if section_id.built_in_details().keep_if_empty {
                 // Don't keep .relro_padding if relro is disabled.
-                if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
+                if section_id == output_section_id::RELRO_PADDING
+                    && !O::wants_relro(resources.symbol_db.args)
                 {
                     continue;
                 }
@@ -3551,7 +3564,7 @@ fn should_emit_undefined_error<'data, O: ObjectFile<'data>>(
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
-    args: &Args,
+    args: &Args<O::ArgsType>,
     output_kind: OutputKind,
 ) -> bool {
     if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
@@ -3624,7 +3637,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
 
 impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
     fn new(
-        args: &Args,
+        args: &Args<O::ArgsType>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> Self {
@@ -3639,7 +3652,7 @@ impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
         total_sizes: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseSizesResources<'data, '_, O>,
     ) -> Result {
-        if resources.symbol_db.args.hash_style.includes_sysv() {
+        if O::hash_includes_sysv(resources.symbol_db.args) {
             let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
             O::apply_late_size_adjustments_epilogue(
                 &mut self.format_specific,
@@ -5015,7 +5028,7 @@ fn layout_section_parts<'data, O: ObjectFile<'data>>(
     output_sections: &OutputSections,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args,
+    args: &Args<O::ArgsType>,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments =
         compute_segment_alignments::<O>(sizes, program_segments, output_order, args);
@@ -5132,7 +5145,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
     sizes: &OutputSectionPartMap<u64>,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args,
+    args: &Args<O::ArgsType>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
 
@@ -5657,7 +5670,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut output_sections = OutputSections::with_base_address(0x1000);
     let (output_order, program_segments) = output_sections.output_order::<crate::elf::File>();
-    let args = Args::default();
+    let args: Args<crate::args::linux::ElfArgs> = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts::<crate::elf::File>(

@@ -9,7 +9,8 @@
 //! up having to make quite a bit of use of thread locals in order to get state to where it needs to
 //! be.
 
-use crate::Args;
+use crate::args::Args;
+use crate::args::linux::ElfArgs;
 use crate::args::Input;
 use crate::args::Modifiers;
 use crate::bail;
@@ -68,7 +69,7 @@ enum Store<'data> {
 }
 
 struct LoadInfo<'data> {
-    args: &'data Args,
+    args: &'data Args<ElfArgs>,
     arena: &'data Arena<LoadedPlugin>,
 }
 
@@ -128,7 +129,7 @@ pub(crate) struct PluginOutputs {
 
 impl<'data> LinkerPlugin<'data> {
     pub(crate) fn from_args(
-        args: &'data crate::Args,
+        args: &'data crate::args::Args<crate::args::linux::ElfArgs>,
         arena: &'data Arena<LoadedPlugin>,
         herd: &'data Herd,
     ) -> Result<Option<LinkerPlugin<'data>>> {
@@ -319,7 +320,7 @@ impl<'data> WrapSymbols<'data> {
 }
 
 impl LoadedPlugin {
-    fn new(plugin_path: &Path, args: &Args) -> Result<LoadedPlugin> {
+    fn new(plugin_path: &Path, args: &Args<ElfArgs>) -> Result<LoadedPlugin> {
         timing_phase!("Load linker plugin");
 
         if cfg!(target_feature = "crt-static") {
