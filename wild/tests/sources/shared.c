@@ -23,7 +23,6 @@
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
 //#DiffIgnore:section.got
 //#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PLT32
-//#DiffIgnore:rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.*
 //#ExpectDynamic:DT_FLAGS
 
 //#Config:symbolic-functions:default

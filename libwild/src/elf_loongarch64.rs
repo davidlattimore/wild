@@ -28,7 +28,6 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-
 impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
     type Relaxation = Relaxation;
     type File = crate::elf::File<'data>;
