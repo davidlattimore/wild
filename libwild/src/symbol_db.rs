@@ -393,7 +393,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
 
         if self.groups.is_empty() {
             self.groups
-                .push(Group::Prelude(crate::parsing::Prelude::new(
+                .push(Group::Prelude(crate::parsing::Prelude::new::<O>(
                     self.args,
                     self.output_kind,
                 )));

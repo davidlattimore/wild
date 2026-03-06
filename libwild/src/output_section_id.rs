@@ -21,7 +21,6 @@ use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
 use crate::elf;
 use crate::elf::DynamicEntry;
-use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::Versym;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
@@ -437,24 +436,11 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) secondary_order: Option<SecondaryOrder>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum DefinitionMode {
-    Strong,
-    Provide,
-    ProvideHidden,
-}
-
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
-    pub(crate) start_symbol_name: Option<&'static str>,
-    pub(crate) end_symbol_name: Option<&'static str>,
-    pub(crate) group_end_symbol_name: Option<&'static str>,
-    pub(crate) start_symbol_mode: DefinitionMode,
-    pub(crate) end_symbol_mode: DefinitionMode,
-    pub(crate) group_end_symbol_mode: DefinitionMode,
     pub(crate) min_alignment: Alignment,
     pub(crate) keep_if_empty: bool,
     pub(crate) mark_zero_sized_input_as_content: bool,
@@ -468,12 +454,6 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
     section_flags: SectionFlags::empty(),
     link: &[],
-    start_symbol_name: None,
-    end_symbol_name: None,
-    group_end_symbol_name: None,
-    start_symbol_mode: DefinitionMode::Strong,
-    end_symbol_mode: DefinitionMode::Strong,
-    group_end_symbol_mode: DefinitionMode::Strong,
     min_alignment: alignment::MIN,
     keep_if_empty: false,
     mark_zero_sized_input_as_content: true,
@@ -488,8 +468,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
-        start_symbol_name: Some("__ehdr_start"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
@@ -524,7 +502,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::WRITE.with(shf::ALLOC),
         element_size: crate::elf::GOT_ENTRY_SIZE,
         min_alignment: alignment::GOT_ENTRY,
-        start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
         is_relro: true,
         ..DEFAULT_DEFS
     },
@@ -543,10 +520,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: elf::RELA_ENTRY_SIZE,
         link: &[DYNSYM, SYMTAB_LOCAL],
         min_alignment: alignment::RELA_ENTRY,
-        start_symbol_name: Some("__rela_iplt_start"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
-        end_symbol_name: Some("__rela_iplt_end"),
-        end_symbol_mode: DefinitionMode::ProvideHidden,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -580,7 +553,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<DynamicEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::USIZE,
-        start_symbol_name: Some("_DYNAMIC"),
         is_relro: true,
         target_segment_type: Some(pt::DYNAMIC),
         ..DEFAULT_DEFS
@@ -716,10 +688,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::INIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
-        start_symbol_name: Some("__init_array_start"),
-        group_end_symbol_name: Some("__init_array_end"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
-        group_end_symbol_mode: DefinitionMode::ProvideHidden,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -729,10 +697,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::FINI_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
-        start_symbol_name: Some("__fini_array_start"),
-        group_end_symbol_name: Some("__fini_array_end"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
-        group_end_symbol_mode: DefinitionMode::ProvideHidden,
         min_alignment: alignment::USIZE,
         is_relro: true,
         ..DEFAULT_DEFS
@@ -741,10 +705,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
         ty: sht::PREINIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
-        start_symbol_name: Some("__preinit_array_start"),
-        end_symbol_name: Some("__preinit_array_end"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
-        end_symbol_mode: DefinitionMode::ProvideHidden,
         is_relro: true,
         ..DEFAULT_DEFS
     },
@@ -752,8 +712,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        end_symbol_name: Some("_etext"),
-        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -772,18 +730,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
-        // TODO: define the symbol only on RISC-V target
-        start_symbol_name: Some(GLOBAL_POINTER_SYMBOL_NAME),
-        end_symbol_name: Some("_edata"),
-        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
-        start_symbol_name: Some("__tdata_start"),
-        start_symbol_mode: DefinitionMode::ProvideHidden,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -796,8 +748,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(BSS_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
-        end_symbol_name: Some("_end"),
-        end_symbol_mode: DefinitionMode::Provide,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

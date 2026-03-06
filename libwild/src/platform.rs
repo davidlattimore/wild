@@ -499,6 +499,11 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Returns segment definitions that should be unconditionally emitted without content.
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
+
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+        output_kind: OutputKind,
+    );
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:

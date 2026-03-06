@@ -116,17 +116,16 @@ impl<'data> LayoutRulesBuilder<'data> {
                     .map_err(|_| crate::error!("Invalid UTF-8 in PROVIDE symbol value"))?;
 
                 let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
-                symbol_defs.push(if provide.hidden {
-                    crate::parsing::InternalSymDefInfo::hidden(placement, provide.name)
-                } else {
-                    crate::parsing::InternalSymDefInfo::notype(placement, provide.name)
-                });
+                symbol_defs.push(
+                    crate::parsing::InternalSymDefInfo::new(placement, provide.name)
+                        .with_hidden(provide.hidden),
+                );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
                 let value_str = std::str::from_utf8(value)
                     .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
 
                 let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
-                symbol_defs.push(crate::parsing::InternalSymDefInfo::notype(placement, name));
+                symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
@@ -185,12 +184,12 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
                                         symbol_defs.push(if let Some(id) = last_section_id {
-                                            InternalSymDefInfo::notype(
+                                            InternalSymDefInfo::new(
                                                 SymbolPlacement::SectionEnd(id),
                                                 assignment.name,
                                             )
                                         } else {
-                                            InternalSymDefInfo::notype(
+                                            InternalSymDefInfo::new(
                                                 SymbolPlacement::SectionStart(primary_section_id),
                                                 assignment.name,
                                             )
@@ -204,11 +203,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             SymbolPlacement::SectionStart(primary_section_id)
                                         };
 
-                                        symbol_defs.push(if provide.hidden {
-                                            InternalSymDefInfo::hidden(placement, provide.name)
-                                        } else {
-                                            InternalSymDefInfo::notype(placement, provide.name)
-                                        });
+                                        symbol_defs.push(
+                                            InternalSymDefInfo::new(placement, provide.name)
+                                                .with_hidden(provide.hidden),
+                                        );
                                     }
                                 }
                             }
