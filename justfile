@@ -1,10 +1,10 @@
-mod w "windows/wlibwild/w.just"
 
-
+# list all available just targets
 default:
-    @just w
+    @just --list
 
 
+# Dump the symbol table of kernel32.lib using llvm-objdump
 dump-kernel32:
     @llvm-objdump -a -t "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.22621.0/um/x64/kernel32.Lib" > kernel32.dump
 
