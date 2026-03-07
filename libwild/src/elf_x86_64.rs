@@ -321,7 +321,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                         return Some(Relaxation {
                             kind: RelaxationKind::RexAddIndirectToAbsolute(6),
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
-                            mandatory: false,
+                            mandatory: output_kind.is_static_executable(),
                         });
                     }
                     _ => {}
@@ -375,7 +375,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
-                                mandatory: false,
+                                mandatory: output_kind.is_static_executable(),
                             });
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
@@ -392,7 +392,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExecNoPlt,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
-                                mandatory: false,
+                                mandatory: output_kind.is_static_executable(),
                             });
                         }
                         _ => {}
