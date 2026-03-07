@@ -16,8 +16,7 @@ use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
-use crate::platform::SectionFlags;
-use crate::platform::SectionType;
+use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
 use linker_utils::elf::secnames;
@@ -463,10 +462,9 @@ impl<'data> SectionRules<'data> {
         &self,
         section_name: &[u8],
         file_name: Option<&[u8]>,
-        section_flags: impl SectionFlags,
-        sh_type: impl SectionType,
+        section_header: &impl SectionHeader,
     ) -> SectionRuleOutcome {
-        if section_flags.should_exclude() {
+        if section_header.should_exclude() {
             return SectionRuleOutcome::Discard;
         }
 
@@ -479,7 +477,7 @@ impl<'data> SectionRules<'data> {
         }
 
         if section_name.is_empty() {
-            return unnamed_section_output(section_flags, sh_type);
+            return unnamed_section_output(section_header);
         }
 
         SectionRuleOutcome::Custom
@@ -494,24 +492,21 @@ fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
-fn unnamed_section_output(
-    section_flags: impl SectionFlags,
-    sh_type: impl SectionType,
-) -> SectionRuleOutcome {
-    if !section_flags.is_alloc() {
+fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
+    if !section_header.is_alloc() {
         SectionRuleOutcome::Discard
-    } else if sh_type.is_prog_bits() {
-        if section_flags.is_executable() {
+    } else if section_header.is_prog_bits() {
+        if section_header.is_executable() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TEXT))
-        } else if section_flags.is_tls() {
+        } else if section_header.is_tls() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TDATA))
-        } else if section_flags.is_writable() {
+        } else if section_header.is_writable() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::DATA))
         } else {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA))
         }
-    } else if sh_type.is_no_bits() {
-        if section_flags.is_tls() {
+    } else if section_header.is_no_bits() {
+        if section_header.is_tls() {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TBSS))
         } else {
             SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS))
@@ -524,14 +519,19 @@ fn unnamed_section_output(
 #[test]
 fn test_section_mapping() {
     let rules = SectionRules::from_rules(BUILT_IN_RULES);
-    let lookup_name = |name: &str| {
-        rules.lookup(
-            name.as_bytes(),
-            None,
-            linker_utils::elf::SectionFlags::empty(),
-            linker_utils::elf::SectionType::from_u32(0),
-        )
+    let header = crate::elf::SectionHeader {
+        sh_name: Default::default(),
+        sh_type: Default::default(),
+        sh_flags: Default::default(),
+        sh_addr: Default::default(),
+        sh_offset: Default::default(),
+        sh_size: Default::default(),
+        sh_link: Default::default(),
+        sh_info: Default::default(),
+        sh_addralign: Default::default(),
+        sh_entsize: Default::default(),
     };
+    let lookup_name = |name: &str| rules.lookup(name.as_bytes(), None, &header);
 
     assert_eq!(
         lookup_name(".comment"),

@@ -57,15 +57,15 @@ pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 /// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-pub(crate) fn should_merge_sections<S: platform::SectionFlags>(
-    section_flags: S,
+pub(crate) fn should_merge_sections(
+    section_header: &impl platform::SectionHeader,
     section_alignment: u64,
     args: &Args,
 ) -> bool {
     if !args.merge_sections {
         return false;
     }
-    section_flags.is_merge_section() && section_alignment <= 1
+    section_header.is_merge_section() && section_alignment <= 1
 }
 
 impl PartId {

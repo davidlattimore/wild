@@ -150,7 +150,7 @@ pub(crate) struct RelaxSymbolInfo {
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
     type Symbol: Symbol;
-    type SectionHeader: SectionHeader<'data, Self>;
+    type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
     type SectionType: SectionType;
     type SegmentType: SegmentType;
@@ -217,6 +217,10 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
 
     fn section_size(&self, header: &Self::SectionHeader) -> Result<u64>;
+
+    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
+
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
 
     fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]>;
 
@@ -519,27 +523,37 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn built_in_section_infos() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
 }
 
-pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
-    std::fmt::Debug + Send + Sync + 'data
-{
-    fn flags(&self) -> O::SectionFlags;
+pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
+    fn is_alloc(&self) -> bool;
 
-    fn attributes(&self) -> O::SectionAttributes;
+    fn is_writable(&self) -> bool;
 
-    fn section_type(&self) -> O::SectionType;
+    fn is_executable(&self) -> bool;
+
+    fn is_tls(&self) -> bool;
+
+    fn is_merge_section(&self) -> bool;
+
+    fn is_strings(&self) -> bool;
+
+    fn should_retain(&self) -> bool;
+
+    fn should_exclude(&self) -> bool;
+
+    fn is_group(&self) -> bool;
+
+    fn is_note(&self) -> bool;
+
+    fn is_prog_bits(&self) -> bool;
+
+    /// Returns whether the section has no contents in the file (zero initialised).
+    fn is_no_bits(&self) -> bool;
 }
 
 pub(crate) trait SectionType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
 {
     fn is_null(self) -> bool;
-
-    fn is_note(self) -> bool;
-
-    fn is_prog_bits(self) -> bool;
-
-    /// Returns whether the section has no contents in the file (zero initialised).
-    fn is_no_bits(self) -> bool;
 }
 
 pub(crate) trait SegmentType:
@@ -551,22 +565,6 @@ pub(crate) trait SectionFlags:
     Default + Copy + std::fmt::Debug + Send + Sync + 'static
 {
     fn is_alloc(self) -> bool;
-
-    fn is_writable(self) -> bool;
-
-    fn is_executable(self) -> bool;
-
-    fn is_tls(self) -> bool;
-
-    fn is_merge_section(self) -> bool;
-
-    fn is_strings(self) -> bool;
-
-    fn should_retain(self) -> bool;
-
-    fn should_exclude(&self) -> bool;
-
-    fn is_group(self) -> bool;
 }
 
 pub(crate) trait Symbol: std::fmt::Debug + Send + Sync + 'static {

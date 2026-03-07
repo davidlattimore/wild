@@ -36,7 +36,6 @@ use crate::parsing::SyntheticSymbols;
 use crate::platform;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
-use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader;
 use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
@@ -893,9 +892,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
             return false;
         };
 
-        let flags = header.flags();
-
-        flags.is_group()
+        header.is_group()
     }
 
     pub(crate) fn entry_symbol_name(&self) -> &[u8] {

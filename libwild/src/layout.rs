@@ -1165,7 +1165,7 @@ impl<'data, O: ObjectFile<'data>> CommonGroupState<'data, O> {
     fn store_section_attributes(&mut self, part_id: PartId, header: &O::SectionHeader) {
         let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
 
-        let new_attributes = header.attributes();
+        let new_attributes = O::section_attributes(header);
 
         if let Some(existing) = existing_attributes {
             existing.merge(new_attributes);
@@ -1507,7 +1507,7 @@ impl<'data, O: ObjectFile<'data>> Layout<'data, O> {
                             .zip(&obj.sections)
                             .map(|((res, section), section_slot)| {
                                 (matches!(section_slot, SectionSlot::Loaded(..))
-                                    && section.flags().is_alloc()
+                                    && section.is_alloc()
                                     && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                 .then(|| {
                                     let address = res.address;
@@ -2641,7 +2641,7 @@ impl Section {
             part_id,
             size,
             flags: ValueFlags::empty(),
-            is_writable: header.flags().is_writable(),
+            is_writable: header.is_writable(),
         };
         Ok(section)
     }
@@ -2691,7 +2691,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocatio
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = section.flags();
+        let section_flags = <P::File as ObjectFile<'data>>::section_flags(section);
 
         let rel_info = if let Some(relaxation) = P::new_relaxation(
             r_type,
@@ -2711,7 +2711,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocatio
             P::relocation_from_raw(r_type)?
         };
 
-        let section_is_writable = section_flags.is_writable();
+        let section_is_writable = section.is_writable();
         let mut flags_to_add = resolution_flags(rel_info.kind);
 
         if !section_flags.is_alloc() {
@@ -4835,7 +4835,7 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
                             .filter_map(|(i, slot)| {
                                 if let SectionSlot::Loaded(_) = slot
                                     && let Ok(header) = obj.object.section(SectionIndex(i))
-                                    && header.flags().is_executable()
+                                    && header.is_executable()
                                 {
                                     Some(i)
                                 } else {
