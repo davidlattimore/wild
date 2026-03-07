@@ -273,13 +273,7 @@ impl SaveDirState {
                 self.copy_file(&absolute_target, parsed_args)?;
             }
 
-            std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
-                format!(
-                    "Failed to symlink {} to {}",
-                    dest_path.display(),
-                    target.display()
-                )
-            })?;
+            create_symlink(&target, &dest_path)?;
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
@@ -356,6 +350,38 @@ impl SaveDirState {
 
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, dest_path: &Path) -> Result {
+    std::os::unix::fs::symlink(target, dest_path).with_context(|| {
+        format!(
+            "Failed to symlink {} to {}",
+            dest_path.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, dest_path: &Path) -> Result {
+    let is_dir = std::fs::metadata(target)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    let result = if is_dir {
+        std::os::windows::fs::symlink_dir(target, dest_path)
+    } else {
+        std::os::windows::fs::symlink_file(target, dest_path)
+    };
+    result.with_context(|| {
+        format!(
+            "Failed to symlink {} to {}",
+            dest_path.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u8>> {

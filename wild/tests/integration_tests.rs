@@ -3249,7 +3249,7 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path)
+    if let Err(error) = create_symlink(wild, &wild_ld_path)
         && error.kind() != std::io::ErrorKind::AlreadyExists
     {
         Err(error).with_context(|| {
@@ -3261,6 +3261,16 @@ fn setup_wild_ld_symlink() -> Result {
         })?
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, dest_path)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, dest_path)
 }
 
 fn find_bin(names: &[&str]) -> Result<PathBuf> {
