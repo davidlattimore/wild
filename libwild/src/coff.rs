@@ -626,7 +626,7 @@ impl platform::NonAddressableIndexes for () {
 // ── ObjectFile trait implementation ─────────────────────────────────────────
 
 impl<'data> platform::ObjectFile<'data> for CoffObjectFile<'data> {
-    type ArgsType = PeArgs;
+    type Args = PeArgs;
     type Symbol = CoffSymbol;
     type SectionHeader = pe::ImageSectionHeader;
     type SectionIterator = core::slice::Iter<'data, pe::ImageSectionHeader>;

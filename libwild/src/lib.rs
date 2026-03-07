@@ -280,7 +280,7 @@ impl Linker {
 
     fn link_for_arch<'layout_inputs, P: Platform<'layout_inputs>>(
         &'layout_inputs self,
-        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::ArgsType>,
+        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::Args>,
     ) -> error::Result<Option<layout::Layout<'layout_inputs, P::File>>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
@@ -309,7 +309,7 @@ impl Linker {
     fn load_inputs_and_link<'layout_inputs, P: Platform<'layout_inputs>>(
         &'layout_inputs self,
         file_loader: &mut FileLoader<'layout_inputs>,
-        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::ArgsType>,
+        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::Args>,
     ) -> error::Result<Option<layout::Layout<'layout_inputs, P::File>>> {
         let mut plugin = P::create_plugin(self, args)?;
 

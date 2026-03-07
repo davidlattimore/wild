@@ -71,7 +71,7 @@ use symbolic_demangle::demangle;
 
 #[derive(Debug)]
 pub struct SymbolDb<'data, O: ObjectFile<'data>> {
-    pub(crate) args: &'data Args<O::ArgsType>,
+    pub(crate) args: &'data Args<O::Args>,
 
     pub(crate) groups: Vec<Group<'data, O>>,
 
@@ -321,7 +321,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
     }
 
     pub(crate) fn new(
-        args: &'data Args<O::ArgsType>,
+        args: &'data Args<O::Args>,
         output_kind: OutputKind,
         auxiliary: &AuxiliaryFiles<'data>,
         herd: &'data bumpalo_herd::Herd,
@@ -1393,7 +1393,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 fn read_symbols<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, O>],
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
@@ -1421,7 +1421,7 @@ fn read_symbols_for_group<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
     verbose_timing_phase!(
@@ -1558,7 +1558,7 @@ fn load_symbols_from_file<'data, O: ObjectFile<'data>>(
     version_script: &VersionScript,
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, O>,
     outputs: &mut SymbolLoadOutputs<'data>,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
@@ -1685,7 +1685,7 @@ trait SymbolLoader<'data, O: ObjectFile<'data>> {
 
 struct RegularObjectSymbolLoader<'a, 'data, O: ObjectFile<'data>> {
     object: &'a O,
-    args: &'a Args<O::ArgsType>,
+    args: &'a Args<O::Args>,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],

@@ -40,14 +40,14 @@ pub(crate) trait Platform<'data>: 'data {
 
     fn create_plugin(
         _linker: &'data crate::Linker,
-        _args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
+        _args: &'data Args<<Self::File as ObjectFile<'data>>::Args>,
     ) -> crate::Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
         Ok(None)
     }
 
     fn finish_link(
         file_loader: &mut crate::input_data::FileLoader<'data>,
-        args: &'data Args<<Self::File as ObjectFile<'data>>::ArgsType>,
+        args: &'data Args<<Self::File as ObjectFile<'data>>::Args>,
         plugin: &mut Option<crate::linker_plugins::LinkerPlugin<'data>>,
         symbol_db: crate::symbol_db::SymbolDb<'data, Self::File>,
         per_symbol_flags: crate::value_flags::PerSymbolFlags,
@@ -189,7 +189,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
     type ProgramSegmentDef: ProgramSegmentDef;
-    type ArgsType: Send + Sync + 'static;
+    type Args: Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -210,7 +210,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
     /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &Args<Self::ArgsType>) -> Result<Self>;
+    fn parse(input: &InputBytes<'data>, args: &Args<Self::Args>) -> Result<Self>;
 
     fn is_dynamic(&self) -> bool;
 
@@ -294,7 +294,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Self::DynamicLayout;
 
     fn new_epilogue_layout(
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout;
@@ -396,7 +396,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -429,7 +429,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState<'data, Self>]);
 
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState<'data, Self>, args: &Args<Self::ArgsType>);
+    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState<'data, Self>, args: &Args<Self::Args>);
 
     fn finalise_object_sizes(
         object: &mut layout::ObjectLayoutState<'data, Self>,
@@ -512,7 +512,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
     );
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
@@ -527,24 +527,24 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Implementations can force certain sections to be kept. Only needs to be done for sections
     /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<Self::ArgsType>);
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<Self::Args>);
 
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
     fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
 
     /// Whether to emit GOT/PLT symbol entries in the local symtab.
-    fn wants_got_plt_syms(_args: &Args<Self::ArgsType>) -> bool {
+    fn wants_got_plt_syms(_args: &Args<Self::Args>) -> bool {
         false
     }
 
     /// Returns the stack size for the STACK segment.
-    fn stack_size(_args: &Args<Self::ArgsType>) -> u64 {
+    fn stack_size(_args: &Args<Self::Args>) -> u64 {
         0
     }
 
     /// Whether the hash style includes sysv.
-    fn hash_includes_sysv(_args: &Args<Self::ArgsType>) -> bool {
+    fn hash_includes_sysv(_args: &Args<Self::Args>) -> bool {
         false
     }
 }

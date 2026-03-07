@@ -548,7 +548,7 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
-// Note: Manual Debug impl below to avoid requiring O::ArgsType: Debug
+// Note: Manual Debug impl below to avoid requiring O::Args: Debug
 pub struct Layout<'data, O: ObjectFile<'data>> {
     pub(crate) symbol_db: SymbolDb<'data, O>,
     pub(crate) symbol_resolutions: SymbolResolutions,
@@ -1393,7 +1393,7 @@ impl<'data, O: ObjectFile<'data>> Layout<'data, O> {
         i
     }
 
-    pub(crate) fn args(&self) -> &'data Args<O::ArgsType> {
+    pub(crate) fn args(&self) -> &'data Args<O::Args> {
         self.symbol_db.args
     }
 
@@ -1674,7 +1674,7 @@ fn compute_segment_layout<'data, O: ObjectFile<'data>>(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     header_info: &HeaderInfo,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -3055,7 +3055,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         uses_tlsld: &AtomicBool,
-        args: &Args<O::ArgsType>,
+        args: &Args<O::Args>,
         output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
@@ -3560,7 +3560,7 @@ fn should_emit_undefined_error<'data, O: ObjectFile<'data>>(
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
     output_kind: OutputKind,
 ) -> bool {
     if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
@@ -3633,7 +3633,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
 
 impl<'data, O: ObjectFile<'data>> EpilogueLayoutState<'data, O> {
     fn new(
-        args: &Args<O::ArgsType>,
+        args: &Args<O::Args>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> Self {
@@ -5031,7 +5031,7 @@ fn layout_section_parts<'data, O: ObjectFile<'data>>(
     output_sections: &OutputSections,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments = compute_segment_alignments::<O>(
         sizes,
@@ -5153,7 +5153,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
     sizes: &OutputSectionPartMap<u64>,
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args<O::ArgsType>,
+    args: &Args<O::Args>,
     output_sections: &OutputSections,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");

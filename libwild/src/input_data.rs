@@ -130,7 +130,7 @@ pub(crate) struct InputLinkerScript<'data> {
 }
 
 struct TemporaryState<'data, O: ObjectFile<'data>> {
-    args: &'data Args<O::ArgsType>,
+    args: &'data Args<O::Args>,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
     path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
@@ -243,7 +243,7 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn load_inputs<O: ObjectFile<'data>>(
         &mut self,
         inputs: &[Input],
-        args: &'data Args<O::ArgsType>,
+        args: &'data Args<O::Args>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, O>> {
         timing_phase!("Open input files");
