@@ -23,6 +23,21 @@
 //#LinkArgs:-no-pie -Wl,-z,now
 //#EnableLinker:lld
 
+//#Config:static:default
+//#CompArgs:-fmerge-constants
+//#LinkerDriver:g++
+//#LinkArgs:-static -Wl,-z,now,-no-relax
+//#DiffIgnore:rel.extra-got-plt-got
+//#DiffIgnore:init_array
+//#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
+//#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
+//#DiffIgnore:literal-byte-mismatch
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute.static-non-pie
+//#DiffIgnore:section.rela.plt.link
+//#Arch: x86_64
+
 //#Config:clang-pie:default
 //#CompArgs:-fpie
 //#Compiler:clang
