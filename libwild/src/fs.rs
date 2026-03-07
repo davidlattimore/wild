@@ -2,16 +2,16 @@ use crate::error::Result;
 use std::fs::File;
 use std::path::PathBuf;
 
-pub(crate) fn make_executable(file: &File) -> Result {
+pub(crate) fn make_executable(_file: &File) -> Result {
     #[cfg(unix)]
     {
         use std::os::unix::prelude::PermissionsExt;
-        let mut permissions = file.metadata()?.permissions();
+        let mut permissions = _file.metadata()?.permissions();
         let mut mode = PermissionsExt::mode(&permissions);
         // Set execute permission wherever we currently have read permission.
         mode = mode | ((mode & 0o444) >> 2);
         PermissionsExt::set_mode(&mut permissions, mode);
-        file.set_permissions(permissions)?;
+        _file.set_permissions(permissions)?;
         Ok(())
     }
 
