@@ -32,7 +32,7 @@ pub(crate) struct LayoutRulesBuilder<'data> {
     rules: Vec<SectionRule<'data>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SectionKind<'data> {
     /// This is the primary section.
     Primary(SectionName<'data>),
