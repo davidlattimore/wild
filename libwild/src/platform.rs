@@ -504,6 +504,14 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
         output_kind: OutputKind,
     );
+
+    /// Implementations can force certain sections to be kept. Only needs to be done for sections
+    /// that need to be emitted even if empty.
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args);
+
+    /// Returns whether an input section with zero size destined for the specified output section
+    /// should be considered content and thus prevent the output section from being discarded.
+    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:

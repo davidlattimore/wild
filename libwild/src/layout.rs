@@ -1151,8 +1151,14 @@ impl<'data, O: ObjectFile<'data>> CommonGroupState<'data, O> {
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
-    fn section_loaded(&mut self, part_id: PartId, header: &O::SectionHeader, section: Section) {
-        self.allocate(part_id, section.capacity());
+    fn section_loaded(
+        &mut self,
+        part_id: PartId,
+        header: &O::SectionHeader,
+        section: Section,
+        output_sections: &OutputSections,
+    ) {
+        self.allocate(part_id, section.capacity(output_sections));
         self.store_section_attributes(part_id, header);
     }
 
@@ -2642,11 +2648,11 @@ impl Section {
 
     // How much space we take up. This is our size rounded up to the next multiple of our
     // alignment, unless we're in a packed section, in which case it's just our size.
-    pub(crate) fn capacity(&self) -> u64 {
+    pub(crate) fn capacity(&self, output_sections: &OutputSections) -> u64 {
         if self.part_id.should_pack() {
             self.size
         } else {
-            self.alignment().align_up(self.size)
+            self.alignment(output_sections).align_up(self.size)
         }
     }
 
@@ -2659,8 +2665,8 @@ impl Section {
     }
 
     /// Returns the alignment for this section.
-    fn alignment(&self) -> Alignment {
-        self.part_id.alignment()
+    fn alignment(&self, output_sections: &OutputSections) -> Alignment {
+        self.part_id.alignment(output_sections)
     }
 }
 
@@ -3186,16 +3192,7 @@ impl<'data> PreludeLayoutState<'data> {
         });
 
         // Keep any sections that we've said we want to keep regardless.
-        for section_id in output_section_id::built_in_section_ids() {
-            if section_id.built_in_details().keep_if_empty {
-                // Don't keep .relro_padding if relro is disabled.
-                if section_id == output_section_id::RELRO_PADDING && !resources.symbol_db.args.relro
-                {
-                    continue;
-                }
-                *keep_sections.get_mut(section_id) = true;
-            }
-        }
+        O::apply_force_keep_sections(&mut keep_sections, resources.symbol_db.args);
 
         // Keep any sections that have a start/stop symbol which is referenced.
         symbol_flags
@@ -3926,13 +3923,13 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
-        common.section_loaded(part_id, header, section);
+        common.section_loaded(part_id, header, section, resources.output_sections);
 
         let section_id = section.output_section_id();
 
         if section.size > 0 {
             O::non_empty_section_loaded::<P>(self, common, queue, unloaded, resources, scope)?;
-        } else if section_id.marks_zero_sized_inputs_as_content() {
+        } else if O::is_zero_sized_section_content(section_id) {
             resources.keep_section(section_id);
         }
 
@@ -3996,7 +3993,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         }
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
-        common.section_loaded(part_id, header, section);
+        common.section_loaded(part_id, header, section, resources.output_sections);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
@@ -4125,7 +4122,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                     let address = *memory_offsets.get(part_id);
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
-                    *memory_offsets.get_mut(part_id) += sec.capacity();
+                    *memory_offsets.get_mut(part_id) += sec.capacity(resources.output_sections);
                     // Collect SFrame section ranges while we're already iterating
                     if part_id.output_section_id() == output_section_id::SFRAME {
                         let offset = (address - sframe_start_address) as usize;
@@ -4136,7 +4133,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
                     let address = *memory_offsets.get(sec.part_id);
-                    *memory_offsets.get_mut(sec.part_id) += sec.capacity();
+                    *memory_offsets.get_mut(sec.part_id) += sec.capacity(resources.output_sections);
                     SectionResolution { address }
                 }
                 SectionSlot::FrameData(..) => {
@@ -4694,6 +4691,7 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
     group_states: &[GroupState<'data, O>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, O>,
+    output_sections: &OutputSections,
 ) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
     timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
@@ -4719,12 +4717,12 @@ fn compute_section_and_symbol_addresses<'data, O: ObjectFile<'data>>(
                             match slot {
                                 SectionSlot::Loaded(sec) => {
                                     addresses[sec_idx] = *offsets.get(sec.part_id);
-                                    *offsets.get_mut(sec.part_id) += sec.capacity();
+                                    *offsets.get_mut(sec.part_id) += sec.capacity(output_sections);
                                 }
                                 SectionSlot::LoadedDebugInfo(sec) => {
                                     // Advance offsets so subsequent sections are placed
                                     // correctly, but we don't need the address for relaxation.
-                                    *offsets.get_mut(sec.part_id) += sec.capacity();
+                                    *offsets.get_mut(sec.part_id) += sec.capacity(output_sections);
                                 }
                                 _ => {}
                             }
@@ -4797,11 +4795,16 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
+    output_sections: &OutputSections,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
-    let (section_addresses, symbol_infos) =
-        compute_section_and_symbol_addresses(group_states, section_part_layouts, symbol_db);
+    let (section_addresses, symbol_infos) = compute_section_and_symbol_addresses(
+        group_states,
+        section_part_layouts,
+        symbol_db,
+        output_sections,
+    );
 
     // Scan each group.
     #[expect(clippy::type_complexity)]
@@ -4897,9 +4900,9 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
                             raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
 
                         if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
-                            let old_capacity = sec.capacity();
+                            let old_capacity = sec.capacity(output_sections);
                             sec.size -= new_total_deleted;
-                            let new_capacity = sec.capacity();
+                            let new_capacity = sec.capacity(output_sections);
                             debug_assert!(old_capacity >= new_capacity);
                             let capacity_reduction = old_capacity - new_capacity;
                             if capacity_reduction > 0 {
@@ -4973,6 +4976,7 @@ fn perform_iterative_relaxation<'data, P: Platform<'data>>(
             per_symbol_flags,
             section_part_sizes,
             rescan_sections.as_ref(),
+            output_sections,
         );
 
         if deleted == 0 {
@@ -5017,8 +5021,13 @@ fn layout_section_parts<'data, O: ObjectFile<'data>>(
     output_order: &OutputOrder,
     args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
-    let segment_alignments =
-        compute_segment_alignments::<O>(sizes, program_segments, output_order, args);
+    let segment_alignments = compute_segment_alignments::<O>(
+        sizes,
+        program_segments,
+        output_order,
+        args,
+        output_sections,
+    );
 
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
@@ -5057,7 +5066,7 @@ fn layout_section_parts<'data, O: ObjectFile<'data>>(
                 );
                 let section_info = output_sections.output_info(section_id);
                 let part_id_range = section_id.part_id_range();
-                let max_alignment = sizes.max_alignment(part_id_range.clone());
+                let max_alignment = sizes.max_alignment(part_id_range.clone(), output_sections);
                 if let Some(location) = section_info.location {
                     mem_offset = location.address;
                 }
@@ -5068,7 +5077,7 @@ fn layout_section_parts<'data, O: ObjectFile<'data>>(
                     .enumerate()
                     .for_each(|(offset, (part_layout, &part_size))| {
                         let part_id = part_id_range.start.offset(offset);
-                        let alignment = part_id.alignment().min(max_alignment);
+                        let alignment = part_id.alignment(output_sections).min(max_alignment);
                         let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = if section_id == output_section_id::RELRO_PADDING {
@@ -5133,6 +5142,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
     program_segments: &ProgramSegments<O::ProgramSegmentDef>,
     output_order: &OutputOrder,
     args: &Args,
+    output_sections: &OutputSections,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
 
@@ -5155,7 +5165,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
             }
             OrderEvent::Section(section_id) => {
                 let part_id_range = section_id.part_id_range();
-                let max_alignment = sizes.max_alignment(part_id_range);
+                let max_alignment = sizes.max_alignment(part_id_range, output_sections);
 
                 // Update the alignment for all active LOAD segments
                 for &segment_id in &active_load_segments {

@@ -1518,7 +1518,7 @@ fn write_section_raw<'out, 'data>(
         .has_data_in_file(sec.output_section_id())
     {
         let section_buffer = buffers.get_mut(sec.output_part_id());
-        let allocation_size = sec.capacity() as usize;
+        let allocation_size = sec.capacity(&layout.output_sections) as usize;
         if section_buffer.len() < allocation_size {
             bail!(
                 "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
@@ -4854,21 +4854,29 @@ pub(crate) fn verify_resolution_allocation(
     // Allocate however much space was requested.
 
     let mut total_bytes_allocated = 0;
-    mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
-        total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
-    });
+    mem_sizes.output_order_map(
+        output_order,
+        output_sections,
+        |_part_id, alignment, &size| {
+            total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
+        },
+    );
     total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
     let mut all_mem = vec![0_u64; total_bytes_allocated as usize / size_of::<u64>()];
     let mut all_mem: &mut [u8] = transmute_mut!(all_mem.as_mut_slice());
     let mut offset = 0;
-    let mut buffers = mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
-        let aligned_offset = alignment.align_up(offset);
-        all_mem
-            .split_off_mut(..(aligned_offset - offset) as usize)
-            .unwrap();
-        offset = aligned_offset + size;
-        all_mem.split_off_mut(..size as usize).unwrap()
-    });
+    let mut buffers = mem_sizes.output_order_map(
+        output_order,
+        output_sections,
+        |_part_id, alignment, &size| {
+            let aligned_offset = alignment.align_up(offset);
+            all_mem
+                .split_off_mut(..(aligned_offset - offset) as usize)
+                .unwrap();
+            offset = aligned_offset + size;
+            all_mem.split_off_mut(..size as usize).unwrap()
+        },
+    );
 
     let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);
     let debug_symbol_writer = SymbolTableWriter::new(0, &mut buffers, output_sections);
