@@ -1,4 +1,4 @@
-use crate::Args;
+use crate::args::Args;
 use crate::args::RelocationModel;
 use crate::input_data::FileLoader;
 
@@ -10,7 +10,7 @@ pub(crate) enum OutputKind {
 }
 
 impl OutputKind {
-    pub(crate) fn new(args: &Args, input_data: &FileLoader<'_>) -> OutputKind {
+    pub(crate) fn new<T>(args: &Args<T>, input_data: &FileLoader<'_>) -> OutputKind {
         if !args.should_output_executable {
             OutputKind::SharedObject
         } else if args.dynamic_linker.is_some()

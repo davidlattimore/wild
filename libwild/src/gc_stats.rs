@@ -28,9 +28,9 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use std::path::PathBuf;
 
-pub(crate) fn maybe_write_gc_stats<'data, O: ObjectFile<'data>>(
+pub(crate) fn maybe_write_gc_stats<'data, O: ObjectFile<'data>, T>(
     group_layouts: &[GroupLayout<'data, O>],
-    args: &Args,
+    args: &Args<T>,
 ) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
         return Ok(());
@@ -46,10 +46,10 @@ struct InputFile<'data> {
     discarded_names: Vec<&'data [u8]>,
 }
 
-fn write_gc_stats<'data, O: ObjectFile<'data>>(
+fn write_gc_stats<'data, O: ObjectFile<'data>, T>(
     group_layouts: &[GroupLayout<'data, O>],
     stats_file: &std::path::Path,
-    args: &Args,
+    args: &Args<T>,
 ) -> Result {
     use std::io::Write as _;
 
