@@ -34,8 +34,8 @@ impl<'data> LinkerPlugin<'data> {
         unreachable!();
     }
 
-    pub(crate) fn from_args(
-        _args: &'data crate::Args,
+    pub(crate) fn from_args<T>(
+        _args: &'data crate::args::Args<T>,
         _linker_plugin_arena: &colosseum::sync::Arena<LoadedPlugin>,
         _herd: &bumpalo_herd::Herd,
     ) -> Result<Option<Self>> {
@@ -46,10 +46,10 @@ impl<'data> LinkerPlugin<'data> {
         false
     }
 
-    pub(crate) fn all_symbols_read(
+    pub(crate) fn all_symbols_read<O: crate::platform::ObjectFile<'data>>(
         &mut self,
-        _symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
-        _resolver: &mut Resolver<'data, crate::elf::File<'data>>,
+        _symbol_db: &mut SymbolDb<'data, O>,
+        _resolver: &mut Resolver<'data, O>,
         _file_loader: &mut FileLoader<'data>,
         _per_symbol_flags: &mut PerSymbolFlags,
         _output_sections: &mut OutputSections<'data>,

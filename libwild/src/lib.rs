@@ -2,6 +2,7 @@ pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
+pub(crate) mod coff;
 pub(crate) mod debug_trace;
 pub(crate) mod diagnostics;
 pub(crate) mod diff;
@@ -34,6 +35,7 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
+pub(crate) mod pe_writer;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -62,6 +64,7 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
+pub(crate) mod target_os;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
@@ -74,17 +77,15 @@ use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
+use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
-use crate::version_script::VersionScript;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::FileLoader;
 use input_data::InputFile;
-use input_data::InputLinkerScript;
-use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use std::io::BufWriter;
 use std::io::Write;
@@ -95,16 +96,92 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-/// Runs the linker and cleans up associated resources. Only use this function if you've OK with
-/// waiting for cleanup.
-pub fn run(args: Args) -> error::Result {
+/// Trait implemented by format-specific args types to dispatch linking by architecture.
+pub(crate) trait TargetFormat: Send + Sync + 'static {
+    fn dispatch_link<'layout_inputs>(
+        linker: &'layout_inputs Linker,
+        args: &'layout_inputs Args<Self>,
+    ) -> error::Result<LinkerOutput<'layout_inputs>>
+    where
+        Self: Sized;
+}
+
+impl TargetFormat for args::linux::ElfArgs {
+    fn dispatch_link<'layout_inputs>(
+        linker: &'layout_inputs Linker,
+        args: &'layout_inputs Args<Self>,
+    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let res = match args.arch {
+            arch::Architecture::X86_64 => linker.link_for_arch::<elf_x86_64::ElfX86_64>(args)?,
+            arch::Architecture::AArch64 => linker.link_for_arch::<elf_aarch64::ElfAArch64>(args)?,
+            arch::Architecture::RISCV64 => linker.link_for_arch::<elf_riscv64::ElfRiscV64>(args)?,
+            arch::Architecture::LoongArch64 => {
+                linker.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)?
+            }
+        };
+        Ok(match res {
+            Some(layout) => LinkerOutput::Elf(layout),
+            None => LinkerOutput::None,
+        })
+    }
+}
+
+impl TargetFormat for args::windows::PeArgs {
+    fn dispatch_link<'layout_inputs>(
+        linker: &'layout_inputs Linker,
+        args: &'layout_inputs Args<Self>,
+    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let res = match args.arch {
+            arch::Architecture::X86_64 | arch::Architecture::AArch64 => {
+                linker.link_for_arch::<coff::PePlatform>(args)?
+            }
+            other => {
+                bail!("PE format does not support architecture: {other}");
+            }
+        };
+        Ok(match res {
+            Some(layout) => LinkerOutput::Pe(layout),
+            None => LinkerOutput::None,
+        })
+    }
+}
+
+#[macro_export]
+macro_rules! linker_run {
+    ($linker:ident, $args:ident, $after:expr) => {
+        use $crate::TargetFormat;
+        let args = $args.args;
+        match args.target_args {
+            $crate::args::TargetArgs::Elf(_) => {
+                let args = args.map_target(|t| match t {
+                    $crate::args::TargetArgs::Elf(e) => e,
+                    _ => unreachable!(),
+                });
+                let res = $crate::args::linux::ElfArgs::dispatch_link(&$linker, &args)?;
+                $after(res);
+            }
+            $crate::args::TargetArgs::Pe(_) => {
+                let args = args.map_target(|t| match t {
+                    $crate::args::TargetArgs::Pe(p) => p,
+                    _ => unreachable!(),
+                });
+                let res = $crate::args::windows::PeArgs::dispatch_link(&$linker, &args)?;
+                $after(res);
+            }
+        }
+    };
+}
+
+/// Runs the linker and cleans up associated resources.
+pub fn run(args: args::Args) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
-    linker.run(&args)?;
+    linker_run!(linker, args, |_| {});
+
     drop(linker);
     timing::finalise_perfetto_trace()?;
     Ok(())
@@ -113,7 +190,7 @@ pub fn run(args: Args) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
+pub fn setup_tracing(args: &args::Args) -> Result<(), AlreadyInitialised> {
     if let Some(opts) = args.time_phase_options.as_ref() {
         timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
@@ -135,13 +212,13 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// pages) will still happen anyway.
 pub struct Linker {
     /// We store our input files here once we've read them.
-    inputs_arena: Arena<InputFile>,
+    pub(crate) inputs_arena: Arena<InputFile>,
 
-    linker_plugin_arena: Arena<linker_plugins::LoadedPlugin>,
+    pub(crate) linker_plugin_arena: Arena<linker_plugins::LoadedPlugin>,
 
     /// Anything that doesn't need a custom Drop implementation can go in here. In practice, it's
     /// mostly just the decompressed copy of compressed string-merge sections.
-    herd: bumpalo_herd::Herd,
+    pub(crate) herd: bumpalo_herd::Herd,
 
     /// We'll fill this in when we're done linking and start shutting down. Once this is dropped,
     /// that signals the end of shutdown for the purposes of timing measurement.
@@ -153,11 +230,13 @@ pub struct Linker {
     _link_scope: Vec<Box<dyn Drop>>,
 }
 
-pub struct LinkerOutput<'layout_inputs> {
-    /// This is just here so that we defer its destruction. This allows us to (a) measure how long
-    /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
-    /// the background.
-    layout: Option<layout::Layout<'layout_inputs, crate::elf::File<'layout_inputs>>>,
+/// This is just here so that we defer its destruction. This allows us to (a) measure how long
+/// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
+/// the background.
+pub(crate) enum LinkerOutput<'layout_inputs> {
+    Elf(layout::Layout<'layout_inputs, crate::elf::File<'layout_inputs>>),
+    Pe(layout::Layout<'layout_inputs, crate::coff::CoffObjectFile<'layout_inputs>>),
+    None,
 }
 
 impl Linker {
@@ -173,19 +252,18 @@ impl Linker {
         }
     }
 
-    /// Runs the linker. The returned value isn't useful for anything, but is somewhat expensive to
-    /// drop, so we leave it up to the caller to decide when to drop it. At the point at which we
-    /// return, the output file should be usable.
-    pub fn run<'layout_inputs>(
+    /// Runs the linker. Generic over the target format args type (ElfArgs or PeArgs).
+    /// The caller is responsible for mapping the args to the correct format type first.
+    pub(crate) fn run<'layout_inputs, T: TargetFormat>(
         &'layout_inputs self,
-        args: &'layout_inputs ActivatedArgs,
+        args: &'layout_inputs ActivatedArgs<T>,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let args = &args.args;
         match args.version_mode {
             args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{}", linker_identity())?;
-                return Ok(LinkerOutput { layout: None });
+                return Ok(LinkerOutput::None);
             }
             args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
@@ -197,23 +275,16 @@ impl Linker {
             }
         }
 
-        match args.arch {
-            arch::Architecture::X86_64 => self.link_for_arch::<elf_x86_64::ElfX86_64>(args),
-            arch::Architecture::AArch64 => self.link_for_arch::<elf_aarch64::ElfAArch64>(args),
-            arch::Architecture::RISCV64 => self.link_for_arch::<elf_riscv64::ElfRiscV64>(args),
-            arch::Architecture::LoongArch64 => {
-                self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)
-            }
-        }
+        T::dispatch_link(self, args)
     }
 
-    fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-        &'data self,
-        args: &'data Args,
-    ) -> error::Result<LinkerOutput<'data>> {
+    fn link_for_arch<'layout_inputs, P: Platform<'layout_inputs>>(
+        &'layout_inputs self,
+        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::Args>,
+    ) -> error::Result<Option<layout::Layout<'layout_inputs, P::File>>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
-        // Note, we propagate errors from `link_with_input_data` after we've checked if any files
+        // Note, we propagate errors from `load_inputs_and_link` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
         let result = self.load_inputs_and_link::<P>(&mut file_loader, args);
 
@@ -235,13 +306,12 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
-        &'data self,
-        file_loader: &mut FileLoader<'data>,
-        args: &'data Args,
-    ) -> error::Result<LinkerOutput<'data>> {
-        let mut plugin =
-            linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
+    fn load_inputs_and_link<'layout_inputs, P: Platform<'layout_inputs>>(
+        &'layout_inputs self,
+        file_loader: &mut FileLoader<'layout_inputs>,
+        args: &'layout_inputs Args<<P::File as ObjectFile<'layout_inputs>>::Args>,
+    ) -> error::Result<Option<layout::Layout<'layout_inputs, P::File>>> {
+        let mut plugin = P::create_plugin(self, args)?;
 
         let loaded = file_loader.load_inputs(&args.inputs, args, &mut plugin);
 
@@ -250,8 +320,6 @@ impl Linker {
         let loaded = loaded?;
 
         let output_kind = OutputKind::new(args, file_loader);
-
-        let mut output = file_writer::Output::new(args, output_kind);
 
         let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
@@ -285,52 +353,25 @@ impl Linker {
             &resolver.resolved_groups,
         )?;
 
-        if let Some(plugin) = plugin.as_mut()
-            && plugin.is_initialised()
-        {
-            plugin.all_symbols_read(
-                &mut symbol_db,
-                &mut resolver,
-                file_loader,
-                &mut per_symbol_flags,
-                &mut output_sections,
-                &mut layout_rules_builder,
-            )?;
-        }
-
-        // If it's a rust version script, apply the global symbol visibility now.
-        // We previously downgraded all symbols to local visibility.
-        if let VersionScript::Rust(rust_vscript) = &symbol_db.version_script {
-            symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
-        }
-
-        let layout_rules = layout_rules_builder.build();
-
-        let resolved = resolver.resolve_sections_and_canonicalise_undefined(
-            &mut symbol_db,
-            &mut per_symbol_flags,
-            &mut output_sections,
-            &layout_rules,
-        )?;
-
-        let layout = layout::compute::<P>(
+        let layout = P::finish_link(
+            file_loader,
+            args,
+            &mut plugin,
             symbol_db,
             per_symbol_flags,
-            resolved,
+            resolver,
             output_sections,
-            &mut output,
+            layout_rules_builder,
+            output_kind,
         )?;
 
-        output.write(&layout, elf_writer::write::<P>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
         let (g1, g2) = timing_guard!("Shutdown");
         self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
-        Ok(LinkerOutput {
-            layout: Some(layout),
-        })
+        Ok(layout)
     }
 }
 
@@ -348,10 +389,10 @@ impl Drop for Linker {
     }
 }
 
-impl Drop for LinkerOutput<'_> {
+impl<'layout_inputs> Drop for LinkerOutput<'layout_inputs> {
     fn drop(&mut self) {
         timing_phase!("Drop layout");
-        self.layout.take();
+        let _ = std::mem::swap(self, &mut LinkerOutput::None);
     }
 }
 
