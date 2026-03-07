@@ -3,26 +3,13 @@
 //! dependency in our tests so that we can verify consistency.
 
 use crate::error::Result;
+use crate::fs::path_from_bytes;
 use std::ops::Range;
 use std::path::PathBuf;
 
 pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
     Thin(ThinEntry<'data>),
-}
-
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt as _;
-        std::path::Path::new(OsStr::from_bytes(bytes)).to_path_buf()
-    }
-    #[cfg(windows)]
-    {
-        let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
-        PathBuf::from(path)
-    }
 }
 
 #[derive(Clone, Copy)]

@@ -4,6 +4,7 @@
 use crate::elf::File;
 use crate::elf::Rela;
 use crate::error::Result;
+use crate::fs::path_from_bytes;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use crate::platform::Relocation;
@@ -22,18 +23,6 @@ use std::path::PathBuf;
 /// arbitrary, but should be larger than the largest input section we expect to encounter and small
 /// enough to fit comfortably in a u32.
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
-#[cfg(unix)]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt as _;
-    std::path::Path::new(OsStr::from_bytes(bytes)).to_owned()
-}
-
-#[cfg(windows)]
-fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    let path = std::str::from_utf8(bytes).expect("Invalid UTF-8 in archive path name");
-    PathBuf::from(path)
-}
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
 pub(crate) fn get_source_info<'data, P: Platform<'data>>(
