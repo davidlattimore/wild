@@ -35,7 +35,7 @@ impl<'data> LinkerPlugin<'data> {
     }
 
     pub(crate) fn from_args(
-        _args: &'data crate::Args,
+        _args: &'data crate::Args<crate::args::linux::ElfArgs>,
         _linker_plugin_arena: &colosseum::sync::Arena<LoadedPlugin>,
         _herd: &bumpalo_herd::Herd,
     ) -> Result<Option<Self>> {
