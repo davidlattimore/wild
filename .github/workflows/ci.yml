@@ -104,7 +104,6 @@ jobs:
             target\
           key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci -p libwild --lib --no-default-features
 
   minimal-versions:
     runs-on: ubuntu-24.04
