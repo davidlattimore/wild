@@ -268,9 +268,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type CommonGroupStateExt = CommonGroupStateExt;
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
     type ProgramSegmentDef = ProgramSegmentDef;
-    type ArgsType = crate::args::linux::ElfArgs;
+    type Args = crate::args::linux::ElfArgs;
 
-    fn parse(input: &InputBytes<'data>, args: &Args<Self::ArgsType>) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &Args<Self::Args>) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
@@ -679,7 +679,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
     ) -> Result<Self::LayoutProperties>
@@ -848,7 +848,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn new_epilogue_layout(
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayout {
@@ -1178,7 +1178,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn pre_finalise_sizes_prelude(
         common: &mut layout::CommonGroupState<'data, File<'data>>,
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
     ) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
@@ -1421,7 +1421,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args<Self::ArgsType>,
+        args: &Args<Self::Args>,
     ) {
         // If relro is disabled, then discard the relro segment.
         if !args.relro {

@@ -191,7 +191,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<O::ArgsType>) -> Result<Box<Self>> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<O::Args>) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
         let object = O::parse(input, args)
@@ -214,7 +214,7 @@ impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new<O: ObjectFile<'data>>(args: &'data Args<O::ArgsType>, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<O: ObjectFile<'data>>(args: &'data Args<O::Args>, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();

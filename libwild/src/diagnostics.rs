@@ -40,7 +40,7 @@ impl Drop for SymbolInfoPrinter {
 
 impl SymbolInfoPrinter {
     pub(crate) fn new<'data2, O: ObjectFile<'data2>>(
-        args: &Args<O::ArgsType>,
+        args: &Args<O::Args>,
         groups: &[ResolvedGroup<'data2, O>],
     ) -> Self {
         let Some(name) = args.sym_info.as_ref() else {
