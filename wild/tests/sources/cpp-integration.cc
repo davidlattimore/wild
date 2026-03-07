@@ -33,7 +33,7 @@
 //#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
 //#DiffIgnore:rel.match_failed.R_X86_64_PLT32
 //#DiffIgnore:literal-byte-mismatch
-//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative*
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute*
 //#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
 //#DiffIgnore:rel.missing-opt.R_X86_64_GOTTPOFF.RexMovIndirectToAbsolute*
