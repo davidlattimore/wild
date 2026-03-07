@@ -333,7 +333,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
-                                mandatory: false,
+                                mandatory: output_kind.is_static_executable(),
                             });
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
