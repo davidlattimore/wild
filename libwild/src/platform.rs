@@ -170,6 +170,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
     type ProgramSegmentDef: ProgramSegmentDef;
+    type BuiltInSectionDetails: BuiltInSectionDetails;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -512,6 +513,10 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
     fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
+
+    fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
+
+    fn built_in_section_infos() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
 }
 
 pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
@@ -716,3 +721,5 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
         false
     }
 }
+
+pub(crate) trait BuiltInSectionDetails: Send + Sync + 'static {}

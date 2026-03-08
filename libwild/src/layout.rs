@@ -5665,7 +5665,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayout<'data, O> {
 fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
-    let mut output_sections = OutputSections::with_base_address(0x1000);
+    let mut output_sections = OutputSections::with_base_address::<elf::File>(0x1000);
     let (output_order, program_segments) = output_sections.output_order::<crate::elf::File>();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
@@ -5779,7 +5779,7 @@ fn verify_consistent_allocation_handling<'data, O: ObjectFile<'data>>(
     flags: ValueFlags,
     output_kind: OutputKind,
 ) -> Result {
-    let output_sections = OutputSections::with_base_address(0);
+    let output_sections = OutputSections::with_base_address::<O>(0);
     let (output_order, _program_segments) = output_sections.output_order::<O>();
     let mut mem_sizes = output_sections.new_part_map();
     allocate_symbol_resolution(flags, &mut mem_sizes, output_kind);

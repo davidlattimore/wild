@@ -4419,7 +4419,12 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
             continue;
         }
 
-        let entsize = output_info.entsize.max(section_id.element_size());
+        let entsize = output_info.entsize.max(
+            section_id
+                .opt_built_in_details::<elf::File>()
+                .map_or(0, |details| details.element_size),
+        );
+
         let size;
         let alignment;
 
@@ -4443,7 +4448,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
             }
         };
 
-        let link = output_section_id::link_ids(section_id)
+        let link = link_ids(section_id)
             .iter()
             .find_map(|link_id| output_sections.output_index_of_section(*link_id))
             .unwrap_or(0);
@@ -4922,4 +4927,11 @@ fn should_reverse_contents(
             section_name.starts_with(secnames::CTORS_SECTION_NAME)
                 || section_name.starts_with(secnames::DTORS_SECTION_NAME)
         })
+}
+
+fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
+    <elf::File as ObjectFile>::built_in_section_details()
+        .get(section_id.as_usize())
+        .map(|def| def.link)
+        .unwrap_or_default()
 }
