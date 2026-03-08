@@ -1,5 +1,4 @@
 //#Shared:shlib-undefined-3.c
-//#LinkArgs:--no-as-needed
 
 int def3(void);
 
