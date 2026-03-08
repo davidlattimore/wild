@@ -39,5 +39,4 @@ jobs:
       - name: Check regressions
         run: WILD_TEST_CROSS=all cargo test --features mold_tests external_tests::mold_tests::check_mold_tests_regression
       - name: Check tests that should fail still fail
-        continue-on-error: true
         run: WILD_TEST_CROSS=all cargo test --features mold_tests external_tests::mold_tests::verify_skipped_mold_tests_still_fail
