@@ -44,13 +44,28 @@
 // object. We probably should too.
 //#DiffIgnore:file-header.entry
 
+// Disallow linking against shared object that doesn't provide our required
+// symbol by itself, but depends on another shared object providing that symbol.
+//#Config:transitive:default
+//#Shared:shlib-undefined-4.c
+//#CompArgs:-D_TRANSITIVE
+//#ExpectError:def3
+
 #include "runtime.h"
 
+#ifndef _TRANSITIVE
 int def1(void) { return 100; }
-
 int call_def1(void);
+#else
+int def3(void);
+#endif
+
 
 void _start(void) {
   runtime_init();
+#ifndef _TRANSITIVE
   exit_syscall(call_def1());
+#else
+  exit_syscall(def3());
+#endif
 }
