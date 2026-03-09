@@ -35,9 +35,9 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::Arch;
 use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
-use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
@@ -107,17 +107,17 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub fn compute<'data, P: Platform>(
-    symbol_db: SymbolDb<'data, P::File<'data>>,
+pub fn compute<'data, A: Arch>(
+    symbol_db: SymbolDb<'data, A::File<'data>>,
     mut per_symbol_flags: PerSymbolFlags,
-    mut groups: Vec<ResolvedGroup<'data, P::File<'data>>>,
+    mut groups: Vec<ResolvedGroup<'data, A::File<'data>>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
-) -> Result<Layout<'data, P::File<'data>>> {
+) -> Result<Layout<'data, A::File<'data>>> {
     timing_phase!("Layout");
 
     let layout_resources_ext =
-        <P::File<'data> as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
+        <A::File<'data> as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -136,7 +136,7 @@ pub fn compute<'data, P: Platform>(
             )
         },
         || {
-            find_required_sections::<P>(
+            find_required_sections::<A>(
                 groups,
                 &symbol_db,
                 &atomic_per_symbol_flags,
@@ -167,7 +167,7 @@ pub fn compute<'data, P: Platform>(
         num_symbols: 0,
     });
 
-    let properties_and_attributes = P::File::create_layout_properties::<P>(
+    let properties_and_attributes = A::File::create_layout_properties::<A>(
         symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
         objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
@@ -196,11 +196,11 @@ pub fn compute<'data, P: Platform>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order::<P::File<'data>>();
+    let (output_order, program_segments) = output_sections.output_order::<A::File<'data>>();
 
     tracing::trace!(
         "Output order:\n{}",
-        output_order.display::<P::File<'data>>(&output_sections, &program_segments)
+        output_order.display::<A::File<'data>>(&output_sections, &program_segments)
     );
 
     let mut section_part_sizes = compute_total_section_part_sizes(
@@ -213,7 +213,7 @@ pub fn compute<'data, P: Platform>(
         &finalise_sizes_resources,
     )?;
 
-    let mut section_part_layouts = layout_section_parts::<P::File<'data>>(
+    let mut section_part_layouts = layout_section_parts::<A::File<'data>>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -221,8 +221,8 @@ pub fn compute<'data, P: Platform>(
         symbol_db.args,
     );
 
-    if symbol_db.args.relax && P::supports_size_reduction_relaxations() {
-        perform_iterative_relaxation::<P>(
+    if symbol_db.args.relax && A::supports_size_reduction_relaxations() {
+        perform_iterative_relaxation::<A>(
             &mut group_states,
             &mut section_part_sizes,
             &mut section_part_layouts,
@@ -246,7 +246,7 @@ pub fn compute<'data, P: Platform>(
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
-    let segment_layouts = compute_segment_layout::<P::File<'data>>(
+    let segment_layouts = compute_segment_layout::<A::File<'data>>(
         &section_layouts,
         &output_sections,
         &output_order,
@@ -827,7 +827,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
         Ok(())
     }
 
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -932,7 +932,7 @@ impl<'data, O: ObjectFile<'data>> HandlerData for ObjectLayoutState<'data, O> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for ObjectLayoutState<'data, O> {
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -978,7 +978,7 @@ impl<'data, O: ObjectFile<'data>> HandlerData for DynamicLayoutState<'data, O> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for DynamicLayoutState<'data, O> {
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -991,7 +991,7 @@ impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for DynamicLayo
             .dynamic_symbol_used(local_index, &mut self.format_specific_state)?;
 
         // Check for arch-specific VARIANT_PCS flags.
-        if P::is_symbol_variant_pcs(self.object, local_index) {
+        if A::is_symbol_variant_pcs(self.object, local_index) {
             resources
                 .has_variant_pcs
                 .store(true, atomic::Ordering::Relaxed);
@@ -1012,7 +1012,7 @@ impl HandlerData for PreludeLayoutState<'_> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for PreludeLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
@@ -1037,7 +1037,7 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
     for LinkerScriptLayoutState<'data>
 {
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
@@ -1062,7 +1062,7 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
     for SyntheticSymbolsLayoutState<'data>
 {
-    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
+    fn load_symbol<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -1078,7 +1078,7 @@ impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
             // sections that would go into that section.
             let sections = resources.start_stop_sections.get(output_section_id);
             while let Some(request) = sections.pop() {
-                resources.send_work::<P>(
+                resources.send_work::<A>(
                     request.file_id,
                     WorkItem::LoadSection(request),
                     resources,
@@ -1935,7 +1935,7 @@ struct GroupActivationInputs<'data, O: ObjectFile<'data>> {
 }
 
 impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
-    fn activate_group<'scope, P: Platform<File<'data> = O>>(
+    fn activate_group<'scope, A: Arch<File<'data> = O>>(
         self,
         resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
@@ -1961,7 +1961,7 @@ impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
         let mut should_delay_processing = false;
 
         for file in &mut group.files {
-            let r = activate::<P>(&mut group.common, file, &mut group.queue, resources, scope)
+            let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
                 .with_context(|| format!("Failed to activate {file}"));
 
             // SyntheticSymbols can't be processed until all groups have completed activation, since
@@ -1977,7 +1977,7 @@ impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
         if should_delay_processing {
             resources.delay_processing.push(group).unwrap();
         } else {
-            group.do_pending_work::<P>(resources, scope);
+            group.do_pending_work::<A>(resources, scope);
         }
 
         let remaining = resources
@@ -1987,19 +1987,19 @@ impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
 
         if remaining == 0 {
             while let Some(group) = resources.delay_processing.pop() {
-                group.do_pending_work::<P>(resources, scope);
+                group.do_pending_work::<A>(resources, scope);
             }
         }
     }
 }
 
-fn find_required_sections<'data, P: Platform>(
-    groups_in: Vec<resolution::ResolvedGroup<'data, P::File<'data>>>,
-    symbol_db: &SymbolDb<'data, P::File<'data>>,
+fn find_required_sections<'data, A: Arch>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, A::File<'data>>>,
+    symbol_db: &SymbolDb<'data, A::File<'data>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    layout_resources_ext: <P::File<'data> as ObjectFile<'data>>::LayoutResourcesExt,
-) -> Result<GcOutputs<'data, P::File<'data>>> {
+    layout_resources_ext: <A::File<'data> as ObjectFile<'data>>::LayoutResourcesExt,
+) -> Result<GcOutputs<'data, A::File<'data>>> {
     timing_phase!("Find required sections");
 
     let num_groups = groups_in.len();
@@ -2030,7 +2030,7 @@ fn find_required_sections<'data, P: Platform>(
     let resources_ref = &resources;
 
     rayon::in_place_scope(|scope| {
-        queue_initial_group_processing::<P>(groups_in, symbol_db, resources_ref, scope);
+        queue_initial_group_processing::<A>(groups_in, symbol_db, resources_ref, scope);
     });
 
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
@@ -2042,7 +2042,7 @@ fn find_required_sections<'data, P: Platform>(
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
-    <P::File<'data> as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
+    <A::File<'data> as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2050,7 +2050,7 @@ fn find_required_sections<'data, P: Platform>(
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
     };
-    prelude.pre_finalise_sizes::<P::File<'data>>(
+    prelude.pre_finalise_sizes::<A::File<'data>>(
         &mut prelude_group.common,
         &resources.uses_tlsld,
         resources.symbol_db.args,
@@ -2065,10 +2065,10 @@ fn find_required_sections<'data, P: Platform>(
     })
 }
 
-fn queue_initial_group_processing<'data, 'scope, P: Platform>(
-    groups_in: Vec<resolution::ResolvedGroup<'data, P::File<'data>>>,
-    symbol_db: &'scope SymbolDb<'data, P::File<'data>>,
-    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+fn queue_initial_group_processing<'data, 'scope, A: Arch>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, A::File<'data>>>,
+    symbol_db: &'scope SymbolDb<'data, A::File<'data>>,
+    resources: &'scope GraphResources<'data, '_, A::File<'data>>,
     scope: &Scope<'scope>,
 ) {
     verbose_timing_phase!("Create worker slots");
@@ -2087,7 +2087,7 @@ fn queue_initial_group_processing<'data, 'scope, P: Platform>(
                     num_symbols: group.num_symbols(),
                     group_index,
                 };
-                inputs.activate_group::<P>(resources, scope);
+                inputs.activate_group::<A>(resources, scope);
             });
         });
 }
@@ -2104,7 +2104,7 @@ fn unwrap_worker_states<'data, O: ObjectFile<'data>>(
 impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, P: Platform<File<'data> = O>>(
+    fn do_pending_work<'scope, A: Arch<File<'data> = O>>(
         mut self,
         resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
@@ -2113,7 +2113,7 @@ impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
             while let Some(work_item) = self.queue.local_work.pop() {
                 let file_id = work_item.file_id(resources.symbol_db);
                 let file = &mut self.files[file_id.file()];
-                if let Err(error) = file.do_work::<P>(
+                if let Err(error) = file.do_work::<A>(
                     &mut self.common,
                     work_item,
                     resources,
@@ -2188,17 +2188,17 @@ impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
     }
 }
 
-fn activate<'data, 'scope, P: Platform>(
-    common: &mut CommonGroupState<'data, P::File<'data>>,
-    file: &mut FileLayoutState<'data, P::File<'data>>,
+fn activate<'data, 'scope, A: Arch>(
+    common: &mut CommonGroupState<'data, A::File<'data>>,
+    file: &mut FileLayoutState<'data, A::File<'data>>,
     queue: &mut LocalWorkQueue,
-    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+    resources: &'scope GraphResources<'data, '_, A::File<'data>>,
     scope: &Scope<'scope>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate::<P>(common, resources, queue, scope)?,
-        FileLayoutState::Prelude(s) => s.activate::<P>(common, resources, queue, scope)?,
-        FileLayoutState::Dynamic(s) => s.activate::<P>(common, resources, queue, scope)?,
+        FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, scope)?,
+        FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
+        FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
         FileLayoutState::Epilogue(_) => {}
         FileLayoutState::NotLoaded(_) => {}
@@ -2209,9 +2209,9 @@ fn activate<'data, 'scope, P: Platform>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data, 'scope, P: Platform>(
+    fn send_work<'data, 'scope, A: Arch>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         file_id: FileId,
         work: WorkItem,
         scope: &Scope<'scope>,
@@ -2219,7 +2219,7 @@ impl LocalWorkQueue {
         if file_id.group() == self.index {
             self.local_work.push(work);
         } else {
-            resources.send_work::<P>(file_id, work, resources, scope);
+            resources.send_work::<A>(file_id, work, resources, scope);
         }
     }
 
@@ -2231,15 +2231,15 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, P: Platform>(
+    fn send_symbol_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work::<P>(
+        self.send_work::<A>(
             resources,
             symbol_file_id,
             WorkItem::LoadGlobalSymbol(symbol_id),
@@ -2247,15 +2247,15 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<'data, 'scope, P: Platform>(
+    fn send_copy_relocation_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work::<P>(
+        self.send_work::<A>(
             resources,
             symbol_file_id,
             WorkItem::CopyRelocateSymbol(symbol_id),
@@ -2272,7 +2272,7 @@ impl<'data, O: ObjectFile<'data>> GraphResources<'data, '_, O> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work<'scope, P: Platform<File<'data> = O>>(
+    fn send_work<'scope, A: Arch<File<'data> = O>>(
         &self,
         file_id: FileId,
         work: WorkItem,
@@ -2288,7 +2288,7 @@ impl<'data, O: ObjectFile<'data>> GraphResources<'data, '_, O> {
         if let Some(worker) = worker {
             scope.spawn(|scope| {
                 verbose_timing_phase!("Work with object");
-                worker.do_pending_work::<P>(resources, scope);
+                worker.do_pending_work::<A>(resources, scope);
             });
         }
     }
@@ -2355,7 +2355,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
         Ok(())
     }
 
-    fn do_work<'scope, P: Platform<File<'data> = O>>(
+    fn do_work<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         work_item: WorkItem,
@@ -2365,7 +2365,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
     ) -> Result {
         match work_item {
             WorkItem::LoadGlobalSymbol(symbol_id) => self
-                .handle_symbol_request::<P>(common, symbol_id, resources, queue, scope)
+                .handle_symbol_request::<A>(common, symbol_id, resources, queue, scope)
                 .with_context(|| {
                     format!(
                         "Failed to load {} from {self}",
@@ -2384,7 +2384,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
             },
             WorkItem::LoadSection(request) => match self {
                 FileLayoutState::Object(object_layout_state) => object_layout_state
-                    .handle_section_load_request::<P>(
+                    .handle_section_load_request::<A>(
                         common,
                         resources,
                         queue,
@@ -2395,7 +2395,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
             },
             WorkItem::ExportDynamic(symbol_id) => match self {
                 FileLayoutState::Object(object) => {
-                    object.export_dynamic::<P>(common, symbol_id, resources, queue, scope)
+                    object.export_dynamic::<A>(common, symbol_id, resources, queue, scope)
                 }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
@@ -2406,7 +2406,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
         }
     }
 
-    fn handle_symbol_request<'scope, P: Platform<File<'data> = O>>(
+    fn handle_symbol_request<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -2416,24 +2416,24 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
     ) -> Result {
         match self {
             FileLayoutState::Object(state) => {
-                SymbolRequestHandler::load_symbol::<P>(
+                SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 )?;
             }
             FileLayoutState::Prelude(state) => {
-                SymbolRequestHandler::load_symbol::<P>(
+                SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 )?;
             }
             FileLayoutState::Dynamic(state) => {
-                SymbolRequestHandler::load_symbol::<P>(
+                SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 )?;
             }
             FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::SyntheticSymbols(state) => {
-                SymbolRequestHandler::load_symbol::<P>(
+                SymbolRequestHandler::load_symbol::<A>(
                     state, common, symbol_id, resources, queue, scope,
                 )?;
             }
@@ -2671,12 +2671,12 @@ impl Section {
 }
 
 #[inline(always)]
-pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
-    object: &ObjectLayoutState<'data, P::File<'data>>,
-    common: &mut CommonGroupState<'data, P::File<'data>>,
+pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
+    object: &ObjectLayoutState<'data, A::File<'data>>,
+    common: &mut CommonGroupState<'data, A::File<'data>>,
     rel: &R,
-    section: &<P::File<'data> as ObjectFile<'data>>::SectionHeader,
-    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+    section: &<A::File<'data> as ObjectFile<'data>>::SectionHeader,
+    resources: &'scope GraphResources<'data, '_, A::File<'data>>,
     queue: &mut LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
@@ -2691,9 +2691,9 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = <P::File<'data> as ObjectFile<'data>>::section_flags(section);
+        let section_flags = <A::File<'data> as ObjectFile<'data>>::section_flags(section);
 
-        let rel_info = if let Some(relaxation) = P::new_relaxation(
+        let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,
@@ -2708,7 +2708,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
         } else {
-            P::relocation_from_raw(r_type)?
+            A::relocation_from_raw(r_type)?
         };
 
         let section_is_writable = section.is_writable();
@@ -2744,7 +2744,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
                         bail!(
                             "Direct relocation ({}) to dynamic symbol from non-writable section, \
                             but copy relocations are disabled because {reason}. {}",
-                            P::rel_type_to_string(r_type),
+                            A::rel_type_to_string(r_type),
                             resources.symbol_debug(symbol_id),
                         );
                     }
@@ -2766,7 +2766,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
                 bail!(
                     "Cannot apply relocation {} to read-only section. \
                     Please recompile with -fPIC or link with -no-pie",
-                    P::rel_type_to_string(r_type),
+                    A::rel_type_to_string(r_type),
                 );
             }
         }
@@ -2794,8 +2794,8 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
                 atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
             }
 
-            queue.send_symbol_request::<P>(symbol_id, resources, scope);
-            if should_emit_undefined_error::<P::File<'data>>(
+            queue.send_symbol_request::<A>(symbol_id, resources, scope);
+            if should_emit_undefined_error::<A::File<'data>>(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -2805,7 +2805,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
                 let source_info =
-                    P::get_source_info(object.object, &object.relocations, section, rel_offset)
+                    A::get_source_info(object.object, &object.relocations, section, rel_offset)
                         .context("Failed to get source info")?;
 
                 if args.error_unresolved_symbols {
@@ -2823,7 +2823,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
         }
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-            queue.send_copy_relocation_request::<P>(symbol_id, resources, scope);
+            queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
         }
     }
     Ok(next_modifier)
@@ -2898,10 +2898,10 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate<'scope, P: Platform>(
+    fn activate<'scope, A: Arch>(
         &mut self,
-        common: &mut CommonGroupState<'data, P::File<'data>>,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        common: &mut CommonGroupState<'data, A::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -2920,7 +2920,7 @@ impl<'data> PreludeLayoutState<'data> {
             common.allocate(part_id::STRTAB, 1);
         }
 
-        self.load_entry_point::<P>(resources, queue, scope);
+        self.load_entry_point::<A>(resources, queue, scope);
 
         if resources.symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -2944,16 +2944,16 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
-        self.mark_defsyms_as_used::<P>(resources, queue, scope);
+        self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
         Ok(())
     }
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, P: Platform>(
+    fn mark_defsyms_as_used<'scope, A: Arch>(
         &self,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -2990,7 +2990,7 @@ impl<'data> PreludeLayoutState<'data> {
                             .fetch_or(ValueFlags::DIRECT);
 
                         if !old_flags.has_resolution() {
-                            queue.send_work::<P>(
+                            queue.send_work::<A>(
                                 resources,
                                 file_id,
                                 WorkItem::LoadGlobalSymbol(canonical_target_id),
@@ -3004,9 +3004,9 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point<'scope, P: Platform>(
+    fn load_entry_point<'scope, A: Arch>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, A::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3030,7 +3030,7 @@ impl<'data> PreludeLayoutState<'data> {
             .get_atomic(symbol_id)
             .fetch_or(ValueFlags::DIRECT);
         if !old_flags.has_resolution() {
-            queue.send_work::<P>(
+            queue.send_work::<A>(
                 resources,
                 file_id,
                 WorkItem::LoadGlobalSymbol(symbol_id),
@@ -3757,7 +3757,7 @@ fn new_dynamic_object_layout_state<'data, O: ObjectFile<'data>>(
 
 impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
     #[inline(always)]
-    fn activate<'scope, P: Platform<File<'data> = O>>(
+    fn activate<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -3814,7 +3814,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         }
 
         if let Some(frame_data_section_index) = frame_section_index {
-            <P::File<'data> as ObjectFile<'data>>::load_exception_frame_data::<P>(
+            <A::File<'data> as ObjectFile<'data>>::load_exception_frame_data::<A>(
                 self,
                 common,
                 frame_data_section_index,
@@ -3830,7 +3830,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         }
 
         if let Some(riscv_attributes_index) = riscv_attributes_section {
-            P::process_riscv_attributes(
+            A::process_riscv_attributes(
                 self.object,
                 &mut self.format_specific_layout_state,
                 riscv_attributes_index,
@@ -3851,13 +3851,13 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
             || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.export_list.is_some()
         {
-            self.load_non_hidden_symbols::<P>(common, resources, queue, export_all_dynamic, scope)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
         }
 
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, P: Platform<File<'data> = O>>(
+    fn handle_section_load_request<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -3867,12 +3867,12 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
     ) -> Result<(), Error> {
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                self.load_section::<P>(common, queue, *unloaded, section_index, resources, scope)?;
+                self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
-                self.load_debug_section::<P>(
+                self.load_debug_section::<A>(
                     common,
                     queue,
                     *part_id,
@@ -3904,7 +3904,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn load_section<'scope, P: Platform<File<'data> = O>>(
+    fn load_section<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3917,7 +3917,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
 
-        <P::File<'data> as ObjectFile<'data>>::load_object_section_relocations::<P>(
+        <A::File<'data> as ObjectFile<'data>>::load_object_section_relocations::<A>(
             self, common, queue, resources, section, scope,
         )?;
 
@@ -3928,7 +3928,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         let section_id = section.output_section_id();
 
         if section.size > 0 {
-            O::non_empty_section_loaded::<P>(self, common, queue, unloaded, resources, scope)?;
+            O::non_empty_section_loaded::<A>(self, common, queue, unloaded, resources, scope)?;
         } else if O::is_zero_sized_section_content(section_id) {
             resources.keep_section(section_id);
         }
@@ -3938,7 +3938,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    pub(crate) fn load_section_relocations<'scope, P: Platform<File<'data> = O>, R: Relocation>(
+    pub(crate) fn load_section_relocations<'scope, A: Arch<File<'data> = O>, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3953,7 +3953,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
-            modifier = process_relocation::<P, R>(
+            modifier = process_relocation::<A, R>(
                 self,
                 common,
                 &rel,
@@ -3974,7 +3974,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn load_debug_section<'scope, P: Platform<File<'data> = O>>(
+    fn load_debug_section<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3986,8 +3986,8 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        if P::local_symbols_in_debug_info() {
-            <P::File<'data> as ObjectFile<'data>>::load_object_debug_relocations::<P>(
+        if A::local_symbols_in_debug_info() {
+            <A::File<'data> as ObjectFile<'data>>::load_object_debug_relocations::<A>(
                 self, common, queue, resources, section, scope,
             )?;
         }
@@ -3999,7 +3999,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    pub(crate) fn load_debug_relocations<'scope, P: Platform<File<'data> = O>, R: Relocation>(
+    pub(crate) fn load_debug_relocations<'scope, A: Arch<File<'data> = O>, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -4009,7 +4009,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         for rel in relocations {
-            let modifier = process_relocation::<P, R>(
+            let modifier = process_relocation::<A, R>(
                 self,
                 common,
                 &rel,
@@ -4279,7 +4279,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, P: Platform<File<'data> = O>>(
+    fn load_non_hidden_symbols<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -4300,7 +4300,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
                 .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
             if !old_flags.has_resolution() {
-                self.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+                self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
 
             if !old_flags.needs_export_dynamic() {
@@ -4310,7 +4310,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, P: Platform<File<'data> = O>>(
+    fn export_dynamic<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -4337,7 +4337,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
             .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
         if !old_flags.has_resolution() {
-            self.load_symbol::<P>(common, symbol_id, resources, queue, scope)?;
+            self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
         }
 
         if !old_flags.needs_export_dynamic() {
@@ -4788,10 +4788,10 @@ type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
-fn relaxation_scan_pass<'data, P: Platform>(
-    group_states: &mut [GroupState<'data, P::File<'data>>],
+fn relaxation_scan_pass<'data, A: Arch>(
+    group_states: &mut [GroupState<'data, A::File<'data>>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'data, P::File<'data>>,
+    symbol_db: &SymbolDb<'data, A::File<'data>>,
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
@@ -4880,7 +4880,7 @@ fn relaxation_scan_pass<'data, P: Platform>(
                             Err(_) => continue,
                         };
 
-                        let (raw_deltas, min_margin) = P::collect_relaxation_deltas(
+                        let (raw_deltas, min_margin) = A::collect_relaxation_deltas(
                             sec_output_addr,
                             section_bytes,
                             relocs,
@@ -4946,14 +4946,14 @@ fn relaxation_scan_pass<'data, P: Platform>(
     (total_deleted, next_rescan_candidates)
 }
 
-fn perform_iterative_relaxation<'data, P: Platform>(
-    group_states: &mut [GroupState<'data, P::File<'data>>],
+fn perform_iterative_relaxation<'data, A: Arch>(
+    group_states: &mut [GroupState<'data, A::File<'data>>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
-    program_segments: &ProgramSegments<<P::File<'data> as ObjectFile<'data>>::ProgramSegmentDef>,
+    program_segments: &ProgramSegments<<A::File<'data> as ObjectFile<'data>>::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    symbol_db: &SymbolDb<'data, P::File<'data>>,
+    symbol_db: &SymbolDb<'data, A::File<'data>>,
     per_symbol_flags: &PerSymbolFlags,
 ) {
     timing_phase!("Iterative relaxation");
@@ -4969,7 +4969,7 @@ fn perform_iterative_relaxation<'data, P: Platform>(
             break;
         }
 
-        let (deleted, next_candidates) = relaxation_scan_pass::<P>(
+        let (deleted, next_candidates) = relaxation_scan_pass::<A>(
             group_states,
             section_part_layouts,
             symbol_db,
@@ -5004,7 +5004,7 @@ fn perform_iterative_relaxation<'data, P: Platform>(
                 .collect(),
         );
 
-        *section_part_layouts = layout_section_parts::<P::File<'data>>(
+        *section_part_layouts = layout_section_parts::<A::File<'data>>(
             section_part_sizes,
             output_sections,
             program_segments,
@@ -5182,7 +5182,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
 }
 
 impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
-    fn activate<'scope, P: Platform<File<'data> = O>>(
+    fn activate<'scope, A: Arch<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, '_, O>,
@@ -5199,10 +5199,10 @@ impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
 
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
 
-        self.request_all_undefined_symbols::<P>(resources, queue, scope)
+        self.request_all_undefined_symbols::<A>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols<'scope, P: Platform<File<'data> = O>>(
+    fn request_all_undefined_symbols<'scope, A: Arch<File<'data> = O>>(
         &self,
         resources: &'scope GraphResources<'data, '_, O>,
         queue: &mut LocalWorkQueue,
@@ -5251,7 +5251,7 @@ impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
             } else if definition_symbol_id != symbol_id {
                 let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
 
-                queue.send_work::<P>(
+                queue.send_work::<A>(
                     resources,
                     file_id,
                     WorkItem::ExportDynamic(definition_symbol_id),

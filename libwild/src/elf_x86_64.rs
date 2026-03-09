@@ -46,7 +46,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::platform::Platform for ElfX86_64 {
+impl crate::platform::Arch for ElfX86_64 {
     type Relaxation = Relaxation;
     type File<'data> = crate::elf::File<'data>;
 
@@ -531,7 +531,7 @@ impl TlsGdForm {
 #[test]
 fn test_relaxation() {
     use crate::args::RelocationModel;
-    use crate::platform::Platform as _;
+    use crate::platform::Arch as _;
     use crate::platform::Relaxation as _;
 
     #[track_caller]

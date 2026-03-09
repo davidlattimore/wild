@@ -46,7 +46,7 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl crate::platform::Platform for ElfRiscV64 {
+impl crate::platform::Arch for ElfRiscV64 {
     type Relaxation = Relaxation;
     type File<'data> = crate::elf::File<'data>;
 
