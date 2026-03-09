@@ -27,9 +27,9 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
+impl crate::platform::Platform for ElfLoongArch64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type File<'data> = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_LOONGARCH
@@ -80,7 +80,7 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
         true
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -140,10 +140,10 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
         None
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(

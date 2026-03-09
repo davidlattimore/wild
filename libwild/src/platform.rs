@@ -34,9 +34,9 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 /// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform<'data>: Send + Sync + 'data {
+pub(crate) trait Platform: Send + Sync + 'static {
     type Relaxation: Relaxation;
-    type File: ObjectFile<'data>;
+    type File<'data>: ObjectFile<'data>;
 
     /// Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
@@ -64,7 +64,7 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start(layout: &Layout<'data, Self::File>) -> u64;
+    fn tp_offset_start<'data>(layout: &Layout<'data, Self::File<'data>>) -> u64;
 
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -83,17 +83,17 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
 
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<SourceInfo>;
 
-    fn collect_relaxation_deltas(
+    fn collect_relaxation_deltas<'data>(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        _relocations: <Self::File as ObjectFile<'data>>::RelocationList,
+        _relocations: <Self::File<'data> as ObjectFile<'data>>::RelocationList,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
@@ -102,26 +102,29 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
         unreachable!();
     }
 
-    fn is_symbol_variant_pcs(_object: &Self::File, _symbol_index: object::SymbolIndex) -> bool {
+    fn is_symbol_variant_pcs<'data>(
+        _object: &Self::File<'data>,
+        _symbol_index: object::SymbolIndex,
+    ) -> bool {
         false
     }
 
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
-    fn new_relaxation(
+    fn new_relaxation<'data>(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <Self::File as ObjectFile<'data>>::SectionFlags,
+        section_flags: <Self::File<'data> as ObjectFile<'data>>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
 
-    fn process_riscv_attributes(
-        _object: &Self::File,
-        _format_specific: &mut <Self::File as ObjectFile<'data>>::FileLayoutState,
+    fn process_riscv_attributes<'data>(
+        _object: &Self::File<'data>,
+        _format_specific: &mut <Self::File<'data> as ObjectFile<'data>>::FileLayoutState,
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
@@ -380,7 +383,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section_index: object::SectionIndex,
     ) -> Result;
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, P: Platform<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -389,7 +392,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         'data: 'files,
         'data: 'states;
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+    fn load_exception_frame_data<'scope, P: Platform<File<'data> = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         eh_frame_section_index: object::SectionIndex,
@@ -400,7 +403,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+    fn non_empty_section_loaded<'scope, P: Platform<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -442,7 +445,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
-    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_section_relocations<'scope, P: Platform<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -452,7 +455,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_debug_relocations<'scope, P: Platform<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,

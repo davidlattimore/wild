@@ -685,7 +685,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, P: Platform<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -1078,7 +1078,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+    fn load_exception_frame_data<'scope, P: Platform<File<'data> = Self>>(
         object: &mut crate::layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut crate::layout::CommonGroupState<'data, File<'data>>,
         eh_frame_section_index: object::SectionIndex,
@@ -1130,7 +1130,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+    fn non_empty_section_loaded<'scope, P: Platform<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut layout::CommonGroupState<'data, File<'data>>,
         queue: &mut layout::LocalWorkQueue,
@@ -1259,7 +1259,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_section_relocations<'scope, P: Platform<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1293,7 +1293,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_debug_relocations<'scope, P: Platform<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1605,7 +1605,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 fn process_eh_frame_relocations<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    P: Platform<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &mut layout::ObjectLayoutState<'data, File<'data>>,
@@ -1738,7 +1738,7 @@ fn process_eh_frame_relocations<
 fn process_section_exception_frames<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    P: Platform<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &layout::ObjectLayoutState<'data, File<'data>>,
@@ -2360,7 +2360,7 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
         args: &Args,
@@ -2377,7 +2377,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
+fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -2441,7 +2441,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
+fn merge_eflags<'files, 'data: 'files, P: Platform>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
@@ -2451,7 +2451,7 @@ fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
     )?))
 }
 
-fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform<'data>>(
+fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
