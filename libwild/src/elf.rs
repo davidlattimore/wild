@@ -32,11 +32,11 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::platform;
+use crate::platform::Arch;
 use crate::platform::CommonSymbol;
 use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
-use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
@@ -685,7 +685,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn create_layout_properties<'states, 'files, P: Platform<File<'data> = Self>>(
+    fn create_layout_properties<'states, 'files, A: Arch<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -694,7 +694,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         'data: 'files,
         'data: 'states,
     {
-        ElfLayoutProperties::new::<P>(objects, states, args)
+        ElfLayoutProperties::new::<A>(objects, states, args)
     }
 
     fn symbol_versions(&self) -> &[Self::SymbolVersionIndex] {
@@ -1078,7 +1078,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
-    fn load_exception_frame_data<'scope, P: Platform<File<'data> = Self>>(
+    fn load_exception_frame_data<'scope, A: Arch<File<'data> = Self>>(
         object: &mut crate::layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut crate::layout::CommonGroupState<'data, File<'data>>,
         eh_frame_section_index: object::SectionIndex,
@@ -1091,7 +1091,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let data = object.object.raw_section_data(eh_frame_section)?;
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
-                ExceptionFrames::Rela(process_eh_frame_relocations::<P, Rela>(
+                ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
                     object,
                     common,
                     file_symbol_id_range,
@@ -1104,7 +1104,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?)
             }
             RelocationList::Crel(crel_iterator) => {
-                ExceptionFrames::Crel(process_eh_frame_relocations::<P, Crel>(
+                ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
                     object,
                     common,
                     file_symbol_id_range,
@@ -1130,7 +1130,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn non_empty_section_loaded<'scope, P: Platform<File<'data> = Self>>(
+    fn non_empty_section_loaded<'scope, A: Arch<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut layout::CommonGroupState<'data, File<'data>>,
         queue: &mut layout::LocalWorkQueue,
@@ -1139,7 +1139,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         scope: &Scope<'scope>,
     ) -> Result {
         let sizes = match &object.format_specific_layout_state.exception_frames {
-            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<P, Rela>(
+            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<A, Rela>(
                 object,
                 unloaded.last_frame_index,
                 common,
@@ -1148,7 +1148,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 scope,
                 exception_frames,
             )?,
-            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<P, Crel>(
+            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<A, Crel>(
                 object,
                 unloaded.last_frame_index,
                 common,
@@ -1259,7 +1259,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn load_object_section_relocations<'scope, P: Platform<File<'data> = Self>>(
+    fn load_object_section_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1269,7 +1269,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> Result {
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                state.load_section_relocations::<P, Rela>(
+                state.load_section_relocations::<A, Rela>(
                     common,
                     queue,
                     resources,
@@ -1279,7 +1279,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                state.load_section_relocations::<P, Crel>(
+                state.load_section_relocations::<A, Crel>(
                     common,
                     queue,
                     resources,
@@ -1293,7 +1293,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn load_object_debug_relocations<'scope, P: Platform<File<'data> = Self>>(
+    fn load_object_debug_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1303,7 +1303,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> Result {
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                state.load_debug_relocations::<P, Rela>(
+                state.load_debug_relocations::<A, Rela>(
                     common,
                     queue,
                     resources,
@@ -1313,7 +1313,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                state.load_debug_relocations::<P, Crel>(
+                state.load_debug_relocations::<A, Crel>(
                     common,
                     queue,
                     resources,
@@ -1605,7 +1605,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 fn process_eh_frame_relocations<
     'data,
     'scope,
-    P: Platform<File<'data> = crate::elf::File<'data>>,
+    A: Arch<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &mut layout::ObjectLayoutState<'data, File<'data>>,
@@ -1654,7 +1654,7 @@ fn process_eh_frame_relocations<
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                layout::process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     rel,
@@ -1738,7 +1738,7 @@ fn process_eh_frame_relocations<
 fn process_section_exception_frames<
     'data,
     'scope,
-    P: Platform<File<'data> = crate::elf::File<'data>>,
+    A: Arch<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &layout::ObjectLayoutState<'data, File<'data>>,
@@ -1764,7 +1764,7 @@ fn process_section_exception_frames<
         // section.
         if let Some(eh_frame_section) = object.format_specific_layout_state.eh_frame_section {
             for rel in frame_data.relocations.rel_iter() {
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                layout::process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     &rel,
@@ -2360,14 +2360,14 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
         args: &Args,
     ) -> Result<Self> {
-        let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
-        let riscv_attributes = merge_riscv_attributes::<P>(states)?;
-        let eflags = merge_eflags::<P>(objects)?;
+        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
+        let eflags = merge_eflags::<A>(objects)?;
 
         Ok(Self {
             gnu_property_notes,
@@ -2377,7 +2377,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform>(
+fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -2390,7 +2390,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform>(
 
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = P::get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -2441,17 +2441,17 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, P: Platform>(
+fn merge_eflags<'files, 'data: 'files, A: Arch>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
 
-    Ok(Eflags(P::merge_eflags(
+    Ok(Eflags(A::merge_eflags(
         objects.map(|object| object.eflags),
     )?))
 }
 
-fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform>(
+fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");

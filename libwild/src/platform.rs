@@ -33,8 +33,8 @@ use std::num::NonZeroU32;
 use std::ops::Range;
 use std::path::PathBuf;
 
-/// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform: Send + Sync + 'static {
+/// Represents a supported architecture. Note that implementations are file-format specific.
+pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
     type File<'data>: ObjectFile<'data>;
 
@@ -383,7 +383,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section_index: object::SectionIndex,
     ) -> Result;
 
-    fn create_layout_properties<'states, 'files, P: Platform<File<'data> = Self>>(
+    fn create_layout_properties<'states, 'files, A: Arch<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -392,7 +392,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         'data: 'files,
         'data: 'states;
 
-    fn load_exception_frame_data<'scope, P: Platform<File<'data> = Self>>(
+    fn load_exception_frame_data<'scope, A: Arch<File<'data> = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         eh_frame_section_index: object::SectionIndex,
@@ -403,7 +403,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
-    fn non_empty_section_loaded<'scope, P: Platform<File<'data> = Self>>(
+    fn non_empty_section_loaded<'scope, A: Arch<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -445,7 +445,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
-    fn load_object_section_relocations<'scope, P: Platform<File<'data> = Self>>(
+    fn load_object_section_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -455,7 +455,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'scope, P: Platform<File<'data> = Self>>(
+    fn load_object_debug_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,

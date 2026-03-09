@@ -2155,7 +2155,7 @@ fn src_path(filename: &str) -> PathBuf {
 
 /// Returns whether both `output_path` all `src_paths` exist and `output_path` has a modification
 /// timestamp >= that of all elements of `src_paths`.
-fn is_newer<P: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = P>) -> bool {
+fn is_newer<A: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = A>) -> bool {
     let Ok(out) = std::fs::metadata(output_path) else {
         return false;
     };
