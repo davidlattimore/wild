@@ -3600,7 +3600,8 @@ fn integration_test(
         "riscv-hi20-lui-deletion.s",
         "segment-end-syms.c",
         "linker-script-filename-match.c",
-        "tls-apx-relocs.s"
+        "tls-apx-relocs.s",
+        "execstack.s"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
