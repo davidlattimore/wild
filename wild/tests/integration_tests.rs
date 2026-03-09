@@ -3887,4 +3887,79 @@ mod tidy {
             )
         }
     }
+
+    #[test]
+    fn check_text_files() -> Result {
+        const EXCLUDE_DIR: &[&str] = &[
+            "target",
+            "build",
+            "external_test_suites",
+            "fakes-debug",
+            "fakes",
+        ];
+
+        fn verify_path(path: &Path, problems: &mut Vec<String>) -> Result {
+            if EXCLUDE_DIR.iter().any(|e| path.ends_with(e)) {
+                return Ok(());
+            }
+
+            if path.is_dir() {
+                for entry in read_dir(path)
+                    .with_context(|| format!("Failed to read directory {}", path.display()))?
+                {
+                    let entry = entry?;
+                    let file_name = entry.file_name();
+                    let Some(file_name) = file_name.to_str() else {
+                        continue;
+                    };
+
+                    // Ignore hidden files / directories.
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
+
+                    verify_path(&entry.path(), problems)?;
+                }
+            } else if path.is_symlink() {
+                // Ignore symlinks.
+            } else {
+                let content = std::fs::read(path)
+                    .with_context(|| format!("Failed to read file {}", path.display()))?;
+
+                let is_valid_utf8 = std::str::from_utf8(&content).is_ok();
+                let is_text = is_valid_utf8 && !content.contains(&0);
+
+                if is_text {
+                    if content.contains(&b'\r') {
+                        problems.push(format!(
+                            "The file {} uses Windows line-endings. Please convert it to Unix-style.",
+                            path.display()
+                        ));
+                    }
+
+                    let allow_no_trailing_newline =
+                        content.is_empty() || path.extension().is_some_and(|ext| ext == "json");
+
+                    if !allow_no_trailing_newline && !content.ends_with(b"\n") {
+                        problems.push(format!(
+                            "The file {} is missing a trailing newline",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
+        let mut problems = Vec::new();
+        verify_path(root, &mut problems)?;
+
+        if !problems.is_empty() {
+            bail!("{}", problems.join("\n"))
+        }
+
+        Ok(())
+    }
 }
