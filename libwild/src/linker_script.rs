@@ -174,7 +174,11 @@ pub(crate) fn skip_comments_and_whitespace(input: &mut &BStr) -> winnow::Result<
         if input.starts_with(b"#") {
             take_until(1.., "\n").parse_next(input)?;
         } else if input.starts_with(b"/*") {
-            take_until(1.., "*/").parse_next(input)?;
+            take_until(1.., "*/")
+                .parse_next(input)
+                .map_err(|_: ContextError| {
+                    ContextError::from_external_error(input, LinkerScriptError::UnclosedComment)
+                })?;
             "*/".parse_next(input)?;
         } else {
             return Ok(());
@@ -502,6 +506,7 @@ fn to_str(bytes: &[u8]) -> Result<&str> {
 #[derive(Debug)]
 enum LinkerScriptError {
     InvalidAlignment,
+    UnclosedComment,
 }
 
 impl std::error::Error for LinkerScriptError {}
@@ -510,6 +515,7 @@ impl std::fmt::Display for LinkerScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
+            LinkerScriptError::UnclosedComment => write!(f, "unclosed comment"),
         }
     }
 }
