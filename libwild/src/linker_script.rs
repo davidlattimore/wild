@@ -338,13 +338,13 @@ fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     parse_comparison.parse_next(input)
 }
 
-/// Parse comparison operators: <, >, <=, >=, ==, !=
+/// Parse comparison expression: expression < expression, expression == expression, etc.
 fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     let mut left = parse_additive.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
-    while let Some(op) = opt(alt((
+    if let Some(op) = opt(alt((
         "<=".map(|_| CompOp::LessEqual),
         ">=".map(|_| CompOp::GreaterEqual),
         "==".map(|_| CompOp::Equal),
@@ -421,7 +421,7 @@ fn parse_primary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
 
     alt((
         // Parentheses - parse expression inside
-        delimited('(', parse_comparison, ')'),
+        delimited('(', parse_expression, ')'),
         // Hex numbers (0x or 0X prefix)
         preceded(alt(("0x", "0X")), hex_uint::<_, u64, _>).map(Expression::Number),
         // Decimal numbers
@@ -465,29 +465,29 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 Ok(Expression::Addr(arg))
             }
             b"ALIGN" => {
-                let arg_expr = parse_comparison.parse_next(input)?;
+                let arg_expr = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
                 Ok(Expression::Align(Box::new(arg_expr)))
             }
             b"MIN" => {
                 // MIN takes two expressions separated by comma
-                let first = parse_comparison.parse_next(input)?;
+                let first = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ','.parse_next(input)?;
                 multispace0.parse_next(input)?;
-                let second = parse_comparison.parse_next(input)?;
+                let second = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
                 Ok(Expression::Min(Box::new(first), Box::new(second)))
             }
             b"MAX" => {
                 // MAX takes two expressions separated by comma
-                let first = parse_comparison.parse_next(input)?;
+                let first = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ','.parse_next(input)?;
                 multispace0.parse_next(input)?;
-                let second = parse_comparison.parse_next(input)?;
+                let second = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
                 Ok(Expression::Max(Box::new(first), Box::new(second)))
