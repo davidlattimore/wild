@@ -1588,6 +1588,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             })
             .collect()
     }
+
+    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags {
+        SectionFlags::from_header(header)
+    }
+
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+        SectionAttributes {
+            flags: SectionFlags::from_header(header),
+            ty: SectionType::from_header(header),
+            entsize: header.sh_entsize.get(LittleEndian),
+        }
+    }
 }
 
 fn process_eh_frame_relocations<
@@ -1820,21 +1832,53 @@ fn compute_version_mapping(
     out
 }
 
-impl<'data> platform::SectionHeader<'data, File<'data>> for SectionHeader {
-    fn flags(&self) -> SectionFlags {
-        SectionFlags::from_header(self)
+impl platform::SectionHeader for SectionHeader {
+    fn is_alloc(&self) -> bool {
+        SectionFlags::from_header(self).is_alloc()
     }
 
-    fn attributes(&self) -> SectionAttributes {
-        SectionAttributes {
-            flags: SectionFlags::from_header(self),
-            ty: SectionType::from_header(self),
-            entsize: self.sh_entsize.get(LittleEndian),
-        }
+    fn is_writable(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::WRITE)
     }
 
-    fn section_type(&self) -> SectionType {
-        SectionType::from_header(self)
+    fn is_executable(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::EXECINSTR)
+    }
+
+    fn is_tls(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::TLS)
+    }
+
+    fn is_merge_section(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::MERGE)
+    }
+
+    fn is_strings(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::STRINGS)
+    }
+
+    fn should_retain(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::GNU_RETAIN)
+    }
+
+    fn should_exclude(&self) -> bool {
+        SectionFlags::from_header(self).should_exclude()
+    }
+
+    fn is_group(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::GROUP)
+    }
+
+    fn is_note(&self) -> bool {
+        SectionType::from_header(self) == sht::NOTE
+    }
+
+    fn is_prog_bits(&self) -> bool {
+        SectionType::from_header(self) == sht::PROGBITS
+    }
+
+    fn is_no_bits(&self) -> bool {
+        SectionType::from_header(self) == sht::NOBITS
     }
 }
 
@@ -1842,55 +1886,11 @@ impl platform::SectionType for SectionType {
     fn is_null(self) -> bool {
         self == sht::NULL
     }
-
-    fn is_note(self) -> bool {
-        self == sht::NOTE
-    }
-
-    fn is_prog_bits(self) -> bool {
-        self == sht::PROGBITS
-    }
-
-    fn is_no_bits(self) -> bool {
-        self == sht::NOBITS
-    }
 }
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
         self.contains(shf::ALLOC)
-    }
-
-    fn is_writable(self) -> bool {
-        self.contains(shf::WRITE)
-    }
-
-    fn is_executable(self) -> bool {
-        self.contains(shf::EXECINSTR)
-    }
-
-    fn is_merge_section(self) -> bool {
-        self.contains(shf::MERGE)
-    }
-
-    fn is_strings(self) -> bool {
-        self.contains(shf::STRINGS)
-    }
-
-    fn should_retain(self) -> bool {
-        self.contains(shf::GNU_RETAIN)
-    }
-
-    fn should_exclude(&self) -> bool {
-        self.contains(shf::EXCLUDE)
-    }
-
-    fn is_group(self) -> bool {
-        self.contains(shf::GROUP)
-    }
-
-    fn is_tls(self) -> bool {
-        self.contains(shf::TLS)
     }
 }
 
