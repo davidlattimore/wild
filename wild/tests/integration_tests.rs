@@ -79,6 +79,9 @@
 //! specified regex. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
 //! times - all must match.
 //!
+//! ExpectMessage:{message regex} Verifies that the linker prints the message matching the specified
+//! regex. May be specified multiple times - all must match.
+//!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
@@ -291,7 +294,7 @@ impl Linker {
             // If we're expecting errors, those errors should only occur when we link the final
             // binary, not when we link any dependent shared objects.
             let mut config = config.clone();
-            config.expect_errors = Vec::new();
+            config.expect_messages = Vec::new();
 
             command.run(&config)?;
             command.write_input_hashes()?;
@@ -508,7 +511,8 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_errors: Vec<ErrorMatcher>,
+    should_error: bool,
+    expect_messages: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -980,7 +984,8 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
-            expect_errors: Default::default(),
+            should_error: false,
+            expect_messages: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -1162,10 +1167,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
-                    config.expect_errors.push(ErrorMatcher::new(arg.trim())?);
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+                    config.should_error = true;
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
+                }
+                "ExpectMessage" => {
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
                 }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
@@ -1317,7 +1326,7 @@ impl ProgramInputs {
 
         if config.test_update_in_place
             && matches!(linker, Linker::Wild)
-            && config.expect_errors.is_empty()
+            && !config.should_error
             && (config.should_diff || config.should_run)
         {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
@@ -2481,20 +2490,25 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if !config.expect_errors.is_empty() {
+        if !config.expect_messages.is_empty() {
             let output = self
                 .command
                 .output()
                 .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-            if output.status.success() {
+            if config.should_error && output.status.success() {
                 bail!(
                     "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
                 );
             }
 
-            for expected_error in &config.expect_errors {
-                if !expected_error.matches(&output.stderr) {
+            for expected_error in &config.expect_messages {
+                let output_stream = if config.should_error {
+                    &output.stderr
+                } else {
+                    &output.stdout
+                };
+                if !expected_error.matches(&output_stream) {
                     eprintln!(
                         "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
                         String::from_utf8_lossy(&output.stdout),
@@ -3422,7 +3436,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if !config.expect_errors.is_empty() {
+    if !config.expect_messages.is_empty() {
         return Ok(());
     }
 
