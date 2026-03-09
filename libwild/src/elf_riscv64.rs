@@ -1,4 +1,4 @@
-use crate::elf;
+use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::RelocationList;
 use crate::ensure;
@@ -6,6 +6,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform::ObjectFile as _;
+use crate::platform::Platform;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
@@ -48,10 +49,9 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfRiscV64 {
     type Relaxation = Relaxation;
-    type File<'data> = crate::elf::File<'data>;
+    type Platform = Elf;
 
-    fn arch_identifier<'a>() -> <Self::File<'a> as crate::platform::ObjectFile<'a>>::ArchIdentifier
-    {
+    fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_RISCV
     }
 
@@ -99,7 +99,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         true
     }
 
-    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, Elf>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -156,7 +156,7 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     fn is_symbol_variant_pcs<'data>(
-        object: &Self::File<'data>,
+        object: &<Self::Platform as Platform>::File<'data>,
         symbol_index: object::SymbolIndex,
     ) -> bool {
         object
@@ -297,9 +297,9 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     fn get_source_info<'data>(
-        object: &Self::File<'data>,
-        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
+        object: &<Self::Platform as Platform>::File<'data>,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+        section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(
@@ -311,8 +311,8 @@ impl crate::platform::Arch for ElfRiscV64 {
     }
 
     fn process_riscv_attributes<'data>(
-        object: &Self::File<'data>,
-        format_specific: &mut <Self::File<'data> as crate::platform::ObjectFile<'data>>::FileLayoutState,
+        object: &<Self::Platform as Platform>::File<'data>,
+        format_specific: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
         riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         format_specific.riscv_attributes =

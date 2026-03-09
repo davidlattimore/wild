@@ -7,6 +7,7 @@ use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SyntheticSymbols;
 use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -18,9 +19,9 @@ use crate::verbose_timing_phase;
 use std::fmt::Display;
 
 #[derive(Debug)]
-pub(crate) enum Group<'data, O: ObjectFile<'data>> {
+pub(crate) enum Group<'data, P: Platform> {
     Prelude(Prelude<'data>),
-    Objects(&'data [SequencedInputObject<'data, O>]),
+    Objects(&'data [SequencedInputObject<'data, P>]),
     LinkerScripts(Vec<SequencedLinkerScript<'data>>),
     SyntheticSymbols(SyntheticSymbols),
     #[cfg(feature = "plugins")]
@@ -28,8 +29,8 @@ pub(crate) enum Group<'data, O: ObjectFile<'data>> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SequencedInputObject<'data, O: ObjectFile<'data>> {
-    pub(crate) parsed: Box<ParsedInputObject<'data, O>>,
+pub(crate) struct SequencedInputObject<'data, P: Platform> {
+    pub(crate) parsed: Box<ParsedInputObject<'data, P>>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -42,16 +43,16 @@ pub(crate) struct SequencedLinkerScript<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) enum SequencedInput<'db, 'data, O: ObjectFile<'data>> {
+pub(crate) enum SequencedInput<'db, 'data, P: Platform> {
     Prelude(&'db Prelude<'data>),
-    Object(&'data SequencedInputObject<'data, O>),
+    Object(&'data SequencedInputObject<'data, P>),
     LinkerScript(&'db SequencedLinkerScript<'data>),
     SyntheticSymbols(&'db SyntheticSymbols),
     #[cfg(feature = "plugins")]
     LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
 }
 
-impl<'data, O: ObjectFile<'data>> Group<'data, O> {
+impl<'data, P: Platform> Group<'data, P> {
     // This is used when the verbose-ttttiming feature is enabled.
     pub(crate) fn group_id(&self) -> usize {
         match self {
@@ -99,9 +100,9 @@ impl<'data, O: ObjectFile<'data>> Group<'data, O> {
     }
 }
 
-pub(crate) fn create_groups<'data, O: ObjectFile<'data>>(
-    symbol_db: &mut SymbolDb<'data, O>,
-    parsed_objects: Vec<Box<ParsedInputObject<'data, O>>>,
+pub(crate) fn create_groups<'data, P: Platform>(
+    symbol_db: &mut SymbolDb<'data, P>,
+    parsed_objects: Vec<Box<ParsedInputObject<'data, P>>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
 ) {
     timing_phase!("Group files");
@@ -224,15 +225,13 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 }
 
 /// Compute the total number of symbols in the supplied objects.
-fn count_symbols<'data, O: ObjectFile<'data>>(
-    objects: &[Box<ParsedInputObject<'data, O>>],
-) -> usize {
+fn count_symbols<'data, P: Platform>(objects: &[Box<ParsedInputObject<'data, P>>]) -> usize {
     verbose_timing_phase!("Count symbols");
 
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()
 }
 
-impl<'data, O: ObjectFile<'data>> SequencedInputObject<'data, O> {
+impl<'data, P: Platform> SequencedInputObject<'data, P> {
     pub(crate) fn symbol_name(
         &self,
         symbol_id: crate::symbol_db::SymbolId,
@@ -283,7 +282,7 @@ impl<'data> SequencedLinkerScript<'data> {
     }
 }
 
-impl<'db, 'data, O: ObjectFile<'data>> SequencedInput<'db, 'data, O> {
+impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
@@ -312,13 +311,13 @@ impl<'db, 'data, O: ObjectFile<'data>> SequencedInput<'db, 'data, O> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInputObject<'data, O> {
+impl<'data, P: Platform> std::fmt::Display for SequencedInputObject<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.parsed.input, f)
     }
 }
 
-impl<'data, O: ObjectFile<'data>> Display for Group<'data, O> {
+impl<'data, P: Platform> Display for Group<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Group::Prelude(_) => write!(f, "<prelude>"),
@@ -342,7 +341,7 @@ impl<'data, O: ObjectFile<'data>> Display for Group<'data, O> {
     }
 }
 
-impl<'db, 'data, O: ObjectFile<'data>> std::fmt::Display for SequencedInput<'db, 'data, O> {
+impl<'db, 'data, P: Platform> std::fmt::Display for SequencedInput<'db, 'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),

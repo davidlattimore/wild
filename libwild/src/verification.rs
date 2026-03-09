@@ -9,7 +9,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use itertools::Itertools;
 
 pub(crate) struct OffsetVerifier {
@@ -31,12 +31,12 @@ impl OffsetVerifier {
         }
     }
 
-    pub(crate) fn verify<'data, O: ObjectFile<'data>>(
+    pub(crate) fn verify<'data, P: Platform>(
         &self,
         memory_offsets: &OutputSectionPartMap<u64>,
         output_sections: &OutputSections,
         output_order: &OutputOrder,
-        files: &[FileLayout<'data, O>],
+        files: &[FileLayout<'data, P>],
     ) -> Result {
         if memory_offsets == &self.expected && self.alignments_ok(output_sections) {
             return Ok(());

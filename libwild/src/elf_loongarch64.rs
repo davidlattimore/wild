@@ -1,7 +1,8 @@
-use crate::elf;
+use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
+use crate::platform::Platform;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PAGE_MASK_4KB;
@@ -29,10 +30,9 @@ const _ASSERTS: () = {
 
 impl crate::platform::Arch for ElfLoongArch64 {
     type Relaxation = Relaxation;
-    type File<'data> = crate::elf::File<'data>;
+    type Platform = Elf;
 
-    fn arch_identifier<'a>() -> <Self::File<'a> as crate::platform::ObjectFile<'a>>::ArchIdentifier
-    {
+    fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_LOONGARCH
     }
 
@@ -81,7 +81,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
         true
     }
 
-    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, Elf>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -142,9 +142,9 @@ impl crate::platform::Arch for ElfLoongArch64 {
     }
 
     fn get_source_info<'data>(
-        object: &Self::File<'data>,
-        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
+        object: &<Self::Platform as Platform>::File<'data>,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+        section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(

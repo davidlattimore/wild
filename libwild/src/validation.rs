@@ -1,6 +1,7 @@
 //! Code to double-check that we did certain things correctly. Generally only used in debug builds.
 
 use crate::bail;
+use crate::elf::Elf;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
@@ -10,7 +11,7 @@ use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
 use zerocopy::FromBytes;
 
-type ElfLayout<'data> = Layout<'data, crate::elf::File<'data>>;
+type ElfLayout<'data> = Layout<'data, Elf>;
 
 pub(crate) fn validate_bytes(layout: &ElfLayout, file_bytes: &[u8]) -> Result {
     let object = crate::elf::File::parse_bytes(file_bytes, true)

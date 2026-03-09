@@ -3,6 +3,7 @@
 #![allow(clippy::unnecessary_wraps)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
+use crate::elf::Elf;
 use crate::error::Result;
 use crate::input_data::FileLoader;
 use crate::layout_rules::LayoutRulesBuilder;
@@ -48,8 +49,8 @@ impl<'data> LinkerPlugin<'data> {
 
     pub(crate) fn all_symbols_read(
         &mut self,
-        _symbol_db: &mut SymbolDb<'data, crate::elf::File<'data>>,
-        _resolver: &mut Resolver<'data, crate::elf::File<'data>>,
+        _symbol_db: &mut SymbolDb<'data, Elf>,
+        _resolver: &mut Resolver<'data, Elf>,
         _file_loader: &mut FileLoader<'data>,
         _per_symbol_flags: &mut PerSymbolFlags,
         _output_sections: &mut OutputSections<'data>,

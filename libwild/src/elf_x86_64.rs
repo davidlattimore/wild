@@ -4,10 +4,12 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::OutputKind;
+use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::error;
 use crate::error::Result;
+use crate::platform::Platform;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -48,10 +50,9 @@ macro_rules! rel_info_from_type {
 
 impl crate::platform::Arch for ElfX86_64 {
     type Relaxation = Relaxation;
-    type File<'data> = crate::elf::File<'data>;
+    type Platform = Elf;
 
-    fn arch_identifier<'a>() -> <Self::File<'a> as crate::platform::ObjectFile<'a>>::ArchIdentifier
-    {
+    fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_X86_64
     }
 
@@ -90,9 +91,7 @@ impl crate::platform::Arch for ElfX86_64 {
         false
     }
 
-    fn tp_offset_start<'data>(
-        layout: &crate::layout::Layout<'data, crate::elf::File<'data>>,
-    ) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, Elf>) -> u64 {
         layout.tls_end_address()
     }
 
@@ -456,9 +455,9 @@ impl crate::platform::Arch for ElfX86_64 {
     }
 
     fn get_source_info<'data>(
-        object: &Self::File<'data>,
-        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
+        object: &<Self::Platform as Platform>::File<'data>,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+        section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(
