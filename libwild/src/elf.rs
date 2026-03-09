@@ -240,6 +240,15 @@ pub(crate) enum RelocationList<'data> {
     Crel(CrelIterator<'data>),
 }
 
+impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
+    fn num_relocations(&self) -> usize {
+        match self {
+            RelocationList::Rela(rela) => rela.len(),
+            RelocationList::Crel(crel) => crel.len(),
+        }
+    }
+}
+
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
     type Rel = Rela;
 
@@ -649,6 +658,9 @@ impl platform::Platform for Elf {
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
+        if resources.symbol_db.args.should_output_partial_object() {
+            return Ok(());
+        }
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
                 load_section_relocations::<A, Rela>(
@@ -685,6 +697,9 @@ impl platform::Platform for Elf {
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
+        if resources.symbol_db.args.should_output_partial_object {
+            return Ok(());
+        }
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
                 load_debug_relocations::<A, Rela>(
@@ -1474,6 +1489,16 @@ impl platform::Platform for Elf {
                 }
                 let name = RawSymbolName::parse(info.name).name();
                 strings_size += name.len() + 1;
+            } else if symbol_db.args.should_output_partial_object
+                && sym.is_undefined()
+                && symbol_db.is_canonical(symbol_id)
+                && let Ok(name) = state.object.symbol_name(sym)
+                && !name.is_empty()
+                && !name.starts_with(b".L")
+            {
+                let name = RawSymbolName::parse(name).name();
+                num_globals += 1;
+                strings_size += name.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -1749,10 +1774,11 @@ impl platform::Platform for Elf {
 
     fn build_output_order_and_program_segments<'data>(
         custom: &CustomSectionIds,
+        output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>) {
-        let mut builder = OutputOrderBuilder::<Self>::new(output_sections, secondary);
+        let mut builder = OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary);
 
         builder.add_section(output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
@@ -2619,7 +2645,23 @@ impl platform::SectionHeader for SectionHeader {
     }
 }
 
-impl platform::SectionType for SectionType {}
+impl platform::SectionType for SectionType {
+    fn is_rela(&self) -> bool {
+        *self == sht::RELA
+    }
+
+    fn is_rel(&self) -> bool {
+        *self == sht::REL
+    }
+
+    fn is_symtab(&self) -> bool {
+        *self == sht::SYMTAB
+    }
+
+    fn is_strtab(&self) -> bool {
+        *self == sht::STRTAB
+    }
+}
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
@@ -3541,6 +3583,10 @@ impl platform::SectionAttributes for SectionAttributes {
         self.flags
     }
 
+    fn ty(&self) -> <Self::Platform as Platform>::SectionType {
+        self.ty
+    }
+
     fn set_to_default_type(&mut self) {
         self.ty = sht::PROGBITS;
     }
@@ -3559,6 +3605,14 @@ impl platform::SectionAttributes for SectionAttributes {
 
     fn is_no_bits(&self) -> bool {
         self.ty == sht::NOBITS
+    }
+
+    fn new_relocation_type() -> Self {
+        Self {
+            flags: linker_utils::elf::shf::INFO_LINK,
+            ty: sht::RELA,
+            entsize: elf::RELA_ENTRY_SIZE,
+        }
     }
 }
 

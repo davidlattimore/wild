@@ -106,6 +106,10 @@ impl platform::Args for MachOArgs {
         // TODO
         true
     }
+
+    fn should_output_partial_object(&self) -> bool {
+        todo!()
+    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.

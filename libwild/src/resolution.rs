@@ -31,6 +31,7 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::RelocationList;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
 use crate::string_merging::StringMergeSectionExtra;
@@ -92,7 +93,12 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         let mut syn = symbol_db.new_synthetic_symbols_group();
 
-        assign_section_ids(&mut self.resolved_groups, output_sections, symbol_db.args);
+        assign_section_ids(
+            &mut self.resolved_groups,
+            output_sections,
+            symbol_db.args,
+            &symbol_db.herd.get(),
+        )?;
 
         canonicalise_undefined_symbols(
             self.undefined_symbols,
@@ -683,7 +689,8 @@ fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
     output_sections: &mut OutputSections<'data, P>,
     args: &P::Args,
-) {
+    allocator: &bumpalo_herd::Member<'data>,
+) -> Result {
     timing_phase!("Assign section IDs");
 
     for group in resolved {
@@ -695,9 +702,34 @@ fn assign_section_ids<'data, P: Platform>(
                     s.sections.as_mut_slice(),
                     output_sections,
                 );
+
+                if args.should_output_partial_object() {
+                    for i in 0..s.sections.len() {
+                        let section_index = SectionIndex(i);
+                        let relocations =
+                            s.common.object.relocations(section_index, &s.relocations)?;
+                        if relocations.num_relocations() == 0 {
+                            continue;
+                        }
+
+                        let section_name = s
+                            .common
+                            .object
+                            .section_name(s.common.object.section(section_index)?)
+                            .unwrap_or_default();
+
+                        let mut rela_name = Vec::with_capacity(section_name.len() + 5);
+                        rela_name.extend_from_slice(b".rela");
+                        rela_name.extend_from_slice(section_name);
+                        let rela_name = allocator.alloc_slice_copy(&rela_name);
+
+                        output_sections.add_rela_section(SectionName(rela_name));
+                    }
+                }
             }
         }
     }
+    Ok(())
 }
 
 struct Outputs<'data, P: Platform> {
@@ -1099,7 +1131,12 @@ fn resolve_section<'data, P: Platform>(
             .map(|n| n.as_encoded_bytes())
     };
 
-    match rules.lookup(section_name, file_name, input_section) {
+    let rule_outcome = if args.should_output_partial_object() {
+        rules.lookup_for_partial_link(section_name, input_section)
+    } else {
+        rules.lookup(section_name, file_name, input_section)
+    };
+    match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)

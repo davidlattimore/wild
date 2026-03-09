@@ -15,8 +15,10 @@
 
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
+use crate::elf::Elf;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
+use crate::output_kind::OutputKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -25,7 +27,8 @@ use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
-use crate::platform::SectionAttributes as _;
+use crate::platform::SectionAttributes;
+use crate::platform::SectionType as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::SectionSlot;
@@ -155,10 +158,12 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
 
     output_sections: &'scope OutputSections<'data, P>,
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
+    output_kind: OutputKind,
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     pub(crate) fn new(
+        output_kind: OutputKind,
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     ) -> Self {
@@ -168,6 +173,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             output_sections,
             active_segment_kinds: vec![None; P::program_segment_defs().len()],
             secondary,
+            output_kind,
         }
     }
 
@@ -269,6 +275,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         let mut stop = Vec::new();
         let mut start = Vec::new();
 
+        if self.output_kind.is_partial_object() {
+            return (start, stop);
+        }
+
         // Secondary sections don't begin or end segments.
         if self.output_sections.merge_target(section_id).is_some() {
             return (stop, start);
@@ -328,10 +338,12 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        for def in P::unconditional_segment_defs() {
-            let segment_id = self.program_segments.add_segment(*def);
-            self.events.push(OrderEvent::SegmentStart(segment_id));
-            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        if !self.output_kind.is_partial_object() {
+            for def in P::unconditional_segment_defs() {
+                let segment_id = self.program_segments.add_segment(*def);
+                self.events.push(OrderEvent::SegmentStart(segment_id));
+                self.events.push(OrderEvent::SegmentEnd(segment_id));
+            }
         }
 
         (
@@ -557,6 +569,18 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
+    pub(crate) fn add_rela_section(&mut self, name: SectionName<'data>) -> OutputSectionId {
+        *self.custom_by_name.entry(name).or_insert_with(|| {
+            self.section_infos.add_new(SectionOutputInfo {
+                kind: SectionKind::Primary(name),
+                section_attributes: SectionAttributes::new_relocation_type(),
+                min_alignment: crate::alignment::RELA_ENTRY,
+                location: None,
+                secondary_order: None,
+            })
+        })
+    }
+
     pub(crate) fn add_named_section(
         &mut self,
         name: SectionName<'data>,
@@ -631,7 +655,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         sid
     }
 
-    pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+    pub(crate) fn output_order(
+        &self,
+        output_kind: OutputKind,
+    ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         timing_phase!("Compute output order");
 
         let mut custom = CustomSectionIds::default();
@@ -668,7 +695,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
 
-        P::build_output_order_and_program_segments(&custom, self, &secondary)
+        P::build_output_order_and_program_segments(&custom, output_kind, self, &secondary)
     }
 
     #[must_use]
@@ -737,7 +764,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         format!("{section_id}{merge} ({})", self.display_name(merge_target))
     }
 
-    pub(crate) fn custom_name_to_id(&self, name: SectionName) -> Option<OutputSectionId> {
+    pub(crate) fn custom_name_to_id<'a>(&self, name: SectionName<'a>) -> Option<OutputSectionId> {
         self.custom_by_name.get(&name).copied()
     }
 
@@ -753,6 +780,32 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
         found
+    }
+
+    pub(crate) fn will_emit_section_symbol(&self, section_id: OutputSectionId) -> bool {
+        if !self.will_emit_section(section_id) {
+            return false;
+        }
+
+        if matches!(section_id, FILE_HEADER | PROGRAM_HEADERS | SECTION_HEADERS) {
+            return false;
+        }
+
+        let section_attr = self.output_info(section_id).section_attributes;
+        let segment_type = section_id
+            .opt_built_in_details::<Elf>()
+            .and_then(|d| d.target_segment_type)
+            .unwrap_or(linker_utils::elf::pt::LOAD);
+        if section_attr.is_null() {
+            false
+        } else {
+            let type_id = section_attr.ty();
+            !type_id.is_rela()
+                && !type_id.is_rel()
+                && !type_id.is_symtab()
+                && !type_id.is_strtab()
+                && segment_type == linker_utils::elf::pt::LOAD
+        }
     }
 
     #[cfg(test)]
