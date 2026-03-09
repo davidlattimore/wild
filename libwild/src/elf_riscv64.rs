@@ -46,9 +46,9 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
+impl crate::platform::Platform for ElfRiscV64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type File<'data> = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_RISCV
@@ -98,7 +98,7 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         true
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -154,7 +154,10 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         ]
     }
 
-    fn is_symbol_variant_pcs(object: &Self::File, symbol_index: object::SymbolIndex) -> bool {
+    fn is_symbol_variant_pcs<'data>(
+        object: &Self::File<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> bool {
         object
             .symbol(symbol_index)
             .is_ok_and(|sym| (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0)
@@ -292,10 +295,10 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         }
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(
@@ -306,9 +309,9 @@ impl<'data> crate::platform::Platform<'data> for ElfRiscV64 {
         )
     }
 
-    fn process_riscv_attributes(
-        object: &Self::File,
-        format_specific: &mut <Self::File as crate::platform::ObjectFile<'data>>::FileLayoutState,
+    fn process_riscv_attributes<'data>(
+        object: &Self::File<'data>,
+        format_specific: &mut <Self::File<'data> as crate::platform::ObjectFile<'data>>::FileLayoutState,
         riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         format_specific.riscv_attributes =

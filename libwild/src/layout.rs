@@ -107,17 +107,17 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::Relaxed;
 
-pub fn compute<'data, P: Platform<'data>>(
-    symbol_db: SymbolDb<'data, P::File>,
+pub fn compute<'data, P: Platform>(
+    symbol_db: SymbolDb<'data, P::File<'data>>,
     mut per_symbol_flags: PerSymbolFlags,
-    mut groups: Vec<ResolvedGroup<'data, P::File>>,
+    mut groups: Vec<ResolvedGroup<'data, P::File<'data>>>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
-) -> Result<Layout<'data, P::File>> {
+) -> Result<Layout<'data, P::File<'data>>> {
     timing_phase!("Layout");
 
     let layout_resources_ext =
-        <P::File as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
+        <P::File<'data> as ObjectFile<'data>>::layout_resources_ext(&symbol_db.groups);
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -196,11 +196,11 @@ pub fn compute<'data, P: Platform<'data>>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order::<P::File>();
+    let (output_order, program_segments) = output_sections.output_order::<P::File<'data>>();
 
     tracing::trace!(
         "Output order:\n{}",
-        output_order.display::<P::File>(&output_sections, &program_segments)
+        output_order.display::<P::File<'data>>(&output_sections, &program_segments)
     );
 
     let mut section_part_sizes = compute_total_section_part_sizes(
@@ -213,7 +213,7 @@ pub fn compute<'data, P: Platform<'data>>(
         &finalise_sizes_resources,
     )?;
 
-    let mut section_part_layouts = layout_section_parts::<P::File>(
+    let mut section_part_layouts = layout_section_parts::<P::File<'data>>(
         &section_part_sizes,
         &output_sections,
         &program_segments,
@@ -246,7 +246,7 @@ pub fn compute<'data, P: Platform<'data>>(
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
-    let segment_layouts = compute_segment_layout::<P::File>(
+    let segment_layouts = compute_segment_layout::<P::File<'data>>(
         &section_layouts,
         &output_sections,
         &output_order,
@@ -827,7 +827,7 @@ trait SymbolRequestHandler<'data, O: ObjectFile<'data>>: std::fmt::Display + Han
         Ok(())
     }
 
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -932,7 +932,7 @@ impl<'data, O: ObjectFile<'data>> HandlerData for ObjectLayoutState<'data, O> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for ObjectLayoutState<'data, O> {
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -978,7 +978,7 @@ impl<'data, O: ObjectFile<'data>> HandlerData for DynamicLayoutState<'data, O> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for DynamicLayoutState<'data, O> {
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -1012,7 +1012,7 @@ impl HandlerData for PreludeLayoutState<'_> {
 }
 
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O> for PreludeLayoutState<'data> {
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
@@ -1037,7 +1037,7 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
     for LinkerScriptLayoutState<'data>
 {
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         _symbol_id: SymbolId,
@@ -1062,7 +1062,7 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
 impl<'data, O: ObjectFile<'data>> SymbolRequestHandler<'data, O>
     for SyntheticSymbolsLayoutState<'data>
 {
-    fn load_symbol<'scope, P: Platform<'data, File = O>>(
+    fn load_symbol<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         _common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -1935,7 +1935,7 @@ struct GroupActivationInputs<'data, O: ObjectFile<'data>> {
 }
 
 impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
-    fn activate_group<'scope, P: Platform<'data, File = O>>(
+    fn activate_group<'scope, P: Platform<File<'data> = O>>(
         self,
         resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
@@ -1993,13 +1993,13 @@ impl<'data, O: ObjectFile<'data>> GroupActivationInputs<'data, O> {
     }
 }
 
-fn find_required_sections<'data, P: Platform<'data>>(
-    groups_in: Vec<resolution::ResolvedGroup<'data, P::File>>,
-    symbol_db: &SymbolDb<'data, P::File>,
+fn find_required_sections<'data, P: Platform>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, P::File<'data>>>,
+    symbol_db: &SymbolDb<'data, P::File<'data>>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    layout_resources_ext: <P::File as ObjectFile<'data>>::LayoutResourcesExt,
-) -> Result<GcOutputs<'data, P::File>> {
+    layout_resources_ext: <P::File<'data> as ObjectFile<'data>>::LayoutResourcesExt,
+) -> Result<GcOutputs<'data, P::File<'data>>> {
     timing_phase!("Find required sections");
 
     let num_groups = groups_in.len();
@@ -2042,7 +2042,7 @@ fn find_required_sections<'data, P: Platform<'data>>(
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
-    <P::File as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
+    <P::File<'data> as ObjectFile<'data>>::finalise_find_required_sections(&group_states);
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2050,7 +2050,7 @@ fn find_required_sections<'data, P: Platform<'data>>(
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
     };
-    prelude.pre_finalise_sizes::<P::File>(
+    prelude.pre_finalise_sizes::<P::File<'data>>(
         &mut prelude_group.common,
         &resources.uses_tlsld,
         resources.symbol_db.args,
@@ -2065,10 +2065,10 @@ fn find_required_sections<'data, P: Platform<'data>>(
     })
 }
 
-fn queue_initial_group_processing<'data, 'scope, P: Platform<'data>>(
-    groups_in: Vec<resolution::ResolvedGroup<'data, P::File>>,
-    symbol_db: &'scope SymbolDb<'data, P::File>,
-    resources: &'scope GraphResources<'data, '_, P::File>,
+fn queue_initial_group_processing<'data, 'scope, P: Platform>(
+    groups_in: Vec<resolution::ResolvedGroup<'data, P::File<'data>>>,
+    symbol_db: &'scope SymbolDb<'data, P::File<'data>>,
+    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
     scope: &Scope<'scope>,
 ) {
     verbose_timing_phase!("Create worker slots");
@@ -2104,7 +2104,7 @@ fn unwrap_worker_states<'data, O: ObjectFile<'data>>(
 impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, P: Platform<'data, File = O>>(
+    fn do_pending_work<'scope, P: Platform<File<'data> = O>>(
         mut self,
         resources: &'scope GraphResources<'data, '_, O>,
         scope: &Scope<'scope>,
@@ -2188,11 +2188,11 @@ impl<'data, O: ObjectFile<'data>> GroupState<'data, O> {
     }
 }
 
-fn activate<'data, 'scope, P: Platform<'data>>(
-    common: &mut CommonGroupState<'data, P::File>,
-    file: &mut FileLayoutState<'data, P::File>,
+fn activate<'data, 'scope, P: Platform>(
+    common: &mut CommonGroupState<'data, P::File<'data>>,
+    file: &mut FileLayoutState<'data, P::File<'data>>,
     queue: &mut LocalWorkQueue,
-    resources: &'scope GraphResources<'data, '_, P::File>,
+    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
     scope: &Scope<'scope>,
 ) -> Result {
     match file {
@@ -2209,9 +2209,9 @@ fn activate<'data, 'scope, P: Platform<'data>>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data, 'scope, P: Platform<'data>>(
+    fn send_work<'data, 'scope, P: Platform>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         file_id: FileId,
         work: WorkItem,
         scope: &Scope<'scope>,
@@ -2231,10 +2231,10 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, P: Platform<'data>>(
+    fn send_symbol_request<'data, 'scope, P: Platform>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
@@ -2247,10 +2247,10 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<'data, 'scope, P: Platform<'data>>(
+    fn send_copy_relocation_request<'data, 'scope, P: Platform>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
@@ -2272,7 +2272,7 @@ impl<'data, O: ObjectFile<'data>> GraphResources<'data, '_, O> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work<'scope, P: Platform<'data, File = O>>(
+    fn send_work<'scope, P: Platform<File<'data> = O>>(
         &self,
         file_id: FileId,
         work: WorkItem,
@@ -2355,7 +2355,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
         Ok(())
     }
 
-    fn do_work<'scope, P: Platform<'data, File = O>>(
+    fn do_work<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         work_item: WorkItem,
@@ -2406,7 +2406,7 @@ impl<'data, O: ObjectFile<'data>> FileLayoutState<'data, O> {
         }
     }
 
-    fn handle_symbol_request<'scope, P: Platform<'data, File = O>>(
+    fn handle_symbol_request<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -2671,12 +2671,12 @@ impl Section {
 }
 
 #[inline(always)]
-pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocation>(
-    object: &ObjectLayoutState<'data, P::File>,
-    common: &mut CommonGroupState<'data, P::File>,
+pub(crate) fn process_relocation<'data, 'scope, P: Platform, R: Relocation>(
+    object: &ObjectLayoutState<'data, P::File<'data>>,
+    common: &mut CommonGroupState<'data, P::File<'data>>,
     rel: &R,
-    section: &<P::File as ObjectFile<'data>>::SectionHeader,
-    resources: &'scope GraphResources<'data, '_, P::File>,
+    section: &<P::File<'data> as ObjectFile<'data>>::SectionHeader,
+    resources: &'scope GraphResources<'data, '_, P::File<'data>>,
     queue: &mut LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
@@ -2691,7 +2691,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocatio
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = <P::File as ObjectFile<'data>>::section_flags(section);
+        let section_flags = <P::File<'data> as ObjectFile<'data>>::section_flags(section);
 
         let rel_info = if let Some(relaxation) = P::new_relaxation(
             r_type,
@@ -2795,7 +2795,7 @@ pub(crate) fn process_relocation<'data, 'scope, P: Platform<'data>, R: Relocatio
             }
 
             queue.send_symbol_request::<P>(symbol_id, resources, scope);
-            if should_emit_undefined_error::<P::File>(
+            if should_emit_undefined_error::<P::File<'data>>(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -2898,10 +2898,10 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate<'scope, P: Platform<'data>>(
+    fn activate<'scope, P: Platform>(
         &mut self,
-        common: &mut CommonGroupState<'data, P::File>,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        common: &mut CommonGroupState<'data, P::File<'data>>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -2951,9 +2951,9 @@ impl<'data> PreludeLayoutState<'data> {
 
     /// Mark defsyms from the command-line as being directly referenced so that we emit the symbols
     /// even if nothing in the code references them.
-    fn mark_defsyms_as_used<'scope, P: Platform<'data>>(
+    fn mark_defsyms_as_used<'scope, P: Platform>(
         &self,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3004,9 +3004,9 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point<'scope, P: Platform<'data>>(
+    fn load_entry_point<'scope, P: Platform>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, P::File>,
+        resources: &'scope GraphResources<'data, '_, P::File<'data>>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3757,7 +3757,7 @@ fn new_dynamic_object_layout_state<'data, O: ObjectFile<'data>>(
 
 impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
     #[inline(always)]
-    fn activate<'scope, P: Platform<'data, File = O>>(
+    fn activate<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -3814,7 +3814,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         }
 
         if let Some(frame_data_section_index) = frame_section_index {
-            <P::File as ObjectFile<'data>>::load_exception_frame_data::<P>(
+            <P::File<'data> as ObjectFile<'data>>::load_exception_frame_data::<P>(
                 self,
                 common,
                 frame_data_section_index,
@@ -3857,7 +3857,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, P: Platform<'data, File = O>>(
+    fn handle_section_load_request<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -3904,7 +3904,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn load_section<'scope, P: Platform<'data, File = O>>(
+    fn load_section<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3917,7 +3917,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
 
-        <P::File as ObjectFile<'data>>::load_object_section_relocations::<P>(
+        <P::File<'data> as ObjectFile<'data>>::load_object_section_relocations::<P>(
             self, common, queue, resources, section, scope,
         )?;
 
@@ -3938,7 +3938,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    pub(crate) fn load_section_relocations<'scope, P: Platform<'data, File = O>, R: Relocation>(
+    pub(crate) fn load_section_relocations<'scope, P: Platform<File<'data> = O>, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3974,7 +3974,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn load_debug_section<'scope, P: Platform<'data, File = O>>(
+    fn load_debug_section<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -3987,7 +3987,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         if P::local_symbols_in_debug_info() {
-            <P::File as ObjectFile<'data>>::load_object_debug_relocations::<P>(
+            <P::File<'data> as ObjectFile<'data>>::load_object_debug_relocations::<P>(
                 self, common, queue, resources, section, scope,
             )?;
         }
@@ -3999,7 +3999,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    pub(crate) fn load_debug_relocations<'scope, P: Platform<'data, File = O>, R: Relocation>(
+    pub(crate) fn load_debug_relocations<'scope, P: Platform<File<'data> = O>, R: Relocation>(
         &self,
         common: &mut CommonGroupState<'data, O>,
         queue: &mut LocalWorkQueue,
@@ -4279,7 +4279,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, P: Platform<'data, File = O>>(
+    fn load_non_hidden_symbols<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, 'scope, O>,
@@ -4310,7 +4310,7 @@ impl<'data, O: ObjectFile<'data>> ObjectLayoutState<'data, O> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, P: Platform<'data, File = O>>(
+    fn export_dynamic<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         symbol_id: SymbolId,
@@ -4788,10 +4788,10 @@ type RescanCandidates = Vec<Vec<SmallVec<[(usize, u64); 16]>>>;
 /// Run one pass of the relaxation scan across all groups/objects.  Returns the total number of
 /// bytes newly deleted in this pass together with the set of sections that should be rescanned on
 /// the next iteration.
-fn relaxation_scan_pass<'data, P: Platform<'data>>(
-    group_states: &mut [GroupState<'data, P::File>],
+fn relaxation_scan_pass<'data, P: Platform>(
+    group_states: &mut [GroupState<'data, P::File<'data>>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'data, P::File>,
+    symbol_db: &SymbolDb<'data, P::File<'data>>,
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
@@ -4946,14 +4946,14 @@ fn relaxation_scan_pass<'data, P: Platform<'data>>(
     (total_deleted, next_rescan_candidates)
 }
 
-fn perform_iterative_relaxation<'data, P: Platform<'data>>(
-    group_states: &mut [GroupState<'data, P::File>],
+fn perform_iterative_relaxation<'data, P: Platform>(
+    group_states: &mut [GroupState<'data, P::File<'data>>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
-    program_segments: &ProgramSegments<<P::File as ObjectFile<'data>>::ProgramSegmentDef>,
+    program_segments: &ProgramSegments<<P::File<'data> as ObjectFile<'data>>::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    symbol_db: &SymbolDb<'data, P::File>,
+    symbol_db: &SymbolDb<'data, P::File<'data>>,
     per_symbol_flags: &PerSymbolFlags,
 ) {
     timing_phase!("Iterative relaxation");
@@ -5004,7 +5004,7 @@ fn perform_iterative_relaxation<'data, P: Platform<'data>>(
                 .collect(),
         );
 
-        *section_part_layouts = layout_section_parts::<P::File>(
+        *section_part_layouts = layout_section_parts::<P::File<'data>>(
             section_part_sizes,
             output_sections,
             program_segments,
@@ -5182,7 +5182,7 @@ fn compute_segment_alignments<'data, O: ObjectFile<'data>>(
 }
 
 impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
-    fn activate<'scope, P: Platform<'data, File = O>>(
+    fn activate<'scope, P: Platform<File<'data> = O>>(
         &mut self,
         common: &mut CommonGroupState<'data, O>,
         resources: &'scope GraphResources<'data, '_, O>,
@@ -5202,7 +5202,7 @@ impl<'data, O: ObjectFile<'data>> DynamicLayoutState<'data, O> {
         self.request_all_undefined_symbols::<P>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols<'scope, P: Platform<'data, File = O>>(
+    fn request_all_undefined_symbols<'scope, P: Platform<File<'data> = O>>(
         &self,
         resources: &'scope GraphResources<'data, '_, O>,
         queue: &mut LocalWorkQueue,

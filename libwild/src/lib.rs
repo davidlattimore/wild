@@ -207,7 +207,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn link_for_arch<'data, P: Platform<File<'data> = crate::elf::File<'data>>>(
         &'data self,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
@@ -235,7 +235,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_inputs_and_link<'data, P: Platform<File<'data> = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,

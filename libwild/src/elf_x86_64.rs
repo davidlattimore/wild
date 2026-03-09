@@ -46,9 +46,9 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
+impl crate::platform::Platform for ElfX86_64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type File<'data> = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_X86_64
@@ -89,7 +89,9 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         false
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data, crate::elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(
+        layout: &crate::layout::Layout<'data, crate::elf::File<'data>>,
+    ) -> u64 {
         layout.tls_end_address()
     }
 
@@ -452,10 +454,10 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         None
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(
