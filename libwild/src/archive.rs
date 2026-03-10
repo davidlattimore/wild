@@ -3,10 +3,9 @@
 //! dependency in our tests so that we can verify consistency.
 
 use crate::error::Result;
-use std::ffi::OsStr;
+use crate::fs::path_from_bytes;
 use std::ops::Range;
-use std::os::unix::ffi::OsStrExt as _;
-use std::path::Path;
+use std::path::PathBuf;
 
 pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
@@ -93,8 +92,8 @@ impl<'data> Identifier<'data> {
         self.data
     }
 
-    pub(crate) fn as_path(&self) -> &'data std::path::Path {
-        Path::new(OsStr::from_bytes(self.as_slice()))
+    pub(crate) fn as_path(&self) -> PathBuf {
+        path_from_bytes(self.as_slice())
     }
 }
 
