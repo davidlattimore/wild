@@ -65,7 +65,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start<'data>(layout: &Layout<'data, Self::Platform>) -> u64;
+    fn tp_offset_start(layout: &Layout<Self::Platform>) -> u64;
 
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -103,8 +103,8 @@ pub(crate) trait Arch: Send + Sync + 'static {
         unreachable!();
     }
 
-    fn is_symbol_variant_pcs<'data>(
-        _object: &<Self::Platform as Platform>::File<'data>,
+    fn is_symbol_variant_pcs(
+        _object: &<Self::Platform as Platform>::File<'_>,
         _symbol_index: object::SymbolIndex,
     ) -> bool {
         false
@@ -219,7 +219,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
 
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
-    fn finalise_find_required_sections<'data>(groups: &[layout::GroupState<'data, Self>]);
+    fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
 
     fn pre_finalise_sizes_prelude<'data>(
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -301,8 +301,8 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     /// Returns segment definitions that should be unconditionally emitted without content.
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
 
-    fn create_linker_defined_symbols<'data>(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder,
         output_kind: OutputKind,
     );
 
@@ -716,7 +716,7 @@ pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync + 'data 
 }
 
 pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
-    fn new<'data, P: Platform>(symbol_db: &SymbolDb<'data, P>) -> Self;
+    fn new<P: Platform>(symbol_db: &SymbolDb<P>) -> Self;
 }
 
 pub(crate) trait SectionAttributes:

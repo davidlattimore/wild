@@ -338,7 +338,7 @@ struct StringToMerge<'data, 'offsets> {
     offset_out: OffsetOut<'offsets>,
 }
 
-/// A place where we'll store the `BucketOffset` of the the string once known.
+/// A place where we'll store the `BucketOffset` of the string once known.
 enum OffsetOut<'offsets> {
     InShard(&'offsets mut BucketOffset),
     Overflow(LinearInputOffset),

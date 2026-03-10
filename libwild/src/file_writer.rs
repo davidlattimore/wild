@@ -421,7 +421,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
     )
 }
 
-fn write_layout<'data, P: Platform>(layout: &Layout<'data, P>) -> Result {
+fn write_layout<P: Platform>(layout: &Layout<P>) -> Result {
     let layout_path = linker_layout::layout_path(&layout.args().output);
     write_layout_to(layout, &layout_path)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))

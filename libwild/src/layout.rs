@@ -1356,7 +1356,7 @@ struct SectionLoadRequest {
 }
 
 impl WorkItem {
-    fn file_id<'data, P: Platform>(self, symbol_db: &SymbolDb<'data, P>) -> FileId {
+    fn file_id<P: Platform>(self, symbol_db: &SymbolDb<P>) -> FileId {
         match self {
             WorkItem::LoadGlobalSymbol(s) | WorkItem::CopyRelocateSymbol(s) => {
                 symbol_db.file_id_for_symbol(s)
@@ -1594,8 +1594,8 @@ fn merge_secondary_parts<P: Platform>(
     }
 }
 
-fn compute_start_offsets_by_group<'data, P: Platform>(
-    group_states: &[GroupState<'data, P>],
+fn compute_start_offsets_by_group<P: Platform>(
+    group_states: &[GroupState<P>],
     mut mem_offsets: OutputSectionPartMap<u64>,
 ) -> Vec<OutputSectionPartMap<u64>> {
     timing_phase!("Compute per-group start offsets");
@@ -3722,9 +3722,9 @@ impl HeaderInfo {
 
 /// Construct a new inactive instance, which means we don't yet load non-GC sections and only
 /// load them later if a symbol from this object is referenced.
-fn new_object_layout_state<'data, P: Platform>(
-    input_state: resolution::ResolvedObject<'data, P>,
-) -> FileLayoutState<'data, P> {
+fn new_object_layout_state<P: Platform>(
+    input_state: resolution::ResolvedObject<P>,
+) -> FileLayoutState<P> {
     // Note, this function is called for all objects from a single thread, so don't be tempted to do
     // significant work here. Do work when activate is called instead. Doing it there also means
     // that we don't do the work unless the object is actually needed.
@@ -5608,8 +5608,8 @@ impl<'data, P: Platform> std::fmt::Debug for FileLayoutState<'data, P> {
     }
 }
 
-fn section_debug<'data, P: Platform>(
-    object: &P::File<'data>,
+fn section_debug<P: Platform>(
+    object: &P::File<'_>,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
     let name = object

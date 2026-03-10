@@ -225,7 +225,7 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 }
 
 /// Compute the total number of symbols in the supplied objects.
-fn count_symbols<'data, P: Platform>(objects: &[Box<ParsedInputObject<'data, P>>]) -> usize {
+fn count_symbols<P: Platform>(objects: &[Box<ParsedInputObject<P>>]) -> usize {
     verbose_timing_phase!("Count symbols");
 
     objects.iter().map(|o| o.num_symbols()).sum::<usize>()

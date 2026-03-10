@@ -99,7 +99,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         true
     }
 
-    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, Elf>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -155,8 +155,8 @@ impl crate::platform::Arch for ElfRiscV64 {
         ]
     }
 
-    fn is_symbol_variant_pcs<'data>(
-        object: &<Self::Platform as Platform>::File<'data>,
+    fn is_symbol_variant_pcs(
+        object: &<Self::Platform as Platform>::File<'_>,
         symbol_index: object::SymbolIndex,
     ) -> bool {
         object

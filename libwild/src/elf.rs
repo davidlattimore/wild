@@ -354,7 +354,7 @@ impl platform::Platform for Elf {
         *memory_offsets.get(part_id::EH_FRAME)
     }
 
-    fn finalise_find_required_sections<'data>(groups: &[layout::GroupState<'data, Elf>]) {
+    fn finalise_find_required_sections(groups: &[layout::GroupState<Elf>]) {
         tracing::debug!(target: "metrics", total = groups
             .iter()
             .map(|g| g.common.format_specific.exception_frame_count)
@@ -580,8 +580,8 @@ impl platform::Platform for Elf {
         &[STACK_SEGMENT_DEF]
     }
 
-    fn create_linker_defined_symbols<'data>(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder,
         output_kind: OutputKind,
     ) {
         // The undefined symbol must always be symbol 0.
@@ -1782,7 +1782,7 @@ fn allocate_sysv_hash(
         return Ok(());
     }
 
-    let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
+    let bucket_count = (num_defs / 2).max(1).next_power_of_two() as u32;
     // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
     // symbols, which also includes undefined dynamic symbols.
     let num_dynsym = *current_sizes.get(part_id::DYNSYM) / SYMTAB_ENTRY_SIZE;
@@ -2943,7 +2943,7 @@ pub(crate) struct NonAddressableIndexes {
 }
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<'data, P: Platform>(symbol_db: &crate::symbol_db::SymbolDb<'data, P>) -> Self {
+    fn new<P: Platform>(symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
         Self {
             // Allocate version indexes starting from after the local and global indexes and any
             // versions defined by a version script.
