@@ -375,7 +375,7 @@ fn populate_file_header<'data, A: Arch<File<'data> = crate::elf::File<'data>>>(
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty);
-    header.e_machine.set(e, A::elf_header_arch_magic());
+    header.e_machine.set(e, A::arch_identifier());
     header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
