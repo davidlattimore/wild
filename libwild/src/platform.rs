@@ -125,7 +125,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     fn process_riscv_attributes<'data>(
         _object: &<Self::Platform as Platform>::File<'data>,
-        _format_specific: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
+        _format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
@@ -154,7 +154,7 @@ pub(crate) struct RelaxSymbolInfo {
 /// A platform for which we support writing producing linked outputs.
 pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type File<'data>: ObjectFile<'data, Platform = Self>;
-    type Symbol: Symbol;
+    type SymtabEntry: Symbol;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
     type SectionAttributes: SectionAttributes<Platform = Self>;
@@ -166,7 +166,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type DynamicEntry: Send + Sync + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
-    type EpilogueLayout: Send + Sync + 'static;
+    type EpilogueLayoutExt: Send + Sync + 'static;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
@@ -175,18 +175,18 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type SymbolVersionIndex: Send + Sync + Copy;
 
     /// Format-specific properties produced by the layout phase.
-    type LayoutProperties: Send + Sync + 'static;
+    type LayoutExt: Send + Sync + 'static;
 
     type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: Send + Sync + 'data;
     type VerneedTable<'data>: VerneedTable<'data>;
-    type DynamicLayoutState<'data>: Default + Send + Sync + 'data;
-    type DynamicLayout<'data>: std::fmt::Debug + Send + Sync + 'data;
+    type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
+    type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
 
     /// Format-specific per-file state used during the layout phase.
-    type FileLayoutState<'data>: Default + Send + Sync + 'data;
+    type ObjectLayoutStateExt<'data>: Default + Send + Sync + 'data;
 
     /// The name of a symbol, possibly with a version.
     type RawSymbolName<'data>: RawSymbolName<'data>;
@@ -312,8 +312,8 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::FileLayoutState<'data>> + Clone,
-    ) -> Result<Self::LayoutProperties>
+        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+    ) -> Result<Self::LayoutExt>
     where
         'data: 'files,
         'data: 'states;
@@ -342,11 +342,11 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         args: &Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
-    ) -> Self::EpilogueLayout;
+    ) -> Self::EpilogueLayoutExt;
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayout,
+        state: &mut Self::EpilogueLayoutExt,
     );
 
     fn apply_non_addressable_indexes<'data, 'groups>(
@@ -356,10 +356,10 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     );
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayout,
+        state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
-        properties: &Self::LayoutProperties,
+        properties: &Self::LayoutExt,
         symbol_db: &SymbolDb<'data, Self>,
     );
 
@@ -369,17 +369,17 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayout,
+        state: &mut Self::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result;
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayout,
+        epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &Self::LayoutProperties,
+        common_state: &Self::LayoutExt,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result;
@@ -399,14 +399,14 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn num_symbols(&self) -> usize;
 
-    fn symbols(&self) -> &'data [<Self::Platform as Platform>::Symbol];
+    fn symbols(&self) -> &'data [<Self::Platform as Platform>::SymtabEntry];
 
     fn enumerate_symbols(
         &self,
     ) -> impl Iterator<
         Item = (
             object::SymbolIndex,
-            &'data <Self::Platform as Platform>::Symbol,
+            &'data <Self::Platform as Platform>::SymtabEntry,
         ),
     > {
         self.symbols()
@@ -417,18 +417,23 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     // TODO: Remove implementations of this as this default should be fine. Perhaps first check if
     // all platforms can get a slice of symbols.
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data <Self::Platform as Platform>::Symbol> {
+    fn symbols_iter(
+        &self,
+    ) -> impl Iterator<Item = &'data <Self::Platform as Platform>::SymtabEntry> {
         self.symbols().iter()
     }
 
     fn symbol(
         &self,
         index: object::SymbolIndex,
-    ) -> Result<&'data <Self::Platform as Platform>::Symbol>;
+    ) -> Result<&'data <Self::Platform as Platform>::SymtabEntry>;
 
     fn section_size(&self, header: &<Self::Platform as Platform>::SectionHeader) -> Result<u64>;
 
-    fn symbol_name(&self, symbol: &<Self::Platform as Platform>::Symbol) -> Result<&'data [u8]>;
+    fn symbol_name(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+    ) -> Result<&'data [u8]>;
 
     fn num_sections(&self) -> usize;
 
@@ -458,7 +463,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn symbol_section(
         &self,
-        symbol: &<Self::Platform as Platform>::Symbol,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
 
@@ -466,18 +471,21 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     /// The dynamic object will be linked against. This is a chance to perform extra initialisation
     /// of `state`.
-    fn activate_dynamic(&self, state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>);
+    fn activate_dynamic(
+        &self,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
+    );
 
     fn dynamic_symbol_used(
         &self,
         symbol_index: object::SymbolIndex,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
 
     fn finalise_sizes_dynamic(
         &self,
         lib_name: &[u8],
-        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result;
 
@@ -485,15 +493,15 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         &self,
         indexes: &mut <Self::Platform as Platform>::NonAddressableIndexes,
         counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
 
     fn finalise_layout_dynamic(
         &self,
-        state: <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        state: <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> <Self::Platform as Platform>::DynamicLayout<'data>;
+    ) -> <Self::Platform as Platform>::DynamicLayoutExt<'data>;
 
     fn section_name(
         &self,
@@ -552,7 +560,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &<Self::Platform as Platform>::Symbol,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
         local_index: usize,
         version_names: &<Self::Platform as Platform>::VersionNames<'data>,
     ) -> Result<<Self::Platform as Platform>::RawSymbolName<'data>>;
@@ -568,7 +576,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn process_gnu_note_section(
         &self,
-        state: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
+        state: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
         section_index: object::SectionIndex,
     ) -> Result;
 

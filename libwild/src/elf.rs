@@ -118,7 +118,6 @@ pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
 pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
-pub(crate) type Symbol = object::elf::Sym64<LittleEndian>;
 pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
@@ -254,7 +253,7 @@ const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
-    type Symbol = Symbol;
+    type SymtabEntry = SymtabEntry;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
@@ -264,11 +263,11 @@ impl platform::Platform for Elf {
     type BuiltInSectionDetails = BuiltInSectionDetails;
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
-    type LayoutProperties = ElfLayoutProperties;
+    type LayoutExt = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
     type NonAddressableIndexes = NonAddressableIndexes;
-    type EpilogueLayout = EpilogueLayout;
+    type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type ArchIdentifier = u16;
@@ -278,9 +277,9 @@ impl platform::Platform for Elf {
     type VersionNames<'data> = VersionNames<'data>;
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VerneedTable<'data> = VerneedTable<'data>;
-    type FileLayoutState<'data> = ElfObjectLayoutState<'data>;
-    type DynamicLayoutState<'data> = DynamicLayoutState<'data>;
-    type DynamicLayout<'data> = DynamicLayout<'data>;
+    type ObjectLayoutStateExt<'data> = ObjectLayoutStateExt<'data>;
+    type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt<'data>;
+    type DynamicLayoutExt<'data> = DynamicLayoutExt<'data>;
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
 
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args) {
@@ -382,23 +381,17 @@ impl platform::Platform for Elf {
     ) {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
-        for cie in &object.format_specific_layout_state.cies {
-            object.format_specific_layout_state.eh_frame_size += cie.cie.bytes.len() as u64;
+        for cie in &object.format_specific.cies {
+            object.format_specific.eh_frame_size += cie.cie.bytes.len() as u64;
         }
-        common.allocate(
-            part_id::EH_FRAME,
-            object.format_specific_layout_state.eh_frame_size,
-        );
+        common.allocate(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
     fn finalise_object_layout<'data>(
         object: &layout::ObjectLayoutState<'data, Elf>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
-        memory_offsets.increment(
-            part_id::EH_FRAME,
-            object.format_specific_layout_state.eh_frame_size,
-        );
+        memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
     fn compute_object_addresses<'data>(
@@ -407,10 +400,7 @@ impl platform::Platform for Elf {
     ) {
         // Note, this is currently identical to finalise_object_layout above. The two functions are
         // however called separately and they might become different at some point.
-        memory_offsets.increment(
-            part_id::EH_FRAME,
-            object.format_specific_layout_state.eh_frame_size,
-        );
+        memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
     fn layout_resources_ext<'data>(
@@ -706,13 +696,13 @@ impl platform::Platform for Elf {
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::FileLayoutState<'data>> + Clone,
-    ) -> Result<ElfLayoutProperties>
+        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+    ) -> Result<LayoutExt>
     where
         'data: 'files,
         'data: 'states,
     {
-        ElfLayoutProperties::new::<A>(objects, states, args)
+        LayoutExt::new::<A>(objects, states, args)
     }
 
     fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Elf>>(
@@ -755,8 +745,8 @@ impl platform::Platform for Elf {
             }
         };
 
-        object.format_specific_layout_state.exception_frames = exception_frames;
-        object.format_specific_layout_state.eh_frame_section = Some(eh_frame_section);
+        object.format_specific.exception_frames = exception_frames;
+        object.format_specific.eh_frame_section = Some(eh_frame_section);
 
         Ok(())
     }
@@ -769,7 +759,7 @@ impl platform::Platform for Elf {
         resources: &'scope layout::GraphResources<'data, 'scope, Elf>,
         scope: &Scope<'scope>,
     ) -> Result {
-        let sizes = match &object.format_specific_layout_state.exception_frames {
+        let sizes = match &object.format_specific.exception_frames {
             ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<A, Rela>(
                 object,
                 unloaded.last_frame_index,
@@ -790,7 +780,7 @@ impl platform::Platform for Elf {
             )?,
         };
 
-        object.format_specific_layout_state.eh_frame_size += sizes.eh_frame_size;
+        object.format_specific.eh_frame_size += sizes.eh_frame_size;
 
         if resources.symbol_db.args.should_write_eh_frame_hdr {
             common.allocate(
@@ -806,7 +796,7 @@ impl platform::Platform for Elf {
         args: &Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
-    ) -> EpilogueLayout {
+    ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
         let build_id_size = match &args.build_id {
@@ -816,7 +806,7 @@ impl platform::Platform for Elf {
             BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
         };
 
-        EpilogueLayout {
+        EpilogueLayoutExt {
             sysv_hash_layout: Default::default(),
             gnu_hash_layout,
             verdefs: Default::default(),
@@ -826,7 +816,7 @@ impl platform::Platform for Elf {
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut NonAddressableCounts,
-        state: &mut EpilogueLayout,
+        state: &mut EpilogueLayoutExt,
     ) {
         counts.verdef_count += state
             .verdefs
@@ -853,10 +843,10 @@ impl platform::Platform for Elf {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut EpilogueLayout,
+        state: &mut EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
-        properties: &ElfLayoutProperties,
+        properties: &LayoutExt,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
         if symbol_db.output_kind.needs_dynamic() {
@@ -961,10 +951,10 @@ impl platform::Platform for Elf {
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut EpilogueLayout,
+        epilogue_state: &mut EpilogueLayoutExt,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
-        common_state: &ElfLayoutProperties,
+        common_state: &LayoutExt,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
     ) -> Result {
@@ -1011,7 +1001,7 @@ impl platform::Platform for Elf {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut crate::elf::EpilogueLayout,
+        state: &mut crate::elf::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
@@ -1224,17 +1214,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         )
     }
 
-    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data SymtabEntry> {
         Ok(self.symbols.symbol(index)?)
     }
 
-    fn symbol_name(&self, symbol: &Symbol) -> Result<&'data [u8]> {
+    fn symbol_name(&self, symbol: &SymtabEntry) -> Result<&'data [u8]> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
     fn symbol_section(
         &self,
-        symbol: &Symbol,
+        symbol: &SymtabEntry,
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
@@ -1356,7 +1346,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &Symbol,
+        symbol: &SymtabEntry,
         local_index: usize,
         version_names: &VersionNames<'data>,
     ) -> Result<RawSymbolName<'data>> {
@@ -1386,11 +1376,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn symbols(&self) -> &'data [Symbol] {
+    fn symbols(&self) -> &'data [SymtabEntry] {
         self.symbols.symbols()
     }
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data Symbol> {
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
         self.symbols.iter()
     }
 
@@ -1404,7 +1394,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn process_gnu_note_section(
         &self,
-        state: &mut ElfObjectLayoutState<'data>,
+        state: &mut ObjectLayoutStateExt<'data>,
         section_index: object::SectionIndex,
     ) -> Result {
         let section = self.section(section_index)?;
@@ -1445,7 +1435,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn dynamic_symbol_used(
         &self,
         symbol_index: object::SymbolIndex,
-        state: &mut DynamicLayoutState<'data>,
+        state: &mut DynamicLayoutStateExt<'data>,
     ) -> Result {
         if let Some(version_index) = self.versym.get(symbol_index.0) {
             let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
@@ -1462,14 +1452,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn activate_dynamic(&self, state: &mut DynamicLayoutState<'data>) {
+    fn activate_dynamic(&self, state: &mut DynamicLayoutStateExt<'data>) {
         state.symbol_versions_needed = vec![false; self.verdefnum as usize];
     }
 
     fn finalise_sizes_dynamic(
         &self,
         lib_name: &[u8],
-        state: &mut DynamicLayoutState<'data>,
+        state: &mut DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result {
         let e = LittleEndian;
@@ -1545,10 +1535,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn finalise_layout_dynamic(
         &self,
-        state: DynamicLayoutState<'data>,
+        state: DynamicLayoutStateExt<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> DynamicLayout<'data> {
+    ) -> DynamicLayoutExt<'data> {
         let mut is_last_verneed = false;
 
         if let Some(v) = state.verneed_info.as_ref()
@@ -1569,7 +1559,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let version_mapping =
             compute_version_mapping(&state.symbol_versions_needed, state.non_addressable_indexes);
 
-        DynamicLayout {
+        DynamicLayoutExt {
             version_mapping,
             verneed_info: state.verneed_info,
             is_last_verneed,
@@ -1580,7 +1570,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         indexes: &mut NonAddressableIndexes,
         counts: &mut NonAddressableCounts,
-        state: &mut DynamicLayoutState,
+        state: &mut DynamicLayoutStateExt,
     ) -> Result {
         state.non_addressable_indexes = *indexes;
         if let Some(info) = state.verneed_info.as_ref()
@@ -1676,7 +1666,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                 rel_iter.next();
             }
 
-            object.format_specific_layout_state.cies.push(CieAtOffset {
+            object.format_specific.cies.push(CieAtOffset {
                 offset: offset as u32,
                 cie: Cie {
                     bytes: &data[offset..next_offset],
@@ -1725,12 +1715,11 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
         offset = next_offset;
     }
 
-    common.format_specific.exception_frame_count +=
-        object.format_specific_layout_state.exception_frames.len();
+    common.format_specific.exception_frame_count += object.format_specific.exception_frames.len();
 
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
-    object.format_specific_layout_state.eh_frame_size += (data.len() - offset) as u64;
+    object.format_specific.eh_frame_size += (data.len() - offset) as u64;
 
     Ok(exception_frames)
 }
@@ -1758,7 +1747,7 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
 
         // Request loading of any sections/symbols referenced by the FDEs for our
         // section.
-        if let Some(eh_frame_section) = object.format_specific_layout_state.eh_frame_section {
+        if let Some(eh_frame_section) = object.format_specific.eh_frame_section {
             for rel in frame_data.relocations.rel_iter() {
                 layout::process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
@@ -1783,7 +1772,7 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
 }
 
 fn allocate_sysv_hash(
-    state: &mut EpilogueLayout,
+    state: &mut EpilogueLayoutExt,
     current_sizes: &OutputSectionPartMap<u64>,
     extra_sizes: &mut OutputSectionPartMap<u64>,
     dynamic_symbol_defs: &[DynamicSymbolDefinition],
@@ -1886,7 +1875,7 @@ impl platform::SectionFlags for SectionFlags {
     }
 }
 
-impl platform::Symbol for Symbol {
+impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<CommonSymbol> {
         let e = LittleEndian;
         if !object::read::elf::Sym::is_common(self, e) {
@@ -2331,7 +2320,7 @@ pub(crate) enum RiscVAttribute {
 }
 
 #[derive(Default)]
-pub(crate) struct ElfObjectLayoutState<'data> {
+pub(crate) struct ObjectLayoutStateExt<'data> {
     gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
 
@@ -2345,16 +2334,16 @@ pub(crate) struct ElfObjectLayoutState<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ElfLayoutProperties {
+pub(crate) struct LayoutExt {
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: RiscVAttributes,
     pub(crate) eflags: Eflags,
 }
 
-impl ElfLayoutProperties {
+impl LayoutExt {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
         objects: impl Iterator<Item = &'files File<'data>>,
-        states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
+        states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
         args: &Args,
     ) -> Result<Self> {
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
@@ -2370,7 +2359,7 @@ impl ElfLayoutProperties {
 }
 
 fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
-    states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
+    states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
     timing_phase!("Merge GNU property notes");
@@ -2444,7 +2433,7 @@ fn merge_eflags<'files, 'data: 'files, A: Arch>(
 }
 
 fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(
-    states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
+    states: impl Iterator<Item = &'groups ObjectLayoutStateExt<'data>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
 
@@ -2927,7 +2916,7 @@ pub(crate) struct VerneedInfo<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct DynamicLayoutState<'data> {
+pub(crate) struct DynamicLayoutStateExt<'data> {
     /// Which symbol versions are needed. A symbol version is needed if a symbol with that version
     /// has been loaded. The first version has index 1, so we store it at offset 0.
     symbol_versions_needed: Vec<bool>,
@@ -2938,7 +2927,7 @@ pub(crate) struct DynamicLayoutState<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct DynamicLayout<'data> {
+pub(crate) struct DynamicLayoutExt<'data> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
     pub(crate) version_mapping: Vec<u16>,
 
@@ -2973,7 +2962,7 @@ pub(crate) struct NonAddressableCounts {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout {
+pub(crate) struct EpilogueLayoutExt {
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
@@ -3214,7 +3203,7 @@ impl<'data> Sonames<'data> {
 
 impl platform::SegmentType for SegmentType {}
 
-impl EpilogueLayout {
+impl EpilogueLayoutExt {
     fn gnu_build_id_note_section_size(&self) -> Option<u64> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }

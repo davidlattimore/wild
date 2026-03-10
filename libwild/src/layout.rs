@@ -11,7 +11,6 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
-use crate::elf::Elf;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -170,7 +169,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let properties_and_attributes = P::create_layout_properties::<A>(
         symbol_db.args,
         objects_iter(&group_states).map(|obj| obj.object),
-        objects_iter(&group_states).map(|obj| &obj.format_specific_layout_state),
+        objects_iter(&group_states).map(|obj| &obj.format_specific),
     )?;
 
     let finalise_sizes_resources = FinaliseSizesResources {
@@ -339,7 +338,7 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    format_specific: &'scope P::LayoutProperties,
+    format_specific: &'scope P::LayoutExt,
 }
 
 /// Update resolutions for defsym symbols that reference other symbols.
@@ -573,7 +572,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    pub(crate) properties_and_attributes: P::LayoutProperties,
+    pub(crate) properties_and_attributes: P::LayoutExt,
 }
 
 #[derive(Debug)]
@@ -688,7 +687,7 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data> {
 }
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
-    format_specific: P::EpilogueLayout,
+    format_specific: P::EpilogueLayoutExt,
 }
 
 #[derive(Debug)]
@@ -706,7 +705,7 @@ pub(crate) struct SyntheticSymbolsLayout<'data> {
 
 #[derive(Debug)]
 pub(crate) struct EpilogueLayout<P: Platform> {
-    pub(crate) format_specific: P::EpilogueLayout,
+    pub(crate) format_specific: P::EpilogueLayoutExt,
     pub(crate) dynsym_start_index: u32,
 }
 
@@ -755,7 +754,7 @@ pub(crate) struct DynamicLayout<'data, P: Platform> {
 
     pub(crate) copy_relocation_symbols: Vec<SymbolId>,
 
-    pub(crate) format_specific_layout: P::DynamicLayout<'data>,
+    pub(crate) format_specific_layout: P::DynamicLayoutExt<'data>,
 }
 
 trait HandlerData {
@@ -793,7 +792,7 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
                 if flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
-                    let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                    let entry_size = size_of::<P::SymtabEntry>() as u64;
                     common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
                     common.allocate(part_id::STRTAB, name.len() as u64 + 1);
                 } else {
@@ -1099,7 +1098,7 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 
-    pub(crate) format_specific: <Elf as Platform>::CommonGroupStateExt,
+    pub(crate) format_specific: P::CommonGroupStateExt,
 }
 
 impl<'data, P: Platform> CommonGroupState<'data, P> {
@@ -1183,7 +1182,7 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// Mapping from sections to their corresponding relocation section.
     relocations: P::RelocationSections,
 
-    pub(crate) format_specific_layout_state: P::FileLayoutState<'data>,
+    pub(crate) format_specific: P::ObjectLayoutStateExt<'data>,
 
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
@@ -1206,7 +1205,7 @@ struct DynamicLayoutState<'data, P: Platform> {
     symbol_id_range: SymbolIdRange,
     lib_name: &'data [u8],
 
-    format_specific_state: P::DynamicLayoutState<'data>,
+    format_specific_state: P::DynamicLayoutStateExt<'data>,
 
     /// Maps from addresses within the shared object to copy relocations at that address.
     copy_relocations: HashMap<u64, CopyRelocationInfo>,
@@ -1325,7 +1324,7 @@ struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
-    format_specific: &'scope P::LayoutProperties,
+    format_specific: &'scope P::LayoutExt,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -3545,7 +3544,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
 }
 
 fn should_emit_undefined_error<P: Platform>(
-    symbol: &P::Symbol,
+    symbol: &P::SymtabEntry,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
@@ -3737,7 +3736,7 @@ fn new_object_layout_state<'data, P: Platform>(
         object: input_state.common.object,
         sections: input_state.sections,
         relocations: input_state.relocations,
-        format_specific_layout_state: Default::default(),
+        format_specific: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
     })
 }
@@ -3827,13 +3826,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         if let Some(section_index) = note_gnu_property_section {
             self.object
-                .process_gnu_note_section(&mut self.format_specific_layout_state, section_index)?;
+                .process_gnu_note_section(&mut self.format_specific, section_index)?;
         }
 
         if let Some(riscv_attributes_index) = riscv_attributes_section {
             A::process_riscv_attributes(
                 self.object,
-                &mut self.format_specific_layout_state,
+                &mut self.format_specific,
                 riscv_attributes_index,
             )
             .context("Cannot parse .riscv.attributes section")?;
@@ -4181,7 +4180,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         &self,
         resources: &FinaliseLayoutResources<'scope, 'data, P>,
         flags: ValueFlags,
-        local_symbol: &P::Symbol,
+        local_symbol: &P::SymtabEntry,
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -4203,7 +4202,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         &self,
         resources: &FinaliseLayoutResources<'scope, 'data, P>,
         flags: ValueFlags,
-        local_symbol: &P::Symbol,
+        local_symbol: &P::SymtabEntry,
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -4365,7 +4364,7 @@ impl<'data> SymbolCopyInfo<'data> {
     pub(crate) fn new<P: Platform>(
         object: &P::File<'data>,
         sym_index: object::SymbolIndex,
-        sym: &P::Symbol,
+        sym: &P::SymtabEntry,
         symbol_id: SymbolId,
         symbol_db: &SymbolDb<'data, P>,
         symbol_state: ValueFlags,
@@ -4409,7 +4408,7 @@ impl<'data> SymbolCopyInfo<'data> {
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
 fn can_export_symbol<'data, P: Platform>(
-    sym: &P::Symbol,
+    sym: &P::SymtabEntry,
     symbol_id: SymbolId,
     resources: &GraphResources<'data, '_, P>,
     export_all_dynamic: bool,
@@ -5561,7 +5560,7 @@ impl CopyRelocationInfo {
 /// Assigns the address in BSS for the copy relocation of a symbol.
 fn assign_copy_relocation_address<'data, P: Platform>(
     file: &P::File<'data>,
-    local_symbol: &P::Symbol,
+    local_symbol: &P::SymtabEntry,
     memory_offsets: &mut OutputSectionPartMap<u64>,
 ) -> Result<u64, Error> {
     let section_index = local_symbol.section_index();
@@ -5664,6 +5663,7 @@ impl<'data, P: Platform> ObjectLayout<'data, P> {
 /// overlap and that sections don't overlap.
 #[test]
 fn test_no_disallowed_overlaps() {
+    use crate::elf::Elf;
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
