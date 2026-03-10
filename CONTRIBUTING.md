@@ -38,14 +38,9 @@ guidelines](https://forge.rust-lang.org/how-to-start-contributing.html#etiquette
 
 ## Options for communicating
 
-Feel free to start a [discussion](https://github.com/wild-linker/wild/discussions) or open an
-[issue](https://github.com/wild-linker/wild/issues).
+Feel free to start a [discussion](https://github.com/wild-linker/wild/discussions), open an [issue](https://github.com/wild-linker/wild/issues), or start a thread on our [Zulip](https://wild.zulipchat.com/).
 
-You're also welcome to reach out directly to the following people:
-
-* [David Lattimore](https://davidlattimore.github.io/about/) - original author and primary
-  maintainer. I love talking about this stuff, so feel free to set up a video call to discuss.
-  You're also welcome to PM me on the [rust-lang zulip](https://rust-lang.zulipchat.com/).
+You're also welcome to reach out directly to the [maintainers](GOVERNANCE.md#maintainers).
 
 ## Meetings
 
