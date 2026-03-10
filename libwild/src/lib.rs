@@ -69,6 +69,7 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 
 use crate::args::ActivatedArgs;
+use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
 use crate::identity::linker_identity;
@@ -157,7 +158,7 @@ pub struct LinkerOutput<'layout_inputs> {
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<layout::Layout<'layout_inputs, crate::elf::File<'layout_inputs>>>,
+    layout: Option<layout::Layout<'layout_inputs, Elf>>,
 }
 
 impl Linker {
@@ -207,7 +208,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'data, A: Arch<File<'data> = crate::elf::File<'data>>>(
+    fn link_for_arch<'data, A: Arch<Platform = Elf>>(
         &'data self,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
@@ -235,7 +236,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: Arch<File<'data> = crate::elf::File<'data>>>(
+    fn load_inputs_and_link<'data, A: Arch<Platform = Elf>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,
@@ -254,7 +255,7 @@ impl Linker {
         let mut output = file_writer::Output::new(args, output_kind);
 
         let mut output_sections =
-            OutputSections::with_base_address::<elf::File>(output_kind.base_address());
+            OutputSections::with_base_address::<Elf>(output_kind.base_address());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
@@ -314,7 +315,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<A>(
+        let layout = layout::compute::<Elf, A>(
             symbol_db,
             per_symbol_flags,
             resolved,

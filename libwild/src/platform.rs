@@ -36,11 +36,11 @@ use std::path::PathBuf;
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
-    type File<'data>: ObjectFile<'data>;
+    type Platform: Platform;
 
     /// Returns the identifier to be written into the output file that identifies the file as
     /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
-    fn arch_identifier<'a>() -> <Self::File<'a> as ObjectFile<'a>>::ArchIdentifier;
+    fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier;
 
     /// Get dynamic relocation value specific for the architecture.
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
@@ -65,7 +65,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start<'data>(layout: &Layout<'data, Self::File<'data>>) -> u64;
+    fn tp_offset_start<'data>(layout: &Layout<'data, Self::Platform>) -> u64;
 
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -85,16 +85,16 @@ pub(crate) trait Arch: Send + Sync + 'static {
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
     fn get_source_info<'data>(
-        object: &Self::File<'data>,
-        relocations: &<Self::File<'data> as ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File<'data> as ObjectFile<'data>>::SectionHeader,
+        object: &<Self::Platform as Platform>::File<'data>,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+        section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<SourceInfo>;
 
     fn collect_relaxation_deltas<'data>(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        _relocations: <Self::File<'data> as ObjectFile<'data>>::RelocationList,
+        _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
@@ -104,7 +104,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
     }
 
     fn is_symbol_variant_pcs<'data>(
-        _object: &Self::File<'data>,
+        _object: &<Self::Platform as Platform>::File<'data>,
         _symbol_index: object::SymbolIndex,
     ) -> bool {
         false
@@ -112,20 +112,20 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
-    fn new_relaxation<'data>(
+    fn new_relaxation(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <Self::File<'data> as ObjectFile<'data>>::SectionFlags,
+        section_flags: <Self::Platform as Platform>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
 
     fn process_riscv_attributes<'data>(
-        _object: &Self::File<'data>,
-        _format_specific: &mut <Self::File<'data> as ObjectFile<'data>>::FileLayoutState,
+        _object: &<Self::Platform as Platform>::File<'data>,
+        _format_specific: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
@@ -151,303 +151,105 @@ pub(crate) struct RelaxSymbolInfo {
     pub is_interposable: bool,
 }
 
-/// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
-pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
+/// A platform for which we support writing producing linked outputs.
+pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
+    type File<'data>: ObjectFile<'data, Platform = Self>;
     type Symbol: Symbol;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
+    type SectionAttributes: SectionAttributes;
     type SectionType: SectionType;
     type SegmentType: SegmentType;
-    type SectionAttributes: SectionAttributes;
-    type SectionIterator: Iterator<Item = &'data Self::SectionHeader>;
-    type DynamicTagValues: DynamicTagValues<'data>;
-    type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
-    type RelocationList: Send + Sync + 'data;
-    type DynamicEntry: Send + Sync + 'data;
-    type VerneedTable: VerneedTable<'data>;
-    type EpilogueLayout: Send + Sync + 'static;
-    type DynamicLayoutState: Default + Send + Sync + 'data;
-    type DynamicLayout: std::fmt::Debug + Send + Sync + 'data;
-    type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'data;
-    type NonAddressableCounts: Default + Send + Sync + 'data;
-    type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
-    type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
-    type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
     type ProgramSegmentDef: ProgramSegmentDef;
     type BuiltInSectionDetails: BuiltInSectionDetails;
+    type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
+    type DynamicEntry: Send + Sync + 'static;
+    type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
+    type NonAddressableCounts: Default + Send + Sync + 'static;
+    type EpilogueLayout: Send + Sync + 'static;
+    type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
+    type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
 
-    /// Format-specific per-file state used during the layout phase.
-    type FileLayoutState: Default + Send + Sync + 'data;
-
     /// Format-specific properties produced by the layout phase.
     type LayoutProperties: Send + Sync + 'static;
 
+    type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
+    type DynamicTagValues<'data>: DynamicTagValues<'data>;
+    type RelocationList<'data>: Send + Sync + 'data;
+    type VerneedTable<'data>: VerneedTable<'data>;
+    type DynamicLayoutState<'data>: Default + Send + Sync + 'data;
+    type DynamicLayout<'data>: std::fmt::Debug + Send + Sync + 'data;
+    type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
+
+    /// Format-specific per-file state used during the layout phase.
+    type FileLayoutState<'data>: Default + Send + Sync + 'data;
+
     /// The name of a symbol, possibly with a version.
-    type RawSymbolName: RawSymbolName<'data>;
+    type RawSymbolName<'data>: RawSymbolName<'data>;
 
     /// For platforms that don't support symbol versioning, this can just be the unit type.
-    type VersionNames;
-
-    fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> Result<Self>;
-
-    /// As for `parse_bytes` but also validates that the file architecture matches what is expected
-    /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self>;
-
-    fn is_dynamic(&self) -> bool;
-
-    fn num_symbols(&self) -> usize;
-
-    fn symbols(&self) -> &'data [Self::Symbol];
-
-    fn enumerate_symbols(
-        &self,
-    ) -> impl Iterator<Item = (object::SymbolIndex, &'data Self::Symbol)> {
-        self.symbols()
-            .iter()
-            .enumerate()
-            .map(|(i, sym)| (object::SymbolIndex(i), sym))
-    }
-
-    // TODO: Remove implementations of this as this default should be fine. Perhaps first check if
-    // all platforms can get a slice of symbols.
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data Self::Symbol> {
-        self.symbols().iter()
-    }
-
-    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
-
-    fn section_size(&self, header: &Self::SectionHeader) -> Result<u64>;
+    type VersionNames<'data>;
 
     fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
 
-    fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]>;
+    /// Returns the default section type used for custom sections that don't specify a type.
+    fn default_section_type() -> Self::SectionType;
 
-    fn num_sections(&self) -> usize;
+    /// Validate that the supplied sizes are internally consistent.
+    fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        Ok(())
+    }
 
-    fn section_iter(&self) -> Self::SectionIterator;
+    /// Implementations can force certain sections to be kept. Only needs to be done for sections
+    /// that need to be emitted even if empty.
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args);
 
-    fn enumerate_sections(
-        &self,
-    ) -> impl Iterator<Item = (object::SectionIndex, &'data Self::SectionHeader)>;
+    /// Returns whether an input section with zero size destined for the specified output section
+    /// should be considered content and thus prevent the output section from being discarded.
+    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
 
-    fn section(&self, index: object::SectionIndex) -> Result<&'data Self::SectionHeader>;
-
-    fn section_by_name(
-        &self,
-        name: &str,
-    ) -> Option<(object::SectionIndex, &'data Self::SectionHeader)>;
-
-    fn symbol_section(
-        &self,
-        symbol: &Self::Symbol,
-        index: object::SymbolIndex,
-    ) -> Result<Option<object::SectionIndex>>;
-
-    fn symbol_versions(&self) -> &[Self::SymbolVersionIndex];
-
-    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
-    /// of `state`.
-    fn activate_dynamic(&self, state: &mut Self::DynamicLayoutState);
-
-    fn dynamic_symbol_used(
-        &self,
-        symbol_index: object::SymbolIndex,
-        state: &mut Self::DynamicLayoutState,
-    ) -> Result;
-
-    fn finalise_sizes_dynamic(
-        &self,
-        lib_name: &[u8],
-        state: &mut Self::DynamicLayoutState,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-    ) -> Result;
-
-    fn apply_non_addressable_indexes_dynamic(
-        &self,
-        indexes: &mut Self::NonAddressableIndexes,
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::DynamicLayoutState,
-    ) -> Result;
-
-    fn finalise_layout_dynamic(
-        &self,
-        state: Self::DynamicLayoutState,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> Self::DynamicLayout;
-
-    fn new_epilogue_layout(
-        args: &Args,
-        output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
-    ) -> Self::EpilogueLayout;
-
-    fn apply_non_addressable_indexes_epilogue(
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayout,
-    );
-
-    fn apply_non_addressable_indexes<'groups>(
-        symbol_db: &SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
-        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
-    );
-
-    fn finalise_sizes_epilogue(
-        state: &mut Self::EpilogueLayout,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
-        properties: &Self::LayoutProperties,
-        symbol_db: &SymbolDb<'data, Self>,
-    );
-
-    fn finalise_sizes_all(
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<'data, Self>,
-    );
-
-    fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayout,
-        current_sizes: &OutputSectionPartMap<u64>,
-        extra_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
-    ) -> Result;
-
-    fn finalise_layout_epilogue(
-        epilogue_state: &mut Self::EpilogueLayout,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<'data, Self>,
-        common_state: &Self::LayoutProperties,
-        dynsym_start_index: u32,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
-    ) -> Result;
-
-    fn dynamic_tags(&self) -> Result<&'data [Self::DynamicEntry]>;
-
-    fn section_name(&self, section_header: &Self::SectionHeader) -> Result<&'data [u8]>;
-
-    /// Returns the raw section data. Doesn't handle decompression.
-    fn raw_section_data(&self, section: &Self::SectionHeader) -> Result<&'data [u8]>;
-
-    fn section_data(
-        &self,
-        section: &Self::SectionHeader,
-        member: &bumpalo_herd::Member<'data>,
-        loaded_metrics: &LoadedMetrics,
-    ) -> Result<&'data [u8]>;
-
-    /// Copies the data for the specified section into `out`, which must be the correct size.
-    /// Decompresses the data if necessary.
-    fn copy_section_data(&self, section: &Self::SectionHeader, out: &mut [u8]) -> Result;
-
-    /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
-    fn section_data_cow(&self, section: &Self::SectionHeader) -> Result<Cow<'data, [u8]>>;
-
-    fn section_alignment(&self, section: &Self::SectionHeader) -> Result<u64>;
-
-    fn relocations(
-        &self,
-        index: object::SectionIndex,
-        relocations: &Self::RelocationSections,
-    ) -> Result<Self::RelocationList>;
-
-    fn parse_relocations(&self) -> Result<Self::RelocationSections>;
-
-    /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
-    /// quite slow.
-    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String>;
-
-    fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
-
-    fn dynamic_tag_values(&self) -> Option<Self::DynamicTagValues>;
-
-    fn get_version_names(&self) -> Result<Self::VersionNames>;
-
-    fn get_symbol_name_and_version(
-        &self,
-        symbol: &Self::Symbol,
-        local_index: usize,
-        version_names: &Self::VersionNames,
-    ) -> Result<Self::RawSymbolName>;
-
-    fn verneed_table(&self) -> Result<Self::VerneedTable>;
-
-    fn process_gnu_note_section(
-        &self,
-        state: &mut Self::FileLayoutState,
-        section_index: object::SectionIndex,
-    ) -> Result;
-
-    fn create_layout_properties<'states, 'files, A: Arch<File<'data> = Self>>(
-        args: &Args,
-        objects: impl Iterator<Item = &'files Self>,
-        states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
-    ) -> Result<Self::LayoutProperties>
-    where
-        'data: 'files,
-        'data: 'states;
-
-    fn load_exception_frame_data<'scope, A: Arch<File<'data> = Self>>(
-        object: &mut ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        queue: &mut layout::LocalWorkQueue,
-        scope: &Scope<'scope>,
-    ) -> Result;
-
-    /// Called when a section is loaded (not GCed). Implementations should process any exception
-    /// frame data related to the loaded section.
-    fn non_empty_section_loaded<'scope, A: Arch<File<'data> = Self>>(
-        object: &mut layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
-        unloaded: UnloadedSection,
-        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
-        scope: &Scope<'scope>,
-    ) -> Result;
+    fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
-
-    /// Called after GC phase has completed. Mostly useful for platform-specific logging.
-    fn finalise_find_required_sections(groups: &[layout::GroupState<'data, Self>]);
-
-    fn pre_finalise_sizes_prelude(common: &mut layout::CommonGroupState<'data, Self>, args: &Args);
-
-    fn finalise_object_sizes(
-        object: &mut layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-    );
-
-    fn finalise_object_layout(
-        object: &layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-    );
-
-    fn compute_object_addresses(
-        object: &layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-    );
 
     /// Resolves a reference to the frame data section.
     fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
 
-    /// Returns whether we should check for undefined symbols in `self`. Only called for dynamic
-    /// objects.
-    fn should_enforce_undefined(&self, resources: &layout::GraphResources<'data, '_, Self>)
-    -> bool;
+    /// Called after GC phase has completed. Mostly useful for platform-specific logging.
+    fn finalise_find_required_sections<'data>(groups: &[layout::GroupState<'data, Self>]);
 
-    fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
+    fn pre_finalise_sizes_prelude<'data>(
+        common: &mut layout::CommonGroupState<'data, Self>,
+        args: &Args,
+    );
+
+    fn finalise_object_sizes<'data>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+    );
+
+    fn finalise_object_layout<'data>(
+        object: &layout::ObjectLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    );
+
+    fn compute_object_addresses<'data>(
+        object: &layout::ObjectLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    );
+
+    fn layout_resources_ext<'data>(
+        groups: &[Group<'data, Self>],
+    ) -> Self::LayoutResourcesExt<'data>;
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
-    fn load_object_section_relocations<'scope, A: Arch<File<'data> = Self>>(
+    fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -457,7 +259,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'scope, A: Arch<File<'data> = Self>>(
+    fn load_object_debug_relocations<'data, 'scope, A: Arch<Platform = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -466,12 +268,12 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         scope: &Scope<'scope>,
     ) -> Result;
 
-    fn create_dynamic_symbol_definition(
+    fn create_dynamic_symbol_definition<'data>(
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
     ) -> Result<layout::DynamicSymbolDefinition<'data>>;
 
-    fn validate_section(
+    fn validate_section<'data>(
         section_info: &crate::output_section_id::SectionOutputInfo,
         section_flags: Self::SectionFlags,
         section_layout: &OutputRecordLayout,
@@ -479,14 +281,6 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         output_sections: &OutputSections<'data>,
         section_id: OutputSectionId,
     ) -> Result;
-
-    /// Returns the default section type used for custom sections that don't specify a type.
-    fn default_section_type() -> Self::SectionType;
-
-    /// Validate that the supplied sizes are internally consistent.
-    fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        Ok(())
-    }
 
     /// Called when we detect an internal error with allocation in order to try and help determine
     /// what we did wrong.
@@ -510,22 +304,277 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     /// Returns segment definitions that should be unconditionally emitted without content.
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
 
-    fn create_linker_defined_symbols(
+    fn create_linker_defined_symbols<'data>(
         symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
         output_kind: OutputKind,
     );
 
-    /// Implementations can force certain sections to be kept. Only needs to be done for sections
-    /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args);
+    fn built_in_section_infos<'data>() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
 
-    /// Returns whether an input section with zero size destined for the specified output section
-    /// should be considered content and thus prevent the output section from being discarded.
-    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
+    fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
+        args: &Args,
+        objects: impl Iterator<Item = &'files Self::File<'data>>,
+        states: impl Iterator<Item = &'states Self::FileLayoutState<'data>> + Clone,
+    ) -> Result<Self::LayoutProperties>
+    where
+        'data: 'files,
+        'data: 'states;
 
-    fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
+    fn load_exception_frame_data<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        eh_frame_section_index: object::SectionIndex,
+        resources: &'scope layout::GraphResources<'data, '_, Self>,
+        queue: &mut layout::LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) -> Result;
 
-    fn built_in_section_infos() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
+    /// Called when a section is loaded (not GCed). Implementations should process any exception
+    /// frame data related to the loaded section.
+    fn non_empty_section_loaded<'data, 'scope, A: Arch<Platform = Self>>(
+        object: &mut layout::ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        queue: &mut layout::LocalWorkQueue,
+        unloaded: UnloadedSection,
+        resources: &'scope layout::GraphResources<'data, 'scope, Self>,
+        scope: &Scope<'scope>,
+    ) -> Result;
+
+    fn new_epilogue_layout(
+        args: &Args,
+        output_kind: OutputKind,
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    ) -> Self::EpilogueLayout;
+
+    fn apply_non_addressable_indexes_epilogue(
+        counts: &mut Self::NonAddressableCounts,
+        state: &mut Self::EpilogueLayout,
+    );
+
+    fn apply_non_addressable_indexes<'data, 'groups>(
+        symbol_db: &SymbolDb<'data, Self>,
+        counts: &Self::NonAddressableCounts,
+        mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
+    );
+
+    fn finalise_sizes_epilogue<'data>(
+        state: &mut Self::EpilogueLayout,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
+        properties: &Self::LayoutProperties,
+        symbol_db: &SymbolDb<'data, Self>,
+    );
+
+    fn finalise_sizes_all<'data>(
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+    );
+
+    fn apply_late_size_adjustments_epilogue(
+        state: &mut Self::EpilogueLayout,
+        current_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result;
+
+    fn finalise_layout_epilogue<'data>(
+        epilogue_state: &mut Self::EpilogueLayout,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<'data, Self>,
+        common_state: &Self::LayoutProperties,
+        dynsym_start_index: u32,
+        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result;
+}
+
+/// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
+pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'data {
+    type Platform: Platform<File<'data> = Self>;
+
+    fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> Result<Self>;
+
+    /// As for `parse_bytes` but also validates that the file architecture matches what is expected
+    /// based on `args`.
+    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self>;
+
+    fn is_dynamic(&self) -> bool;
+
+    fn num_symbols(&self) -> usize;
+
+    fn symbols(&self) -> &'data [<Self::Platform as Platform>::Symbol];
+
+    fn enumerate_symbols(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            object::SymbolIndex,
+            &'data <Self::Platform as Platform>::Symbol,
+        ),
+    > {
+        self.symbols()
+            .iter()
+            .enumerate()
+            .map(|(i, sym)| (object::SymbolIndex(i), sym))
+    }
+
+    // TODO: Remove implementations of this as this default should be fine. Perhaps first check if
+    // all platforms can get a slice of symbols.
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data <Self::Platform as Platform>::Symbol> {
+        self.symbols().iter()
+    }
+
+    fn symbol(
+        &self,
+        index: object::SymbolIndex,
+    ) -> Result<&'data <Self::Platform as Platform>::Symbol>;
+
+    fn section_size(&self, header: &<Self::Platform as Platform>::SectionHeader) -> Result<u64>;
+
+    fn symbol_name(&self, symbol: &<Self::Platform as Platform>::Symbol) -> Result<&'data [u8]>;
+
+    fn num_sections(&self) -> usize;
+
+    fn section_iter(&self) -> <Self::Platform as Platform>::SectionIterator<'data>;
+
+    fn enumerate_sections(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            object::SectionIndex,
+            &'data <Self::Platform as Platform>::SectionHeader,
+        ),
+    >;
+
+    fn section(
+        &self,
+        index: object::SectionIndex,
+    ) -> Result<&'data <Self::Platform as Platform>::SectionHeader>;
+
+    fn section_by_name(
+        &self,
+        name: &str,
+    ) -> Option<(
+        object::SectionIndex,
+        &'data <Self::Platform as Platform>::SectionHeader,
+    )>;
+
+    fn symbol_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::Symbol,
+        index: object::SymbolIndex,
+    ) -> Result<Option<object::SectionIndex>>;
+
+    fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
+
+    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
+    /// of `state`.
+    fn activate_dynamic(&self, state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>);
+
+    fn dynamic_symbol_used(
+        &self,
+        symbol_index: object::SymbolIndex,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+    ) -> Result;
+
+    fn finalise_sizes_dynamic(
+        &self,
+        lib_name: &[u8],
+        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+    ) -> Result;
+
+    fn apply_non_addressable_indexes_dynamic(
+        &self,
+        indexes: &mut <Self::Platform as Platform>::NonAddressableIndexes,
+        counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
+        state: &mut <Self::Platform as Platform>::DynamicLayoutState<'data>,
+    ) -> Result;
+
+    fn finalise_layout_dynamic(
+        &self,
+        state: <Self::Platform as Platform>::DynamicLayoutState<'data>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> <Self::Platform as Platform>::DynamicLayout<'data>;
+
+    fn section_name(
+        &self,
+        section_header: &<Self::Platform as Platform>::SectionHeader,
+    ) -> Result<&'data [u8]>;
+
+    /// Returns the raw section data. Doesn't handle decompression.
+    fn raw_section_data(
+        &self,
+        section: &<Self::Platform as Platform>::SectionHeader,
+    ) -> Result<&'data [u8]>;
+
+    fn section_data(
+        &self,
+        section: &<Self::Platform as Platform>::SectionHeader,
+        member: &bumpalo_herd::Member<'data>,
+        loaded_metrics: &LoadedMetrics,
+    ) -> Result<&'data [u8]>;
+
+    /// Copies the data for the specified section into `out`, which must be the correct size.
+    /// Decompresses the data if necessary.
+    fn copy_section_data(
+        &self,
+        section: &<Self::Platform as Platform>::SectionHeader,
+        out: &mut [u8],
+    ) -> Result;
+
+    /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
+    fn section_data_cow(
+        &self,
+        section: &<Self::Platform as Platform>::SectionHeader,
+    ) -> Result<Cow<'data, [u8]>>;
+
+    fn section_alignment(
+        &self,
+        section: &<Self::Platform as Platform>::SectionHeader,
+    ) -> Result<u64>;
+
+    fn relocations(
+        &self,
+        index: object::SectionIndex,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+    ) -> Result<<Self::Platform as Platform>::RelocationList<'data>>;
+
+    fn parse_relocations(&self) -> Result<<Self::Platform as Platform>::RelocationSections>;
+
+    /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
+    /// quite slow.
+    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String>;
+
+    fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
+
+    fn dynamic_tag_values(&self) -> Option<<Self::Platform as Platform>::DynamicTagValues<'data>>;
+
+    fn get_version_names(&self) -> Result<<Self::Platform as Platform>::VersionNames<'data>>;
+
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &<Self::Platform as Platform>::Symbol,
+        local_index: usize,
+        version_names: &<Self::Platform as Platform>::VersionNames<'data>,
+    ) -> Result<<Self::Platform as Platform>::RawSymbolName<'data>>;
+
+    /// Returns whether we should check for undefined symbols in `self`. Only called for dynamic
+    /// objects.
+    fn should_enforce_undefined(
+        &self,
+        resources: &layout::GraphResources<'data, '_, Self::Platform>,
+    ) -> bool;
+
+    fn verneed_table(&self) -> Result<<Self::Platform as Platform>::VerneedTable<'data>>;
+
+    fn process_gnu_note_section(
+        &self,
+        state: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
+        section_index: object::SectionIndex,
+    ) -> Result;
+
+    fn dynamic_tags(&self) -> Result<&'data [<Self::Platform as Platform>::DynamicEntry]>;
 }
 
 pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
@@ -662,7 +711,7 @@ pub(crate) trait DynamicTagValues<'data>: std::fmt::Debug + Send + Sync + 'data 
 }
 
 pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
-    fn new<'data, O: ObjectFile<'data>>(symbol_db: &SymbolDb<'data, O>) -> Self;
+    fn new<'data, P: Platform>(symbol_db: &SymbolDb<'data, P>) -> Self;
 }
 
 pub(crate) trait SectionAttributes: std::fmt::Debug + Send + Sync + 'static {

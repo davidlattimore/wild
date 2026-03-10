@@ -23,13 +23,14 @@ use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
 use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use std::path::PathBuf;
 
-pub(crate) fn maybe_write_gc_stats<'data, O: ObjectFile<'data>>(
-    group_layouts: &[GroupLayout<'data, O>],
+pub(crate) fn maybe_write_gc_stats<'data, P: Platform>(
+    group_layouts: &[GroupLayout<'data, P>],
     args: &Args,
 ) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
@@ -46,8 +47,8 @@ struct InputFile<'data> {
     discarded_names: Vec<&'data [u8]>,
 }
 
-fn write_gc_stats<'data, O: ObjectFile<'data>>(
-    group_layouts: &[GroupLayout<'data, O>],
+fn write_gc_stats<'data, P: Platform>(
+    group_layouts: &[GroupLayout<'data, P>],
     stats_file: &std::path::Path,
     args: &Args,
 ) -> Result {
