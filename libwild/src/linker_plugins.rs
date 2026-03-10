@@ -1012,13 +1012,10 @@ extern "C" fn message(level: libc::c_int, format: *const libc::c_char) -> Status
 /// from all non-trivial hooks in order to ensure that we don't try to propagate a panic back into
 /// the linker-plugin which would be undefined behaviour.
 fn catch_panics(body: impl FnOnce() -> Status) -> Status {
-    match std::panic::catch_unwind(AssertUnwindSafe(body)) {
-        Ok(status) => status,
-        Err(_) => {
-            ERROR_MESSAGE.replace(Some("Panic in plugin callback".to_owned()));
-            Status::Err
-        }
-    }
+    std::panic::catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        ERROR_MESSAGE.replace(Some("Panic in plugin callback".to_owned()));
+        Status::Err
+    })
 }
 
 struct ClaimContext<'data> {
