@@ -326,10 +326,6 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn default_section_type() -> Self::SectionType {
-        sht::PROGBITS
-    }
-
     fn validate_sizes(mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if *mem_sizes.get(part_id::GNU_VERSION) > 0 {
             let num_dynamic_symbols =
@@ -521,11 +517,11 @@ impl platform::Platform for Elf {
     }
 
     fn validate_section<'data>(
-        section_info: &output_section_id::SectionOutputInfo,
+        section_info: &output_section_id::SectionOutputInfo<Elf>,
         section_flags: SectionFlags,
         section_layout: &OutputRecordLayout,
         merge_target: OutputSectionId,
-        output_sections: &OutputSections<'data>,
+        output_sections: &OutputSections<'data, Elf>,
         section_id: OutputSectionId,
     ) -> Result {
         // TODO: Remove the NOTE exception. Non-alloc sections should be placed outside of program
@@ -535,7 +531,7 @@ impl platform::Platform for Elf {
 
         // The .riscv.attributes section is non-alloc but is expected to be put into a
         // RISCV_ATTRIBUTES segment.
-        if [sht::NOTE, sht::RISCV_ATTRIBUTES].contains(&section_info.ty) {
+        if [sht::NOTE, sht::RISCV_ATTRIBUTES].contains(&section_info.section_attributes.ty) {
         } else {
             // All segments should only cover sections that are allocated and have a non-zero
             // address.
@@ -556,7 +552,7 @@ impl platform::Platform for Elf {
     }
 
     fn verify_resolution_allocation(
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<Elf>,
         output_order: &output_section_id::OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
@@ -689,15 +685,18 @@ impl platform::Platform for Elf {
         });
     }
 
-    fn built_in_section_infos<'data>() -> Vec<crate::output_section_id::SectionOutputInfo<'data>> {
+    fn built_in_section_infos<'data>()
+    -> Vec<crate::output_section_id::SectionOutputInfo<'data, Elf>> {
         SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                section_flags: d.section_flags,
+                section_attributes: SectionAttributes {
+                    flags: d.section_flags,
+                    ty: d.ty,
+                    entsize: d.element_size,
+                },
                 kind: d.kind,
-                ty: d.ty,
                 min_alignment: d.min_alignment,
-                entsize: d.element_size,
                 location: None,
                 secondary_order: None,
             })
@@ -1879,11 +1878,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 }
 
-impl platform::SectionType for SectionType {
-    fn is_null(self) -> bool {
-        self == sht::NULL
-    }
-}
+impl platform::SectionType for SectionType {}
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
@@ -2746,11 +2741,11 @@ pub(crate) fn process_riscv_attributes(
 
 /// Attributes that we'll take from an input section and apply to the output section into which it's
 /// placed.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct SectionAttributes {
-    flags: SectionFlags,
-    ty: SectionType,
-    entsize: u64,
+    pub(crate) flags: SectionFlags,
+    pub(crate) ty: SectionType,
+    pub(crate) entsize: u64,
 }
 
 /// Section flags that should be propagated from input sections to the output section in which they
@@ -2759,6 +2754,8 @@ const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
     SectionFlags::from_u32(!object::elf::SHF_GROUP);
 
 impl platform::SectionAttributes for SectionAttributes {
+    type Platform = Elf;
+
     fn merge(&mut self, rhs: Self) {
         self.flags |= rhs.flags;
 
@@ -2773,14 +2770,46 @@ impl platform::SectionAttributes for SectionAttributes {
         }
     }
 
-    fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
+    fn apply(&self, output_sections: &mut OutputSections<Elf>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
-        info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+        info.section_attributes.flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
 
-        info.entsize = self.entsize;
+        info.section_attributes.entsize = self.entsize;
 
-        info.ty = info.ty.max(self.ty);
+        info.section_attributes.ty = info.section_attributes.ty.max(self.ty);
+    }
+
+    fn is_null(&self) -> bool {
+        self.ty == sht::NULL
+    }
+
+    fn is_alloc(&self) -> bool {
+        self.flags.contains(shf::ALLOC)
+    }
+
+    fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
+        self.flags
+    }
+
+    fn set_to_default_type(&mut self) {
+        self.ty = sht::PROGBITS;
+    }
+
+    fn is_executable(&self) -> bool {
+        self.flags.contains(shf::EXECINSTR)
+    }
+
+    fn is_tls(&self) -> bool {
+        self.flags.contains(shf::TLS)
+    }
+
+    fn is_writable(&self) -> bool {
+        self.flags.contains(shf::WRITE)
+    }
+
+    fn is_no_bits(&self) -> bool {
+        self.ty == sht::NOBITS
     }
 }
 
@@ -3261,6 +3290,8 @@ pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
 };
 
 impl platform::ProgramSegmentDef for ProgramSegmentDef {
+    type Platform = Elf;
+
     fn is_writable(self) -> bool {
         self.segment_flags.contains(pf::WRITABLE)
     }
@@ -3297,19 +3328,20 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
     fn should_include_section(
         self,
-        info: &crate::output_section_id::SectionOutputInfo,
+        info: &crate::output_section_id::SectionOutputInfo<Elf>,
         section_id: OutputSectionId,
     ) -> bool {
         match self.segment_type {
-            pt::NOTE => info.ty == sht::NOTE,
-            pt::TLS => info.section_flags.contains(shf::TLS),
+            pt::NOTE => info.section_attributes.ty == sht::NOTE,
+            pt::TLS => info.section_attributes.flags.contains(shf::TLS),
             pt::LOAD => {
-                info.section_flags.contains(shf::ALLOC)
-                    && info.section_flags.contains(shf::WRITE) == self.is_writable()
-                    && info.section_flags.contains(shf::EXECINSTR) == self.is_executable()
+                info.section_attributes.flags.contains(shf::ALLOC)
+                    && info.section_attributes.flags.contains(shf::WRITE) == self.is_writable()
+                    && info.section_attributes.flags.contains(shf::EXECINSTR)
+                        == self.is_executable()
             }
             pt::GNU_RELRO => {
-                info.section_flags.contains(shf::TLS)
+                info.section_attributes.flags.contains(shf::TLS)
                     || section_id
                         .opt_built_in_details::<Elf>()
                         .is_some_and(|details| details.is_relro)

@@ -6,6 +6,7 @@ use crate::output_section_id::INIT;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
+use crate::platform::Platform;
 use std::fmt::Debug;
 
 /// An ID for a part of an output section. Parts IDs are ordered with generated
@@ -96,7 +97,10 @@ impl PartId {
         PartId(value)
     }
 
-    pub(crate) fn alignment(self, output_sections: &OutputSections<'_>) -> Alignment {
+    pub(crate) fn alignment<P: Platform>(
+        self,
+        output_sections: &OutputSections<'_, P>,
+    ) -> Alignment {
         if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
@@ -137,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_conversion_consistency() {
-        let output_sections = OutputSections::for_testing();
+        let output_sections = OutputSections::<crate::elf::Elf>::for_testing();
         for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
             let part_id = PartId::from_u32(i);
             let section_id = part_id.output_section_id();

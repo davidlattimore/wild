@@ -53,7 +53,7 @@ impl<'data> LinkerPlugin<'data> {
         _resolver: &mut Resolver<'data, Elf>,
         _file_loader: &mut FileLoader<'data>,
         _per_symbol_flags: &mut PerSymbolFlags,
-        _output_sections: &mut OutputSections<'data>,
+        _output_sections: &mut OutputSections<'data, Elf>,
         _layout_rules_builder: &mut LayoutRulesBuilder<'data>,
     ) -> Result {
         Ok(())

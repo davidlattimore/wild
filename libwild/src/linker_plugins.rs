@@ -177,7 +177,7 @@ impl<'data> LinkerPlugin<'data> {
         resolver: &mut Resolver<'data, P>,
         file_loader: &mut FileLoader<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
     ) -> Result {
         // If no LTO files were activated, and we proceed with LTO, the GCC plugin tries to invoke

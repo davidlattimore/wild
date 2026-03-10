@@ -157,10 +157,10 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type Symbol: Symbol;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
-    type SectionAttributes: SectionAttributes;
+    type SectionAttributes: SectionAttributes<Platform = Self>;
     type SectionType: SectionType;
     type SegmentType: SegmentType;
-    type ProgramSegmentDef: ProgramSegmentDef;
+    type ProgramSegmentDef: ProgramSegmentDef<Platform = Self>;
     type BuiltInSectionDetails: BuiltInSectionDetails;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
@@ -197,9 +197,6 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
-
-    /// Returns the default section type used for custom sections that don't specify a type.
-    fn default_section_type() -> Self::SectionType;
 
     /// Validate that the supplied sizes are internally consistent.
     fn validate_sizes(_mem_sizes: &OutputSectionPartMap<u64>) -> Result {
@@ -274,18 +271,18 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     ) -> Result<layout::DynamicSymbolDefinition<'data>>;
 
     fn validate_section<'data>(
-        section_info: &crate::output_section_id::SectionOutputInfo,
+        section_info: &crate::output_section_id::SectionOutputInfo<Self>,
         section_flags: Self::SectionFlags,
         section_layout: &OutputRecordLayout,
         merge_target: OutputSectionId,
-        output_sections: &OutputSections<'data>,
+        output_sections: &OutputSections<'data, Self>,
         section_id: OutputSectionId,
     ) -> Result;
 
     /// Called when we detect an internal error with allocation in order to try and help determine
     /// what we did wrong.
     fn verify_resolution_allocation(
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<Self>,
         output_order: &OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
@@ -309,7 +306,8 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         output_kind: OutputKind,
     );
 
-    fn built_in_section_infos<'data>() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
+    fn built_in_section_infos<'data>()
+    -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>>;
 
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
         args: &Args,
@@ -607,7 +605,6 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
 pub(crate) trait SectionType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
 {
-    fn is_null(self) -> bool;
 }
 
 pub(crate) trait SegmentType:
@@ -714,10 +711,35 @@ pub(crate) trait NonAddressableIndexes: Send + Sync + 'static {
     fn new<'data, P: Platform>(symbol_db: &SymbolDb<'data, P>) -> Self;
 }
 
-pub(crate) trait SectionAttributes: std::fmt::Debug + Send + Sync + 'static {
+pub(crate) trait SectionAttributes:
+    std::fmt::Debug + Default + Send + Sync + Copy + 'static
+{
+    type Platform: Platform;
+
     fn merge(&mut self, rhs: Self);
 
-    fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId);
+    fn apply(
+        &self,
+        output_sections: &mut OutputSections<Self::Platform>,
+        section_id: OutputSectionId,
+    );
+
+    fn is_null(&self) -> bool;
+
+    fn is_alloc(&self) -> bool;
+
+    fn is_executable(&self) -> bool;
+
+    fn is_tls(&self) -> bool;
+
+    fn is_writable(&self) -> bool;
+
+    fn is_no_bits(&self) -> bool;
+
+    fn flags(&self) -> <Self::Platform as Platform>::SectionFlags;
+
+    /// Called for custom sections that return true to `is_null`.
+    fn set_to_default_type(&mut self);
 }
 
 pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);
@@ -744,6 +766,8 @@ impl FrameIndex {
 }
 
 pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
+    type Platform: Platform;
+
     fn is_writable(self) -> bool;
 
     fn is_executable(self) -> bool;
@@ -764,7 +788,7 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
     /// `self`
     fn should_include_section(
         self,
-        section_info: &crate::output_section_id::SectionOutputInfo,
+        section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: OutputSectionId,
     ) -> bool;
 

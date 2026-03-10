@@ -212,9 +212,9 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
-pub(crate) fn merge_strings<'data>(
+pub(crate) fn merge_strings<'data, P: Platform>(
     inputs: &StringMergeInputs<'data>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
     args: &Args,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
     timing_phase!("Merge strings");
@@ -278,7 +278,7 @@ pub(crate) fn merge_strings<'data>(
 impl<'data> StringMergeInputs<'data> {
     pub(crate) fn new<P: Platform>(
         resolved: &mut [ResolvedGroup<'data, P>],
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
     ) -> Result<Self> {
         Ok(Self {
             input_sections_by_output: group_merge_string_sections_by_output(
@@ -294,7 +294,7 @@ impl<'data> StringMergeInputs<'data> {
 // faster.
 fn group_merge_string_sections_by_output<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
     verbose_timing_phase!("Find merge sectionns");
 
@@ -1088,8 +1088,8 @@ fn find_string(
 }
 
 impl MergedStringStartAddresses {
-    pub(crate) fn compute(
-        output_sections: &OutputSections<'_>,
+    pub(crate) fn compute<P: Platform>(
+        output_sections: &OutputSections<'_, P>,
         starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
         merge_string_sections: &OutputSectionMap<MergedStringsSection>,
     ) -> Self {

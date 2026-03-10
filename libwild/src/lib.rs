@@ -254,8 +254,7 @@ impl Linker {
 
         let mut output = file_writer::Output::new(args, output_kind);
 
-        let mut output_sections =
-            OutputSections::with_base_address::<Elf>(output_kind.base_address());
+        let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 

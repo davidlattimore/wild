@@ -88,7 +88,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
         mut self,
         symbol_db: &mut SymbolDb<'data, P>,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
         layout_rules: &LayoutRules<'data>,
     ) -> Result<Vec<ResolvedGroup<'data, P>>> {
         timing_phase!("Section resolution");
@@ -686,7 +686,7 @@ pub(crate) struct ResolvedLtoInput {
 
 fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
-    output_sections: &mut OutputSections<'data>,
+    output_sections: &mut OutputSections<'data, P>,
     args: &Args,
 ) {
     timing_phase!("Assign section IDs");
@@ -917,7 +917,7 @@ fn load_symbol_named<'scope, 'data, P: Platform>(
 /// information up and put it into `custom_start_stop_defs`.
 fn canonicalise_undefined_symbols<'data, P: Platform>(
     mut undefined_symbols: Vec<UndefinedSymbol<'data>>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
     groups: &[ResolvedGroup<'data, P>],
     symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
@@ -1025,7 +1025,7 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
     symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
 
@@ -1072,10 +1072,10 @@ impl<'data, P: Platform> ResolvedCommon<'data, P> {
     }
 }
 
-fn apply_init_fini_secondaries<'data>(
+fn apply_init_fini_secondaries<'data, P: Platform>(
     details: &[InitFiniSectionDetail],
     sections: &mut [SectionSlot],
-    output_sections: &mut OutputSections<'data>,
+    output_sections: &mut OutputSections<'data, P>,
 ) {
     for d in details {
         let Some(slot) = sections.get_mut(d.index as usize) else {

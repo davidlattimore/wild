@@ -373,7 +373,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     pub(crate) fn add_inputs(
         &mut self,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
         loaded: LoadedInputs<'data, P>,
     ) -> Result {
