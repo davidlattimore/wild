@@ -289,7 +289,7 @@ impl<'data> LinkerPlugin<'data> {
     }
 }
 
-fn has_loaded_lto_input<'data, P: Platform>(resolved_groups: &[ResolvedGroup<'data, P>]) -> bool {
+fn has_loaded_lto_input<P: Platform>(resolved_groups: &[ResolvedGroup<P>]) -> bool {
     resolved_groups.iter().any(|group| {
         group
             .files

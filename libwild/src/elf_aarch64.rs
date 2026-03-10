@@ -99,7 +99,7 @@ impl crate::platform::Arch for ElfAArch64 {
         false
     }
 
-    fn tp_offset_start<'data>(layout: &Layout<'data, Elf>) -> u64 {
+    fn tp_offset_start(layout: &Layout<Elf>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 
@@ -278,8 +278,8 @@ impl crate::platform::Arch for ElfAArch64 {
         None
     }
 
-    fn is_symbol_variant_pcs<'data>(
-        object: &<Self::Platform as Platform>::File<'data>,
+    fn is_symbol_variant_pcs(
+        object: &<Self::Platform as Platform>::File<'_>,
         symbol_index: object::SymbolIndex,
     ) -> bool {
         object
