@@ -1407,8 +1407,8 @@ struct ResolvedGroup<'data, A: Arch> {
     /// The inclusive start of the bytes associated with this resolution.
     start: u64,
 
-    /// The exclusive end of the bytes associated with this resolution. This should the the offset
-    /// of the first byte after the later of (a) any instructions modified by the relaxation and
+    /// The exclusive end of the bytes associated with this resolution. This should be the offset
+    /// of the first byte after the latter of (a) any instructions modified by the relaxation and
     /// (b) the bytes of the relocation offset.
     end: u64,
 

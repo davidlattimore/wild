@@ -307,7 +307,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         });
 
         // Don't forget to add the non-interposable flag the local symbols.
-        // We coudn't do this earlier as we didn't know which symbols would remain
+        // We couldn't do this earlier as we didn't know which symbols would remain
         // local.
         per_symbol_flags
             .flags_mut()
@@ -1666,7 +1666,7 @@ trait SymbolLoader<'data, P: Platform> {
         false
     }
 
-    /// Returns whether the supplied symbol should be ignore.
+    /// Returns whether the supplied symbol should be ignored.
     fn should_ignore_symbol(&self, _symbol: &P::SymtabEntry) -> bool {
         false
     }
@@ -2030,7 +2030,7 @@ impl InternalSymDefInfo<'_> {
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),
             // The other linkers attach to the closest section, but the address is nonetheless
-            // outside of the selected section. It's tricky for us to find the the closest section
+            // outside of the selected section. It's tricky for us to find the closest section
             // at this point in the code, so we pick an arbitrary section.
             SymbolPlacement::LoadBaseAddress => Some(output_section_id::TEXT),
         }

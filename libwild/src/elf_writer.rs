@@ -3230,8 +3230,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
 
     // The actual build-id will be filled in later once all writing has completed. It's important
     // that we fill it with zeros now however, since if we're overwriting an existing file, there
-    // might be other data there and it we don't zero it, then the build ID will be hashing that
-    // data.
+    // might be other data there and we don't zero it, then the build ID will be hashing that data.
     let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
     build_id_buffer.fill(0);
 
