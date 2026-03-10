@@ -21,9 +21,9 @@ use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
 
-pub(crate) fn process_linker_scripts<'data>(
+pub(crate) fn process_linker_scripts<'data, P: Platform>(
     linker_scripts_in: &[InputLinkerScript<'data>],
-    output_sections: &mut OutputSections<'data>,
+    output_sections: &mut OutputSections<'data, P>,
     layout_rules_builder: &mut LayoutRulesBuilder<'data>,
 ) -> Result<Vec<ProcessedLinkerScript<'data>>> {
     timing_phase!("Process linker scripts");

@@ -48,7 +48,6 @@ use crate::platform::Relocation;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
-use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
@@ -113,7 +112,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     symbol_db: SymbolDb<'data, A::Platform>,
     mut per_symbol_flags: PerSymbolFlags,
     mut groups: Vec<ResolvedGroup<'data, A::Platform>>,
-    mut output_sections: OutputSections<'data>,
+    mut output_sections: OutputSections<'data, P>,
     output: &mut file_writer::Output,
 ) -> Result<Layout<'data, A::Platform>> {
     timing_phase!("Layout");
@@ -197,7 +196,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order::<A::Platform>();
+    let (output_order, program_segments) = output_sections.output_order();
 
     tracing::trace!(
         "Output order:\n{}",
@@ -461,7 +460,7 @@ fn finalise_copy_relocations<'data, P: Platform>(
 
 fn finalise_all_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
 ) -> Result {
@@ -563,7 +562,7 @@ pub struct Layout<'data, P: Platform> {
 
     pub(crate) group_layouts: Vec<GroupLayout<'data, P>>,
     pub(crate) segment_layouts: SegmentLayouts,
-    pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) output_sections: OutputSections<'data, P>,
     pub(crate) program_segments: ProgramSegments<P::ProgramSegmentDef>,
     pub(crate) output_order: OutputOrder,
     pub(crate) non_addressable_counts: P::NonAddressableCounts,
@@ -1104,7 +1103,7 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
 }
 
 impl<'data, P: Platform> CommonGroupState<'data, P> {
-    fn new(output_sections: &OutputSections) -> Self {
+    fn new(output_sections: &OutputSections<P>) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
@@ -1153,7 +1152,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         part_id: PartId,
         header: &P::SectionHeader,
         section: Section,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
     ) {
         self.allocate(part_id, section.capacity(output_sections));
         self.store_section_attributes(part_id, header);
@@ -1284,7 +1283,7 @@ pub(crate) struct OutputRecordLayout {
 pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
     pub(crate) symbol_db: &'scope SymbolDb<'data, P>,
 
-    output_sections: &'scope OutputSections<'data>,
+    output_sections: &'scope OutputSections<'data, P>,
 
     worker_slots: Vec<Mutex<WorkerSlot<'data, P>>>,
 
@@ -1318,7 +1317,7 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     symbol_db: &'scope SymbolDb<'data, P>,
     per_symbol_flags: &'scope PerSymbolFlags,
-    output_sections: &'scope OutputSections<'data>,
+    output_sections: &'scope OutputSections<'data, P>,
     output_order: &'scope OutputOrder,
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
@@ -1553,8 +1552,8 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 }
 
-fn layout_sections(
-    output_sections: &OutputSections,
+fn layout_sections<P: Platform>(
+    output_sections: &OutputSections<P>,
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
 ) -> OutputSectionMap<OutputRecordLayout> {
     section_part_layouts.merge_parts(|section_id, layouts| {
@@ -1584,8 +1583,8 @@ fn layout_sections(
     })
 }
 
-fn merge_secondary_parts(
-    output_sections: &OutputSections,
+fn merge_secondary_parts<P: Platform>(
+    output_sections: &OutputSections<P>,
     section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
 ) {
     for (id, info) in output_sections.ids_with_info() {
@@ -1655,7 +1654,7 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
 
 fn compute_segment_layout<P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     header_info: &HeaderInfo,
@@ -1734,7 +1733,7 @@ fn compute_segment_layout<P: Platform>(
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    <Elf as Platform>::validate_section(
+                    P::validate_section(
                         section_info,
                         section_flags,
                         section_layout,
@@ -1800,7 +1799,7 @@ fn compute_segment_layout<P: Platform>(
 
 fn compute_total_section_part_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &mut OutputSections,
+    output_sections: &mut OutputSections<P>,
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     per_symbol_flags: &mut PerSymbolFlags,
@@ -1846,7 +1845,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
 /// Propagates attributes from input sections to the output sections into which they were placed.
 fn propagate_section_attributes<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
-    output_sections: &mut OutputSections,
+    output_sections: &mut OutputSections<P>,
 ) {
     timing_phase!("Propagate section attributes");
 
@@ -1994,7 +1993,7 @@ fn find_required_sections<'data, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data, A::Platform>>,
     symbol_db: &SymbolDb<'data, A::Platform>,
     per_symbol_flags: &AtomicPerSymbolFlags,
-    output_sections: &OutputSections<'data>,
+    output_sections: &OutputSections<'data, A::Platform>,
     layout_resources_ext: <A::Platform as Platform>::LayoutResourcesExt<'data>,
 ) -> Result<GcOutputs<'data, A::Platform>> {
     timing_phase!("Find required sections");
@@ -2134,7 +2133,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
 
     fn finalise_sizes(
         &mut self,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
@@ -2316,7 +2315,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
@@ -2492,9 +2491,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     }
 }
 
-fn compute_file_sizes(
+fn compute_file_sizes<P: Platform>(
     mem_sizes: &OutputSectionPartMap<u64>,
-    output_sections: &OutputSections<'_>,
+    output_sections: &OutputSections<'_, P>,
 ) -> OutputSectionPartMap<usize> {
     mem_sizes.map(|part_id, size| {
         if output_sections.has_data_in_file(part_id.output_section_id()) {
@@ -2645,7 +2644,7 @@ impl Section {
 
     // How much space we take up. This is our size rounded up to the next multiple of our
     // alignment, unless we're in a packed section, in which case it's just our size.
-    pub(crate) fn capacity(&self, output_sections: &OutputSections) -> u64 {
+    pub(crate) fn capacity<P: Platform>(&self, output_sections: &OutputSections<P>) -> u64 {
         if self.part_id.should_pack() {
             self.size
         } else {
@@ -2662,7 +2661,7 @@ impl Section {
     }
 
     /// Returns the alignment for this section.
-    fn alignment(&self, output_sections: &OutputSections) -> Alignment {
+    fn alignment<P: Platform>(&self, output_sections: &OutputSections<P>) -> Alignment {
         self.part_id.alignment(output_sections)
     }
 }
@@ -3080,7 +3079,7 @@ impl<'data> PreludeLayoutState<'data> {
         common: &mut CommonGroupState<'data, P>,
         total_sizes: &mut OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
-        output_sections: &mut OutputSections,
+        output_sections: &mut OutputSections<P>,
         output_order: &OutputOrder,
         program_segments: &ProgramSegments<P::ProgramSegmentDef>,
         per_symbol_flags: &mut PerSymbolFlags,
@@ -3122,7 +3121,7 @@ impl<'data> PreludeLayoutState<'data> {
     /// going to emit.
     fn allocate_symbol_table_sizes<P: Platform>(
         &self,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         per_symbol_flags: &mut PerSymbolFlags,
         symbol_db: &SymbolDb<'data, P>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
@@ -3168,7 +3167,7 @@ impl<'data> PreludeLayoutState<'data> {
         total_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         must_keep_sections: OutputSectionMap<bool>,
-        output_sections: &mut OutputSections,
+        output_sections: &mut OutputSections<P>,
         program_segments: &ProgramSegments<P::ProgramSegmentDef>,
         output_order: &OutputOrder,
         resources: &FinaliseSizesResources<'data, '_, P>,
@@ -3222,10 +3221,15 @@ impl<'data> PreludeLayoutState<'data> {
             // default section type assigned instead, since an empty but explicitly defined section
             // should still be emitted if something references it.
             let section_info = output_sections.section_infos.get(section_id);
-            if section_info.ty.is_null() && section_id != output_section_id::FILE_HEADER {
+            if section_info.section_attributes.is_null()
+                && section_id != output_section_id::FILE_HEADER
+            {
                 if section_id.is_custom() {
-                    output_sections.section_infos.get_mut(section_id).ty =
-                        Elf::default_section_type();
+                    output_sections
+                        .section_infos
+                        .get_mut(section_id)
+                        .section_attributes
+                        .set_to_default_type();
                 } else {
                     *keep_sections.get_mut(section_id) = false;
                 }
@@ -4034,7 +4038,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) {
@@ -4688,7 +4692,7 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data, P>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> (Vec<Vec<Vec<u64>>>, SymbolOutputInfos) {
     timing_phase!("Compute section and symbol addresses");
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(section_part_layouts);
@@ -4792,7 +4796,7 @@ fn relaxation_scan_pass<'data, A: Arch>(
     per_symbol_flags: &PerSymbolFlags,
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<A::Platform>,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
@@ -4947,7 +4951,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     group_states: &mut [GroupState<'data, A::Platform>],
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     section_part_layouts: &mut OutputSectionPartMap<OutputRecordLayout>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<A::Platform>,
     program_segments: &ProgramSegments<<A::Platform as Platform>::ProgramSegmentDef>,
     output_order: &OutputOrder,
     symbol_db: &SymbolDb<'data, A::Platform>,
@@ -5013,7 +5017,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
 
 fn layout_section_parts<P: Platform>(
     sizes: &OutputSectionPartMap<u64>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
     args: &Args,
@@ -5139,7 +5143,7 @@ fn compute_segment_alignments<P: Platform>(
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
     args: &Args,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
 
@@ -5662,8 +5666,8 @@ impl<'data, P: Platform> ObjectLayout<'data, P> {
 fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
-    let mut output_sections = OutputSections::with_base_address::<Elf>(0x1000);
-    let (output_order, program_segments) = output_sections.output_order::<Elf>();
+    let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
+    let (output_order, program_segments) = output_sections.output_order();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
@@ -5723,7 +5727,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut section_index = 0;
     output_sections.section_infos.for_each(|_, info| {
-        if info.section_flags.is_alloc() {
+        if info.section_attributes.is_alloc() {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));
@@ -5776,8 +5780,8 @@ fn verify_consistent_allocation_handling<P: Platform>(
     flags: ValueFlags,
     output_kind: OutputKind,
 ) -> Result {
-    let output_sections = OutputSections::with_base_address::<P>(0);
-    let (output_order, _program_segments) = output_sections.output_order::<P>();
+    let output_sections = OutputSections::with_base_address(0);
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
     allocate_symbol_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();

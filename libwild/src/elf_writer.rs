@@ -1088,7 +1088,7 @@ struct VersionedDynsymWriter<'layout, 'out> {
 struct SymbolTableWriter<'layout, 'out> {
     local_entries: &'out mut [SymtabEntry],
     global_entries: &'out mut [SymtabEntry],
-    output_sections: &'layout OutputSections<'layout>,
+    output_sections: &'layout OutputSections<'layout, Elf>,
     strtab_writer: StrTabWriter<'out>,
     is_dynamic: bool,
 }
@@ -1097,7 +1097,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn new(
         start_string_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        output_sections: &'layout OutputSections<'layout>,
+        output_sections: &'layout OutputSections<'layout, Elf>,
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
@@ -1117,7 +1117,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn new_dynamic(
         string_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        output_sections: &'layout OutputSections,
+        output_sections: &'layout OutputSections<Elf>,
     ) -> Self {
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::DYNSYM));
         let strings = slice_from_all_bytes_mut(buffers.take(part_id::DYNSTR));
@@ -4377,7 +4377,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         };
 
         let output_info = output_sections.output_info(section_id);
-        let section_type = output_info.ty;
+        let section_type = output_info.section_attributes.ty;
         let section_layout = layout.merged_section_layouts.get(section_id);
 
         if output_sections
@@ -4387,7 +4387,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
             continue;
         }
 
-        let entsize = output_info.entsize.max(
+        let entsize = output_info.section_attributes.entsize.max(
             section_id
                 .opt_built_in_details::<Elf>()
                 .map_or(0, |details| details.element_size),
@@ -4494,7 +4494,7 @@ fn compute_info_values(layout: &ElfLayout) -> OutputSectionMap<u32> {
 
 fn write_section_header_strings(
     mut out: &mut [u8],
-    sections: &OutputSections,
+    sections: &OutputSections<Elf>,
     output_order: &OutputOrder,
 ) {
     for event in output_order {
@@ -4815,7 +4815,7 @@ fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
 }
 
 pub(crate) fn verify_resolution_allocation(
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<Elf>,
     output_order: &OutputOrder,
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
@@ -4875,7 +4875,7 @@ impl<R> Default for RelocationCache<R> {
 fn should_reverse_contents(
     section: &layout::Section,
     file: &crate::elf::File,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<Elf>,
 ) -> bool {
     // Getting the section name is expensive, so we only do it when the output section is
     // .init_array / .fini_array.

@@ -16,6 +16,7 @@ use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
+use crate::platform::Platform;
 use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
@@ -103,10 +104,10 @@ impl SectionOutputInfo {
 
 impl<'data> LayoutRulesBuilder<'data> {
     /// Records information about any sections and symbols declared by the linker script.
-    pub(crate) fn process_linker_script(
+    pub(crate) fn process_linker_script<P: Platform>(
         &mut self,
         input: &InputLinkerScript<'data>,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
     ) -> Result<ProcessedLinkerScript<'data>> {
         let mut symbol_defs = Vec::new();
 
