@@ -1220,6 +1220,14 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             unloaded_section = UnloadedSection::new(part_id);
         }
         SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
+        SectionRuleOutcome::NoteGnuStack => {
+            // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
+            // executable stack.
+            if input_section.is_executable() && !args.execstack {
+                bail!("{obj}: requires executable stack, but -z execstack is not specified");
+            }
+            return Ok(SectionSlot::Discard);
+        }
         SectionRuleOutcome::EhFrame => {
             return Ok(SectionSlot::FrameData(input_section_index));
         }
