@@ -1654,7 +1654,7 @@ trait SymbolLoader<'data, P: Platform> {
 
     fn object(&self) -> &P::File<'data>;
 
-    fn compute_value_flags(&self, symbol: &P::Symbol) -> ValueFlags;
+    fn compute_value_flags(&self, symbol: &P::SymtabEntry) -> ValueFlags;
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
@@ -1667,13 +1667,13 @@ trait SymbolLoader<'data, P: Platform> {
     }
 
     /// Returns whether the supplied symbol should be ignore.
-    fn should_ignore_symbol(&self, _symbol: &P::Symbol) -> bool {
+    fn should_ignore_symbol(&self, _symbol: &P::SymtabEntry) -> bool {
         false
     }
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &P::Symbol,
+        symbol: &P::SymtabEntry,
         local_index: usize,
     ) -> Result<P::RawSymbolName<'data>>;
 }
@@ -1704,7 +1704,7 @@ impl<'a, 'data, P: Platform> DynamicObjectSymbolLoader<'a, 'data, P> {
 }
 
 impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_, 'data, P> {
-    fn compute_value_flags(&self, sym: &P::Symbol) -> ValueFlags {
+    fn compute_value_flags(&self, sym: &P::SymtabEntry) -> ValueFlags {
         let is_undefined = sym.is_undefined();
 
         let symbol_is_exported = || {
@@ -1781,7 +1781,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &P::Symbol,
+        symbol: &P::SymtabEntry,
         _local_index: usize,
     ) -> Result<P::RawSymbolName<'data>> {
         Ok(<P::RawSymbolName<'data> as platform::RawSymbolName>::parse(
@@ -1795,7 +1795,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
 }
 
 impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_, 'data, P> {
-    fn compute_value_flags(&self, symbol: &P::Symbol) -> ValueFlags {
+    fn compute_value_flags(&self, symbol: &P::SymtabEntry) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
         if symbol.is_func() || symbol.is_ifunc() {
             flags |= ValueFlags::FUNCTION;
@@ -1808,7 +1808,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &P::Symbol,
+        symbol: &P::SymtabEntry,
         local_index: usize,
     ) -> Result<P::RawSymbolName<'data>> {
         self.object
@@ -1819,7 +1819,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_
         self.object
     }
 
-    fn should_ignore_symbol(&self, symbol: &P::Symbol) -> bool {
+    fn should_ignore_symbol(&self, symbol: &P::SymtabEntry) -> bool {
         // Shared objects shouldn't export hidden symbols. If for some reason they do, ignore them.
         symbol.is_hidden()
     }

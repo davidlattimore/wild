@@ -312,7 +312,7 @@ impl crate::platform::Arch for ElfRiscV64 {
 
     fn process_riscv_attributes<'data>(
         object: &<Self::Platform as Platform>::File<'data>,
-        format_specific: &mut <Self::Platform as Platform>::FileLayoutState<'data>,
+        format_specific: &mut <Self::Platform as Platform>::ObjectLayoutStateExt<'data>,
         riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         format_specific.riscv_attributes =

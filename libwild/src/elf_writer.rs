@@ -1136,7 +1136,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     #[inline(always)]
     fn copy_symbol(
         &mut self,
-        sym: &crate::elf::Symbol,
+        sym: &crate::elf::SymtabEntry,
         name: &[u8],
         output_section_id: OutputSectionId,
         value: u64,
@@ -1159,7 +1159,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     #[inline(always)]
     fn copy_symbol_shndx(
         &mut self,
-        sym: &crate::elf::Symbol,
+        sym: &crate::elf::SymtabEntry,
         name: &[u8],
         shndx: u16,
         value: u64,
@@ -1180,7 +1180,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
 
     fn copy_absolute_symbol(
         &mut self,
-        sym: &crate::elf::Symbol,
+        sym: &crate::elf::SymtabEntry,
         name: &[u8],
         flags: ValueFlags,
     ) -> Result<&mut SymtabEntry> {
