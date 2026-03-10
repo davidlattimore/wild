@@ -141,6 +141,9 @@
 //! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
 //! object and adds it to the link.
 //!
+//! Relocatable:{source-filename}[:extra-compilation-args] Builds the specified filename as a
+//! relocatable object and adds it to the link.
+//!
 //! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
 //! and adds it to the link.
 //!
@@ -416,6 +419,44 @@ impl Linker {
         if !command.can_skip() {
             // Clear properties that should only apply to the final link, not to intermediate
             // artefacts like shared objects.
+            let mut config = config.clone();
+            config.expect_stderr = Vec::new();
+            config.expect_stdout = Vec::new();
+            config.should_error = false;
+
+            command.run(&config)?;
+            command.write_input_hashes()?;
+        }
+
+        Ok(LinkerInput::with_command(so_path.to_owned(), command))
+    }
+
+    fn link_partial(
+        &self,
+        objects: &[BuiltObject],
+        so_path: &Path,
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkerInput> {
+        let linker_args = ArgumentSet {
+            args: vec!["-r".to_owned()],
+        };
+
+        let mut config = config.clone();
+        config.linker_driver = LinkerDriver::Direct(DirectConfig {
+            mode: Mode::Unspecified,
+        });
+
+        let mut command = LinkCommand::new(
+            self,
+            &objects.iter().flat_map(|o| o.inputs()).collect_vec(),
+            so_path,
+            &linker_args,
+            &config,
+            cross_arch,
+        )?;
+
+        if !command.can_skip() {
             let mut config = config.clone();
             config.expect_stderr = Vec::new();
             config.expect_stdout = Vec::new();
@@ -1092,6 +1133,7 @@ impl ExpectedSymtabEntry {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, EnumString)]
 enum InputType {
     Object,
+    Relocatable,
     Archive,
     ThinArchive,
     BsdArchive,
@@ -1407,7 +1449,7 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-        input_type @ ("Object" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
+        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
         | "LinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
 
@@ -2031,6 +2073,10 @@ fn build_linker_input(
                 .check_path(&out.path, linker)
                 .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
             out
+        }
+        InputType::Relocatable => {
+            let so_path = first_obj_path.with_extension(format!("{linker}.o"));
+            linker.link_partial(&objects, &so_path, &config, cross_arch)?
         }
         InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
     };
@@ -2743,7 +2789,10 @@ impl LinkCommand {
                         Mode::Unspecified => {}
                     }
 
-                    command.arg("--gc-sections").args(&linker_args.args);
+                    if !linker_args.args.iter().any(|a| a == "-r") {
+                        command.arg("--gc-sections");
+                    }
+                    command.args(&linker_args.args);
                 }
             }
 
@@ -3485,6 +3534,7 @@ impl Display for InputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InputType::Object => write!(f, "object"),
+            InputType::Relocatable => write!(f, "relocatable"),
             InputType::Archive => write!(f, "archive"),
             InputType::ThinArchive => write!(f, "thin archive"),
             InputType::BsdArchive => write!(f, "bsd archive"),
