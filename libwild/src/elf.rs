@@ -276,6 +276,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
     type ProgramSegmentDef = ProgramSegmentDef;
     type BuiltInSectionDetails = BuiltInSectionDetails;
+    type ArchIdentifier = u16;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;

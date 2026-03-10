@@ -38,8 +38,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
     type File<'data>: ObjectFile<'data>;
 
-    /// Get ELF header magic for the architecture.
-    fn elf_header_arch_magic() -> u16;
+    /// Returns the identifier to be written into the output file that identifies the file as
+    /// belonging to this architecture. e.g. for ELF, this is the header magic for the architecture.
+    fn arch_identifier<'a>() -> <Self::File<'a> as ObjectFile<'a>>::ArchIdentifier;
 
     /// Get dynamic relocation value specific for the architecture.
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
@@ -174,6 +175,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
     type ProgramSegmentDef: ProgramSegmentDef;
     type BuiltInSectionDetails: BuiltInSectionDetails;
+    type ArchIdentifier: Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;

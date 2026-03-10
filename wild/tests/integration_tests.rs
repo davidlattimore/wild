@@ -2508,7 +2508,7 @@ impl LinkCommand {
                 } else {
                     &output.stdout
                 };
-                if !expected_error.matches(&output_stream) {
+                if !expected_error.matches(output_stream) {
                     eprintln!(
                         "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
                         String::from_utf8_lossy(&output.stdout),
