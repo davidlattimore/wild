@@ -60,7 +60,6 @@ int call_def1(void);
 int def3(void);
 #endif
 
-
 void _start(void) {
   runtime_init();
 #ifndef _TRANSITIVE
