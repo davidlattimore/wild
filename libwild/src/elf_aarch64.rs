@@ -38,9 +38,9 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
+impl crate::platform::Arch for ElfAArch64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type File<'data> = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_AARCH64
@@ -98,7 +98,7 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         false
     }
 
-    fn tp_offset_start(layout: &Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address_aarch64()
     }
 
@@ -125,7 +125,7 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         flags: crate::value_flags::ValueFlags,
         output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
-        non_zero_address: bool,
+        _non_zero_address: bool,
         _relax_deltas: Option<&linker_utils::relaxation::SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>
     where
@@ -159,21 +159,12 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
 
         match relocation_kind {
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if !interposable => {
-                return if non_zero_address {
-                    relocation.kind = RelocationKind::Relative;
-                    Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                } else {
-                    // GNU ld replaces: 'bl 0' with 'nop'
-                    Some(Relaxation {
-                        kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_AARCH64_NONE),
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                };
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
 
             // Relax TLSDESC to local exec
@@ -286,16 +277,19 @@ impl<'data> crate::platform::Platform<'data> for ElfAArch64 {
         None
     }
 
-    fn is_symbol_variant_pcs(object: &Self::File, symbol_index: object::SymbolIndex) -> bool {
+    fn is_symbol_variant_pcs<'data>(
+        object: &Self::File<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> bool {
         object
             .symbol(symbol_index)
             .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(

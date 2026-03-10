@@ -79,6 +79,9 @@
 //! specified regex. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
 //! times - all must match.
 //!
+//! ExpectMessage:{message regex} Verifies that the linker prints the message matching the specified
+//! regex. May be specified multiple times - all must match.
+//!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
@@ -291,7 +294,7 @@ impl Linker {
             // If we're expecting errors, those errors should only occur when we link the final
             // binary, not when we link any dependent shared objects.
             let mut config = config.clone();
-            config.expect_errors = Vec::new();
+            config.expect_messages = Vec::new();
 
             command.run(&config)?;
             command.write_input_hashes()?;
@@ -508,7 +511,8 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_errors: Vec<ErrorMatcher>,
+    should_error: bool,
+    expect_messages: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -980,7 +984,8 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
-            expect_errors: Default::default(),
+            should_error: false,
+            expect_messages: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -1162,10 +1167,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
-                    config.expect_errors.push(ErrorMatcher::new(arg.trim())?);
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+                    config.should_error = true;
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
+                }
+                "ExpectMessage" => {
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
                 }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
@@ -1317,7 +1326,7 @@ impl ProgramInputs {
 
         if config.test_update_in_place
             && matches!(linker, Linker::Wild)
-            && config.expect_errors.is_empty()
+            && !config.should_error
             && (config.should_diff || config.should_run)
         {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
@@ -2155,7 +2164,7 @@ fn src_path(filename: &str) -> PathBuf {
 
 /// Returns whether both `output_path` all `src_paths` exist and `output_path` has a modification
 /// timestamp >= that of all elements of `src_paths`.
-fn is_newer<P: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = P>) -> bool {
+fn is_newer<A: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = A>) -> bool {
     let Ok(out) = std::fs::metadata(output_path) else {
         return false;
     };
@@ -2481,20 +2490,25 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if !config.expect_errors.is_empty() {
+        if !config.expect_messages.is_empty() {
             let output = self
                 .command
                 .output()
                 .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-            if output.status.success() {
+            if config.should_error && output.status.success() {
                 bail!(
                     "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
                 );
             }
 
-            for expected_error in &config.expect_errors {
-                if !expected_error.matches(&output.stderr) {
+            for expected_error in &config.expect_messages {
+                let output_stream = if config.should_error {
+                    &output.stderr
+                } else {
+                    &output.stdout
+                };
+                if !expected_error.matches(&output_stream) {
                     eprintln!(
                         "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
                         String::from_utf8_lossy(&output.stdout),
@@ -3354,22 +3368,23 @@ impl PartialEq for ErrorMatcher {
 impl Eq for ErrorMatcher {}
 
 fn available_linkers() -> Result<Vec<Linker>> {
-    let mut linkers = vec![
-        Linker::ThirdParty(ThirdPartyLinker {
-            name: "ld",
-            gcc_name: "bfd",
-            path: find_bin(&["ld.bfd", "ld"])?,
-            cross_paths: find_cross_paths("ld"),
-            enabled_by_default: true,
-        }),
-        Linker::ThirdParty(ThirdPartyLinker {
+    let mut linkers = vec![Linker::ThirdParty(ThirdPartyLinker {
+        name: "ld",
+        gcc_name: "bfd",
+        path: find_bin(&["ld.bfd", "ld"])?,
+        cross_paths: find_cross_paths("ld"),
+        enabled_by_default: true,
+    })];
+
+    if let Ok(path) = find_bin(&["ld.lld"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
-            path: find_bin(&["ld.lld"])?,
+            path,
             cross_paths: find_cross_paths("ld.lld"),
             enabled_by_default: false,
-        }),
-    ];
+        }));
+    }
 
     // We don't need gold and mold for our tests, they're just there for the odd occasion when we're
     // curious and looking for extra data points as to how other linkers handle a particular case.
@@ -3431,7 +3446,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if !config.expect_errors.is_empty() {
+    if !config.expect_messages.is_empty() {
         return Ok(());
     }
 
@@ -3535,6 +3550,7 @@ fn integration_test(
         "linker-script.c",
         "linker-script-executable.c",
         "linker-script-provide.c",
+        "linker-defined-provide.c",
         "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",
@@ -3593,7 +3609,8 @@ fn integration_test(
         "riscv-hi20-relaxation.s",
         "riscv-hi20-lui-deletion.s",
         "segment-end-syms.c",
-        "linker-script-filename-match.c"
+        "linker-script-filename-match.c",
+        "tls-apx-relocs.s"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -3893,5 +3910,80 @@ mod tidy {
                 extensions_str = extensions.join(",")
             )
         }
+    }
+
+    #[test]
+    fn check_text_files() -> Result {
+        const EXCLUDE_DIR: &[&str] = &[
+            "target",
+            "build",
+            "external_test_suites",
+            "fakes-debug",
+            "fakes",
+        ];
+
+        fn verify_path(path: &Path, problems: &mut Vec<String>) -> Result {
+            if EXCLUDE_DIR.iter().any(|e| path.ends_with(e)) {
+                return Ok(());
+            }
+
+            if path.is_dir() {
+                for entry in read_dir(path)
+                    .with_context(|| format!("Failed to read directory {}", path.display()))?
+                {
+                    let entry = entry?;
+                    let file_name = entry.file_name();
+                    let Some(file_name) = file_name.to_str() else {
+                        continue;
+                    };
+
+                    // Ignore hidden files / directories.
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
+
+                    verify_path(&entry.path(), problems)?;
+                }
+            } else if path.is_symlink() {
+                // Ignore symlinks.
+            } else {
+                let content = std::fs::read(path)
+                    .with_context(|| format!("Failed to read file {}", path.display()))?;
+
+                let is_valid_utf8 = std::str::from_utf8(&content).is_ok();
+                let is_text = is_valid_utf8 && !content.contains(&0);
+
+                if is_text {
+                    if content.contains(&b'\r') {
+                        problems.push(format!(
+                            "The file {} uses Windows line-endings. Please convert it to Unix-style.",
+                            path.display()
+                        ));
+                    }
+
+                    let allow_no_trailing_newline =
+                        content.is_empty() || path.extension().is_some_and(|ext| ext == "json");
+
+                    if !allow_no_trailing_newline && !content.ends_with(b"\n") {
+                        problems.push(format!(
+                            "The file {} is missing a trailing newline",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
+        let mut problems = Vec::new();
+        verify_path(root, &mut problems)?;
+
+        if !problems.is_empty() {
+            bail!("{}", problems.join("\n"))
+        }
+
+        Ok(())
     }
 }

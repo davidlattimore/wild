@@ -11,7 +11,6 @@ use linker_utils::elf::SIZE_2KB;
 use linker_utils::elf::loongarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::loongarch64::RelaxationKind;
-use linker_utils::loongarch64::relocation_type_from_raw;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::or_from_slice;
 
@@ -28,15 +27,9 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-macro_rules! rel_info_from_type {
-    ($r_type:expr) => {
-        const { relocation_type_from_raw($r_type).unwrap() }
-    };
-}
-
-impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
+impl crate::platform::Arch for ElfLoongArch64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type File<'data> = crate::elf::File<'data>;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_LOONGARCH
@@ -87,7 +80,7 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
         true
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
+    fn tp_offset_start<'data>(layout: &crate::layout::Layout<'data, elf::File<'data>>) -> u64 {
         layout.tls_start_address()
     }
 
@@ -133,21 +126,12 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
 
         match relocation_kind {
             object::elf::R_LARCH_B26 if !interposable => {
-                return if non_zero_address {
-                    relocation.kind = RelocationKind::Relative;
-                    Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                } else {
-                    // GNU ld replaces: 'bl 0' with 'nop'
-                    Some(Relaxation {
-                        kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type!(object::elf::R_LARCH_NONE),
-                        mandatory: output_kind.is_static_executable(),
-                    })
-                };
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
 
             _ => (),
@@ -156,10 +140,10 @@ impl<'data> crate::platform::Platform<'data> for ElfLoongArch64 {
         None
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as crate::platform::ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(

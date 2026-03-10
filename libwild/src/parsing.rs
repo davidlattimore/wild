@@ -3,7 +3,6 @@ use crate::OutputSections;
 use crate::args::Args;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
-use crate::args::RelocationModel;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -11,7 +10,6 @@ use crate::input_data::InputBytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
-use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::ObjectFile;
 use crate::symbol::UnversionedSymbolName;
@@ -170,7 +168,7 @@ pub(crate) fn parse_number(s: &str) -> Result<u64, ()> {
 }
 
 impl<'data> InternalSymDefInfo<'data> {
-    pub(crate) fn notype(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+    pub(crate) fn new(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
         Self {
             placement,
             name,
@@ -179,13 +177,16 @@ impl<'data> InternalSymDefInfo<'data> {
         }
     }
 
-    pub(crate) fn hidden(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
+    pub(crate) fn with_hidden(self, hidden: bool) -> Self {
         Self {
-            placement,
-            name,
-            elf_symbol_type: stt::NOTYPE,
-            is_hidden: true,
+            is_hidden: hidden,
+            ..self
         }
+    }
+
+    pub(crate) fn hide(&mut self) -> &mut Self {
+        self.is_hidden = true;
+        self
     }
 }
 
@@ -213,99 +214,88 @@ impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new(args: &'data Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<O: ObjectFile<'data>>(args: &'data Args, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
-        // The undefined symbol must always be symbol 0.
-        let mut symbol_definitions =
-            vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
+        let mut symbols = InternalSymbolsBuilder::default();
 
-        for section_id in output_section_id::built_in_section_ids() {
-            // If we're producing non-relocatable, static executable, then don't define any symbols
-            // for the .dynamic section.
-            if section_id == output_section_id::DYNAMIC
-                && output_kind == OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
-            {
-                continue;
-            }
+        O::create_linker_defined_symbols(&mut symbols, output_kind);
 
-            let def = section_id.built_in_details();
-            // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
-            // Emitting them for relocatable binaries causes glibc to try to call the resolver
-            // functions without taking into account that the binary has been relocated.
-            if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
-                && section_id == output_section_id::RELA_PLT
-            {
-                continue;
-            }
-
-            if let Some(name) = def.start_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
-                    SymbolPlacement::SectionStart(section_id),
-                    name.as_bytes(),
-                ));
-            }
-
-            if let Some(name) = def.end_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
-                    SymbolPlacement::SectionEnd(section_id),
-                    name.as_bytes(),
-                ));
-            }
-
-            if let Some(name) = def.group_end_symbol_name {
-                symbol_definitions.push(InternalSymDefInfo::notype(
-                    SymbolPlacement::SectionGroupEnd(section_id),
-                    name.as_bytes(),
-                ));
-            }
-        }
-
-        // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
-        // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
-        // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
-        symbol_definitions.push(InternalSymDefInfo {
-            placement: if output_kind == OutputKind::SharedObject {
-                SymbolPlacement::SectionStart(output_section_id::TDATA)
-            } else {
-                SymbolPlacement::SectionEnd(output_section_id::TBSS)
-            },
-            name: b"_TLS_MODULE_BASE_",
-            elf_symbol_type: stt::TLS,
-            is_hidden: false,
+        args.undefined.iter().for_each(|name| {
+            symbols.add_symbol(InternalSymDefInfo::new(
+                SymbolPlacement::ForceUndefined,
+                name.as_bytes(),
+            ));
         });
 
-        symbol_definitions.extend(args.undefined.iter().map(|name| {
-            InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes())
-        }));
-
         // Add symbols defined via --defsym
-        symbol_definitions.extend(args.defsym.iter().map(|(name, value)| {
+        args.defsym.iter().for_each(|(name, value)| {
             let placement = match value {
                 DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
                 DefsymValue::SymbolWithOffset(target, offset) => {
                     SymbolPlacement::DefsymSymbol(target.as_str(), *offset)
                 }
             };
-            InternalSymDefInfo::notype(placement, name.as_bytes())
-        }));
+            symbols.add_symbol(InternalSymDefInfo::new(placement, name.as_bytes()));
+        });
 
-        symbol_definitions.push(InternalSymDefInfo::notype(
-            SymbolPlacement::SectionEnd(output_section_id::TEXT),
-            b"__etext",
-        ));
-
-        symbol_definitions.push(InternalSymDefInfo::notype(
-            SymbolPlacement::LoadBaseAddress,
-            b"__executable_start",
-        ));
-
-        Self { symbol_definitions }
+        Self {
+            symbol_definitions: symbols.symbol_definitions,
+        }
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         UnversionedSymbolName::new(def.name)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct InternalSymbolsBuilder<'data> {
+    symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+}
+
+impl<'data> InternalSymbolsBuilder<'data> {
+    pub(crate) fn add_symbol(
+        &mut self,
+        def: InternalSymDefInfo<'data>,
+    ) -> &mut InternalSymDefInfo<'data> {
+        let index = self.symbol_definitions.len();
+        self.symbol_definitions.push(def);
+        &mut self.symbol_definitions[index]
+    }
+
+    pub(crate) fn section_start(
+        &mut self,
+        section_id: OutputSectionId,
+        name: &'static str,
+    ) -> &mut InternalSymDefInfo<'data> {
+        self.add_symbol(InternalSymDefInfo::new(
+            SymbolPlacement::SectionStart(section_id),
+            name.as_bytes(),
+        ))
+    }
+
+    pub(crate) fn section_end(
+        &mut self,
+        section_id: OutputSectionId,
+        name: &'static str,
+    ) -> &mut InternalSymDefInfo<'data> {
+        self.add_symbol(InternalSymDefInfo::new(
+            SymbolPlacement::SectionEnd(section_id),
+            name.as_bytes(),
+        ))
+    }
+
+    pub(crate) fn section_group_end(
+        &mut self,
+        section_id: OutputSectionId,
+        name: &'static str,
+    ) -> &mut InternalSymDefInfo<'data> {
+        self.add_symbol(InternalSymDefInfo::new(
+            SymbolPlacement::SectionGroupEnd(section_id),
+            name.as_bytes(),
+        ))
     }
 }
 

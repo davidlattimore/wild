@@ -3,6 +3,7 @@ use crate::alignment::Alignment;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
 use std::mem::take;
@@ -105,6 +106,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     pub(crate) fn output_order_map<U: Default>(
         &self,
         output_order: &OutputOrder,
+        output_sections: &OutputSections,
         mut cb: impl FnMut(PartId, Alignment, &T) -> U,
     ) -> OutputSectionPartMap<U> {
         let mut parts_out = Vec::new();
@@ -117,14 +119,14 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             };
 
             let part_id_range = section_id.part_id_range();
-            let max_alignment = self.max_alignment(part_id_range.clone());
+            let max_alignment = self.max_alignment(part_id_range.clone(), output_sections);
             output[part_id_range.clone()]
                 .iter_mut()
                 .zip(&self[part_id_range.clone()])
                 .enumerate()
                 .for_each(|(offset, (out, input))| {
                     let part_id = part_id_range.start.offset(offset);
-                    let alignment = part_id.alignment().min(max_alignment);
+                    let alignment = part_id.alignment(output_sections).min(max_alignment);
                     *out = cb(part_id, alignment, input);
                 });
         }
@@ -135,12 +137,23 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// Returns the maximum alignment for any part with a non-default value starting from
     /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
     /// minimum alignment for the section.
-    pub(crate) fn max_alignment(&self, range: Range<PartId>) -> Alignment {
+    pub(crate) fn max_alignment(
+        &self,
+        range: Range<PartId>,
+        output_sections: &OutputSections,
+    ) -> Alignment {
         self[range.clone()]
             .iter()
             .position(|p| *p != T::default())
-            .map_or(alignment::MIN, |o| range.start.offset(o).alignment())
-            .max(range.start.output_section_id().min_alignment())
+            .map_or(alignment::MIN, |o| {
+                range.start.offset(o).alignment(output_sections)
+            })
+            .max(
+                range
+                    .start
+                    .output_section_id()
+                    .min_alignment(output_sections),
+            )
     }
 
     /// Zip mutable references to values in `self` with shared references from `other` producing a
@@ -213,14 +226,16 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 #[test]
 fn test_merge_parts() {
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
     let mut expected_sum_of_sums = 0;
-    let all_1 = output_sections
-        .new_part_map::<u32>()
-        .output_order_map(&output_order, |_, _, _| {
+    let all_1 = output_sections.new_part_map::<u32>().output_order_map(
+        &output_order,
+        &output_sections,
+        |_, _, _| {
             expected_sum_of_sums += 1;
             1
-        });
+        },
+    );
     let num_regular_sections = output_sections.num_regular_sections();
     let mut num_sections_with_17 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
@@ -282,7 +297,7 @@ fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
@@ -306,7 +321,7 @@ fn test_output_order_map_consistent() {
     );
 
     let mut ordering_a = Vec::new();
-    part_map.output_order_map(&output_order, |part_id, _, _| {
+    part_map.output_order_map(&output_order, &output_sections, |part_id, _, _| {
         let section_id = part_id.output_section_id();
         if ordering_a.last() != Some(&section_id.as_usize()) {
             ordering_a.push(section_id.as_usize());
@@ -331,7 +346,7 @@ fn test_output_order_map() {
     use crate::output_section_id;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
@@ -340,25 +355,29 @@ fn test_output_order_map() {
     const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
-    part_map.output_order_map(&output_order, |part_id, alignment, &value| match part_id {
-        PART_ID1 => {
-            assert_eq!(alignment, alignment::USIZE);
-            assert_eq!(value, 32);
-        }
-        PART_ID2 => {
-            assert_eq!(alignment, alignment::MIN);
-            assert_eq!(value, 5);
-        }
-        _ => {
-            if part_id.output_section_id() == output_section_id::DATA {
-                assert!(
-                    alignment <= alignment::USIZE,
-                    "Unexpected alignment {alignment}"
-                );
+    part_map.output_order_map(
+        &output_order,
+        &output_sections,
+        |part_id, alignment, &value| match part_id {
+            PART_ID1 => {
+                assert_eq!(alignment, alignment::USIZE);
+                assert_eq!(value, 32);
             }
-            assert_eq!(value, 0);
-        }
-    });
+            PART_ID2 => {
+                assert_eq!(alignment, alignment::MIN);
+                assert_eq!(value, 5);
+            }
+            _ => {
+                if part_id.output_section_id() == output_section_id::DATA {
+                    assert!(
+                        alignment <= alignment::USIZE,
+                        "Unexpected alignment {alignment}"
+                    );
+                }
+                assert_eq!(value, 0);
+            }
+        },
+    );
 }
 
 #[test]
@@ -369,7 +388,7 @@ fn test_max_alignment() {
     let mut part_map = output_sections.new_part_map::<u32>();
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.part_id_range()),
+        part_map.max_alignment(output_section_id::DATA.part_id_range(), &output_sections),
         alignment::MIN
     );
 
@@ -380,7 +399,7 @@ fn test_max_alignment() {
     *part_map.get_mut(PART_ID2) += 5;
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.part_id_range()),
+        part_map.max_alignment(output_section_id::DATA.part_id_range(), &output_sections),
         alignment::USIZE
     );
 }

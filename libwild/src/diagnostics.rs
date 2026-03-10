@@ -79,7 +79,9 @@ impl SymbolInfoPrinter {
             return;
         };
 
-        let mut out = String::new();
+        let mut out = &mut state.output;
+        out.clear();
+
         let name = symbol_db
             .find_mangled_name(&state.name)
             .unwrap_or_else(|| state.name.clone());

@@ -26,7 +26,7 @@ impl Arch for X86_64 {
 
     type RawInstruction = iced_x86::Instruction;
 
-    const MAX_RELAX_MODIFY_BEFORE: u64 = 4;
+    const MAX_RELAX_MODIFY_BEFORE: u64 = 6;
     const MAX_RELAX_MODIFY_AFTER: u64 = 19;
 
     fn next_relocation_modifier(
@@ -39,9 +39,11 @@ impl Arch for X86_64 {
         match relaxation.relaxation_kind {
             Self::RelaxationKind::MovIndirectToLea => RelaxationByteRange::new(2, 6),
             Self::RelaxationKind::MovIndirectToAbsolute => RelaxationByteRange::new(2, 6),
-            Self::RelaxationKind::RexMovIndirectToAbsolute => RelaxationByteRange::new(3, 7),
-            Self::RelaxationKind::RexSubIndirectToAbsolute => RelaxationByteRange::new(3, 7),
-            Self::RelaxationKind::RexCmpIndirectToAbsolute => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexMovIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexAddIndirectToAbsolute(6) => RelaxationByteRange::new(6, 10),
+            Self::RelaxationKind::RexAddIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexSubIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexCmpIndirectToAbsolute(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::CallIndirectToRelative => RelaxationByteRange::new(2, 6),
             Self::RelaxationKind::JmpIndirectToRelative => RelaxationByteRange::new(2, 6),
             Self::RelaxationKind::TlsGdToLocalExec => RelaxationByteRange::new(4, 16),
@@ -51,7 +53,7 @@ impl Arch for X86_64 {
             Self::RelaxationKind::TlsLdToLocalExecNoPlt => RelaxationByteRange::new(3, 13),
             Self::RelaxationKind::TlsLdToLocalExec64 => RelaxationByteRange::new(3, 22),
             Self::RelaxationKind::SkipTlsDescCall => RelaxationByteRange::new(0, 2),
-            Self::RelaxationKind::TlsDescToLocalExec => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::TlsDescToLocalExec(_) => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::TlsDescToInitialExec => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::NoOp => match relaxation.new_r_type.0 {
                 // TLSDESC_CALL is a relocation that does nothing unless it's optimised away. To
@@ -97,20 +99,34 @@ impl Arch for X86_64 {
         match (section_kind, r_type.0) {
             (SectionKind::Text, object::elf::R_X86_64_REX_GOTPCRELX) => {
                 relax(
-                    Self::RelaxationKind::RexMovIndirectToAbsolute,
+                    Self::RelaxationKind::RexMovIndirectToAbsolute(3),
                     object::elf::R_X86_64_32,
                 );
                 relax(
-                    Self::RelaxationKind::RexSubIndirectToAbsolute,
+                    Self::RelaxationKind::RexSubIndirectToAbsolute(3),
                     object::elf::R_X86_64_32,
                 );
                 relax(
-                    Self::RelaxationKind::RexCmpIndirectToAbsolute,
+                    Self::RelaxationKind::RexCmpIndirectToAbsolute(3),
                     object::elf::R_X86_64_32,
                 );
                 relax(
                     Self::RelaxationKind::MovIndirectToLea,
                     object::elf::R_X86_64_PC32,
+                );
+            }
+            (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTPCRELX) => {
+                relax(
+                    Self::RelaxationKind::RexMovIndirectToAbsolute(4),
+                    object::elf::R_X86_64_32,
+                );
+                relax(
+                    Self::RelaxationKind::RexSubIndirectToAbsolute(4),
+                    object::elf::R_X86_64_32,
+                );
+                relax(
+                    Self::RelaxationKind::RexCmpIndirectToAbsolute(4),
+                    object::elf::R_X86_64_32,
                 );
             }
             (SectionKind::Text, object::elf::R_X86_64_GOTPCRELX) => {
@@ -139,7 +155,23 @@ impl Arch for X86_64 {
             }
             (SectionKind::Text, object::elf::R_X86_64_GOTTPOFF) => {
                 relax(
-                    Self::RelaxationKind::RexMovIndirectToAbsolute,
+                    Self::RelaxationKind::RexMovIndirectToAbsolute(3),
+                    object::elf::R_X86_64_TPOFF32,
+                );
+            }
+            (SectionKind::Text, object::elf::R_X86_64_CODE_4_GOTTPOFF) => {
+                relax(
+                    Self::RelaxationKind::RexMovIndirectToAbsolute(4),
+                    object::elf::R_X86_64_TPOFF32,
+                );
+                relax(
+                    Self::RelaxationKind::RexAddIndirectToAbsolute(4),
+                    object::elf::R_X86_64_TPOFF32,
+                );
+            }
+            (SectionKind::Text, object::elf::R_X86_64_CODE_6_GOTTPOFF) => {
+                relax(
+                    Self::RelaxationKind::RexAddIndirectToAbsolute(6),
                     object::elf::R_X86_64_TPOFF32,
                 );
             }

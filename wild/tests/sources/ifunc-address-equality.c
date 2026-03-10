@@ -8,7 +8,6 @@
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
-//#DiffIgnore:rel.R_X86_64_REX_GOTPCRELX.R_X86_64_REX_GOTPCRELX
 
 #include "ifunc_init.h"
 #include "runtime.h"

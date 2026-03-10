@@ -28,14 +28,15 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use rayon::Scope;
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::num::NonZeroU32;
 use std::ops::Range;
 use std::path::PathBuf;
 
-/// Represents a supported object file format + architecture combination.
-pub(crate) trait Platform<'data>: Send + Sync + 'data {
+/// Represents a supported architecture. Note that implementations are file-format specific.
+pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
-    type File: ObjectFile<'data>;
+    type File<'data>: ObjectFile<'data>;
 
     /// Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
@@ -63,7 +64,7 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
-    fn tp_offset_start(layout: &Layout<'data, Self::File>) -> u64;
+    fn tp_offset_start<'data>(layout: &Layout<'data, Self::File<'data>>) -> u64;
 
     /// Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<crate::elf::PropertyClass>;
@@ -82,17 +83,17 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
 
     /// Uses debug info, if available, to get information about where in the source code a
     /// particular offset in a particular section came from.
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &Self::File<'data>,
+        relocations: &<Self::File<'data> as ObjectFile<'data>>::RelocationSections,
+        section: &<Self::File<'data> as ObjectFile<'data>>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<SourceInfo>;
 
-    fn collect_relaxation_deltas(
+    fn collect_relaxation_deltas<'data>(
         _section_output_address: u64,
         _section_bytes: &[u8],
-        _relocations: <Self::File as ObjectFile<'data>>::RelocationList,
+        _relocations: <Self::File<'data> as ObjectFile<'data>>::RelocationList,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
     ) -> (Vec<(u64, u32)>, Option<u64>) {
@@ -101,26 +102,29 @@ pub(crate) trait Platform<'data>: Send + Sync + 'data {
         unreachable!();
     }
 
-    fn is_symbol_variant_pcs(_object: &Self::File, _symbol_index: object::SymbolIndex) -> bool {
+    fn is_symbol_variant_pcs<'data>(
+        _object: &Self::File<'data>,
+        _symbol_index: object::SymbolIndex,
+    ) -> bool {
         false
     }
 
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
-    fn new_relaxation(
+    fn new_relaxation<'data>(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: ValueFlags,
         output_kind: OutputKind,
-        section_flags: <Self::File as ObjectFile<'data>>::SectionFlags,
+        section_flags: <Self::File<'data> as ObjectFile<'data>>::SectionFlags,
         non_zero_address: bool,
         relax_deltas: Option<&SectionRelaxDeltas>,
     ) -> Option<Self::Relaxation>;
 
-    fn process_riscv_attributes(
-        _object: &Self::File,
-        _format_specific: &mut <Self::File as ObjectFile<'data>>::FileLayoutState,
+    fn process_riscv_attributes<'data>(
+        _object: &Self::File<'data>,
+        _format_specific: &mut <Self::File<'data> as ObjectFile<'data>>::FileLayoutState,
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
@@ -149,7 +153,7 @@ pub(crate) struct RelaxSymbolInfo {
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
 pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'data {
     type Symbol: Symbol;
-    type SectionHeader: SectionHeader<'data, Self>;
+    type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
     type SectionType: SectionType;
     type SegmentType: SegmentType;
@@ -168,6 +172,8 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type LayoutResourcesExt: std::fmt::Debug + Send + Sync + 'data;
+    type ProgramSegmentDef: ProgramSegmentDef;
+    type BuiltInSectionDetails: BuiltInSectionDetails;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -214,6 +220,10 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Self::Symbol>;
 
     fn section_size(&self, header: &Self::SectionHeader) -> Result<u64>;
+
+    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
+
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
 
     fn symbol_name(&self, symbol: &Self::Symbol) -> Result<&'data [u8]>;
 
@@ -373,7 +383,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         section_index: object::SectionIndex,
     ) -> Result;
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, A: Arch<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -382,7 +392,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
         'data: 'files,
         'data: 'states;
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+    fn load_exception_frame_data<'scope, A: Arch<File<'data> = Self>>(
         object: &mut ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         eh_frame_section_index: object::SectionIndex,
@@ -393,7 +403,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Called when a section is loaded (not GCed). Implementations should process any exception
     /// frame data related to the loaded section.
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+    fn non_empty_section_loaded<'scope, A: Arch<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -435,7 +445,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     fn layout_resources_ext(groups: &[Group<'data, Self>]) -> Self::LayoutResourcesExt;
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
-    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_section_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -445,7 +455,7 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
     ) -> Result;
 
     /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_debug_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -488,33 +498,65 @@ pub(crate) trait ObjectFile<'data>: Send + Sync + Sized + std::fmt::Debug + 'dat
 
     /// Updates the list of segments to keep.
     fn update_segment_keep_list(
-        program_segments: &ProgramSegments,
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
         args: &Args,
     );
+
+    fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
+
+    /// Returns segment definitions that should be unconditionally emitted without content.
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
+
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+        output_kind: OutputKind,
+    );
+
+    /// Implementations can force certain sections to be kept. Only needs to be done for sections
+    /// that need to be emitted even if empty.
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args);
+
+    /// Returns whether an input section with zero size destined for the specified output section
+    /// should be considered content and thus prevent the output section from being discarded.
+    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
+
+    fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
+
+    fn built_in_section_infos() -> Vec<crate::output_section_id::SectionOutputInfo<'data>>;
 }
 
-pub(crate) trait SectionHeader<'data, O: ObjectFile<'data>>:
-    std::fmt::Debug + Send + Sync + 'data
-{
-    fn flags(&self) -> O::SectionFlags;
+pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
+    fn is_alloc(&self) -> bool;
 
-    fn attributes(&self) -> O::SectionAttributes;
+    fn is_writable(&self) -> bool;
 
-    fn section_type(&self) -> O::SectionType;
+    fn is_executable(&self) -> bool;
+
+    fn is_tls(&self) -> bool;
+
+    fn is_merge_section(&self) -> bool;
+
+    fn is_strings(&self) -> bool;
+
+    fn should_retain(&self) -> bool;
+
+    fn should_exclude(&self) -> bool;
+
+    fn is_group(&self) -> bool;
+
+    fn is_note(&self) -> bool;
+
+    fn is_prog_bits(&self) -> bool;
+
+    /// Returns whether the section has no contents in the file (zero initialised).
+    fn is_no_bits(&self) -> bool;
 }
 
 pub(crate) trait SectionType:
     Default + Copy + Send + Sync + std::fmt::Debug + 'static
 {
     fn is_null(self) -> bool;
-
-    fn is_note(self) -> bool;
-
-    fn is_prog_bits(self) -> bool;
-
-    /// Returns whether the section has no contents in the file (zero initialised).
-    fn is_no_bits(self) -> bool;
 }
 
 pub(crate) trait SegmentType:
@@ -526,22 +568,6 @@ pub(crate) trait SectionFlags:
     Default + Copy + std::fmt::Debug + Send + Sync + 'static
 {
     fn is_alloc(self) -> bool;
-
-    fn is_writable(self) -> bool;
-
-    fn is_executable(self) -> bool;
-
-    fn is_tls(self) -> bool;
-
-    fn is_merge_section(self) -> bool;
-
-    fn is_strings(self) -> bool;
-
-    fn should_retain(self) -> bool;
-
-    fn should_exclude(&self) -> bool;
-
-    fn is_group(self) -> bool;
 }
 
 pub(crate) trait Symbol: std::fmt::Debug + Send + Sync + 'static {
@@ -665,3 +691,36 @@ impl FrameIndex {
         self.0.get() as usize - 1
     }
 }
+
+pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
+    fn is_writable(self) -> bool;
+
+    fn is_executable(self) -> bool;
+
+    fn always_keep(self) -> bool;
+
+    fn is_loadable(self) -> bool;
+
+    fn is_stack(self) -> bool;
+
+    fn is_tls(self) -> bool;
+
+    /// Returns a numeric value that can be used to sort the segments as they should appear in the
+    /// program headers table. Segments with lower values will appear first.
+    fn order_key(self) -> usize;
+
+    /// Returns whether we should include the specified section in a segment with the properties of
+    /// `self`
+    fn should_include_section(
+        self,
+        section_info: &crate::output_section_id::SectionOutputInfo,
+        section_id: OutputSectionId,
+    ) -> bool;
+
+    /// Returns whether the current RW segment should end when this segment ends.
+    fn should_cut_rw_segment_when_ending(self) -> bool {
+        false
+    }
+}
+
+pub(crate) trait BuiltInSectionDetails: Send + Sync + 'static {}

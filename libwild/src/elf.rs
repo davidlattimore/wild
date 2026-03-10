@@ -1,8 +1,11 @@
 use crate::Args;
+use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BuildIdOption;
+use crate::args::RelocationModel;
 use crate::bail;
+use crate::elf;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
@@ -15,19 +18,25 @@ use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::OutputRecordLayout;
+use crate::layout_rules::SectionKind;
 use crate::output_kind::OutputKind;
 use crate::output_section_id;
+use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionName;
+use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::InternalSymDefInfo;
+use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::platform;
+use crate::platform::Arch;
 use crate::platform::CommonSymbol;
 use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
-use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
@@ -54,7 +63,9 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentFlags;
 use linker_utils::elf::SegmentType;
+use linker_utils::elf::pf;
 use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
@@ -65,8 +76,14 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::stt;
+use linker_utils::utils::read_string;
+use linker_utils::utils::read_u32;
+use linker_utils::utils::read_uleb128;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
@@ -79,7 +96,6 @@ use rayon::Scope;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::borrow::Cow;
-use std::ffi::CStr;
 use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
@@ -258,6 +274,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type LayoutResourcesExt = LayoutResourcesExt<'data>;
+    type ProgramSegmentDef = ProgramSegmentDef;
+    type BuiltInSectionDetails = BuiltInSectionDetails;
 
     fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
@@ -667,7 +685,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn create_layout_properties<'states, 'files, P: Platform<'data, File = Self>>(
+    fn create_layout_properties<'states, 'files, A: Arch<File<'data> = Self>>(
         args: &Args,
         objects: impl Iterator<Item = &'files Self>,
         states: impl Iterator<Item = &'states Self::FileLayoutState> + Clone,
@@ -676,7 +694,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         'data: 'files,
         'data: 'states,
     {
-        ElfLayoutProperties::new::<P>(objects, states, args)
+        ElfLayoutProperties::new::<A>(objects, states, args)
     }
 
     fn symbol_versions(&self) -> &[Self::SymbolVersionIndex] {
@@ -1060,7 +1078,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
 
-    fn load_exception_frame_data<'scope, P: Platform<'data, File = Self>>(
+    fn load_exception_frame_data<'scope, A: Arch<File<'data> = Self>>(
         object: &mut crate::layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut crate::layout::CommonGroupState<'data, File<'data>>,
         eh_frame_section_index: object::SectionIndex,
@@ -1073,7 +1091,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let data = object.object.raw_section_data(eh_frame_section)?;
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
-                ExceptionFrames::Rela(process_eh_frame_relocations::<P, Rela>(
+                ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
                     object,
                     common,
                     file_symbol_id_range,
@@ -1086,7 +1104,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?)
             }
             RelocationList::Crel(crel_iterator) => {
-                ExceptionFrames::Crel(process_eh_frame_relocations::<P, Crel>(
+                ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
                     object,
                     common,
                     file_symbol_id_range,
@@ -1112,7 +1130,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn non_empty_section_loaded<'scope, P: Platform<'data, File = Self>>(
+    fn non_empty_section_loaded<'scope, A: Arch<File<'data> = Self>>(
         object: &mut layout::ObjectLayoutState<'data, File<'data>>,
         common: &mut layout::CommonGroupState<'data, File<'data>>,
         queue: &mut layout::LocalWorkQueue,
@@ -1121,7 +1139,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         scope: &Scope<'scope>,
     ) -> Result {
         let sizes = match &object.format_specific_layout_state.exception_frames {
-            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<P, Rela>(
+            ExceptionFrames::Rela(exception_frames) => process_section_exception_frames::<A, Rela>(
                 object,
                 unloaded.last_frame_index,
                 common,
@@ -1130,7 +1148,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 scope,
                 exception_frames,
             )?,
-            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<P, Crel>(
+            ExceptionFrames::Crel(exception_frames) => process_section_exception_frames::<A, Crel>(
                 object,
                 unloaded.last_frame_index,
                 common,
@@ -1241,7 +1259,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
-    fn load_object_section_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_section_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1251,7 +1269,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> Result {
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                state.load_section_relocations::<P, Rela>(
+                state.load_section_relocations::<A, Rela>(
                     common,
                     queue,
                     resources,
@@ -1261,7 +1279,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                state.load_section_relocations::<P, Crel>(
+                state.load_section_relocations::<A, Crel>(
                     common,
                     queue,
                     resources,
@@ -1275,7 +1293,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn load_object_debug_relocations<'scope, P: Platform<'data, File = Self>>(
+    fn load_object_debug_relocations<'scope, A: Arch<File<'data> = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
@@ -1285,7 +1303,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> Result {
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
-                state.load_debug_relocations::<P, Rela>(
+                state.load_debug_relocations::<A, Rela>(
                     common,
                     queue,
                     resources,
@@ -1295,7 +1313,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 )?;
             }
             RelocationList::Crel(relocations) => {
-                state.load_debug_relocations::<P, Crel>(
+                state.load_debug_relocations::<A, Crel>(
                     common,
                     queue,
                     resources,
@@ -1408,7 +1426,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn update_segment_keep_list(
-        program_segments: &ProgramSegments,
+        program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
         args: &Args,
     ) {
@@ -1421,12 +1439,173 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             }
         }
     }
+
+    fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        PROGRAM_SEGMENT_DEFS
+    }
+
+    fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
+        &[STACK_SEGMENT_DEF]
+    }
+
+    fn create_linker_defined_symbols(
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<'data>,
+        output_kind: OutputKind,
+    ) {
+        // The undefined symbol must always be symbol 0.
+        symbols
+            .add_symbol(InternalSymDefInfo::new(SymbolPlacement::Undefined, b""))
+            .hide();
+
+        symbols
+            .section_start(output_section_id::FILE_HEADER, "__ehdr_start")
+            .hide();
+
+        symbols.section_start(output_section_id::GOT, "_GLOBAL_OFFSET_TABLE_");
+
+        // .rela.plt start/stop symbols are only emitted for non-relocatable executables. Emitting
+        // them for relocatable binaries causes glibc to try to call the resolver functions without
+        // taking into account that the binary has been relocated.
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::Relocatable) {
+            symbols
+                .section_start(output_section_id::RELA_PLT, "__rela_iplt_start")
+                .hide();
+            symbols
+                .section_end(output_section_id::RELA_PLT, "__rela_iplt_end")
+                .hide();
+        }
+
+        symbols
+            .section_start(output_section_id::PREINIT_ARRAY, "__preinit_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::PREINIT_ARRAY, "__preinit_array_end")
+            .hide();
+
+        symbols
+            .section_start(output_section_id::INIT_ARRAY, "__init_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::INIT_ARRAY, "__init_array_end")
+            .hide();
+
+        symbols
+            .section_start(output_section_id::FINI_ARRAY, "__fini_array_start")
+            .hide();
+        symbols
+            .section_group_end(output_section_id::FINI_ARRAY, "__fini_array_end")
+            .hide();
+
+        symbols.section_end(output_section_id::TEXT, "etext");
+        symbols.section_end(output_section_id::TEXT, "_etext");
+        symbols.section_end(output_section_id::TEXT, "__etext");
+
+        symbols.section_end(output_section_id::BSS, "end");
+        symbols.section_end(output_section_id::BSS, "_end");
+        symbols.section_end(output_section_id::BSS, "__end").hide();
+
+        // TODO: define the symbol only on RISC-V target
+        symbols.section_start(
+            output_section_id::DATA,
+            crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+        );
+
+        symbols.section_end(output_section_id::DATA, "edata");
+        symbols.section_end(output_section_id::DATA, "_edata");
+
+        symbols
+            .section_start(output_section_id::TDATA, "__tdata_start")
+            .hide();
+
+        if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable) {
+            symbols.section_start(output_section_id::DYNAMIC, "_DYNAMIC");
+        }
+
+        symbols
+            .add_symbol(InternalSymDefInfo::new(
+                SymbolPlacement::LoadBaseAddress,
+                b"__executable_start",
+            ))
+            .hide();
+
+        // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
+        // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
+        // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
+        symbols.add_symbol(InternalSymDefInfo {
+            placement: if output_kind == OutputKind::SharedObject {
+                SymbolPlacement::SectionStart(output_section_id::TDATA)
+            } else {
+                SymbolPlacement::SectionEnd(output_section_id::TBSS)
+            },
+            name: b"_TLS_MODULE_BASE_",
+            elf_symbol_type: stt::TLS,
+            is_hidden: false,
+        });
+    }
+
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args) {
+        // Some of these sections aren't really empty, but we just haven't allocated space for them
+        // yet. e.g. we don't allocate space for section headers until we know which sections we're
+        // keeping, which by inherently needs to be after this method is called.
+        const FORCE_KEEP_SECTIONS: &[OutputSectionId] = &[
+            output_section_id::FILE_HEADER,
+            output_section_id::PROGRAM_HEADERS,
+            output_section_id::SECTION_HEADERS,
+            output_section_id::SHSTRTAB,
+            output_section_id::RELRO_PADDING,
+        ];
+
+        for section_id in FORCE_KEEP_SECTIONS {
+            *keep_sections.get_mut(*section_id) = true;
+        }
+
+        // Keep .relro_padding unless relro is disabled.
+        if args.relro {
+            *keep_sections.get_mut(output_section_id::RELRO_PADDING) = true;
+        }
+    }
+
+    fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool {
+        // We always consider empty sections as content except for sframe sections.
+        section_id != output_section_id::SFRAME
+    }
+
+    fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
+        &SECTION_DEFINITIONS
+    }
+
+    fn built_in_section_infos() -> Vec<crate::output_section_id::SectionOutputInfo<'data>> {
+        SECTION_DEFINITIONS
+            .iter()
+            .map(|d| SectionOutputInfo {
+                section_flags: d.section_flags,
+                kind: d.kind,
+                ty: d.ty,
+                min_alignment: d.min_alignment,
+                entsize: d.element_size,
+                location: None,
+                secondary_order: None,
+            })
+            .collect()
+    }
+
+    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags {
+        SectionFlags::from_header(header)
+    }
+
+    fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
+        SectionAttributes {
+            flags: SectionFlags::from_header(header),
+            ty: SectionType::from_header(header),
+            entsize: header.sh_entsize.get(LittleEndian),
+        }
+    }
 }
 
 fn process_eh_frame_relocations<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    A: Arch<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &mut layout::ObjectLayoutState<'data, File<'data>>,
@@ -1475,7 +1654,7 @@ fn process_eh_frame_relocations<
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                layout::process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     rel,
@@ -1559,7 +1738,7 @@ fn process_eh_frame_relocations<
 fn process_section_exception_frames<
     'data,
     'scope,
-    P: Platform<'data, File = crate::elf::File<'data>>,
+    A: Arch<File<'data> = crate::elf::File<'data>>,
     R: Relocation,
 >(
     object: &layout::ObjectLayoutState<'data, File<'data>>,
@@ -1585,7 +1764,7 @@ fn process_section_exception_frames<
         // section.
         if let Some(eh_frame_section) = object.format_specific_layout_state.eh_frame_section {
             for rel in frame_data.relocations.rel_iter() {
-                layout::process_relocation::<P, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                layout::process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
                     object,
                     common,
                     &rel,
@@ -1653,21 +1832,53 @@ fn compute_version_mapping(
     out
 }
 
-impl<'data> platform::SectionHeader<'data, File<'data>> for SectionHeader {
-    fn flags(&self) -> SectionFlags {
-        SectionFlags::from_header(self)
+impl platform::SectionHeader for SectionHeader {
+    fn is_alloc(&self) -> bool {
+        SectionFlags::from_header(self).is_alloc()
     }
 
-    fn attributes(&self) -> SectionAttributes {
-        SectionAttributes {
-            flags: SectionFlags::from_header(self),
-            ty: SectionType::from_header(self),
-            entsize: self.sh_entsize.get(LittleEndian),
-        }
+    fn is_writable(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::WRITE)
     }
 
-    fn section_type(&self) -> SectionType {
-        SectionType::from_header(self)
+    fn is_executable(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::EXECINSTR)
+    }
+
+    fn is_tls(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::TLS)
+    }
+
+    fn is_merge_section(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::MERGE)
+    }
+
+    fn is_strings(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::STRINGS)
+    }
+
+    fn should_retain(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::GNU_RETAIN)
+    }
+
+    fn should_exclude(&self) -> bool {
+        SectionFlags::from_header(self).should_exclude()
+    }
+
+    fn is_group(&self) -> bool {
+        SectionFlags::from_header(self).contains(shf::GROUP)
+    }
+
+    fn is_note(&self) -> bool {
+        SectionType::from_header(self) == sht::NOTE
+    }
+
+    fn is_prog_bits(&self) -> bool {
+        SectionType::from_header(self) == sht::PROGBITS
+    }
+
+    fn is_no_bits(&self) -> bool {
+        SectionType::from_header(self) == sht::NOBITS
     }
 }
 
@@ -1675,55 +1886,11 @@ impl platform::SectionType for SectionType {
     fn is_null(self) -> bool {
         self == sht::NULL
     }
-
-    fn is_note(self) -> bool {
-        self == sht::NOTE
-    }
-
-    fn is_prog_bits(self) -> bool {
-        self == sht::PROGBITS
-    }
-
-    fn is_no_bits(self) -> bool {
-        self == sht::NOBITS
-    }
 }
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
         self.contains(shf::ALLOC)
-    }
-
-    fn is_writable(self) -> bool {
-        self.contains(shf::WRITE)
-    }
-
-    fn is_executable(self) -> bool {
-        self.contains(shf::EXECINSTR)
-    }
-
-    fn is_merge_section(self) -> bool {
-        self.contains(shf::MERGE)
-    }
-
-    fn is_strings(self) -> bool {
-        self.contains(shf::STRINGS)
-    }
-
-    fn should_retain(self) -> bool {
-        self.contains(shf::GNU_RETAIN)
-    }
-
-    fn should_exclude(&self) -> bool {
-        self.contains(shf::EXCLUDE)
-    }
-
-    fn is_group(self) -> bool {
-        self.contains(shf::GROUP)
-    }
-
-    fn is_tls(self) -> bool {
-        self.contains(shf::TLS)
     }
 }
 
@@ -2035,12 +2202,6 @@ pub(crate) fn write_relocation_to_buffer(
     Ok(())
 }
 
-pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
-    object::slice_from_bytes_mut(data, data.len() / size_of::<T>())
-        .unwrap()
-        .0
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     pub(crate) verdefnum: u64,
@@ -2199,14 +2360,14 @@ pub(crate) struct ElfLayoutProperties {
 }
 
 impl ElfLayoutProperties {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, P: Platform<'data>>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>> + Clone,
         args: &Args,
     ) -> Result<Self> {
-        let gnu_property_notes = merge_gnu_property_notes::<P>(states.clone(), args.z_isa)?;
-        let riscv_attributes = merge_riscv_attributes::<P>(states)?;
-        let eflags = merge_eflags::<P>(objects)?;
+        let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
+        let riscv_attributes = merge_riscv_attributes::<A>(states)?;
+        let eflags = merge_eflags::<A>(objects)?;
 
         Ok(Self {
             gnu_property_notes,
@@ -2216,7 +2377,7 @@ impl ElfLayoutProperties {
     }
 }
 
-fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
+fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     states: impl Iterator<Item = &'states ElfObjectLayoutState<'data>>,
     isa_needed: Option<NonZeroU32>,
 ) -> Result<Vec<GnuProperty>> {
@@ -2229,7 +2390,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
 
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = P::get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -2280,17 +2441,17 @@ fn merge_gnu_property_notes<'states, 'data: 'states, P: Platform<'data>>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, P: Platform<'data>>(
+fn merge_eflags<'files, 'data: 'files, A: Arch>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<Eflags> {
     timing_phase!("Merge e_flags");
 
-    Ok(Eflags(P::merge_eflags(
+    Ok(Eflags(A::merge_eflags(
         objects.map(|object| object.eflags),
     )?))
 }
 
-fn merge_riscv_attributes<'groups, 'data: 'groups, P: Platform<'data>>(
+fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(
     states: impl Iterator<Item = &'groups ElfObjectLayoutState<'data>>,
 ) -> Result<RiscVAttributes> {
     timing_phase!("Merge .riscv.attributes sections");
@@ -2500,18 +2661,6 @@ pub(crate) fn process_riscv_attributes(
     let content = section.data(e, object.data)?;
     ensure!(content.starts_with(b"A"), "Header must start with 'A'");
     let mut content = &content[1..];
-
-    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
-    let read_string = |content: &mut &[u8]| -> Result<String> {
-        let string = CStr::from_bytes_until_nul(content)?;
-        *content = &content[string.count_bytes() + 1..];
-        Ok(string.to_string_lossy().to_string())
-    };
-    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
-        let value = u32::from_le_bytes(content[..4].try_into()?);
-        *content = &content[4..];
-        Ok(value)
-    };
 
     // Expect only one subsection
     let _size = read_u32(&mut content)?;
@@ -3046,3 +3195,484 @@ impl EpilogueLayout {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProgramSegmentDef {
+    pub(crate) segment_type: SegmentType,
+    pub(crate) segment_flags: SegmentFlags,
+}
+
+/// The different kinds of program segments that we generate based on section properties. Note, this
+/// doesn't include the PT_GNU_STACK segment, since it isn't generated in response to any sections
+/// because it doesn't contain any.
+const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+    ProgramSegmentDef {
+        segment_type: pt::PHDR,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::INTERP,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::NOTE,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_PROPERTY,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::EXECUTABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::LOAD,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::TLS,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_EH_FRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_SFRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::DYNAMIC,
+        segment_flags: pf::READABLE.with(pf::WRITABLE),
+    },
+    ProgramSegmentDef {
+        segment_type: pt::GNU_RELRO,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
+        segment_type: pt::RISCV_ATTRIBUTES,
+        segment_flags: pf::READABLE,
+    },
+];
+
+pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    segment_type: pt::GNU_STACK,
+    segment_flags: pf::READABLE.with(pf::WRITABLE),
+};
+
+impl platform::ProgramSegmentDef for ProgramSegmentDef {
+    fn is_writable(self) -> bool {
+        self.segment_flags.contains(pf::WRITABLE)
+    }
+
+    fn is_executable(self) -> bool {
+        self.segment_flags.contains(pf::EXECUTABLE)
+    }
+
+    fn always_keep(self) -> bool {
+        self.segment_type == pt::PHDR
+    }
+
+    fn is_loadable(self) -> bool {
+        self.segment_type == pt::LOAD
+    }
+
+    fn is_stack(self) -> bool {
+        self.segment_type == pt::GNU_STACK
+    }
+
+    fn is_tls(self) -> bool {
+        self.segment_type == pt::TLS
+    }
+
+    fn order_key(self) -> usize {
+        // Segment types that we put first. Other types
+        const TYPE_ORDER: &[SegmentType] = &[pt::PHDR, pt::INTERP, pt::LOAD, pt::DYNAMIC];
+
+        TYPE_ORDER
+            .iter()
+            .position(|t| *t == self.segment_type)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+    }
+
+    fn should_include_section(
+        self,
+        info: &crate::output_section_id::SectionOutputInfo,
+        section_id: OutputSectionId,
+    ) -> bool {
+        match self.segment_type {
+            pt::NOTE => info.ty == sht::NOTE,
+            pt::TLS => info.section_flags.contains(shf::TLS),
+            pt::LOAD => {
+                info.section_flags.contains(shf::ALLOC)
+                    && info.section_flags.contains(shf::WRITE) == self.is_writable()
+                    && info.section_flags.contains(shf::EXECINSTR) == self.is_executable()
+            }
+            pt::GNU_RELRO => {
+                info.section_flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details::<elf::File>()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details::<elf::File>()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
+    }
+
+    fn should_cut_rw_segment_when_ending(self) -> bool {
+        self.segment_type == pt::GNU_RELRO
+    }
+}
+
+impl std::fmt::Display for ProgramSegmentDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, {}", self.segment_type, self.segment_flags)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BuiltInSectionDetails {
+    pub(crate) kind: SectionKind<'static>,
+    pub(crate) section_flags: SectionFlags,
+    /// Sections to try to link to. The first section that we're outputting is the one used.
+    pub(crate) link: &'static [OutputSectionId],
+    pub(crate) min_alignment: Alignment,
+    pub(crate) element_size: u64,
+    pub(crate) ty: SectionType,
+    pub(crate) is_relro: bool,
+    pub(crate) target_segment_type: Option<SegmentType>,
+}
+
+const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
+    kind: SectionKind::Primary(SectionName(&[])),
+    section_flags: SectionFlags::empty(),
+    link: &[],
+    min_alignment: alignment::MIN,
+    element_size: 0,
+    ty: sht::NULL,
+    is_relro: false,
+    target_segment_type: None,
+};
+
+const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
+    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
+        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+
+    // A section into which we write headers.
+    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"")),
+        section_flags: shf::ALLOC,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::PROGRAM_HEADERS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(PROGRAM_HEADERS_SECTION_NAME)),
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::PROGRAM_HEADER_ENTRY,
+        target_segment_type: Some(pt::PHDR),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SECTION_HEADERS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SECTION_HEADERS_SECTION_NAME)),
+        section_flags: shf::ALLOC,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SHSTRTAB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SHSTRTAB_SECTION_NAME)),
+        ty: sht::STRTAB,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(STRTAB_SECTION_NAME)),
+        ty: sht::STRTAB,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GOT_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::WRITE.with(shf::ALLOC),
+        element_size: crate::elf::GOT_ENTRY_SIZE,
+        min_alignment: alignment::GOT_ENTRY,
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(PLT_GOT_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        element_size: crate::elf::PLT_ENTRY_SIZE,
+        min_alignment: alignment::PLT,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::RELA_PLT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELA_PLT_SECTION_NAME)),
+        ty: sht::RELA,
+        section_flags: shf::ALLOC.with(shf::INFO_LINK),
+        element_size: RELA_ENTRY_SIZE,
+        link: &[output_section_id::DYNSYM, output_section_id::SYMTAB_LOCAL],
+        min_alignment: alignment::RELA_ENTRY,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::EH_FRAME.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(EH_FRAME_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::USIZE,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::EH_FRAME_HDR.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(EH_FRAME_HDR_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::EH_FRAME_HDR,
+        target_segment_type: Some(pt::GNU_EH_FRAME),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SFRAME.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
+        ty: sht::GNU_SFRAME,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::USIZE,
+        target_segment_type: Some(pt::GNU_SFRAME),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYNAMIC.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(DYNAMIC_SECTION_NAME)),
+        ty: sht::DYNAMIC,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        element_size: size_of::<DynamicEntry>() as u64,
+        link: &[output_section_id::DYNSTR],
+        min_alignment: alignment::USIZE,
+        is_relro: true,
+        target_segment_type: Some(pt::DYNAMIC),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::HASH.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(HASH_SECTION_NAME)),
+        ty: sht::HASH,
+        section_flags: shf::ALLOC,
+        link: &[output_section_id::DYNSYM],
+        min_alignment: alignment::SYSV_HASH,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GNU_HASH.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GNU_HASH_SECTION_NAME)),
+        ty: sht::GNU_HASH,
+        section_flags: shf::ALLOC,
+        link: &[output_section_id::DYNSYM],
+        min_alignment: alignment::GNU_HASH,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYNSYM.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(DYNSYM_SECTION_NAME)),
+        ty: sht::DYNSYM,
+        section_flags: shf::ALLOC,
+        element_size: size_of::<elf::SymtabEntry>() as u64,
+        link: &[output_section_id::DYNSTR],
+        min_alignment: alignment::SYMTAB_ENTRY,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYNSTR.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(DYNSTR_SECTION_NAME)),
+        ty: sht::STRTAB,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::MIN,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC,
+        target_segment_type: Some(pt::INTERP),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GNU_VERSION.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_SECTION_NAME)),
+        ty: sht::GNU_VERSYM,
+        section_flags: shf::ALLOC,
+        element_size: size_of::<Versym>() as u64,
+        min_alignment: alignment::VERSYM,
+        link: &[output_section_id::DYNSYM],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GNU_VERSION_D.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_D_SECTION_NAME)),
+        ty: sht::GNU_VERDEF,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::VERSION_D,
+        link: &[output_section_id::DYNSTR],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GNU_VERSION_R.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_R_SECTION_NAME)),
+        ty: sht::GNU_VERNEED,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::VERSION_R,
+        link: &[output_section_id::DYNSTR],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::NOTE_GNU_PROPERTY.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(NOTE_GNU_PROPERTY_SECTION_NAME)),
+        ty: sht::NOTE,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::NOTE_GNU_PROPERTY,
+        target_segment_type: Some(pt::GNU_PROPERTY),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::NOTE_GNU_BUILD_ID.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME)),
+        ty: sht::NOTE,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::NOTE_GNU_BUILD_ID,
+        ..DEFAULT_DEFS
+    };
+    // Multi-part generated sections
+    defs[output_section_id::SYMTAB_LOCAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SYMTAB_SECTION_NAME)),
+        ty: sht::SYMTAB,
+        element_size: size_of::<SymtabEntry>() as u64,
+        min_alignment: alignment::SYMTAB_ENTRY,
+        link: &[output_section_id::STRTAB],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::RELA_DYN_RELATIVE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELA_DYN_SECTION_NAME)),
+        ty: sht::RELA,
+        section_flags: shf::ALLOC,
+        element_size: RELA_ENTRY_SIZE,
+        min_alignment: alignment::RELA_ENTRY,
+        link: &[output_section_id::DYNSYM],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::RELA_DYN_GENERAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::RELA_DYN_RELATIVE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
+        ty: sht::RISCV_ATTRIBUTES,
+        target_segment_type: Some(pt::RISCV_ATTRIBUTES),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::RELRO_PADDING.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELRO_PADDING_SECTION_NAME)),
+        ty: sht::NOBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    // Start of regular sections
+    defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::INIT_ARRAY.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(INIT_ARRAY_SECTION_NAME)),
+        ty: sht::INIT_ARRAY,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        element_size: size_of::<u64>() as u64,
+        min_alignment: alignment::USIZE,
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::FINI_ARRAY.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(FINI_ARRAY_SECTION_NAME)),
+        ty: sht::FINI_ARRAY,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        element_size: size_of::<u64>() as u64,
+        min_alignment: alignment::USIZE,
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::PREINIT_ARRAY.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
+        ty: sht::PREINIT_ARRAY,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::INIT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(INIT_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::FINI.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(FINI_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::TDATA.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::TBSS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(TBSS_SECTION_NAME)),
+        ty: sht::NOBITS,
+        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::BSS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(BSS_SECTION_NAME)),
+        ty: sht::NOBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::COMMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(COMMENT_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::STRINGS.with(shf::MERGE),
+        element_size: 1,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GCC_EXCEPT_TABLE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GCC_EXCEPT_TABLE_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::NOTE_ABI_TAG.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(NOTE_ABI_TAG_SECTION_NAME)),
+        ty: sht::NOTE,
+        section_flags: shf::ALLOC,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DATA_REL_RO.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(DATA_REL_RO_SECTION_NAME)),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        is_relro: true,
+        ..DEFAULT_DEFS
+    };
+
+    defs
+};
+
+impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}

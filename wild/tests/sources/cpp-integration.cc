@@ -23,6 +23,26 @@
 //#LinkArgs:-no-pie -Wl,-z,now
 //#EnableLinker:lld
 
+//#Config:static-no-relax:default
+//#CompArgs:-fmerge-constants
+//#LinkerDriver:g++
+//#LinkArgs:-static -Wl,-z,now,-no-relax
+//#DiffIgnore:rel.extra-got-plt-got
+//#DiffIgnore:section.rela.plt.link
+// TODO: This is likely an important issue.
+//#DiffIgnore:init_array
+// TODO: Missing `endbr64` relaxations.
+//#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
+//#DiffIgnore:rel.match_failed.R_X86_64_REX_GOTPCRELX
+//#DiffIgnore:rel.match_failed.R_X86_64_PLT32
+//#DiffIgnore:literal-byte-mismatch
+// TODO: Some conditions for required relaxations are wrong.
+//#DiffIgnore:rel.extra-opt.R_X86_64_GOTPCRELX.JmpIndirectToRelative*
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexCmpIndirectToAbsolute*
+//#DiffIgnore:rel.extra-opt.R_X86_64_REX_GOTPCRELX.RexMovIndirectToAbsolute*
+//#DiffIgnore:rel.missing-opt.R_X86_64_GOTTPOFF.RexMovIndirectToAbsolute*
+//#Arch: x86_64
+
 //#Config:clang-pie:default
 //#CompArgs:-fpie
 //#Compiler:clang

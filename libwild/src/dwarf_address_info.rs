@@ -5,8 +5,8 @@ use crate::elf::File;
 use crate::elf::Rela;
 use crate::error::Result;
 use crate::fs::path_from_bytes;
+use crate::platform::Arch;
 use crate::platform::ObjectFile as _;
-use crate::platform::Platform;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence as _;
 use crate::platform::SourceInfo;
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<'data, P: Platform<'data>>(
+pub(crate) fn get_source_info<A: Arch>(
     object: &File,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -33,7 +33,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
 ) -> Result<SourceInfo> {
     let dwarf_sections =
         gimli::DwarfSections::load(&|id: gimli::SectionId| -> Result<Cow<[u8]>> {
-            section_data_with_relocations::<P>(object, relocations, id, section)
+            section_data_with_relocations::<A>(object, relocations, id, section)
         })?;
 
     let borrow_section: &dyn for<'a> Fn(
@@ -91,7 +91,7 @@ pub(crate) fn get_source_info<'data, P: Platform<'data>>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<'data, P: Platform<'data>>(
+fn section_data_with_relocations<A: Arch>(
     object: &File,
     relocations: &RelocationSections,
     id: gimli::SectionId,
@@ -104,7 +104,7 @@ fn section_data_with_relocations<'data, P: Platform<'data>>(
             // Apply relocations.
             match object.relocations(index, relocations)? {
                 crate::elf::RelocationList::Rela(relocations) => {
-                    apply_section_relocations::<P, Rela>(
+                    apply_section_relocations::<A, Rela>(
                         object,
                         section_of_interest,
                         &mut section_data,
@@ -112,7 +112,7 @@ fn section_data_with_relocations<'data, P: Platform<'data>>(
                     )?;
                 }
                 crate::elf::RelocationList::Crel(relocations) => {
-                    apply_section_relocations::<P, Crel>(
+                    apply_section_relocations::<A, Crel>(
                         object,
                         section_of_interest,
                         &mut section_data,
@@ -129,7 +129,7 @@ fn section_data_with_relocations<'data, P: Platform<'data>>(
     Ok(data)
 }
 
-fn apply_section_relocations<'data, P: Platform<'data>, R: Relocation>(
+fn apply_section_relocations<A: Arch, R: Relocation>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],
@@ -156,7 +156,7 @@ fn apply_section_relocations<'data, P: Platform<'data>, R: Relocation>(
             value += SECTION_LOAD_ADDRESS;
         }
 
-        let r_type = P::relocation_from_raw(rel.raw_type())?;
+        let r_type = A::relocation_from_raw(rel.raw_type())?;
 
         let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
             continue;

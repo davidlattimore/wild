@@ -38,17 +38,17 @@ impl OffsetVerifier {
         output_order: &OutputOrder,
         files: &[FileLayout<'data, O>],
     ) -> Result {
-        if memory_offsets == &self.expected && self.alignments_ok() {
+        if memory_offsets == &self.expected && self.alignments_ok(output_sections) {
             return Ok(());
         }
-        let expected = offsets_by_key(&self.expected, output_order);
-        let actual = offsets_by_key(memory_offsets, output_order);
-        let sizes = offsets_by_key(&self.sizes, output_order);
+        let expected = offsets_by_key(&self.expected, output_order, output_sections);
+        let actual = offsets_by_key(memory_offsets, output_order, output_sections);
+        let sizes = offsets_by_key(&self.sizes, output_order, output_sections);
         let mut problems = Vec::new();
 
         for (((part_id, exp), (_, act)), (_, size)) in expected.iter().zip(actual.iter()).zip(sizes)
         {
-            let alignment = part_id.alignment();
+            let alignment = part_id.alignment(output_sections);
             if exp != act {
                 let actual_bump = *act as i64 - (*exp as i64 - size as i64);
                 problems.push(format!(
@@ -57,7 +57,7 @@ impl OffsetVerifier {
                     output_sections.display_name(part_id.output_section_id())
                 ));
             }
-            if !size.is_multiple_of(part_id.alignment().value())
+            if !size.is_multiple_of(part_id.alignment(output_sections).value())
                 && !should_ignore_alignment(*part_id)
             {
                 problems.push(format!(
@@ -77,10 +77,11 @@ impl OffsetVerifier {
         );
     }
 
-    fn alignments_ok(&self) -> bool {
+    fn alignments_ok(&self, output_sections: &OutputSections) -> bool {
         self.sizes.parts.iter().enumerate().all(|(i, size)| {
             let part_id = PartId::from_usize(i);
-            size.is_multiple_of(part_id.alignment().value()) || should_ignore_alignment(part_id)
+            size.is_multiple_of(part_id.alignment(output_sections).value())
+                || should_ignore_alignment(part_id)
         })
     }
 }
@@ -120,10 +121,15 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
 fn offsets_by_key(
     memory_offsets: &OutputSectionPartMap<u64>,
     output_order: &OutputOrder,
+    output_sections: &OutputSections,
 ) -> Vec<(PartId, u64)> {
     let mut offsets_by_key = Vec::new();
-    memory_offsets.output_order_map(output_order, |part_id, _alignment, offset| {
-        offsets_by_key.push((part_id, *offset));
-    });
+    memory_offsets.output_order_map(
+        output_order,
+        output_sections,
+        |part_id, _alignment, offset| {
+            offsets_by_key.push((part_id, *offset));
+        },
+    );
     offsets_by_key
 }

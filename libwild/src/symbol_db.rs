@@ -36,7 +36,6 @@ use crate::parsing::SyntheticSymbols;
 use crate::platform;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
-use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader;
 use crate::platform::Symbol;
 use crate::resolution::ResolvedFile;
@@ -393,7 +392,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
 
         if self.groups.is_empty() {
             self.groups
-                .push(Group::Prelude(crate::parsing::Prelude::new(
+                .push(Group::Prelude(crate::parsing::Prelude::new::<O>(
                     self.args,
                     self.output_kind,
                 )));
@@ -893,9 +892,7 @@ impl<'data, O: ObjectFile<'data>> SymbolDb<'data, O> {
             return false;
         };
 
-        let flags = header.flags();
-
-        flags.is_group()
+        header.is_group()
     }
 
     pub(crate) fn entry_symbol_name(&self) -> &[u8] {
@@ -1997,7 +1994,7 @@ impl<'data> Prelude<'data> {
     ) {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
-            let flags = match definition.placement {
+            let mut flags = match definition.placement {
                 SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
                     ValueFlags::ABSOLUTE
                 }
@@ -2014,6 +2011,9 @@ impl<'data> Prelude<'data> {
                     ValueFlags::NON_INTERPOSABLE
                 }
             };
+            if definition.is_hidden {
+                flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
+            }
             symbols_out.set_next(flags, symbol_id, PRELUDE_FILE_ID);
         }
     }

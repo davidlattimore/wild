@@ -401,6 +401,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, O: ObjectFile<'data>>(
 ) -> OutputSectionPartMap<&'out mut [u8]> {
     layout.section_part_layouts.output_order_map(
         &layout.output_order,
+        &layout.output_sections,
         |part_id, _alignment, rec| {
             section_buffers
                 .get_mut(part_id.output_section_id())
@@ -412,7 +413,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, O: ObjectFile<'data>>(
                         layout
                             .output_sections
                             .section_debug(part_id.output_section_id()),
-                        part_id.alignment(),
+                        part_id.alignment(&layout.output_sections),
                     )
                 })
                 .unwrap()

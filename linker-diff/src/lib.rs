@@ -22,6 +22,7 @@ use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
+use linker_utils::utils::slice_from_all_bytes;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
@@ -206,6 +207,7 @@ impl Config {
                 "section.eh_frame.flags",
                 // TLSDESC relaxations aren't yet implemented.
                 "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
+                "rel.match_failed.R_X86_64_CODE_4_GOTPC32_TLSDESC",
                 "rel.missing-opt.R_X86_64_TLSDESC_CALL.SkipTlsDescCall.*",
                 // Wild eliminates GOTPCRELX in statically linked executables even for undefined
                 // symbols, whereas other linkers don't. This is a valid optimisation that other
@@ -285,6 +287,11 @@ impl Config {
                     // Also on Alpine Linux, aarch64, it seems that GNU ld is emitting an
                     // unnecessary GLOB_DAT relocation in a GOT entry.
                     "rel.missing-got-dynamic.executable",
+                    // GNU ld replaces calls to undefined symbols with nop. Wild instead encodes
+                    // bl 0x0 so that if the call site is reached, it will crash rather than
+                    // silently continuing execution.
+                    "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.*",
+                    "rel.missing-opt.R_AARCH64_JUMP26.ReplaceWithNop.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -316,6 +323,10 @@ impl Config {
                     "literal-byte-mismatch*",
                     "error.*",
                     "section-diff-failed*",
+                    // GNU ld replaces calls to undefined symbols with nop. Wild instead encodes
+                    // bl 0x0 so that if the call site is reached, it will crash rather than
+                    // silently continuing execution.
+                    "rel.missing-opt.R_LARCH_B26.ReplaceWithNop.*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -939,12 +950,6 @@ impl<'data> NameIndex<'data> {
             dynamic_by_name,
         }
     }
-}
-
-fn slice_from_all_bytes<T: object::Pod>(data: &[u8]) -> &[T] {
-    object::slice_from_bytes(data, data.len() / size_of::<T>())
-        .unwrap()
-        .0
 }
 
 fn parse_string_equality(

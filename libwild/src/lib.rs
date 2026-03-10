@@ -74,7 +74,7 @@ use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
-use crate::platform::Platform;
+use crate::platform::Arch;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 pub use args::Args;
@@ -207,7 +207,7 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn link_for_arch<'data, A: Arch<File<'data> = crate::elf::File<'data>>>(
         &'data self,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
@@ -215,7 +215,7 @@ impl Linker {
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<P>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
@@ -235,7 +235,7 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, P: Platform<'data, File = crate::elf::File<'data>>>(
+    fn load_inputs_and_link<'data, A: Arch<File<'data> = crate::elf::File<'data>>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
         args: &'data Args,
@@ -253,7 +253,8 @@ impl Linker {
 
         let mut output = file_writer::Output::new(args, output_kind);
 
-        let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
+        let mut output_sections =
+            OutputSections::with_base_address::<elf::File>(output_kind.base_address());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
@@ -313,7 +314,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<P>(
+        let layout = layout::compute::<A>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -321,7 +322,7 @@ impl Linker {
             &mut output,
         )?;
 
-        output.write(&layout, elf_writer::write::<P>)?;
+        output.write(&layout, elf_writer::write::<A>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.

@@ -32,9 +32,7 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::RawSymbolName as _;
-use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
-use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::string_merging::StringMergeSectionExtra;
@@ -649,7 +647,7 @@ pub(crate) struct ResolvedObject<'data, O: ObjectFile<'data>> {
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: O::RelocationSections,
 
-    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data, O::SectionFlags>>,
+    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
@@ -1041,9 +1039,9 @@ fn allocate_start_stop_symbol_id<'data, O: ObjectFile<'data>>(
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
     let def_info = if is_start {
-        InternalSymDefInfo::notype(SymbolPlacement::SectionStart(section_id), name.bytes())
+        InternalSymDefInfo::new(SymbolPlacement::SectionStart(section_id), name.bytes())
     } else {
-        InternalSymDefInfo::notype(SymbolPlacement::SectionEnd(section_id), name.bytes())
+        InternalSymDefInfo::new(SymbolPlacement::SectionEnd(section_id), name.bytes())
     };
 
     let symbol_id = symbol_db.add_synthetic_symbol(per_symbol_flags, name, custom_start_stop_defs);
@@ -1169,15 +1167,13 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
         return Err(symbol_db::linker_plugin_disabled_error());
     }
 
-    let section_flags = input_section.flags();
     let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
-    let should_merge_sections = part_id::should_merge_sections(section_flags, raw_alignment, args);
+    let should_merge_sections = part_id::should_merge_sections(input_section, raw_alignment, args);
 
     let mut unloaded_section;
     let mut is_debug_info = false;
-    let section_type = input_section.section_type();
-    let mut must_load = section_flags.should_retain() || section_type.is_note();
+    let mut must_load = input_section.should_retain() || input_section.is_note();
 
     let file_name = if let Some(entry) = &obj.common.input.entry {
         // For archive members, match against the member name (e.g., "app.o"),
@@ -1192,7 +1188,7 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             .map(|n| n.as_encoded_bytes())
     };
 
-    match rules.lookup(section_name, file_name, section_flags, section_type) {
+    match rules.lookup(section_name, file_name, input_section) {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)
@@ -1231,11 +1227,11 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             return Ok(SectionSlot::NoteGnuProperty(input_section_index));
         }
         SectionRuleOutcome::Debug => {
-            if args.strip_debug() && !section_flags.is_alloc() {
+            if args.strip_debug() && !input_section.is_alloc() {
                 return Ok(SectionSlot::Discard);
             }
 
-            is_debug_info = !section_flags.is_alloc();
+            is_debug_info = !input_section.is_alloc();
 
             unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
         }
@@ -1263,7 +1259,6 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             obj.common
                 .object
                 .section_data(input_section, allocator, loaded_metrics)?;
-        let section_flags = input_section.flags();
 
         if section_data.is_empty() {
             SectionSlot::Discard
@@ -1271,7 +1266,7 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             obj.string_merge_extras.push(StringMergeSectionExtra {
                 index: input_section_index,
                 section_data,
-                section_flags,
+                is_strings: input_section.is_strings(),
             });
 
             SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
