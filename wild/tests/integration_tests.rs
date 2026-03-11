@@ -3539,6 +3539,7 @@ fn integration_test(
         "trivial_asm.s",
         "non-alloc.s",
         "gnu-unique.c",
+        "undef-transitive.c",
         "symbol-versions.c",
         "simple-version-script.c",
         "mixed-verdef-verneed.c",
