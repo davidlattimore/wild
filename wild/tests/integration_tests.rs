@@ -3618,6 +3618,7 @@ fn integration_test(
         "segment-end-syms.c",
         "linker-script-filename-match.c",
         "tls-apx-relocs.s",
+        "linker-script-unclosed-comment.c",
         "execstack.s"
     )]
     program_name: &'static str,
