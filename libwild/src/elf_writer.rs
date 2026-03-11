@@ -3884,6 +3884,15 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
             .with_context(|| {
                 format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
             })?;
+    } else if sym.is_absolute(LittleEndian) {
+        dynamic_symbol_writer
+            .copy_absolute_symbol(sym, name, ValueFlags::empty())
+            .with_context(|| {
+                format!(
+                    "Failed to absolute {}",
+                    layout.symbol_debug(sym_def.symbol_id)
+                )
+            })?;
     } else {
         dynamic_symbol_writer
             .copy_symbol_shndx(sym, name, 0, 0, ValueFlags::empty())
