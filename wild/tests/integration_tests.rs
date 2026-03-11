@@ -33,8 +33,7 @@
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
 //!
-//! ExpectDynSym:symbol-name [section] [offset-in-section] As for ExpectSym, but for dynamic
-//! symbols.
+//! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols.
 //!
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
 //! .dynsym.
@@ -2702,8 +2701,10 @@ impl Assertions {
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
         self.verify_file_kind(&obj)?;
-        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
-        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
+        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())
+            .context(".symtab assertion failed")?;
+        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())
+            .context(".dynsym assertion failed")?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), ".symtab")?;
         self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
         self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
@@ -2935,28 +2936,34 @@ fn verify_symbol_assertions(
             continue;
         };
 
-        if let object::SymbolSection::Section(index) = sym.section() {
-            let section = obj.section_by_index(index)?;
-            let section_name = section.name()?;
+        if let Some(exp_name) = exp.assertions.section_name.as_ref() {
+            match sym.section() {
+                object::SymbolSection::Section(index) => {
+                    let section = obj.section_by_index(index)?;
+                    let section_name = section.name()?;
 
-            if let Some(exp_name) = exp.assertions.section_name.as_ref() {
-                if section_name != exp_name {
-                    bail!(
-                        "Expected symbol `{name}` to be in section `{exp_name}`, \
-                                but it was in `{section_name}`"
-                    );
-                }
-
-                if let Some(expected_offset) = exp.assertions.section_offset {
-                    let actual_offset = sym.address().wrapping_sub(section.address());
-                    if expected_offset != actual_offset {
+                    if section_name != exp_name {
                         bail!(
-                            "Expected symbol `{name}` to be at offset {expected_offset} \
-                                    in section `{exp_name}`, but it was actually at offset {}",
-                            actual_offset as i64
+                            "Expected symbol `{name}` to be in section `{exp_name}`, \
+                                but it was in `{section_name}`"
                         );
                     }
+
+                    if let Some(expected_offset) = exp.assertions.section_offset {
+                        let actual_offset = sym.address().wrapping_sub(section.address());
+                        if expected_offset != actual_offset {
+                            bail!(
+                                "Expected symbol `{name}` to be at offset {expected_offset} \
+                                    in section `{exp_name}`, but it was actually at offset {}",
+                                actual_offset as i64
+                            );
+                        }
+                    }
                 }
+                other => bail!(
+                    "Expected symbol `name` to be in section `{exp_name}`, \
+                     but it was {other:?}"
+                ),
             }
         }
 
