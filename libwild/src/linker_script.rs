@@ -12,10 +12,13 @@ use winnow::BStr;
 use winnow::Parser as _;
 use winnow::ascii::dec_uint;
 use winnow::ascii::hex_digit1;
+use winnow::ascii::hex_uint;
 use winnow::ascii::multispace0;
 use winnow::combinator::alt;
+use winnow::combinator::delimited;
 use winnow::combinator::eof;
 use winnow::combinator::opt;
+use winnow::combinator::preceded;
 use winnow::combinator::repeat_till;
 use winnow::error::ContextError;
 use winnow::error::FromExternalError;
@@ -69,6 +72,7 @@ pub(crate) enum Command<'a> {
         value: &'a [u8],
     },
     Provide(ProvideSymbolDefinition<'a>),
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +85,7 @@ pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
     SetLocation(Location),
     Align(Alignment),
+    Assert(AssertCommand<'a>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -113,6 +118,56 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
     pub(crate) name: &'a [u8],
     pub(crate) value: &'a [u8],
     pub(crate) hidden: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct AssertCommand<'a> {
+    pub(crate) expression: Expression<'a>,
+    pub(crate) message: &'a [u8],
+}
+
+/// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
+///
+/// Currently supports:
+/// - Arithmetic: +, -, *, /
+/// - Comparison: <, >, <=, >=, ==, !=
+/// - Functions: SIZEOF, ADDR, ALIGN, MIN, MAX
+/// - Numbers (hex/decimal), symbols, location counter (.)
+/// - Parentheses for grouping
+///
+/// Not yet supported (can be added when needed):
+/// - Unary operators (-, !)
+/// - Bitwise operators (&, |, ^, ~, <<, >>)
+/// - Logical operators (&&, ||)
+/// - Ternary operator (? :)
+/// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Expression<'a> {
+    /// A numeric literal (e.g., 0x1000, 42)
+    Number(u64),
+    /// A symbol reference (e.g., __bss_start)
+    Symbol(&'a [u8]),
+    /// The location counter '.'
+    LocationCounter,
+    /// Binary arithmetic: +, -, *, /
+    Add(Box<Expression<'a>>, Box<Expression<'a>>),
+    Subtract(Box<Expression<'a>>, Box<Expression<'a>>),
+    Multiply(Box<Expression<'a>>, Box<Expression<'a>>),
+    Divide(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Comparison operators: <, >, <=, >=, ==, !=
+    LessThan(Box<Expression<'a>>, Box<Expression<'a>>),
+    GreaterThan(Box<Expression<'a>>, Box<Expression<'a>>),
+    LessEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    GreaterEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    Equal(Box<Expression<'a>>, Box<Expression<'a>>),
+    NotEqual(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Function calls
+    Sizeof(&'a [u8]),
+    Addr(&'a [u8]),
+    Align(Box<Expression<'a>>),
+    /// MIN and MAX functions (take two expressions)
+    Min(Box<Expression<'a>>, Box<Expression<'a>>),
+    Max(Box<Expression<'a>>, Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -210,6 +265,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"VERSION" => Command::Version(parse_version(input)?),
         b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
+        b"ASSERT" => Command::Assert(parse_assert(input)?),
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -253,6 +309,238 @@ fn parse_provide<'input>(
         value,
         hidden,
     })
+}
+
+fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertCommand<'input>> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse expression using winnow - it will consume as much as it can
+    let expression = parse_expression.parse_next(input)?;
+
+    skip_comments_and_whitespace(input)?;
+    ','.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse message (quoted string)
+    let message = parse_token(input)?;
+
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(AssertCommand {
+        expression,
+        message,
+    })
+}
+
+/// Parse an expression - entry point for expression parsing
+fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    parse_comparison.parse_next(input)
+}
+
+/// Parse comparison expression: expression < expression, expression == expression, etc.
+fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_additive.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    if let Some(op) = opt(alt((
+        "<=".map(|_| CompOp::LessEqual),
+        ">=".map(|_| CompOp::GreaterEqual),
+        "==".map(|_| CompOp::Equal),
+        "!=".map(|_| CompOp::NotEqual),
+        '<'.map(|_| CompOp::LessThan),
+        '>'.map(|_| CompOp::GreaterThan),
+    )))
+    .parse_next(input)?
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_additive.parse_next(input)?;
+        left = match op {
+            CompOp::LessThan => Expression::LessThan(Box::new(left), Box::new(right)),
+            CompOp::GreaterThan => Expression::GreaterThan(Box::new(left), Box::new(right)),
+            CompOp::LessEqual => Expression::LessEqual(Box::new(left), Box::new(right)),
+            CompOp::GreaterEqual => Expression::GreaterEqual(Box::new(left), Box::new(right)),
+            CompOp::Equal => Expression::Equal(Box::new(left), Box::new(right)),
+            CompOp::NotEqual => Expression::NotEqual(Box::new(left), Box::new(right)),
+        };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse additive operators: +, -
+fn parse_additive<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_multiplicative.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(op) =
+        opt(alt(('+'.map(|_| AddOp::Add), '-'.map(|_| AddOp::Subtract)))).parse_next(input)?
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_multiplicative.parse_next(input)?;
+        left = match op {
+            AddOp::Add => Expression::Add(Box::new(left), Box::new(right)),
+            AddOp::Subtract => Expression::Subtract(Box::new(left), Box::new(right)),
+        };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse multiplicative operators: *, /
+fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_primary.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(op) = opt(alt((
+        '*'.map(|_| MulOp::Multiply),
+        '/'.map(|_| MulOp::Divide),
+    )))
+    .parse_next(input)?
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_primary.parse_next(input)?;
+        left = match op {
+            MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
+            MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
+        };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse primary expressions: numbers, symbols, functions, parentheses
+fn parse_primary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    multispace0.parse_next(input)?;
+
+    alt((
+        // Parentheses - parse expression inside
+        delimited('(', parse_expression, ')'),
+        // Hex numbers (0x or 0X prefix)
+        preceded(alt(("0x", "0X")), hex_uint::<_, u64, _>).map(Expression::Number),
+        // Decimal numbers
+        dec_uint::<_, u64, _>.map(Expression::Number),
+        // Functions and symbols (identifiers) - this handles '.' as well
+        parse_identifier_or_function,
+    ))
+    .parse_next(input)
+}
+
+/// Parse an identifier (symbol or function call)
+fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    // Parse identifier: starts with letter or underscore, contains alphanumeric, underscore, or dot
+    let ident = take_while(1.., |b: u8| {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
+    })
+    .verify(|s: &[u8]| {
+        // Must start with letter, underscore, or dot
+        s[0].is_ascii_alphabetic() || s[0] == b'_' || s[0] == b'.'
+    })
+    .parse_next(input)?;
+
+    // Special case: if it's just '.', it's the location counter
+    if ident == b"." {
+        return Ok(Expression::LocationCounter);
+    }
+
+    multispace0.parse_next(input)?;
+
+    // Check if it's a function call
+    if opt('(').parse_next(input)?.is_some() {
+        multispace0.parse_next(input)?;
+
+        match ident {
+            b"SIZEOF" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Sizeof(arg))
+            }
+            b"ADDR" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Addr(arg))
+            }
+            b"ALIGN" => {
+                let arg_expr = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ')'.parse_next(input)?;
+                Ok(Expression::Align(Box::new(arg_expr)))
+            }
+            b"MIN" => {
+                // MIN takes two expressions separated by comma
+                let first = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ','.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                let second = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ')'.parse_next(input)?;
+                Ok(Expression::Min(Box::new(first), Box::new(second)))
+            }
+            b"MAX" => {
+                // MAX takes two expressions separated by comma
+                let first = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ','.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                let second = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ')'.parse_next(input)?;
+                Ok(Expression::Max(Box::new(first), Box::new(second)))
+            }
+            _ => Err(ContextError::default()),
+        }
+    } else {
+        // It's a symbol
+        Ok(Expression::Symbol(ident))
+    }
+}
+
+/// Parse a function argument (section name for SIZEOF/ADDR)
+fn parse_function_arg<'a>(input: &mut &'a BStr) -> winnow::Result<&'a [u8]> {
+    multispace0.parse_next(input)?;
+
+    // Section names: start with '.', letter, or underscore
+    let arg = take_while(1.., |b: u8| {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'.'
+    })
+    .verify(|s: &[u8]| s[0] == b'.' || s[0].is_ascii_alphabetic() || s[0] == b'_')
+    .parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+    ')'.parse_next(input)?;
+
+    Ok(arg)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CompOp {
+    LessThan,
+    GreaterThan,
+    LessEqual,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AddOp {
+    Add,
+    Subtract,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MulOp {
+    Multiply,
+    Divide,
 }
 
 fn parse_location(input: &mut &BStr) -> winnow::Result<Location> {
@@ -324,6 +612,11 @@ fn parse_section_command<'input>(
     let name = parse_token(input)?;
 
     skip_comments_and_whitespace(input)?;
+
+    // Handle ASSERT command
+    if name == b"ASSERT" {
+        return Ok(SectionCommand::Assert(parse_assert(input)?));
+    }
 
     if name == b"." {
         '='.parse_next(input)?;
@@ -894,5 +1187,146 @@ mod tests {
                 alignment: None,
             }),
         );
+    }
+
+    #[test]
+    fn test_assert_command() {
+        check_linker_script(
+            r#"
+            SECTIONS {
+                .text : { *(.text) }
+            }
+            ASSERT(. < 0x10000, "Output too large");
+            "#,
+            &LinkerScript {
+                commands: vec![
+                    Command::Sections(Sections {
+                        commands: vec![SectionCommand::Section(Section {
+                            output_section_name: ".text".as_bytes(),
+                            commands: vec![ContentsCommand::Matcher(Matcher {
+                                must_keep: false,
+                                input_file_pattern: None,
+                                input_section_name_patterns: vec![".text".as_bytes()],
+                            })],
+                            alignment: None,
+                        })],
+                    }),
+                    Command::Assert(AssertCommand {
+                        expression: Expression::LessThan(
+                            Box::new(Expression::LocationCounter),
+                            Box::new(Expression::Number(0x10000)),
+                        ),
+                        message: "Output too large".as_bytes(),
+                    }),
+                ],
+            },
+        );
+    }
+
+    #[test]
+    fn test_assert_in_sections() {
+        check_linker_script(
+            r#"
+            SECTIONS {
+                .text : { *(.text) }
+                ASSERT(SIZEOF(.text) < 0x1000, "Text section too large");
+            }
+            "#,
+            &LinkerScript {
+                commands: vec![Command::Sections(Sections {
+                    commands: vec![
+                        SectionCommand::Section(Section {
+                            output_section_name: ".text".as_bytes(),
+                            commands: vec![ContentsCommand::Matcher(Matcher {
+                                must_keep: false,
+                                input_file_pattern: None,
+                                input_section_name_patterns: vec![".text".as_bytes()],
+                            })],
+                            alignment: None,
+                        }),
+                        SectionCommand::Assert(AssertCommand {
+                            expression: Expression::LessThan(
+                                Box::new(Expression::Sizeof(".text".as_bytes())),
+                                Box::new(Expression::Number(0x1000)),
+                            ),
+                            message: "Text section too large".as_bytes(),
+                        }),
+                    ],
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn test_assert_with_complex_expression() {
+        let script =
+            parse_script(r#"ASSERT(__bss_end - __bss_start <= 0x1000, "BSS too large");"#).unwrap();
+
+        assert_eq!(script.commands.len(), 1);
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LessEqual(
+                        Box::new(Expression::Subtract(
+                            Box::new(Expression::Symbol("__bss_end".as_bytes())),
+                            Box::new(Expression::Symbol("__bss_start".as_bytes())),
+                        )),
+                        Box::new(Expression::Number(0x1000)),
+                    )
+                );
+                assert_eq!(assert_cmd.message, "BSS too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_expression_operator_precedence() {
+        // Test that multiplication has higher precedence than addition: 1 + 2 * 3 = 7
+        let script = parse_script(r#"ASSERT(1 + 2 * 3 == 7, "Math is broken");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Add(
+                            Box::new(Expression::Number(1)),
+                            Box::new(Expression::Multiply(
+                                Box::new(Expression::Number(2)),
+                                Box::new(Expression::Number(3)),
+                            )),
+                        )),
+                        Box::new(Expression::Number(7)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_assert_with_min_function_comma_handling() {
+        // This is the KEY test for comma handling!
+        // MIN(a, b) has a comma INSIDE the function call
+        // The old code would have stopped at the first comma and failed
+        let script = parse_script(
+            r#"ASSERT(MIN(SIZEOF(.text), SIZEOF(.data)) < 0x10000, "Section too large");"#,
+        )
+        .unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                // Verify it parsed as LessThan with MIN function
+                assert!(matches!(assert_cmd.expression, Expression::LessThan(_, _)));
+                if let Expression::LessThan(left, _) = &assert_cmd.expression {
+                    // The left side should be a MIN expression with two SIZEOF calls
+                    assert!(matches!(**left, Expression::Min(_, _)));
+                }
+                assert_eq!(assert_cmd.message, "Section too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
     }
 }

@@ -17,7 +17,7 @@ use crate::linker_plugins::LinkerPlugin;
 use crate::linker_plugins::LtoInputInfo;
 use crate::linker_script::LinkerScript;
 use crate::parsing::ParsedInputObject;
-use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
@@ -48,11 +48,11 @@ pub(crate) struct FileLoader<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct LoadedInputs<'data, O: ObjectFile<'data>> {
+pub(crate) struct LoadedInputs<'data, P: Platform> {
     /// The results of parsing all the input files and archive entries. We defer checking for
     /// success until later, since otherwise a parse error would mean that the save-dir mechanism
     /// wouldn't capture all the input files.
-    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data, O>>>>,
+    pub(crate) objects: Vec<Result<Box<ParsedInputObject<'data, P>>>>,
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
 
@@ -129,7 +129,7 @@ pub(crate) struct InputLinkerScript<'data> {
     pub(crate) input_file: &'data InputFile,
 }
 
-struct TemporaryState<'data, O: ObjectFile<'data>> {
+struct TemporaryState<'data, P: Platform> {
     args: &'data Args,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
@@ -137,26 +137,26 @@ struct TemporaryState<'data, O: ObjectFile<'data>> {
 
     next_file_load_index: AtomicUsize,
 
-    files: SegQueue<LoadedFile<'data, O>>,
+    files: SegQueue<LoadedFile<'data, P>>,
 
     inputs_arena: &'data Arena<InputFile>,
 }
 
-struct LoadedFile<'data, O: ObjectFile<'data>> {
+struct LoadedFile<'data, P: Platform> {
     index: FileLoadIndex,
-    state: LoadedFileState<'data, O>,
+    state: LoadedFileState<'data, P>,
 }
 
-enum LoadedFileState<'data, O: ObjectFile<'data>> {
-    Loaded(&'data InputFile, InputRecord<'data, O>),
-    Archive(&'data InputFile, Vec<InputRecord<'data, O>>),
-    ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data, O>>),
+enum LoadedFileState<'data, P: Platform> {
+    Loaded(&'data InputFile, InputRecord<'data, P>),
+    Archive(&'data InputFile, Vec<InputRecord<'data, P>>),
+    ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data, P>>),
     LinkerScript(LoadedLinkerScriptState<'data>),
     Error(Error),
 }
 
-enum InputRecord<'data, O: ObjectFile<'data>> {
-    Object(Result<Box<ParsedInputObject<'data, O>>>),
+enum InputRecord<'data, P: Platform> {
+    Object(Result<Box<ParsedInputObject<'data, P>>>),
     LtoInput(Box<UnclaimedLtoInput<'data>>),
 }
 
@@ -240,12 +240,12 @@ impl<'data> FileLoader<'data> {
         }
     }
 
-    pub(crate) fn load_inputs<O: ObjectFile<'data>>(
+    pub(crate) fn load_inputs<P: Platform>(
         &mut self,
         inputs: &[Input],
         args: &'data Args,
         plugin: &mut Option<LinkerPlugin<'data>>,
-    ) -> Result<LoadedInputs<'data, O>> {
+    ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
 
         let mut path_to_load_index = HashMap::new();
@@ -342,11 +342,11 @@ impl<'data> FileLoader<'data> {
     /// linker script is loaded, its files appear at the point at which the linker script appeared
     /// on the command-line, even though the FileLoadIndex for files loaded by linker scripts is
     /// later.
-    fn extract_all<O: ObjectFile<'data>>(
+    fn extract_all<P: Platform>(
         &mut self,
-        files: &mut [Option<LoadedFileState<'data, O>>],
+        files: &mut [Option<LoadedFileState<'data, P>>],
         plugin: &mut Option<LinkerPlugin<'data>>,
-    ) -> Result<LoadedInputs<'data, O>> {
+    ) -> Result<LoadedInputs<'data, P>> {
         let mut loaded = LoadedInputs {
             objects: Vec::with_capacity(files.len()),
             linker_scripts: Vec::new(),
@@ -360,11 +360,11 @@ impl<'data> FileLoader<'data> {
         Ok(loaded)
     }
 
-    fn extract_file<O: ObjectFile<'data>>(
+    fn extract_file<P: Platform>(
         &mut self,
         index: FileLoadIndex,
-        files: &mut [Option<LoadedFileState<'data, O>>],
-        loaded: &mut LoadedInputs<'data, O>,
+        files: &mut [Option<LoadedFileState<'data, P>>],
+        loaded: &mut LoadedInputs<'data, P>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
@@ -439,11 +439,11 @@ fn process_linker_script<'data>(
     })
 }
 
-fn process_archive<'data, O: ObjectFile<'data>>(
+fn process_archive<'data, P: Platform>(
     input_file: &'data InputFile,
     file: &Arc<std::fs::File>,
-    state: &TemporaryState<'data, O>,
-) -> Result<LoadedFileState<'data, O>> {
+    state: &TemporaryState<'data, P>,
+) -> Result<LoadedFileState<'data, P>> {
     let mut outputs = Vec::new();
 
     for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
@@ -471,10 +471,10 @@ fn process_archive<'data, O: ObjectFile<'data>>(
     Ok(LoadedFileState::Archive(input_file, outputs))
 }
 
-fn process_thin_archive<'data, O: ObjectFile<'data>>(
+fn process_thin_archive<'data, P: Platform>(
     input_file: &InputFile,
-    state: &TemporaryState<'data, O>,
-) -> Result<LoadedFileState<'data, O>> {
+    state: &TemporaryState<'data, P>,
+) -> Result<LoadedFileState<'data, P>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
     let mut files = Vec::new();
@@ -524,7 +524,7 @@ fn process_thin_archive<'data, O: ObjectFile<'data>>(
     Ok(LoadedFileState::ThinArchive(files, parsed_files))
 }
 
-impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
+impl<'data, P: Platform> TemporaryState<'data, P> {
     fn process_and_record_open_file_request<'scope>(
         &'scope self,
         request: OpenFileRequest,
@@ -544,7 +544,7 @@ impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
         &'scope self,
         request: OpenFileRequest,
         scope: &Scope<'scope>,
-    ) -> Result<LoadedFileState<'data, O>> {
+    ) -> Result<LoadedFileState<'data, P>> {
         verbose_timing_phase!("Open file");
 
         let absolute_path = &request.paths.absolute;
@@ -645,7 +645,7 @@ impl<'data, O: ObjectFile<'data>> TemporaryState<'data, O> {
         input_ref: InputRef<'data>,
         file: &Arc<std::fs::File>,
         kind: FileKind,
-    ) -> Result<InputRecord<'data, O>> {
+    ) -> Result<InputRecord<'data, P>> {
         let data = input_ref.data();
 
         // The plugin API docs say to pass files to the plugin before the linker tries to identify
@@ -914,10 +914,10 @@ impl Display for InputBytes<'_> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> LoadedInputs<'data, O> {
+impl<'data, P: Platform> LoadedInputs<'data, P> {
     fn add_record(
         &mut self,
-        record: InputRecord<'data, O>,
+        record: InputRecord<'data, P>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) {
         match record {
@@ -942,7 +942,7 @@ impl<'data, O: ObjectFile<'data>> LoadedInputs<'data, O> {
 
     fn add_records(
         &mut self,
-        parsed_parts: Vec<InputRecord<'data, O>>,
+        parsed_parts: Vec<InputRecord<'data, P>>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) {
         for part in parsed_parts {
@@ -951,7 +951,7 @@ impl<'data, O: ObjectFile<'data>> LoadedInputs<'data, O> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> InputRecord<'data, O> {
+impl<'data, P: Platform> InputRecord<'data, P> {
     fn is_dynamic_object(&self) -> bool {
         match self {
             InputRecord::Object(Ok(obj)) => obj.is_dynamic(),

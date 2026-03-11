@@ -6,6 +6,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
+use crate::platform::Platform;
 use std::mem::take;
 use std::ops::AddAssign;
 use std::ops::Index;
@@ -103,10 +104,10 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// Iterate through all contained T in output order, producing a new map of U from the values
     /// returned by the callback. Note, the alignment is the alignment of the PartId, but capped at
     /// the maximum alignment of the highest alignment PartId with a non-default value.
-    pub(crate) fn output_order_map<U: Default>(
+    pub(crate) fn output_order_map<U: Default, P: Platform>(
         &self,
         output_order: &OutputOrder,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         mut cb: impl FnMut(PartId, Alignment, &T) -> U,
     ) -> OutputSectionPartMap<U> {
         let mut parts_out = Vec::new();
@@ -137,10 +138,10 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// Returns the maximum alignment for any part with a non-default value starting from
     /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
     /// minimum alignment for the section.
-    pub(crate) fn max_alignment(
+    pub(crate) fn max_alignment<P: Platform>(
         &self,
         range: Range<PartId>,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
     ) -> Alignment {
         self[range.clone()]
             .iter()
@@ -225,8 +226,9 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 
 #[test]
 fn test_merge_parts() {
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut expected_sum_of_sums = 0;
     let all_1 = output_sections.new_part_map::<u32>().output_order_map(
         &output_order,
@@ -260,7 +262,8 @@ fn test_merge_parts() {
 
 #[test]
 fn test_mut_with_map() {
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -270,7 +273,8 @@ fn test_mut_with_map() {
 
 #[test]
 fn test_merge() {
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -280,7 +284,8 @@ fn test_merge() {
 
 #[test]
 fn test_merge_with_custom_sections() {
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let mut m1 = output_sections.new_part_map::<u32>();
     let mut m2 = output_sections.new_part_map::<u32>();
     assert_eq!(m2.num_parts(), output_sections.num_parts());
@@ -296,8 +301,9 @@ fn test_merge_with_custom_sections() {
 fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    let (output_order, _program_segments) = output_sections.output_order();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
@@ -345,8 +351,9 @@ fn test_output_order_map_consistent() {
 fn test_output_order_map() {
     use crate::output_section_id;
 
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let (output_order, _program_segments) = output_sections.output_order::<crate::elf::File>();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
@@ -384,7 +391,8 @@ fn test_output_order_map() {
 fn test_max_alignment() {
     use crate::output_section_id;
 
-    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_sections =
+        crate::output_section_id::OutputSections::<crate::elf::Elf>::for_testing();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     assert_eq!(

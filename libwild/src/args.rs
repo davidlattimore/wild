@@ -1101,7 +1101,7 @@ impl ArgumentParser {
         // TODO: This is ad-hoc
         help.push_str(&format!(
             "    {:<31} Read options from a file\n",
-            format!("@<VALUE>"),
+            "@<VALUE>",
         ));
 
         let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();

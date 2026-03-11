@@ -12,6 +12,7 @@ use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -20,9 +21,9 @@ use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
 
-pub(crate) fn process_linker_scripts<'data>(
+pub(crate) fn process_linker_scripts<'data, P: Platform>(
     linker_scripts_in: &[InputLinkerScript<'data>],
-    output_sections: &mut OutputSections<'data>,
+    output_sections: &mut OutputSections<'data, P>,
     layout_rules_builder: &mut LayoutRulesBuilder<'data>,
 ) -> Result<Vec<ProcessedLinkerScript<'data>>> {
     timing_phase!("Process linker scripts");
@@ -39,9 +40,9 @@ pub(crate) struct Prelude<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ParsedInputObject<'data, O: ObjectFile<'data>> {
+pub(crate) struct ParsedInputObject<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: O,
+    pub(crate) object: P::File<'data>,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -190,11 +191,11 @@ impl<'data> InternalSymDefInfo<'data> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
+impl<'data, P: Platform> ParsedInputObject<'data, P> {
     pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
-        let object = O::parse(input, args)
+        let object = P::File::parse(input, args)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
 
         Ok(Box::new(Self {
@@ -214,12 +215,12 @@ impl<'data, O: ObjectFile<'data>> ParsedInputObject<'data, O> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new<O: ObjectFile<'data>>(args: &'data Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<P: Platform>(args: &'data Args, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();
 
-        O::create_linker_defined_symbols(&mut symbols, output_kind);
+        P::create_linker_defined_symbols(&mut symbols, output_kind);
 
         args.undefined.iter().for_each(|name| {
             symbols.add_symbol(InternalSymDefInfo::new(
@@ -305,7 +306,7 @@ impl<'data> ProcessedLinkerScript<'data> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> std::fmt::Display for ParsedInputObject<'data, O> {
+impl<'data, P: Platform> std::fmt::Display for ParsedInputObject<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }

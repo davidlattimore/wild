@@ -6,6 +6,7 @@ use crate::output_section_id::INIT;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::platform;
+use crate::platform::Platform;
 use std::fmt::Debug;
 
 /// An ID for a part of an output section. Parts IDs are ordered with generated
@@ -57,15 +58,15 @@ pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 /// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-pub(crate) fn should_merge_sections<S: platform::SectionFlags>(
-    section_flags: S,
+pub(crate) fn should_merge_sections(
+    section_header: &impl platform::SectionHeader,
     section_alignment: u64,
     args: &Args,
 ) -> bool {
     if !args.merge_sections {
         return false;
     }
-    section_flags.is_merge_section() && section_alignment <= 1
+    section_header.is_merge_section() && section_alignment <= 1
 }
 
 impl PartId {
@@ -96,7 +97,10 @@ impl PartId {
         PartId(value)
     }
 
-    pub(crate) fn alignment(self, output_sections: &OutputSections<'_>) -> Alignment {
+    pub(crate) fn alignment<P: Platform>(
+        self,
+        output_sections: &OutputSections<'_, P>,
+    ) -> Alignment {
         if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
@@ -137,7 +141,7 @@ mod tests {
 
     #[test]
     fn test_conversion_consistency() {
-        let output_sections = OutputSections::for_testing();
+        let output_sections = OutputSections::<crate::elf::Elf>::for_testing();
         for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
             let part_id = PartId::from_u32(i);
             let section_id = part_id.output_section_id();

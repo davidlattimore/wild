@@ -23,18 +23,15 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
+use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use core::slice;
 use hashbrown::HashMap;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
-use linker_utils::elf::shf;
-use linker_utils::elf::sht;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::iter::Copied;
@@ -119,10 +116,10 @@ pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
 pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 15;
 
 #[derive(Debug)]
-pub(crate) struct OutputSections<'data> {
+pub(crate) struct OutputSections<'data, P: Platform> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
-    pub(crate) section_infos: OutputSectionMap<SectionOutputInfo<'data>>,
+    pub(crate) section_infos: OutputSectionMap<SectionOutputInfo<'data, P>>,
 
     // TODO: Consider moving this to Layout. We can't populate this until we know which output
     // sections have content, which we don't know until half way through the layout phase.
@@ -142,34 +139,34 @@ pub(crate) struct OutputOrder {
     events: Vec<OrderEvent>,
 }
 
-pub(crate) struct OutputOrderDisplay<'a, 'data, O: ObjectFile<'data>> {
+pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
     order: &'a OutputOrder,
-    sections: &'a OutputSections<'data>,
-    program_segments: &'a ProgramSegments<O::ProgramSegmentDef>,
+    sections: &'a OutputSections<'data, P>,
+    program_segments: &'a ProgramSegments<P::ProgramSegmentDef>,
 }
 
-struct OutputOrderBuilder<'scope, 'data, O: ObjectFile<'data>> {
+struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     events: Vec<OrderEvent>,
 
-    program_segments: ProgramSegments<O::ProgramSegmentDef>,
+    program_segments: ProgramSegments<P::ProgramSegmentDef>,
 
     /// Indexes correspond to elements of `PROGRAM_SEGMENT_DEFS`.
     active_segment_kinds: Vec<Option<ProgramSegmentId>>,
 
-    output_sections: &'scope OutputSections<'data>,
+    output_sections: &'scope OutputSections<'data, P>,
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
 }
 
-impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
+impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     fn new(
-        output_sections: &'scope OutputSections<'data>,
+        output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     ) -> Self {
         Self {
             events: Vec::new(),
             program_segments: ProgramSegments::empty(),
             output_sections,
-            active_segment_kinds: vec![None; O::program_segment_defs().len()],
+            active_segment_kinds: vec![None; P::program_segment_defs().len()],
             secondary,
         }
     }
@@ -198,7 +195,7 @@ impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
         // are propagated) will have their location handled directly in layout_section_parts
         // via section_info.location.
         if let Some(location) = section_info.location
-            && section_info.section_flags.contains(shf::ALLOC)
+            && section_info.section_attributes.is_alloc()
         {
             self.events.push(OrderEvent::SetLocation(location));
         }
@@ -235,20 +232,20 @@ impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
     fn should_end_current_rw_segment(&self, section_id: OutputSectionId) -> bool {
         self.active_segment_kinds
             .iter()
-            .zip(O::program_segment_defs())
+            .zip(P::program_segment_defs())
             .any(|(id, def)| {
                 id.is_some()
                     && def.should_cut_rw_segment_when_ending()
                     && !self
                         .output_sections
-                        .should_include_in_segment::<O>(section_id, *def)
+                        .should_include_in_segment(section_id, *def)
             })
     }
 
     /// Ends the currently active RW LOAD segment, if any. This is used when the RELRO segment
     /// ends to force .data and other non-RELRO sections into a new LOAD segment.
     fn end_rw_load_segment(&mut self) {
-        let rw_load_def_index = O::program_segment_defs()
+        let rw_load_def_index = P::program_segment_defs()
             .iter()
             .position(|def| def.is_loadable() && def.is_writable() && !def.is_executable());
 
@@ -287,13 +284,13 @@ impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
             }
         }
 
-        O::program_segment_defs()
+        P::program_segment_defs()
             .iter()
             .zip(self.active_segment_kinds.iter_mut())
             .for_each(|(segment_def, active_id)| {
                 let should_be_active = self
                     .output_sections
-                    .should_include_in_segment::<O>(section_id, *segment_def);
+                    .should_include_in_segment(section_id, *segment_def);
 
                 match (active_id.as_ref().copied(), should_be_active) {
                     // Remain inactive
@@ -326,12 +323,12 @@ impl<'scope, 'data, O: ObjectFile<'data>> OutputOrderBuilder<'scope, 'data, O> {
         }
     }
 
-    fn build(mut self) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
+    fn build(mut self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         for segment_id in self.active_segment_kinds.into_iter().flatten() {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        for def in O::unconditional_segment_defs() {
+        for def in P::unconditional_segment_defs() {
             let segment_id = self.program_segments.add_segment(*def);
             self.events.push(OrderEvent::SegmentStart(segment_id));
             self.events.push(OrderEvent::SegmentEnd(segment_id));
@@ -357,11 +354,11 @@ struct CustomSectionIds {
     tbss: Vec<OutputSectionId>,
 }
 
-impl<'data> OutputSections<'data> {
+impl<'data, P: Platform> OutputSections<'data, P> {
     /// Returns an iterator that emits all section IDs and their info.
     pub(crate) fn ids_with_info(
         &self,
-    ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo<'data>)> {
+    ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo<'data, P>)> {
         self.section_infos.iter()
     }
 
@@ -384,8 +381,8 @@ impl<'data> OutputSections<'data> {
         OutputSectionMap::from_values(values)
     }
 
-    pub(crate) fn section_flags(&self, section_id: OutputSectionId) -> SectionFlags {
-        self.output_info(section_id).section_flags
+    pub(crate) fn section_flags(&self, section_id: OutputSectionId) -> P::SectionFlags {
+        self.output_info(section_id).section_attributes.flags()
     }
 
     /// Returns the ID of the primary output section for the supplied section ID.
@@ -404,10 +401,10 @@ impl<'data> OutputSections<'data> {
 
     /// Returns whether we should include the specified section in a program segment with the
     /// supplied properties.
-    fn should_include_in_segment<O: ObjectFile<'data>>(
+    fn should_include_in_segment(
         &self,
         section_id: OutputSectionId,
-        segment_def: O::ProgramSegmentDef,
+        segment_def: P::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
         segment_def.should_include_section(info, section_id)
@@ -416,12 +413,10 @@ impl<'data> OutputSections<'data> {
 
 // TODO: There's also a type with this name in layout_rules. Rename one of them to avoid confusion.
 #[derive(Debug)]
-pub(crate) struct SectionOutputInfo<'data> {
+pub(crate) struct SectionOutputInfo<'data, P: Platform> {
     pub(crate) kind: SectionKind<'data>,
-    pub(crate) section_flags: SectionFlags,
-    pub(crate) ty: SectionType,
+    pub(crate) section_attributes: P::SectionAttributes,
     pub(crate) min_alignment: Alignment,
-    pub(crate) entsize: u64,
     pub(crate) location: Option<linker_script::Location>,
     pub(crate) secondary_order: Option<SecondaryOrder>,
 }
@@ -457,13 +452,16 @@ impl OutputSectionId {
         }
     }
 
-    pub(crate) fn opt_built_in_details<'data, O: ObjectFile<'data>>(
+    pub(crate) fn opt_built_in_details<P: Platform>(
         self,
-    ) -> Option<&'static O::BuiltInSectionDetails> {
-        O::built_in_section_details().get(self.as_usize())
+    ) -> Option<&'static P::BuiltInSectionDetails> {
+        P::built_in_section_details().get(self.as_usize())
     }
 
-    pub(crate) fn min_alignment(self, output_sections: &OutputSections) -> Alignment {
+    pub(crate) fn min_alignment<P: Platform>(
+        self,
+        output_sections: &OutputSections<P>,
+    ) -> Alignment {
         output_sections.section_infos.get(self).min_alignment
     }
 
@@ -538,12 +536,12 @@ pub(crate) enum SecondaryOrder {
 }
 
 impl CustomSectionIds {
-    fn build_output_order_and_program_segments<'data, O: ObjectFile<'data>>(
+    fn build_output_order_and_program_segments<'data, P: Platform>(
         &self,
-        output_sections: &OutputSections<'data>,
+        output_sections: &OutputSections<'data, P>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
-    ) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
-        let mut builder = OutputOrderBuilder::<O>::new(output_sections, secondary);
+    ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+        let mut builder = OutputOrderBuilder::<P>::new(output_sections, secondary);
 
         builder.add_section(FILE_HEADER);
         builder.add_section(PROGRAM_HEADERS);
@@ -601,7 +599,7 @@ impl CustomSectionIds {
     }
 }
 
-impl<'data> OutputSections<'data> {
+impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
         self.section_infos.get(id).secondary_order
     }
@@ -637,10 +635,8 @@ impl<'data> OutputSections<'data> {
                 kind: SectionKind::Primary(name),
                 // Section flags and type will be filled in based on the attributes of the sections
                 // that get placed into this output section.
-                section_flags: SectionFlags::empty(),
-                ty: SectionType::from_u32(0),
+                section_attributes: Default::default(),
                 min_alignment,
-                entsize: 0,
                 location,
                 secondary_order: None,
             })
@@ -653,22 +649,18 @@ impl<'data> OutputSections<'data> {
         min_alignment: Alignment,
         secondary_order: Option<SecondaryOrder>,
     ) -> OutputSectionId {
-        let primary_entsize = self.section_infos.get(primary_id).entsize;
-        let section_flag = self.section_infos.get(primary_id).section_flags;
-        let ty = self.section_infos.get(primary_id).ty;
+        let section_attributes = self.section_infos.get(primary_id).section_attributes;
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
-            section_flags: section_flag,
-            ty,
+            section_attributes,
             min_alignment,
-            entsize: primary_entsize,
             location: None,
             secondary_order,
         })
     }
 
-    pub(crate) fn with_base_address<O: ObjectFile<'data>>(base_address: u64) -> Self {
-        let section_infos = O::built_in_section_infos();
+    pub(crate) fn with_base_address(base_address: u64) -> Self {
+        let section_infos = P::built_in_section_infos();
 
         Self {
             section_infos: OutputSectionMap::from_values(section_infos),
@@ -706,9 +698,7 @@ impl<'data> OutputSections<'data> {
         sid
     }
 
-    pub(crate) fn output_order<O: ObjectFile<'data>>(
-        &self,
-    ) -> (OutputOrder, ProgramSegments<O::ProgramSegmentDef>) {
+    pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         timing_phase!("Compute output order");
 
         let mut custom = CustomSectionIds::default();
@@ -724,28 +714,28 @@ impl<'data> OutputSections<'data> {
                 return;
             }
 
-            if info.section_flags.contains(shf::EXECINSTR) {
+            if info.section_attributes.is_executable() {
                 custom.exec.push(id);
-            } else if info.section_flags.contains(shf::TLS) {
-                if info.ty == sht::NOBITS {
+            } else if info.section_attributes.is_tls() {
+                if info.section_attributes.is_no_bits() {
                     custom.tbss.push(id);
                 } else {
                     custom.tdata.push(id);
                 }
-            } else if !info.section_flags.contains(shf::WRITE) {
-                if info.section_flags.contains(shf::ALLOC) {
+            } else if !info.section_attributes.is_writable() {
+                if info.section_attributes.is_alloc() {
                     custom.ro.push(id);
                 } else {
                     custom.nonalloc.push(id);
                 }
-            } else if info.ty == sht::NOBITS {
+            } else if info.section_attributes.is_no_bits() {
                 custom.bss.push(id);
             } else {
                 custom.data.push(id);
             }
         });
 
-        custom.build_output_order_and_program_segments::<O>(self, &secondary)
+        custom.build_output_order_and_program_segments::<P>(self, &secondary)
     }
 
     #[must_use]
@@ -764,14 +754,11 @@ impl<'data> OutputSections<'data> {
         // NOBITS. This allows us to more easily place .tbss before other PROGBITS sections.
         // Effectively .tbss is NOBITS, but we put zero padding of the same size in the file. GNU ld
         // doesn't do this. It instead puts .tbss and the subsequent section at the same address.
-        self.output_info(section_id).ty != sht::NOBITS
-            || self
-                .output_info(section_id)
-                .section_flags
-                .contains(shf::TLS)
+        let attributes = self.output_info(section_id).section_attributes;
+        !attributes.is_no_bits() || attributes.is_tls()
     }
 
-    pub(crate) fn output_info(&self, id: OutputSectionId) -> &SectionOutputInfo<'data> {
+    pub(crate) fn output_info(&self, id: OutputSectionId) -> &SectionOutputInfo<'data, P> {
         self.section_infos.get(id)
     }
 
@@ -822,8 +809,10 @@ impl<'data> OutputSections<'data> {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_testing() -> OutputSections<'static> {
-        let mut output_sections = OutputSections::with_base_address::<crate::elf::File>(0x1000);
+    pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
+        use crate::elf::Elf;
+
+        let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
         let mut add_name = |name: &'static str| {
             output_sections.add_named_section(
                 SectionName(name.as_bytes()),
@@ -862,11 +851,11 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
-    pub(crate) fn display<'a, 'data, O: ObjectFile<'data>>(
+    pub(crate) fn display<'a, 'data, P: Platform>(
         &'a self,
-        sections: &'a OutputSections<'data>,
-        program_segments: &'a ProgramSegments<O::ProgramSegmentDef>,
-    ) -> OutputOrderDisplay<'a, 'data, O> {
+        sections: &'a OutputSections<'data, P>,
+        program_segments: &'a ProgramSegments<P::ProgramSegmentDef>,
+    ) -> OutputOrderDisplay<'a, 'data, P> {
         OutputOrderDisplay {
             order: self,
             sections,
@@ -875,7 +864,7 @@ impl OutputOrder {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> Display for OutputOrderDisplay<'_, 'data, O> {
+impl<'data, P: Platform> Display for OutputOrderDisplay<'_, 'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for event in &self.order.events {
             match event {
@@ -906,7 +895,7 @@ impl<'data, O: ObjectFile<'data>> Display for OutputOrderDisplay<'_, 'data, O> {
     }
 }
 
-impl Display for OutputSections<'_> {
+impl<P: Platform> Display for OutputSections<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.section_infos.for_each(|section_id, info| {
             let _ = writeln!(f, "{section_id}: {}", info.kind);

@@ -4,6 +4,7 @@ use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
@@ -39,10 +40,7 @@ impl Drop for SymbolInfoPrinter {
 }
 
 impl SymbolInfoPrinter {
-    pub(crate) fn new<'data2, O: ObjectFile<'data2>>(
-        args: &Args,
-        groups: &[ResolvedGroup<'data2, O>],
-    ) -> Self {
+    pub(crate) fn new<'data, P: Platform>(args: &Args, groups: &[ResolvedGroup<'data, P>]) -> Self {
         let Some(name) = args.sym_info.as_ref() else {
             return Self::Disabled;
         };
@@ -70,16 +68,18 @@ impl SymbolInfoPrinter {
         }))
     }
 
-    pub(crate) fn update<'data, O: ObjectFile<'data>>(
+    pub(crate) fn update<'data, P: Platform>(
         &mut self,
-        symbol_db: &SymbolDb<'data, O>,
+        symbol_db: &SymbolDb<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags<'_>,
     ) {
         let Self::Enabled(state) = self else {
             return;
         };
 
-        let mut out = String::new();
+        let mut out = &mut state.output;
+        out.clear();
+
         let name = symbol_db
             .find_mangled_name(&state.name)
             .unwrap_or_else(|| state.name.clone());
@@ -228,11 +228,11 @@ impl NameMatcher {
         }
     }
 
-    fn matches<'data, O: ObjectFile<'data>>(
+    fn matches<'data, P: Platform>(
         &self,
         name: &[u8],
         symbol_id: SymbolId,
-        symbol_db: &SymbolDb<'data, O>,
+        symbol_db: &SymbolDb<'data, P>,
     ) -> bool {
         if let Some(i) = name.iter().position(|b| *b == b'@') {
             let (name, version) = name.split_at(i);

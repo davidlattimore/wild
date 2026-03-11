@@ -9,7 +9,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use itertools::Itertools;
 
 pub(crate) struct OffsetVerifier {
@@ -31,12 +31,12 @@ impl OffsetVerifier {
         }
     }
 
-    pub(crate) fn verify<'data, O: ObjectFile<'data>>(
+    pub(crate) fn verify<'data, P: Platform>(
         &self,
         memory_offsets: &OutputSectionPartMap<u64>,
-        output_sections: &OutputSections,
+        output_sections: &OutputSections<P>,
         output_order: &OutputOrder,
-        files: &[FileLayout<'data, O>],
+        files: &[FileLayout<'data, P>],
     ) -> Result {
         if memory_offsets == &self.expected && self.alignments_ok(output_sections) {
             return Ok(());
@@ -77,7 +77,7 @@ impl OffsetVerifier {
         );
     }
 
-    fn alignments_ok(&self, output_sections: &OutputSections) -> bool {
+    fn alignments_ok<P: Platform>(&self, output_sections: &OutputSections<P>) -> bool {
         self.sizes.parts.iter().enumerate().all(|(i, size)| {
             let part_id = PartId::from_usize(i);
             size.is_multiple_of(part_id.alignment(output_sections).value())
@@ -118,10 +118,10 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
     }
 }
 
-fn offsets_by_key(
+fn offsets_by_key<P: Platform>(
     memory_offsets: &OutputSectionPartMap<u64>,
     output_order: &OutputOrder,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> Vec<(PartId, u64)> {
     let mut offsets_by_key = Vec::new();
     memory_offsets.output_order_map(

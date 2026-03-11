@@ -13,6 +13,7 @@ use crate::Args;
 use crate::args::Input;
 use crate::args::Modifiers;
 use crate::bail;
+use crate::elf::Elf;
 use crate::elf::RawSymbolName;
 use crate::error;
 use crate::error::Context as _;
@@ -24,7 +25,7 @@ use crate::input_data::FileLoader;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
-use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -170,13 +171,13 @@ impl<'data> LinkerPlugin<'data> {
 
     /// Notify the plugin that all symbols have now been read. This will cause it to build
     /// additional object files that it will then pass to us for processing.
-    pub(crate) fn all_symbols_read<O: ObjectFile<'data>>(
+    pub(crate) fn all_symbols_read<P: Platform>(
         &mut self,
-        symbol_db: &mut SymbolDb<'data, O>,
-        resolver: &mut Resolver<'data, O>,
+        symbol_db: &mut SymbolDb<'data, P>,
+        resolver: &mut Resolver<'data, P>,
         file_loader: &mut FileLoader<'data>,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
         layout_rules_builder: &mut LayoutRulesBuilder<'data>,
     ) -> Result {
         // If no LTO files were activated, and we proceed with LTO, the GCC plugin tries to invoke
@@ -288,9 +289,7 @@ impl<'data> LinkerPlugin<'data> {
     }
 }
 
-fn has_loaded_lto_input<'data, O: ObjectFile<'data>>(
-    resolved_groups: &[ResolvedGroup<'data, O>],
-) -> bool {
+fn has_loaded_lto_input<P: Platform>(resolved_groups: &[ResolvedGroup<P>]) -> bool {
     resolved_groups.iter().any(|group| {
         group
             .files
@@ -852,7 +851,7 @@ extern "C" fn get_symbols_v3(
 
 fn get_symbol_resolution<'data>(
     sym: &mut RawPluginSymbol,
-    symbol_db: &SymbolDb<'data, crate::elf::File<'data>>,
+    symbol_db: &SymbolDb<'data, Elf>,
     symbol_id_range: SymbolIdRange,
 ) -> PluginSymbolResolution {
     // It'd be nice if we didn't have to do hashmap lookups for all the symbols again, since we
@@ -1013,13 +1012,10 @@ extern "C" fn message(level: libc::c_int, format: *const libc::c_char) -> Status
 /// from all non-trivial hooks in order to ensure that we don't try to propagate a panic back into
 /// the linker-plugin which would be undefined behaviour.
 fn catch_panics(body: impl FnOnce() -> Status) -> Status {
-    match std::panic::catch_unwind(AssertUnwindSafe(body)) {
-        Ok(status) => status,
-        Err(_) => {
-            ERROR_MESSAGE.replace(Some("Panic in plugin callback".to_owned()));
-            Status::Err
-        }
-    }
+    std::panic::catch_unwind(AssertUnwindSafe(body)).unwrap_or_else(|_| {
+        ERROR_MESSAGE.replace(Some("Panic in plugin callback".to_owned()));
+        Status::Err
+    })
 }
 
 struct ClaimContext<'data> {
@@ -1047,14 +1043,14 @@ impl ClaimContext<'_> {
     }
 }
 
-struct AllSymbolsReadContext<'scope, 'data, O: ObjectFile<'data>> {
-    symbol_db: &'scope SymbolDb<'data, O>,
-    resolved_groups: &'scope [ResolvedGroup<'data, O>],
+struct AllSymbolsReadContext<'scope, 'data, P: Platform> {
+    symbol_db: &'scope SymbolDb<'data, P>,
+    resolved_groups: &'scope [ResolvedGroup<'data, P>],
 }
 
-impl<'scope, 'data, O: ObjectFile<'data>> AllSymbolsReadContext<'scope, 'data, O> {
+impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
     fn with_current(
-        cb: impl FnOnce(&mut AllSymbolsReadContext<'scope, 'data, O>) -> Status,
+        cb: impl FnOnce(&mut AllSymbolsReadContext<'scope, 'data, P>) -> Status,
     ) -> Status {
         let ptr = ALL_SYMBOLS_READ_CONTEXT.get();
         if ptr.is_null() {
@@ -1063,13 +1059,13 @@ impl<'scope, 'data, O: ObjectFile<'data>> AllSymbolsReadContext<'scope, 'data, O
             ));
             return Status::Err;
         };
-        let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext<'scope, 'data, O>) };
+        let ctx = unsafe { &mut *(ptr as *mut AllSymbolsReadContext<'scope, 'data, P>) };
         cb(ctx)
     }
 
     fn set_current_while<R>(&self, cb: impl FnOnce() -> R) -> R {
         ALL_SYMBOLS_READ_CONTEXT
-            .set(self as *const AllSymbolsReadContext<'scope, 'data, O> as *const libc::c_void);
+            .set(self as *const AllSymbolsReadContext<'scope, 'data, P> as *const libc::c_void);
         let r = cb();
         ALL_SYMBOLS_READ_CONTEXT.take();
         r

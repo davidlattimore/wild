@@ -31,10 +31,9 @@ use crate::part_id::PartId;
 use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
+use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
-use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
-use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::string_merging::StringMergeSectionExtra;
@@ -64,19 +63,19 @@ use rayon::iter::ParallelIterator;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-pub(crate) struct Resolver<'data, O: ObjectFile<'data>> {
+pub(crate) struct Resolver<'data, P: Platform> {
     undefined_symbols: Vec<UndefinedSymbol<'data>>,
-    pub(crate) resolved_groups: Vec<ResolvedGroup<'data, O>>,
+    pub(crate) resolved_groups: Vec<ResolvedGroup<'data, P>>,
 }
 
-impl<'data, O: ObjectFile<'data>> Resolver<'data, O> {
+impl<'data, P: Platform> Resolver<'data, P> {
     /// Resolves undefined symbols. In the process of resolving symbols, we decide which archive
     /// entries to load. Some symbols may not have definitions, in which case we'll note those for
     /// later processing. Can be called multiple times with additional groups having been added to
     /// the SymbolDb in between.
     pub(crate) fn resolve_symbols_and_select_archive_entries(
         &mut self,
-        symbol_db: &mut SymbolDb<'data, O>,
+        symbol_db: &mut SymbolDb<'data, P>,
     ) -> Result {
         resolve_symbols_and_select_archive_entries(self, symbol_db)
     }
@@ -87,11 +86,11 @@ impl<'data, O: ObjectFile<'data>> Resolver<'data, O> {
     /// appropriate name.
     pub(crate) fn resolve_sections_and_canonicalise_undefined(
         mut self,
-        symbol_db: &mut SymbolDb<'data, O>,
+        symbol_db: &mut SymbolDb<'data, P>,
         per_symbol_flags: &mut PerSymbolFlags,
-        output_sections: &mut OutputSections<'data>,
+        output_sections: &mut OutputSections<'data, P>,
         layout_rules: &LayoutRules<'data>,
-    ) -> Result<Vec<ResolvedGroup<'data, O>>> {
+    ) -> Result<Vec<ResolvedGroup<'data, P>>> {
         timing_phase!("Section resolution");
 
         resolve_sections(&mut self.resolved_groups, symbol_db, layout_rules)?;
@@ -117,9 +116,9 @@ impl<'data, O: ObjectFile<'data>> Resolver<'data, O> {
     }
 }
 
-fn resolve_symbols_and_select_archive_entries<'data, O: ObjectFile<'data>>(
-    resolver: &mut Resolver<'data, O>,
-    symbol_db: &mut SymbolDb<'data, O>,
+fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
+    resolver: &mut Resolver<'data, P>,
+    symbol_db: &mut SymbolDb<'data, P>,
 ) -> Result {
     timing_phase!("Resolve symbols");
 
@@ -237,14 +236,14 @@ fn resolve_symbols_and_select_archive_entries<'data, O: ObjectFile<'data>>(
     Ok(())
 }
 
-fn resolve_group<'data, 'definitions, O: ObjectFile<'data>>(
-    group: &Group<'data, O>,
+fn resolve_group<'data, 'definitions, P: Platform>(
+    group: &Group<'data, P>,
     initial_work_out: &mut Vec<LoadObjectSymbolsRequest<'definitions>>,
     definitions_out_per_file: &mut Vec<AtomicTake<&'definitions mut [SymbolId]>>,
     symbol_definitions_slice: &mut &'definitions mut [SymbolId],
-    symbol_db: &SymbolDb<'data, O>,
-    outputs: &Outputs<'data, O>,
-) -> ResolvedGroup<'data, O> {
+    symbol_db: &SymbolDb<'data, P>,
+    outputs: &Outputs<'data, P>,
+) -> ResolvedGroup<'data, P> {
     match group {
         Group::Prelude(prelude) => {
             let definitions_out = symbol_definitions_slice
@@ -364,9 +363,9 @@ fn resolve_group<'data, 'definitions, O: ObjectFile<'data>>(
     }
 }
 
-fn resolve_sections<'data, O: ObjectFile<'data>>(
-    groups: &mut [ResolvedGroup<'data, O>],
-    symbol_db: &SymbolDb<'data, O>,
+fn resolve_sections<'data, P: Platform>(
+    groups: &mut [ResolvedGroup<'data, P>],
+    symbol_db: &SymbolDb<'data, P>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
     timing_phase!("Resolve sections");
@@ -380,7 +379,7 @@ fn resolve_sections<'data, O: ObjectFile<'data>>(
             verbose_timing_phase!("Resolve group sections");
 
             for file in &mut group.files {
-                let ResolvedFile::<O>::Object(obj) = file else {
+                let ResolvedFile::<P>::Object(obj) = file else {
                     continue;
                 };
 
@@ -433,13 +432,13 @@ impl LoadedMetrics {
     }
 }
 
-struct ResolutionResources<'data, 'scope, O: ObjectFile<'data>> {
+struct ResolutionResources<'data, 'scope, P: Platform> {
     definitions_per_file: &'scope Vec<Vec<AtomicTake<&'scope mut [SymbolId]>>>,
-    symbol_db: &'scope SymbolDb<'data, O>,
-    outputs: &'scope Outputs<'data, O>,
+    symbol_db: &'scope SymbolDb<'data, P>,
+    outputs: &'scope Outputs<'data, P>,
 }
 
-impl<'scope, 'data, O: ObjectFile<'data>> ResolutionResources<'data, 'scope, O> {
+impl<'scope, 'data, P: Platform> ResolutionResources<'data, 'scope, P> {
     /// Request loading of `file_id` if it hasn't already been requested.
     #[inline(always)]
     fn try_request_file_id(&'scope self, file_id: FileId, scope: &Scope<'scope>) {
@@ -484,11 +483,11 @@ impl<'scope, 'data, O: ObjectFile<'data>> ResolutionResources<'data, 'scope, O> 
     }
 }
 
-fn work_items_do<'definitions, 'data, O: ObjectFile<'data>>(
+fn work_items_do<'definitions, 'data, P: Platform>(
     file_id: FileId,
     mut definitions_out: &'definitions mut [SymbolId],
-    symbol_db: &SymbolDb<'data, O>,
-    outputs: &Outputs<'data, O>,
+    symbol_db: &SymbolDb<'data, P>,
+    outputs: &Outputs<'data, P>,
     mut request_callback: impl FnMut(LoadObjectSymbolsRequest<'definitions>),
 ) {
     match &symbol_db.groups[file_id.group()] {
@@ -551,16 +550,16 @@ fn work_items_do<'definitions, 'data, O: ObjectFile<'data>>(
 }
 
 #[derive(Debug)]
-pub(crate) struct ResolvedGroup<'data, O: ObjectFile<'data>> {
-    pub(crate) files: Vec<ResolvedFile<'data, O>>,
+pub(crate) struct ResolvedGroup<'data, P: Platform> {
+    pub(crate) files: Vec<ResolvedFile<'data, P>>,
 }
 
 #[derive(Debug)]
-pub(crate) enum ResolvedFile<'data, O: ObjectFile<'data>> {
+pub(crate) enum ResolvedFile<'data, P: Platform> {
     NotLoaded(NotLoaded),
     Prelude(ResolvedPrelude<'data>),
-    Object(ResolvedObject<'data, O>),
-    Dynamic(ResolvedDynamic<'data, O>),
+    Object(ResolvedObject<'data, P>),
+    Dynamic(ResolvedDynamic<'data, P>),
     LinkerScript(ResolvedLinkerScript<'data>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data>),
     #[cfg(feature = "plugins")]
@@ -635,21 +634,21 @@ pub(crate) struct ResolvedPrelude<'data> {
 
 /// Resolved state common to dynamic and regular objects.
 #[derive(Debug)]
-pub(crate) struct ResolvedCommon<'data, O: ObjectFile<'data>> {
+pub(crate) struct ResolvedCommon<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: &'data O,
+    pub(crate) object: &'data P::File<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
 #[derive(Debug)]
-pub(crate) struct ResolvedObject<'data, O: ObjectFile<'data>> {
-    pub(crate) common: ResolvedCommon<'data, O>,
+pub(crate) struct ResolvedObject<'data, P: Platform> {
+    pub(crate) common: ResolvedCommon<'data, P>,
 
     pub(crate) sections: Vec<SectionSlot>,
-    pub(crate) relocations: O::RelocationSections,
+    pub(crate) relocations: P::RelocationSections,
 
-    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data, O::SectionFlags>>,
+    pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
@@ -658,9 +657,9 @@ pub(crate) struct ResolvedObject<'data, O: ObjectFile<'data>> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ResolvedDynamic<'data, O: ObjectFile<'data>> {
-    pub(crate) common: ResolvedCommon<'data, O>,
-    dynamic_tag_values: O::DynamicTagValues,
+pub(crate) struct ResolvedDynamic<'data, P: Platform> {
+    pub(crate) common: ResolvedCommon<'data, P>,
+    dynamic_tag_values: P::DynamicTagValues<'data>,
 }
 
 #[derive(Debug)]
@@ -685,9 +684,9 @@ pub(crate) struct ResolvedLtoInput {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
-fn assign_section_ids<'data, O: ObjectFile<'data>>(
-    resolved: &mut [ResolvedGroup<'data, O>],
-    output_sections: &mut OutputSections<'data>,
+fn assign_section_ids<'data, P: Platform>(
+    resolved: &mut [ResolvedGroup<'data, P>],
+    output_sections: &mut OutputSections<'data, P>,
     args: &Args,
 ) {
     timing_phase!("Assign section IDs");
@@ -746,9 +745,9 @@ fn init_fini_priority(name: &[u8]) -> Option<u16> {
     None
 }
 
-struct Outputs<'data, O: ObjectFile<'data>> {
+struct Outputs<'data, P: Platform> {
     /// Where we put objects once we've loaded them.
-    loaded: ArrayQueue<ResolvedFile<'data, O>>,
+    loaded: ArrayQueue<ResolvedFile<'data, P>>,
 
     #[cfg(feature = "plugins")]
     loaded_lto_objects: ArrayQueue<ResolvedLtoInput>,
@@ -759,7 +758,7 @@ struct Outputs<'data, O: ObjectFile<'data>> {
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
 }
 
-impl<'data, O: ObjectFile<'data>> Outputs<'data, O> {
+impl<'data, P: Platform> Outputs<'data, P> {
     #[allow(unused_variables)]
     fn new(num_regular_objects: usize, num_lto_objects: usize) -> Self {
         Self {
@@ -772,9 +771,9 @@ impl<'data, O: ObjectFile<'data>> Outputs<'data, O> {
     }
 }
 
-fn process_object<'scope, 'data: 'scope, 'definitions, O: ObjectFile<'data>>(
+fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
     work_item: LoadObjectSymbolsRequest<'definitions>,
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     scope: &Scope<'scope>,
 ) {
     let file_id = work_item.file_id;
@@ -816,9 +815,9 @@ fn process_object<'scope, 'data: 'scope, 'definitions, O: ObjectFile<'data>>(
 }
 
 #[cfg(feature = "plugins")]
-fn resolve_lto_symbols<'data, 'scope, O: ObjectFile<'data>>(
+fn resolve_lto_symbols<'data, 'scope, P: Platform>(
     obj: &crate::linker_plugins::LtoInput<'data>,
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
@@ -866,10 +865,10 @@ struct UndefinedSymbol<'data> {
     symbol_id: SymbolId,
 }
 
-fn load_prelude<'scope, 'data, O: ObjectFile<'data>>(
+fn load_prelude<'scope, 'data, P: Platform>(
     prelude: &crate::parsing::Prelude,
     definitions_out: &mut [SymbolId],
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     scope: &Scope<'scope>,
 ) {
     // The start symbol could be defined within an archive entry. If it is, then we need to load
@@ -895,8 +894,8 @@ fn load_prelude<'scope, 'data, O: ObjectFile<'data>>(
     }
 }
 
-fn load_symbol_named<'scope, 'data, O: ObjectFile<'data>>(
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+fn load_symbol_named<'scope, 'data, P: Platform>(
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     definition_out: &mut SymbolId,
     name: &[u8],
     scope: &Scope<'scope>,
@@ -916,11 +915,11 @@ fn load_symbol_named<'scope, 'data, O: ObjectFile<'data>>(
 /// as the canonical one to which we'll refer. Where undefined symbols can be resolved to
 /// __start/__stop symbols that refer to the start or stop of a custom section, collect that
 /// information up and put it into `custom_start_stop_defs`.
-fn canonicalise_undefined_symbols<'data, O: ObjectFile<'data>>(
+fn canonicalise_undefined_symbols<'data, P: Platform>(
     mut undefined_symbols: Vec<UndefinedSymbol<'data>>,
-    output_sections: &OutputSections,
-    groups: &[ResolvedGroup<'data, O>],
-    symbol_db: &mut SymbolDb<'data, O>,
+    output_sections: &OutputSections<P>,
+    groups: &[ResolvedGroup<'data, P>],
+    symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
 ) {
@@ -1021,12 +1020,12 @@ fn canonicalise_undefined_symbols<'data, O: ObjectFile<'data>>(
     }
 }
 
-fn allocate_start_stop_symbol_id<'data, O: ObjectFile<'data>>(
+fn allocate_start_stop_symbol_id<'data, P: Platform>(
     name: PreHashed<UnversionedSymbolName<'data>>,
-    symbol_db: &mut SymbolDb<'data, O>,
+    symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
-    output_sections: &OutputSections,
+    output_sections: &OutputSections<P>,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
 
@@ -1053,8 +1052,8 @@ fn allocate_start_stop_symbol_id<'data, O: ObjectFile<'data>>(
     Some(symbol_id)
 }
 
-impl<'data, O: ObjectFile<'data>> ResolvedCommon<'data, O> {
-    fn new(obj: &'data SequencedInputObject<'data, O>) -> Self {
+impl<'data, P: Platform> ResolvedCommon<'data, P> {
+    fn new(obj: &'data SequencedInputObject<'data, P>) -> Self {
         Self {
             input: obj.parsed.input,
             object: &obj.parsed.object,
@@ -1073,10 +1072,10 @@ impl<'data, O: ObjectFile<'data>> ResolvedCommon<'data, O> {
     }
 }
 
-fn apply_init_fini_secondaries<'data>(
+fn apply_init_fini_secondaries<'data, P: Platform>(
     details: &[InitFiniSectionDetail],
     sections: &mut [SectionSlot],
-    output_sections: &mut OutputSections<'data>,
+    output_sections: &mut OutputSections<'data, P>,
 ) {
     for d in details {
         let Some(slot) = sections.get_mut(d.index as usize) else {
@@ -1094,8 +1093,8 @@ fn apply_init_fini_secondaries<'data>(
     }
 }
 
-impl<'data, O: ObjectFile<'data>> ResolvedObject<'data, O> {
-    fn new(common: ResolvedCommon<'data, O>) -> Self {
+impl<'data, P: Platform> ResolvedObject<'data, P> {
+    fn new(common: ResolvedCommon<'data, P>) -> Self {
         Self {
             common,
             // We'll fill this the rest during section resolution.
@@ -1108,8 +1107,11 @@ impl<'data, O: ObjectFile<'data>> ResolvedObject<'data, O> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> ResolvedDynamic<'data, O> {
-    fn new(common: ResolvedCommon<'data, O>, dynamic_tag_values: O::DynamicTagValues) -> Self {
+impl<'data, P: Platform> ResolvedDynamic<'data, P> {
+    fn new(
+        common: ResolvedCommon<'data, P>,
+        dynamic_tag_values: P::DynamicTagValues<'data>,
+    ) -> Self {
         Self {
             common,
             dynamic_tag_values,
@@ -1121,8 +1123,8 @@ impl<'data, O: ObjectFile<'data>> ResolvedDynamic<'data, O> {
     }
 }
 
-fn resolve_sections_for_object<'data, O: ObjectFile<'data>>(
-    obj: &mut ResolvedObject<'data, O>,
+fn resolve_sections_for_object<'data, P: Platform>(
+    obj: &mut ResolvedObject<'data, P>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
@@ -1147,10 +1149,10 @@ fn resolve_sections_for_object<'data, O: ObjectFile<'data>>(
 }
 
 #[inline(always)]
-fn resolve_section<'data, O: ObjectFile<'data>>(
+fn resolve_section<'data, P: Platform>(
     input_section_index: SectionIndex,
-    input_section: &O::SectionHeader,
-    obj: &mut ResolvedObject<'data, O>,
+    input_section: &P::SectionHeader,
+    obj: &mut ResolvedObject<'data, P>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
@@ -1169,15 +1171,13 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
         return Err(symbol_db::linker_plugin_disabled_error());
     }
 
-    let section_flags = input_section.flags();
     let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
-    let should_merge_sections = part_id::should_merge_sections(section_flags, raw_alignment, args);
+    let should_merge_sections = part_id::should_merge_sections(input_section, raw_alignment, args);
 
     let mut unloaded_section;
     let mut is_debug_info = false;
-    let section_type = input_section.section_type();
-    let mut must_load = section_flags.should_retain() || section_type.is_note();
+    let mut must_load = input_section.should_retain() || input_section.is_note();
 
     let file_name = if let Some(entry) = &obj.common.input.entry {
         // For archive members, match against the member name (e.g., "app.o"),
@@ -1192,7 +1192,7 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             .map(|n| n.as_encoded_bytes())
     };
 
-    match rules.lookup(section_name, file_name, section_flags, section_type) {
+    match rules.lookup(section_name, file_name, input_section) {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)
@@ -1224,6 +1224,14 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             unloaded_section = UnloadedSection::new(part_id);
         }
         SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
+        SectionRuleOutcome::NoteGnuStack => {
+            // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
+            // executable stack.
+            if input_section.is_executable() && !args.execstack {
+                bail!("{obj}: requires executable stack, but -z execstack is not specified");
+            }
+            return Ok(SectionSlot::Discard);
+        }
         SectionRuleOutcome::EhFrame => {
             return Ok(SectionSlot::FrameData(input_section_index));
         }
@@ -1231,11 +1239,11 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             return Ok(SectionSlot::NoteGnuProperty(input_section_index));
         }
         SectionRuleOutcome::Debug => {
-            if args.strip_debug() && !section_flags.is_alloc() {
+            if args.strip_debug() && !input_section.is_alloc() {
                 return Ok(SectionSlot::Discard);
             }
 
-            is_debug_info = !section_flags.is_alloc();
+            is_debug_info = !input_section.is_alloc();
 
             unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
         }
@@ -1263,7 +1271,6 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             obj.common
                 .object
                 .section_data(input_section, allocator, loaded_metrics)?;
-        let section_flags = input_section.flags();
 
         if section_data.is_empty() {
             SectionSlot::Discard
@@ -1271,7 +1278,7 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
             obj.string_merge_extras.push(StringMergeSectionExtra {
                 index: input_section_index,
                 section_data,
-                section_flags,
+                is_strings: input_section.is_strings(),
             });
 
             SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
@@ -1287,9 +1294,9 @@ fn resolve_section<'data, O: ObjectFile<'data>>(
     Ok(slot)
 }
 
-fn resolve_symbols<'data, 'scope, O: ObjectFile<'data>>(
-    obj: &SequencedInputObject<'data, O>,
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+fn resolve_symbols<'data, 'scope, P: Platform>(
+    obj: &SequencedInputObject<'data, P>,
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     start_symbol_offset: usize,
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
@@ -1357,11 +1364,11 @@ struct SymbolAttributes<'data> {
 }
 
 #[inline(always)]
-fn resolve_symbol<'data, 'scope, O: ObjectFile<'data>>(
+fn resolve_symbol<'data, 'scope, P: Platform>(
     local_symbol_id: SymbolId,
     local_symbol_attributes: &SymbolAttributes<'data>,
     definition_out: &mut SymbolId,
-    resources: &'scope ResolutionResources<'data, 'scope, O>,
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
     is_dynamic: bool,
     file_id: FileId,
     scope: &Scope<'scope>,
@@ -1417,13 +1424,13 @@ fn resolve_symbol<'data, 'scope, O: ObjectFile<'data>>(
     Ok(())
 }
 
-impl<'data, O: ObjectFile<'data>> std::fmt::Display for ResolvedObject<'data, O> {
+impl<'data, P: Platform> std::fmt::Display for ResolvedObject<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.common.input, f)
     }
 }
 
-impl<'data, O: ObjectFile<'data>> std::fmt::Display for ResolvedDynamic<'data, O> {
+impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.common.input, f)
     }
@@ -1435,7 +1442,7 @@ impl<'data> std::fmt::Display for ResolvedLinkerScript<'data> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> std::fmt::Display for ResolvedFile<'data, O> {
+impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
@@ -1478,7 +1485,7 @@ impl SectionSlot {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> ResolvedFile<'data, O> {
+impl<'data, P: Platform> ResolvedFile<'data, P> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             ResolvedFile::NotLoaded(s) => s.symbol_id_range,
@@ -1505,7 +1512,7 @@ impl ResolvedSyntheticSymbols<'_> {
     }
 }
 
-impl<'data, O: ObjectFile<'data>> Default for Resolver<'data, O> {
+impl<'data, P: Platform> Default for Resolver<'data, P> {
     fn default() -> Self {
         Self {
             undefined_symbols: Default::default(),
