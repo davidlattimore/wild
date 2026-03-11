@@ -515,7 +515,7 @@ impl std::fmt::Display for LinkerScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
-            LinkerScriptError::UnclosedComment => write!(f, "unclosed comment"),
+            LinkerScriptError::UnclosedComment => write!(f, "Unclosed comment"),
         }
     }
 }
