@@ -14,6 +14,20 @@ pub(crate) enum Architecture {
     LoongArch64,
 }
 
+impl Architecture {
+    /// Convert a `target_lexicon::Architecture` to an `Architecture`.
+    /// Panics if the architecture is not supported.
+    pub const fn from_target_lexicon(arch: target_lexicon::Architecture) -> Self {
+        match arch {
+            target_lexicon::Architecture::X86_64 => Self::X86_64,
+            target_lexicon::Architecture::Aarch64(_) => Self::AArch64,
+            target_lexicon::Architecture::Riscv64(_) => Self::RISCV64,
+            target_lexicon::Architecture::LoongArch64 => Self::LoongArch64,
+            _ => panic!("Unsupported architecture"),
+        }
+    }
+}
+
 impl TryFrom<u16> for Architecture {
     type Error = crate::error::Error;
 

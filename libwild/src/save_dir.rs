@@ -129,10 +129,10 @@ impl SaveDirState {
     /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
     /// `run-with` file and if the environment variable is set to indicate that we should skip
     /// linking, then exit.
-    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(
+    fn finish<'a, I: Iterator<Item = &'a PathBuf>, T>(
         &self,
         filenames: I,
-        parsed_args: &Args,
+        parsed_args: &Args<T>,
     ) -> Result {
         for filename in filenames {
             self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
@@ -148,7 +148,7 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn write_args_file(&self, run_file: &Path, args: &Args) -> Result {
+    fn write_args_file<T>(&self, run_file: &Path, args: &Args<T>) -> Result {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
@@ -229,7 +229,7 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path, parsed_args: &Args) -> Result {
+    fn copy_file<T>(&self, source_path: &Path, parsed_args: &Args<T>) -> Result {
         let dest_path = self.output_path(source_path);
 
         if dest_path.exists() || !source_path.exists() {
@@ -325,7 +325,7 @@ impl SaveDirState {
     }
 
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args) -> Result {
+    fn handle_thin_archive<T>(&self, path: &Path, parsed_args: &Args<T>) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
 
@@ -490,7 +490,7 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 
 /// Saves certain environment variables into the script. We only propagate environment variables
 /// that are known to be used for communication between the compiler and say linker plugins.
-fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &Args) -> Result {
+fn write_env<T>(out: &mut BufWriter<&mut std::fs::File>, args: &Args<T>) -> Result {
     for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
         if let Ok(mut value) = std::env::var(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
