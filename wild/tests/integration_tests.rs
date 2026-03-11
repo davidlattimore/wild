@@ -3547,6 +3547,7 @@ fn integration_test(
         "non-alloc.s",
         "gnu-unique.c",
         "symbol-versions.c",
+        "common-shared.c",
         "simple-version-script.c",
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
