@@ -75,6 +75,15 @@
 //#LinkerDriver:gcc
 //#LinkArgs:-flto -nostdlib -znow
 
+// Linker message with format string.
+//#Config:clang-format-string:error
+//#Compiler:clang
+//#LinkerDriver:clang
+//#SkipLinker:ld
+//#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
+//#Archive:empty.c:-flto
+//#ExpectError:(Error from linker plugin: Invalid parallelism level: \%s|Wild was compiled without linker-plugin support)
+
 #include "runtime.h"
 
 int foo();
