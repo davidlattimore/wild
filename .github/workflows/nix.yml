@@ -2,7 +2,7 @@ name: Refresh Nix Cache
 
 on:
   push:
-    branches: [ 'main' ]
+    branches: ['main']
     paths:
       - flake.lock
       - Cargo.lock

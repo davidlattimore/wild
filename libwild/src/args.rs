@@ -1101,7 +1101,7 @@ impl ArgumentParser {
         // TODO: This is ad-hoc
         help.push_str(&format!(
             "    {:<31} Read options from a file\n",
-            format!("@<VALUE>"),
+            "@<VALUE>",
         ));
 
         let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
@@ -2406,6 +2406,15 @@ fn setup_argument_parser() -> ArgumentParser {
 
     parser
         .declare_with_param()
+        .long("sort-section")
+        .help("Specify section sorting criteria")
+        .execute(|_args, _modifier_stack, value| {
+            warn_unsupported(&format!("--sort-section={value}"))?;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("sysroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
@@ -2787,6 +2796,7 @@ mod tests {
         "-x",
         "--discard-all",
         "--dependency-file=deps.d",
+        "--sort-section=alignment",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];

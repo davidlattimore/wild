@@ -33,8 +33,7 @@
 //! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
 //! output file. Can also assert some properties of that symbol. See Symbol properties below.
 //!
-//! ExpectDynSym:symbol-name [section] [offset-in-section] As for ExpectSym, but for dynamic
-//! symbols.
+//! ExpectDynSym:symbol-name As for ExpectSym, but for dynamic symbols.
 //!
 //! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
 //! .dynsym.
@@ -78,6 +77,9 @@
 //! ExpectError:{error regex} Verifies that the link fails and that the error message matches the
 //! specified regex. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
 //! times - all must match.
+//!
+//! ExpectMessage:{message regex} Verifies that the linker prints the message matching the specified
+//! regex. May be specified multiple times - all must match.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
@@ -291,7 +293,7 @@ impl Linker {
             // If we're expecting errors, those errors should only occur when we link the final
             // binary, not when we link any dependent shared objects.
             let mut config = config.clone();
-            config.expect_errors = Vec::new();
+            config.expect_messages = Vec::new();
 
             command.run(&config)?;
             command.write_input_hashes()?;
@@ -508,7 +510,8 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_errors: Vec<ErrorMatcher>,
+    should_error: bool,
+    expect_messages: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -980,7 +983,8 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
-            expect_errors: Default::default(),
+            should_error: false,
+            expect_messages: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -1162,10 +1166,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
-                    config.expect_errors.push(ErrorMatcher::new(arg.trim())?);
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+                    config.should_error = true;
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
+                }
+                "ExpectMessage" => {
+                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
                 }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
@@ -1317,7 +1325,7 @@ impl ProgramInputs {
 
         if config.test_update_in_place
             && matches!(linker, Linker::Wild)
-            && config.expect_errors.is_empty()
+            && !config.should_error
             && (config.should_diff || config.should_run)
         {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
@@ -2155,7 +2163,7 @@ fn src_path(filename: &str) -> PathBuf {
 
 /// Returns whether both `output_path` all `src_paths` exist and `output_path` has a modification
 /// timestamp >= that of all elements of `src_paths`.
-fn is_newer<P: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = P>) -> bool {
+fn is_newer<A: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = A>) -> bool {
     let Ok(out) = std::fs::metadata(output_path) else {
         return false;
     };
@@ -2481,20 +2489,25 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if !config.expect_errors.is_empty() {
+        if !config.expect_messages.is_empty() {
             let output = self
                 .command
                 .output()
                 .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-            if output.status.success() {
+            if config.should_error && output.status.success() {
                 bail!(
                     "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
                 );
             }
 
-            for expected_error in &config.expect_errors {
-                if !expected_error.matches(&output.stderr) {
+            for expected_error in &config.expect_messages {
+                let output_stream = if config.should_error {
+                    &output.stderr
+                } else {
+                    &output.stdout
+                };
+                if !expected_error.matches(output_stream) {
                     eprintln!(
                         "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
                         String::from_utf8_lossy(&output.stdout),
@@ -2688,8 +2701,10 @@ impl Assertions {
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
         self.verify_file_kind(&obj)?;
-        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
-        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
+        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())
+            .context(".symtab assertion failed")?;
+        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())
+            .context(".dynsym assertion failed")?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), ".symtab")?;
         self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
         self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
@@ -2921,28 +2936,34 @@ fn verify_symbol_assertions(
             continue;
         };
 
-        if let object::SymbolSection::Section(index) = sym.section() {
-            let section = obj.section_by_index(index)?;
-            let section_name = section.name()?;
+        if let Some(exp_name) = exp.assertions.section_name.as_ref() {
+            match sym.section() {
+                object::SymbolSection::Section(index) => {
+                    let section = obj.section_by_index(index)?;
+                    let section_name = section.name()?;
 
-            if let Some(exp_name) = exp.assertions.section_name.as_ref() {
-                if section_name != exp_name {
-                    bail!(
-                        "Expected symbol `{name}` to be in section `{exp_name}`, \
-                                but it was in `{section_name}`"
-                    );
-                }
-
-                if let Some(expected_offset) = exp.assertions.section_offset {
-                    let actual_offset = sym.address().wrapping_sub(section.address());
-                    if expected_offset != actual_offset {
+                    if section_name != exp_name {
                         bail!(
-                            "Expected symbol `{name}` to be at offset {expected_offset} \
-                                    in section `{exp_name}`, but it was actually at offset {}",
-                            actual_offset as i64
+                            "Expected symbol `{name}` to be in section `{exp_name}`, \
+                                but it was in `{section_name}`"
                         );
                     }
+
+                    if let Some(expected_offset) = exp.assertions.section_offset {
+                        let actual_offset = sym.address().wrapping_sub(section.address());
+                        if expected_offset != actual_offset {
+                            bail!(
+                                "Expected symbol `{name}` to be at offset {expected_offset} \
+                                    in section `{exp_name}`, but it was actually at offset {}",
+                                actual_offset as i64
+                            );
+                        }
+                    }
                 }
+                other => bail!(
+                    "Expected symbol `name` to be in section `{exp_name}`, \
+                     but it was {other:?}"
+                ),
             }
         }
 
@@ -3249,7 +3270,7 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path)
+    if let Err(error) = create_symlink(wild, &wild_ld_path)
         && error.kind() != std::io::ErrorKind::AlreadyExists
     {
         Err(error).with_context(|| {
@@ -3261,6 +3282,16 @@ fn setup_wild_ld_symlink() -> Result {
         })?
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, dest_path)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &Path, dest_path: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, dest_path)
 }
 
 fn find_bin(names: &[&str]) -> Result<PathBuf> {
@@ -3422,7 +3453,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if !config.expect_errors.is_empty() {
+    if !config.expect_messages.is_empty() {
         return Ok(());
     }
 
@@ -3588,6 +3619,8 @@ fn integration_test(
         "linker-script-filename-match.c",
         "tls-apx-relocs.s",
         "as-needed-weak.c",
+        "linker-script-unclosed-comment.c",
+        "execstack.s"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -3887,5 +3920,80 @@ mod tidy {
                 extensions_str = extensions.join(",")
             )
         }
+    }
+
+    #[test]
+    fn check_text_files() -> Result {
+        const EXCLUDE_DIR: &[&str] = &[
+            "target",
+            "build",
+            "external_test_suites",
+            "fakes-debug",
+            "fakes",
+        ];
+
+        fn verify_path(path: &Path, problems: &mut Vec<String>) -> Result {
+            if EXCLUDE_DIR.iter().any(|e| path.ends_with(e)) {
+                return Ok(());
+            }
+
+            if path.is_dir() {
+                for entry in read_dir(path)
+                    .with_context(|| format!("Failed to read directory {}", path.display()))?
+                {
+                    let entry = entry?;
+                    let file_name = entry.file_name();
+                    let Some(file_name) = file_name.to_str() else {
+                        continue;
+                    };
+
+                    // Ignore hidden files / directories.
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
+
+                    verify_path(&entry.path(), problems)?;
+                }
+            } else if path.is_symlink() {
+                // Ignore symlinks.
+            } else {
+                let content = std::fs::read(path)
+                    .with_context(|| format!("Failed to read file {}", path.display()))?;
+
+                let is_valid_utf8 = std::str::from_utf8(&content).is_ok();
+                let is_text = is_valid_utf8 && !content.contains(&0);
+
+                if is_text {
+                    if content.contains(&b'\r') {
+                        problems.push(format!(
+                            "The file {} uses Windows line-endings. Please convert it to Unix-style.",
+                            path.display()
+                        ));
+                    }
+
+                    let allow_no_trailing_newline =
+                        content.is_empty() || path.extension().is_some_and(|ext| ext == "json");
+
+                    if !allow_no_trailing_newline && !content.ends_with(b"\n") {
+                        problems.push(format!(
+                            "The file {} is missing a trailing newline",
+                            path.display()
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
+        let mut problems = Vec::new();
+        verify_path(root, &mut problems)?;
+
+        if !problems.is_empty() {
+            bail!("{}", problems.join("\n"))
+        }
+
+        Ok(())
     }
 }

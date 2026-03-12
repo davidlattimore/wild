@@ -1,11 +1,12 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
-use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
 use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::OutputSections;
 use crate::platform;
+use crate::platform::Platform;
 use std::fmt::Debug;
 
 /// An ID for a part of an output section. Parts IDs are ordered with generated
@@ -57,15 +58,15 @@ pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 /// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-pub(crate) fn should_merge_sections<S: platform::SectionFlags>(
-    section_flags: S,
+pub(crate) fn should_merge_sections(
+    section_header: &impl platform::SectionHeader,
     section_alignment: u64,
     args: &Args,
 ) -> bool {
     if !args.merge_sections {
         return false;
     }
-    section_flags.is_merge_section() && section_alignment <= 1
+    section_header.is_merge_section() && section_alignment <= 1
 }
 
 impl PartId {
@@ -88,10 +89,6 @@ impl PartId {
         self.0 as usize
     }
 
-    pub(crate) fn built_in_details(self) -> &'static BuiltInSectionDetails {
-        self.output_section_id().built_in_details()
-    }
-
     pub(crate) fn offset(self, offset: usize) -> PartId {
         PartId(self.0 + offset as u32)
     }
@@ -100,13 +97,16 @@ impl PartId {
         PartId(value)
     }
 
-    pub(crate) fn alignment(self) -> Alignment {
+    pub(crate) fn alignment<P: Platform>(
+        self,
+        output_sections: &OutputSections<'_, P>,
+    ) -> Alignment {
         if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
             }
         } else {
-            self.built_in_details().min_alignment
+            self.output_section_id().min_alignment(output_sections)
         }
     }
 }
@@ -141,10 +141,11 @@ mod tests {
 
     #[test]
     fn test_conversion_consistency() {
+        let output_sections = OutputSections::<crate::elf::Elf>::for_testing();
         for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
             let part_id = PartId::from_u32(i);
             let section_id = part_id.output_section_id();
-            let alignment = part_id.alignment();
+            let alignment = part_id.alignment(&output_sections);
             let part_id2 = section_id.part_id_with_alignment(alignment);
             assert_eq!(part_id, part_id2);
         }

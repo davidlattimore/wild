@@ -4,10 +4,12 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::OutputKind;
+use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::error;
 use crate::error::Result;
+use crate::platform::Platform;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -46,11 +48,11 @@ macro_rules! rel_info_from_type {
     };
 }
 
-impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
+impl crate::platform::Arch for ElfX86_64 {
     type Relaxation = Relaxation;
-    type File = crate::elf::File<'data>;
+    type Platform = Elf;
 
-    fn elf_header_arch_magic() -> u16 {
+    fn arch_identifier() -> <Self::Platform as Platform>::ArchIdentifier {
         object::elf::EM_X86_64
     }
 
@@ -74,7 +76,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         plt_address: u64,
     ) -> crate::error::Result {
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
+        let offset: i32 = (got_address.wrapping_sub(plt_address + 0xb) as i64)
             .try_into()
             .map_err(|_| error!("PLT is more than 2GiB away from GOT"))?;
         plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
@@ -89,7 +91,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         false
     }
 
-    fn tp_offset_start(layout: &crate::layout::Layout<'data, crate::elf::File<'data>>) -> u64 {
+    fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
         layout.tls_end_address()
     }
 
@@ -162,9 +164,9 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
 
         match relocation_kind {
             object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_CODE_4_GOTPCRELX
-                if ((relocation_kind == object::elf::R_X86_64_CODE_4_GOTPCRELX
+                if (relocation_kind == object::elf::R_X86_64_CODE_4_GOTPCRELX
                     && (offset >= 4 && section_bytes[offset - 4] == 0xd5))
-                    || offset >= 3) =>
+                    || offset >= 3 =>
             {
                 let b1 = section_bytes[offset - 2];
                 let rex = section_bytes[offset - 3];
@@ -321,7 +323,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                         return Some(Relaxation {
                             kind: RelaxationKind::RexAddIndirectToAbsolute(6),
                             rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
-                            mandatory: false,
+                            mandatory: output_kind.is_static_executable(),
                         });
                     }
                     _ => {}
@@ -375,7 +377,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExec,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
-                                mandatory: false,
+                                mandatory: output_kind.is_static_executable(),
                             });
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
@@ -392,7 +394,7 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
                             return Some(Relaxation {
                                 kind: RelaxationKind::TlsLdToLocalExecNoPlt,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
-                                mandatory: false,
+                                mandatory: output_kind.is_static_executable(),
                             });
                         }
                         _ => {}
@@ -452,10 +454,10 @@ impl<'data> crate::platform::Platform<'data> for ElfX86_64 {
         None
     }
 
-    fn get_source_info(
-        object: &Self::File,
-        relocations: &<Self::File as crate::platform::ObjectFile<'data>>::RelocationSections,
-        section: &<Self::File as crate::platform::ObjectFile<'data>>::SectionHeader,
+    fn get_source_info<'data>(
+        object: &<Self::Platform as Platform>::File<'data>,
+        relocations: &<Self::Platform as Platform>::RelocationSections,
+        section: &<Self::Platform as Platform>::SectionHeader,
         offset_in_section: u64,
     ) -> Result<crate::platform::SourceInfo> {
         crate::dwarf_address_info::get_source_info::<Self>(
@@ -529,7 +531,7 @@ impl TlsGdForm {
 #[test]
 fn test_relaxation() {
     use crate::args::RelocationModel;
-    use crate::platform::Platform as _;
+    use crate::platform::Arch as _;
     use crate::platform::Relaxation as _;
 
     #[track_caller]
