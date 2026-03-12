@@ -158,6 +158,7 @@ tests = [
   "arch-x86_64-note2.sh",           # The order of sections is different.
   "arch-x86_64-plt.sh",             # We use `.got.plt`, not `.plt.got`.
   "arch-x86_64-reloc-overflow.sh",  # Different message formats
+  "as-needed-weak.sh",              # Mold-specific behaviour: GNU ld and lld do not activate --as-needed libs for weak refs
   "auxiliary.sh",                   # Different message format
   "build-id.sh",                    # Different build ID data size
   "cmdline.sh",                     # Different message formats for unknown options.
@@ -217,7 +218,6 @@ tests = [
 [skipped_groups.misc]
 reason = "Not grouped yet"
 tests = [
-  "as-needed-weak.sh",
   "bno-symbolic.sh",
   "canonical-plt.sh",
   "common-archive.sh",
