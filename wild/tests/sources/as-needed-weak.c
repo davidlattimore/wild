@@ -1,4 +1,5 @@
 //#Object:runtime.c
+//#Mode:dynamic
 //#Shared:force-dynamic-linking.c
 //#Shared:template(--push-state --as-needed $O --pop-state):as-needed-weak-lib.c
 // Tests that --as-needed shared libraries are NOT activated for weak symbol
@@ -8,6 +9,10 @@
 // force-dynamic-linking.c is linked without --as-needed so both Wild and GNU
 // ld produce a dynamic binary, enabling a meaningful diff.
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:section.got
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:rel.undefined-weak.dynamic.R_X86_64_GLOB_DAT
 
 #include "runtime.h"
 
