@@ -3618,6 +3618,7 @@ fn integration_test(
         "segment-end-syms.c",
         "linker-script-filename-match.c",
         "tls-apx-relocs.s",
+        "as-needed-weak.c",
         "linker-script-unclosed-comment.c",
         "execstack.s"
     )]
