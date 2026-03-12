@@ -628,12 +628,28 @@ impl platform::Platform for Elf {
             .section_group_end(output_section_id::FINI_ARRAY, "__fini_array_end")
             .hide();
 
-        symbols.section_end(output_section_id::TEXT, "etext");
-        symbols.section_end(output_section_id::TEXT, "_etext");
-        symbols.section_end(output_section_id::TEXT, "__etext");
+        // GNU ld doesn't emit these symbols in shared libraries, so we hide them
+        if output_kind.is_shared_object() {
+            symbols.section_end(output_section_id::TEXT, "etext").hide();
+            symbols
+                .section_end(output_section_id::TEXT, "_etext")
+                .hide();
+            symbols
+                .section_end(output_section_id::TEXT, "__etext")
+                .hide();
+        } else {
+            symbols.section_end(output_section_id::TEXT, "etext");
+            symbols.section_end(output_section_id::TEXT, "_etext");
+            symbols.section_end(output_section_id::TEXT, "__etext");
+        }
 
-        symbols.section_end(output_section_id::BSS, "end");
-        symbols.section_end(output_section_id::BSS, "_end");
+        if output_kind.is_shared_object() {
+            symbols.section_end(output_section_id::BSS, "end").hide();
+            symbols.section_end(output_section_id::BSS, "_end").hide();
+        } else {
+            symbols.section_end(output_section_id::BSS, "end");
+            symbols.section_end(output_section_id::BSS, "_end");
+        }
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
         // TODO: define the symbol only on RISC-V target
@@ -642,8 +658,15 @@ impl platform::Platform for Elf {
             crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
         );
 
-        symbols.section_end(output_section_id::DATA, "edata");
-        symbols.section_end(output_section_id::DATA, "_edata");
+        if output_kind.is_shared_object() {
+            symbols.section_end(output_section_id::DATA, "edata").hide();
+            symbols
+                .section_end(output_section_id::DATA, "_edata")
+                .hide();
+        } else {
+            symbols.section_end(output_section_id::DATA, "edata");
+            symbols.section_end(output_section_id::DATA, "_edata");
+        }
 
         symbols
             .section_start(output_section_id::TDATA, "__tdata_start")
