@@ -175,6 +175,7 @@ tests = [
   "empty-input.sh",                 # Different message formats
   "gc-sections.sh",                 # Passes when `--no-gc-sections` is passed.
   "hash-style.sh",                  # Wild doesn't support `--hash-style=none`.
+  "hidden-undef.sh",                # Wild correctly errors, but message format differs from mold's.
   "help.sh",
   "invalid-version-script.sh",      # Different message formats
   "linker-script-error.sh",         # Different message formats
@@ -229,7 +230,6 @@ tests = [
   "discard.sh",
   "dynamic-linker.sh",
   "glibc-2.22-bug.sh",
-  "hidden-undef.sh",
   "initfirst.sh",
   "mergeable-strings.sh",
   "missing-error.sh",

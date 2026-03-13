@@ -3543,6 +3543,7 @@ fn integration_test(
         "symbol-priority.c",
         "symbol-binding.c",
         "hidden-ref.c",
+        "hidden-undef.c",
         "trivial_asm.s",
         "non-alloc.s",
         "gnu-unique.c",
