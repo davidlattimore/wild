@@ -67,6 +67,11 @@
 //!
 //! RunEnabled:{bool} Defaults to true. Set to false to disable execution of the resulting binary.
 //!
+//! RunDynSym:{string} If set and RunEnabled:true, then, instead of executing the binary normally,
+//! the binary is loaded as a shared library and the function specified by the string is called.
+//! The function must return an integer to indicate status (status != 42 is an error).
+//! Such run is obviously skipped if the shared library is cross compiled.
+//!
 //! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
 //! that isn't supported by GNU ld.
 //!
@@ -165,6 +170,7 @@
 mod external_tests;
 
 use itertools::Itertools;
+use libloading::Library;
 use libwild::bail;
 use libwild::ensure;
 use libwild::error;
@@ -510,6 +516,7 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
+    run_dyn_sym: Option<String>,
     should_error: bool,
     expect_messages: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
@@ -983,6 +990,7 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
+            run_dyn_sym: None,
             should_error: false,
             expect_messages: Default::default(),
             cross_enabled: true,
@@ -1157,6 +1165,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "RunEnabled" => {
                     config.should_run = arg.parse().context("Invalid bool for RunEnabled")?
+                }
+                "RunDynSym" => {
+                    config.run_dyn_sym = Some(arg.parse().context("Invalid string for RunDynSym")?)
                 }
                 "SkipLinker" => {
                     config.skip_linkers.insert(arg.trim().to_owned());
@@ -1550,6 +1561,7 @@ impl Debug for SectionDiff {
 /// the system, which can mean that the test binaries take longer to start, so we need to be
 /// somewhat generous here to avoid flakes.
 const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_millis(2000);
+const EXIT_SUCCESS: i32 = 42;
 
 impl Program<'_> {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
@@ -1610,8 +1622,32 @@ impl Program<'_> {
             error!("Binary exited{possible_core_dumped_msg} with signal {signal}: {output}")
         })?;
 
-        if exit_code != 42 {
+        if exit_code != EXIT_SUCCESS {
             bail!("Binary exited with unexpected exit code {exit_code}: {output}");
+        }
+
+        Ok(())
+    }
+
+    fn run_as_dynlib(&self, entry_sym: &str) -> Result {
+        // SAFETY: It is not safe. However, we assume that our test cases do not break anything.
+        // In particular: All initialization, termination and entry routines of the shared library
+        // need to be safe and entry_sym has to be of type `extern "C" fn() -> i32`.
+        let exit_code = unsafe {
+            let lib = Library::new(&self.link_output.binary).with_context(|| {
+                format!(
+                    "Cannot load shared library {}",
+                    self.link_output.binary.to_string_lossy()
+                )
+            })?;
+            let entry = lib
+                .get::<unsafe extern "C" fn() -> i32>(entry_sym)
+                .with_context(|| format!("Cannot find entry point symbol {entry_sym}"))?;
+            entry()
+        };
+
+        if exit_code != EXIT_SUCCESS {
+            bail!("Function {entry_sym} exited with unexpected status code {exit_code}.");
         }
 
         Ok(())
@@ -3488,9 +3524,24 @@ fn run_with_config(
         }
 
         if config.should_run {
-            program
-                .run(cross_arch)
-                .with_context(|| format!("Failed to run program. {program}"))?;
+            // If RunDynSym is set, execute our binary by loading it dynamically and calling the
+            // configured function. As we are loading the library directly into our
+            // process, our binary cannot be cross compiled.
+            if let Some(func) = config.run_dyn_sym.as_ref()
+                && cross_arch.is_none()
+            {
+                program
+                    .run_as_dynlib(func)
+                    .with_context(|| format!("Failed to load shared library. {program}"))?;
+            } else {
+                program
+                    .run(cross_arch)
+                    .with_context(|| format!("Failed to run program. {program}"))?;
+            }
+        } else if config.run_dyn_sym.is_some() {
+            // RunEnabled is false but RunDynSym is set.
+            // That is definitely not intended, so just bail.
+            bail!("RunDynSym is set but RunEnabled:false. {program}");
         }
     }
 

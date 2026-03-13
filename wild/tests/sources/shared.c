@@ -1,6 +1,3 @@
-// We don't currently run this, we just make sure that we can produce a shared
-// object and that it passes the diff test.
-//
 // One notable scenario that this test tests is having a non-weak undefined
 // symbol (baz) in a shared object and having that symbol be defined by an
 // archive entry that we don't load.
@@ -8,7 +5,7 @@
 //#Config:default
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
-//#RunEnabled:false
+//#RunDynSym:foo
 //#Shared:shared-s1.c
 //#Archive:shared-a1.c,shared-a2.c
 //#DiffIgnore:.dynamic.DT_RELA
