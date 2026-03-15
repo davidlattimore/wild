@@ -165,6 +165,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.0'
+          cache: false
       - run: go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: yamlfmt -lint .
