@@ -4,7 +4,7 @@ use crate::Args;
 use crate::archive::ArchiveEntry;
 use crate::args::elf::ElfArgs;
 use crate::archive::ArchiveIterator;
-use crate::args::elf::Modifiers;
+use crate::args::Modifiers;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -179,7 +179,7 @@ impl SaveDirState {
 
         while let Some(arg) = args.next() {
             if let Some(args_path) = arg.strip_prefix("@") {
-                let args_from_file = crate::args::elf::read_args_from_file(Path::new(args_path))?;
+                let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
                 self.write_args(&args_from_file, out, original_output_file)?;
                 continue;
             }
@@ -395,7 +395,7 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     let mut absolute_paths = Vec::new();
     script.foreach_input(Modifiers::default(), |input| {
-        if let crate::args::elf::InputSpec::File(path) = input.spec
+        if let crate::args::InputSpec::File(path) = input.spec
             && path.is_absolute()
         {
             absolute_paths.push(path);

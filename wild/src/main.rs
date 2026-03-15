@@ -18,13 +18,24 @@ fn run() -> libwild::error::Result {
 
     libwild::init_timing()?;
 
-    let args = libwild::Args::parse(|| std::env::args().skip(1))?;
+    let args = libwild::Args::parse(std::env::args)?;
 
-    if args.should_fork() {
-        // Safety: We haven't spawned any threads yet.
-        unsafe { libwild::run_in_subprocess(args) };
-    } else {
-        // Run the linker in this process without forking.
-        libwild::run(args)
+    fn runner(args: libwild::Args<libwild::args::elf::ElfArgs>) -> libwild::error::Result<()> {
+        if args.should_fork() {
+            // Safety: We haven't spawned any threads yet.
+            unsafe { libwild::run_in_subprocess(args) };
+        } else {
+            // Run the linker in this process without forking.
+            libwild::run(args)
+        }
+    }
+
+    match args.target_args {
+        libwild::args::TargetArgs::Elf(_) => {
+            let args = args.map_target(|a| match a {
+                libwild::args::TargetArgs::Elf(elf_args) => elf_args,
+            });
+            runner(args)
+        }
     }
 }

@@ -2731,10 +2731,10 @@ pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
             } else if !flags.is_absolute() {
                 match args.copy_relocations {
-                    crate::args::elf::CopyRelocations::Allowed => {
+                    crate::args::CopyRelocations::Allowed => {
                         flags_to_add |= ValueFlags::COPY_RELOCATION;
                     }
-                    crate::args::elf::CopyRelocations::Disallowed(reason) => {
+                    crate::args::CopyRelocations::Disallowed(reason) => {
                         // We don't at present support text relocations, so if we can't apply a copy
                         // relocation, we error instead.
                         bail!(
@@ -3567,8 +3567,8 @@ fn should_emit_undefined_error<P: Platform>(
         sym_file_id == sym_def_file_id && symbol.is_undefined() && flags.is_absolute();
 
     match args.unresolved_symbols {
-        crate::args::elf::UnresolvedSymbols::IgnoreAll
-        | crate::args::elf::UnresolvedSymbols::IgnoreInObjectFiles => false,
+        crate::args::UnresolvedSymbols::IgnoreAll
+        | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
         _ => is_symbol_undefined,
     }
 }
@@ -5239,8 +5239,8 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
                     if !symbol.is_weak() {
                         let should_report = !matches!(
                             args.unresolved_symbols,
-                            crate::args::elf::UnresolvedSymbols::IgnoreAll
-                                | crate::args::elf::UnresolvedSymbols::IgnoreInSharedLibs
+                            crate::args::UnresolvedSymbols::IgnoreAll
+                                | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
                         );
 
                         if should_report {
