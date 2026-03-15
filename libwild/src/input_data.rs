@@ -111,6 +111,16 @@ impl InputFile {
     pub(crate) fn data(&self) -> &[u8] {
         self.data.as_deref().unwrap_or_default()
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_testing() -> Self {
+        Self {
+            filename: std::path::PathBuf::new(),
+            original_filename: std::path::PathBuf::new(),
+            modifiers: crate::args::Modifiers::default(),
+            data: None,
+        }
+    }
 }
 
 #[derive(Debug)]

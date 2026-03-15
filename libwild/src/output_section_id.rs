@@ -808,6 +808,20 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         self.custom_by_name.get(&name).copied()
     }
 
+    /// Look up a section by name across all sections — both built-in and custom.
+    pub(crate) fn section_id_by_name(&self, name: SectionName) -> Option<OutputSectionId> {
+        if let Some(id) = self.custom_by_name.get(&name).copied() {
+            return Some(id);
+        }
+        let mut found = None;
+        self.section_infos.for_each(|id, _| {
+            if found.is_none() && self.name(id) == Some(name) {
+                found = Some(id);
+            }
+        });
+        found
+    }
+
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static, crate::elf::Elf> {
         use crate::elf::Elf;

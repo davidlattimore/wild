@@ -309,6 +309,13 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
+    // Evaluate ASSERT commands from all linker scripts now that layout is complete.
+    crate::expression_eval::evaluate_assertions(
+        &symbol_db.groups,
+        &section_layouts,
+        &output_sections,
+    )?;
+
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     Ok(Layout {
