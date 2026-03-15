@@ -11,23 +11,23 @@ edition.workspace = true
 linker-layout = { path = "../linker-layout", version = "0.8.0" }
 linker-trace = { path = "../linker-trace", version = "0.8.0" }
 linker-utils = { path = "../linker-utils", version = "0.8.0" }
-object = { workspace = true }
-iced-x86 = { workspace = true }
-symbolic-demangle = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-itertools = { workspace = true }
-gimli = { workspace = true }
 colored = { workspace = true }
+gimli = { workspace = true }
+hashbrown = { workspace = true }
+iced-x86 = { workspace = true }
+itertools = { workspace = true }
+memchr = { workspace = true }
+memmap2 = { workspace = true }
+object = { workspace = true }
+symbolic-demangle = { workspace = true }
+tabled = { workspace = true }
+tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-memmap2 = { workspace = true }
-memchr = { workspace = true }
-tempfile = { workspace = true }
 which = { workspace = true }
-hashbrown = { workspace = true }
 zerocopy = { workspace = true }
-tabled = { workspace = true }
 
 [lints]
 workspace = true
