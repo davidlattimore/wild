@@ -189,6 +189,11 @@ impl<'data> InternalSymDefInfo<'data> {
         self.is_hidden = true;
         self
     }
+
+    pub(crate) fn set_hidden(&mut self, hidden: bool) -> &mut Self {
+        self.is_hidden = hidden;
+        self
+    }
 }
 
 impl<'data, P: Platform> ParsedInputObject<'data, P> {

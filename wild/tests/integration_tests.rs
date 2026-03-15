@@ -161,6 +161,9 @@
 //!
 //! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
 //! size-changing relaxations (e.g. RISC-V call relaxation) were applied.
+//!
+//! binding=local|global|weak: Type: string. Asserts the binding of the symbol (STB_LOCAL,
+//! STB_GLOBAL or STB_WEAK).
 
 mod external_tests;
 
@@ -897,6 +900,8 @@ struct SymtabAssertions {
     absolute_address: Option<u64>,
 
     size: Option<u64>,
+
+    binding: Option<String>,
 }
 
 impl ExpectedSymtabEntry {
@@ -2987,6 +2992,28 @@ fn verify_symbol_assertions(
                 );
             }
         }
+
+        if let Some(expected_binding) = exp.assertions.binding.as_deref() {
+            if !matches!(expected_binding, "local" | "global" | "weak") {
+                bail!(
+                    "Invalid binding value `{expected_binding}` for symbol `{name}`. \
+                     Must be one of: local, global, weak"
+                );
+            }
+            let actual_binding = if sym.is_weak() {
+                "weak"
+            } else if sym.is_global() {
+                "global"
+            } else {
+                "local"
+            };
+            if expected_binding != actual_binding {
+                bail!(
+                    "Expected symbol `{name}` to have binding `{expected_binding}`, \
+                     but it actually had binding `{actual_binding}`"
+                );
+            }
+        }
     }
 
     let missing: Vec<&str> = missing.into_keys().collect();
@@ -3560,6 +3587,7 @@ fn integration_test(
         "linker-script-executable.c",
         "linker-script-provide.c",
         "linker-defined-provide.c",
+        "linker-defined-syms-shared.c",
         "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",

@@ -628,12 +628,24 @@ impl platform::Platform for Elf {
             .section_group_end(output_section_id::FINI_ARRAY, "__fini_array_end")
             .hide();
 
-        symbols.section_end(output_section_id::TEXT, "etext");
-        symbols.section_end(output_section_id::TEXT, "_etext");
-        symbols.section_end(output_section_id::TEXT, "__etext");
+        // GNU ld doesn't emit these symbols in shared libraries, so we hide them
+        let hidden = output_kind.is_shared_object();
+        symbols
+            .section_end(output_section_id::TEXT, "etext")
+            .set_hidden(hidden);
+        symbols
+            .section_end(output_section_id::TEXT, "_etext")
+            .set_hidden(hidden);
+        symbols
+            .section_end(output_section_id::TEXT, "__etext")
+            .set_hidden(hidden);
 
-        symbols.section_end(output_section_id::BSS, "end");
-        symbols.section_end(output_section_id::BSS, "_end");
+        symbols
+            .section_end(output_section_id::BSS, "end")
+            .set_hidden(hidden);
+        symbols
+            .section_end(output_section_id::BSS, "_end")
+            .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
         // TODO: define the symbol only on RISC-V target
@@ -642,8 +654,12 @@ impl platform::Platform for Elf {
             crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
         );
 
-        symbols.section_end(output_section_id::DATA, "edata");
-        symbols.section_end(output_section_id::DATA, "_edata");
+        symbols
+            .section_end(output_section_id::DATA, "edata")
+            .set_hidden(hidden);
+        symbols
+            .section_end(output_section_id::DATA, "_edata")
+            .set_hidden(hidden);
 
         symbols
             .section_start(output_section_id::TDATA, "__tdata_start")
