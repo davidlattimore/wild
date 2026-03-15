@@ -355,6 +355,8 @@ impl LoadedPlugin {
 
         let mut transfer_vector = Vec::new();
 
+        transfer_vector.push(LdPluginTv::fn_ptr2(Tag::Message, message));
+
         for arg in &args.plugin_args {
             transfer_vector.push(LdPluginTv::c_str(Tag::Option, arg));
         }
@@ -375,7 +377,6 @@ impl LoadedPlugin {
             register_all_symbols_read_hook,
         ));
         transfer_vector.push(LdPluginTv::fn_ptr6(Tag::GetApiVersion, get_api_version));
-        transfer_vector.push(LdPluginTv::fn_ptr2(Tag::Message, message));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::AddSymbols, add_symbols));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::AddSymbolsV2, add_symbols));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::GetSymbolsV3, get_symbols_v3));
