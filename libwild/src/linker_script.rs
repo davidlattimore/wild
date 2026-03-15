@@ -1,9 +1,9 @@
 //! This module is responsible for parsing linker scripts.
 
 use crate::alignment::Alignment;
-use crate::args::elf::Input;
-use crate::args::elf::InputSpec;
-use crate::args::elf::Modifiers;
+use crate::args::Input;
+use crate::args::InputSpec;
+use crate::args::Modifiers;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;

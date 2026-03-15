@@ -1,8 +1,17 @@
 //! An elf-specific extension of `super::Args` and parsing implementation to match gnu style linkers.
 
-use super::ActivatedArgs;
+use super::Args;
+use super::ArgumentParser;
+use super::BSymbolicKind;
+use super::Input;
+use super::InputSpec;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
+use crate::args::CopyRelocations;
+use crate::args::CopyRelocationsDisabledReason;
+use crate::args::Modifiers;
+use crate::args::UnresolvedSymbols;
+use crate::args::warn_unsupported;
 use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
@@ -20,10 +29,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
-use rayon::ThreadPoolBuilder;
 use std::ffi::CString;
-use std::fmt::Display;
-use std::mem::take;
 use std::num::NonZero;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
@@ -54,14 +60,10 @@ pub(crate) enum DefsymValue {
 
 #[derive(Debug)]
 pub struct ElfArgs {
-    pub(crate) unrecognized_options: Vec<String>,
-
     pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub num_threads: Option<NonZeroUsize>,
     pub(crate) strip: Strip,
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
@@ -76,7 +78,6 @@ pub struct ElfArgs {
     pub(crate) wrap: Vec<String>,
     pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
-    pub(crate) files_per_group: Option<u32>,
     pub(crate) exclude_libs: ExcludeLibs,
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
@@ -119,7 +120,6 @@ pub struct ElfArgs {
 
     pub(crate) verbose_gc_stats: bool,
 
-    pub(crate) save_dir: SaveDir,
     pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
@@ -142,14 +142,9 @@ pub struct ElfArgs {
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
 
-    /// The number of actually available threads (considering jobserver)
-    pub(crate) available_threads: NonZeroUsize,
-
     pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     rpath_set: IndexSet<String>,
-
-    jobserver_client: Option<Client>,
 }
 
 #[derive(Debug)]
@@ -171,12 +166,6 @@ pub enum CounterKind {
     PageFaultsMajor,
     L1dRead,
     L1dMiss,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum CopyRelocations {
-    Allowed,
-    Disallowed(CopyRelocationsDisabledReason),
 }
 
 #[derive(Debug)]
@@ -261,72 +250,6 @@ pub(crate) enum FileWriteMode {
     UpdateInPlaceWithFallback,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone, Copy)]
-pub struct Modifiers {
-    /// Whether shared objects should only be linked if they're referenced.
-    pub(crate) as_needed: bool,
-
-    /// Whether we're currently allowed to link against shared libraries.
-    pub(crate) allow_shared: bool,
-
-    /// Whether object files in archives should be linked even if they do not contain symbols that
-    /// are referenced.
-    pub(crate) whole_archive: bool,
-
-    /// Whether archive semantics should be applied even for regular objects.
-    pub(crate) archive_semantics: bool,
-
-    /// Whether the file is known to be a temporary file that will be deleted when the linker
-    /// exits, e.g. an output file from a linker plugin. This doesn't affect linking, but is
-    /// stored in the layout file if written so that linker-diff knows not to error if the file
-    /// is missing.
-    pub(crate) temporary: bool,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Input {
-    pub(crate) spec: InputSpec,
-    /// A directory to search first. Only present when the input came from a linker script, in
-    /// which case this is the directory containing the linker script.
-    pub(crate) search_first: Option<PathBuf>,
-    pub(crate) modifiers: Modifiers,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) enum InputSpec {
-    /// Path (possibly just a filename) to the file.
-    File(Box<Path>),
-    /// Name of the library, without prefix and suffix.
-    Lib(Box<str>),
-    /// Name of the library, including prefix and suffix.
-    Search(Box<str>),
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) enum BSymbolicKind {
-    None,
-    All,
-    Functions,
-    NonWeakFunctions,
-    NonWeak,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) enum UnresolvedSymbols {
-    /// Report all unresolved symbols.
-    ReportAll,
-
-    /// Ignore unresolved symbols in shared libraries.
-    IgnoreInSharedLibs,
-
-    /// Ignore unresolved symbols in object files.
-    IgnoreInObjectFiles,
-
-    /// Ignore all unresolved symbols.
-    IgnoreAll,
-}
-
-pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
@@ -368,7 +291,7 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "C",
 ];
 
-const IGNORED_FLAGS: &[&str] = &[
+pub(super) const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
@@ -395,15 +318,12 @@ impl Default for ElfArgs {
     fn default() -> Self {
         ElfArgs {
             arch: default_target_arch(),
-            unrecognized_options: Vec::new(),
 
             lib_search_path: Vec::new(),
-            inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
             should_output_executable: true,
             dynamic_linker: None,
             time_phase_options: None,
-            num_threads: None,
             strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other
             // than being different, there doesn't seem to be any downside to doing
@@ -445,13 +365,11 @@ impl Default for ElfArgs {
             should_write_linker_identity: true,
             file_write_mode: None,
             build_id: BuildIdOption::None,
-            files_per_group: None,
             exclude_libs: ExcludeLibs::None,
             no_undefined: false,
             allow_shlib_undefined: false,
             version_mode: VersionMode::None,
             sysroot: None,
-            save_dir: Default::default(),
             dependency_file: None,
             demangle: true,
             undefined: Vec::new(),
@@ -466,8 +384,7 @@ impl Default for ElfArgs {
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
-            jobserver_client: None,
-            available_threads: NonZeroUsize::new(1).unwrap(),
+
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
@@ -482,74 +399,6 @@ impl Default for ElfArgs {
             plugin_args: Vec::new(),
         }
     }
-}
-
-// Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
-    input: F,
-) -> Result<ElfArgs> {
-    use crate::input_data::MAX_FILES_PER_GROUP;
-
-    // SAFETY: Should be called early before other descriptors are opened and
-    // so we open it before the arguments are parsed (can open a file).
-    let jobserver_client = unsafe { Client::from_env() };
-
-    let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
-        .ok()
-        .map(|s| s.parse())
-        .transpose()?;
-
-    if let Some(x) = files_per_group {
-        ensure!(
-            x <= MAX_FILES_PER_GROUP,
-            "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
-        );
-    }
-
-    let mut args = ElfArgs {
-        files_per_group,
-        jobserver_client,
-        ..Default::default()
-    };
-
-    args.save_dir = SaveDir::new(&input)?;
-
-    let mut input = input();
-
-    let mut modifier_stack = vec![Modifiers::default()];
-
-    if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
-        args.write_layout = true;
-        args.write_trace = true;
-    }
-
-    let arg_parser = setup_argument_parser();
-    while let Some(arg) = input.next() {
-        let arg = arg.as_ref();
-
-        arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
-    }
-
-    // Copy relocations are only permitted when building executables.
-    if !args.should_output_executable {
-        args.copy_relocations =
-            CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
-    }
-
-    if !args.rpath_set.is_empty() {
-        args.rpath = Some(take(&mut args.rpath_set).into_iter().join(":"));
-    }
-
-    if !args.unrecognized_options.is_empty() {
-        let options_list = args.unrecognized_options.join(", ");
-        bail!("unrecognized option(s): {}", options_list);
-    }
-
-    if !args.auxiliary.is_empty() && args.should_output_executable {
-        bail!("-f may not be used without -shared");
-    }
-
-    Ok(args)
 }
 
 const fn default_target_arch() -> Architecture {
@@ -573,14 +422,10 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
-    arguments_from_string(&contents)
-}
-
 impl ElfArgs {
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<ElfArgs> {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
+        input: F,
+    ) -> Result<Args<Self>> {
         timing_phase!("Parse args");
         parse(input)
     }
@@ -635,16 +480,6 @@ impl ElfArgs {
         }
     }
 
-    /// Adds a linker script to our outputs. Note, this is only called for scripts specified via
-    /// flags like -T. Where a linker script is just listed as an argument, this won't be called.
-    fn add_script(&mut self, path: &str) {
-        self.inputs.push(Input {
-            spec: InputSpec::File(Box::from(Path::new(path))),
-            search_first: None,
-            modifiers: Modifiers::default(),
-        });
-    }
-
     pub(crate) fn numeric_experiment(&self, exp: Experiment, default: u64) -> u64 {
         self.numeric_experiments
             .get(exp as usize)
@@ -678,610 +513,76 @@ fn parse_defsym_expression(s: &str) -> DefsymValue {
     }
 }
 
-impl Default for Modifiers {
-    fn default() -> Self {
-        Self {
-            as_needed: false,
-            allow_shared: true,
-            whole_archive: false,
-            archive_semantics: false,
-            temporary: false,
-        }
-    }
-}
+// Parse the supplied input arguments, which should not include the program name.
+pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
+    input: F,
+) -> Result<Args<ElfArgs>> {
+    use crate::input_data::MAX_FILES_PER_GROUP;
 
-/// Parses arguments from a string, handling quoting, escapes etc.
-/// All arguments must be surrounded by a white space.
-fn arguments_from_string(input: &str) -> Result<Vec<String>> {
-    const QUOTES: [char; 2] = ['\'', '"'];
+    // SAFETY: Should be called early before other descriptors are opened and
+    // so we open it before the arguments are parsed (can open a file).
+    let jobserver_client = unsafe { Client::from_env() };
 
-    let mut out = Vec::new();
-    let mut chars = input.chars();
-    let mut heap = None;
-    let mut quote = None;
-    let mut expect_whitespace = false;
+    let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
+        .ok()
+        .map(|s| s.parse())
+        .transpose()?;
 
-    loop {
-        let Some(mut ch) = chars.next() else {
-            if let Some(quote) = quote.take() {
-                bail!("Missing closing '{quote}'");
-            }
-            if let Some(arg) = heap.take() {
-                out.push(arg);
-            }
-            break;
-        };
-
+    if let Some(x) = files_per_group {
         ensure!(
-            !expect_whitespace || ch.is_whitespace(),
-            "Expected white space after quoted argument"
+            x <= MAX_FILES_PER_GROUP,
+            "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
         );
-        expect_whitespace = false;
-
-        if QUOTES.contains(&ch) {
-            if let Some(qchr) = quote {
-                if qchr == ch {
-                    // close the argument
-                    if let Some(arg) = heap.take() {
-                        out.push(arg);
-                    }
-                    quote = None;
-                    expect_whitespace = true;
-                } else {
-                    // accept the other quoting character as normal char
-                    heap.get_or_insert(String::new()).push(ch);
-                }
-            } else {
-                // beginning of a new argument
-                ensure!(heap.is_none(), "Missing opening quote '{ch}'");
-                quote = Some(ch);
-            }
-        } else if ch.is_whitespace() {
-            if quote.is_none() {
-                if let Some(arg) = heap.take() {
-                    out.push(arg);
-                }
-            } else {
-                heap.get_or_insert(String::new()).push(ch);
-            }
-        } else {
-            if ch == '\\' {
-                ch = chars.next().context("Invalid escape")?;
-            }
-            heap.get_or_insert(String::new()).push(ch);
-        }
     }
 
-    Ok(out)
+    let mut args: Args<ElfArgs> = Args {
+        files_per_group,
+        jobserver_client,
+        ..Default::default()
+    };
+
+    args.save_dir = SaveDir::new(&input)?;
+
+    let mut input = input();
+
+    let mut modifier_stack = vec![Modifiers::default()];
+
+    if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+        args.write_layout = true;
+        args.write_trace = true;
+    }
+
+    let arg_parser = setup_argument_parser();
+    while let Some(arg) = input.next() {
+        let arg = arg.as_ref();
+
+        arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
+    }
+
+    // Copy relocations are only permitted when building executables.
+    if !args.should_output_executable {
+        args.copy_relocations =
+            CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
+    }
+
+    if !args.rpath_set.is_empty() {
+        args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
+    }
+
+    if !args.unrecognized_options.is_empty() {
+        let options_list = args.unrecognized_options.join(", ");
+        bail!("unrecognized option(s): {}", options_list);
+    }
+
+    if !args.auxiliary.is_empty() && args.should_output_executable {
+        bail!("-f may not be used without -shared");
+    }
+
+    Ok(args)
 }
 
-fn warn_unsupported(opt: &str) -> Result {
-    match std::env::var(WILD_UNSUPPORTED_ENV)
-        .unwrap_or_default()
-        .as_str()
-    {
-        "warn" | "" => crate::error::warning(&format!("{opt} is not yet supported")),
-        "ignore" => {}
-        "error" => bail!("{opt} is not yet supported"),
-        other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
-    }
-    Ok(())
-}
-
-struct ArgumentParser {
-    options: HashMap<&'static str, OptionHandler>,
-    short_options: HashMap<&'static str, OptionHandler>, // Short option lookup
-    prefix_options: HashMap<&'static str, PrefixOptionHandler>, // For options like -L, -l, etc.
-}
-
-#[derive(Clone)]
-struct OptionHandler {
-    help_text: &'static str,
-    handler: OptionHandlerFn,
-    short_names: Vec<&'static str>,
-}
-
-struct PrefixOptionHandler {
-    help_text: &'static str,
-    handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>,
-    sub_options: HashMap<&'static str, SubOption>,
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Clone, Copy)]
-enum OptionHandlerFn {
-    NoParam(fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>),
-    WithParam(fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>),
-    OptionalParam(fn(&mut ElfArgs, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
-}
-
-impl OptionHandlerFn {
-    fn help_suffix_long(&self) -> &'static str {
-        match self {
-            OptionHandlerFn::NoParam(_) => "",
-            OptionHandlerFn::WithParam(_) => "=<VALUE>",
-            OptionHandlerFn::OptionalParam(_) => "[=<VALUE>]",
-        }
-    }
-
-    fn help_suffix_short(&self) -> &'static str {
-        match self {
-            OptionHandlerFn::NoParam(_) => "",
-            OptionHandlerFn::WithParam(_) => " <VALUE>",
-            OptionHandlerFn::OptionalParam(_) => " [<VALUE>]",
-        }
-    }
-}
-
-struct OptionDeclaration<'a, T> {
-    parser: &'a mut ArgumentParser,
-    long_names: Vec<&'static str>,
-    short_names: Vec<&'static str>,
-    prefixes: Vec<&'static str>,
-    sub_options: HashMap<&'static str, SubOption>,
-    help_text: &'static str,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-struct NoParam;
-struct WithParam;
-struct WithOptionalParam;
-
-#[derive(Clone, Copy)]
-enum SubOptionHandler {
-    /// Handler without value parameter (exact match)
-    NoValue(fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>),
-    /// Handler with value parameter (prefix match)
-    WithValue(fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>),
-}
-
-#[derive(Clone, Copy)]
-struct SubOption {
-    help: &'static str,
-    handler: SubOptionHandler,
-}
-
-impl SubOption {
-    fn with_value(&self) -> bool {
-        matches!(self.handler, SubOptionHandler::WithValue(_))
-    }
-}
-
-impl Default for ArgumentParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ArgumentParser {
-    #[must_use]
-    fn new() -> Self {
-        Self {
-            options: HashMap::new(),
-            short_options: HashMap::new(),
-            prefix_options: HashMap::new(),
-        }
-    }
-
-    fn declare(&mut self) -> OptionDeclaration<'_, NoParam> {
-        OptionDeclaration {
-            parser: self,
-            long_names: Vec::new(),
-            short_names: Vec::new(),
-            prefixes: Vec::new(),
-            sub_options: HashMap::new(),
-            help_text: "",
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    fn declare_with_param(&mut self) -> OptionDeclaration<'_, WithParam> {
-        OptionDeclaration {
-            parser: self,
-            long_names: Vec::new(),
-            short_names: Vec::new(),
-            prefixes: Vec::new(),
-            sub_options: HashMap::new(),
-            help_text: "",
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, WithOptionalParam> {
-        OptionDeclaration {
-            parser: self,
-            long_names: Vec::new(),
-            short_names: Vec::new(),
-            prefixes: Vec::new(),
-            sub_options: HashMap::new(),
-            help_text: "",
-            _phantom: std::marker::PhantomData,
-        }
-    }
-
-    fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
-        &self,
-        args: &mut ElfArgs,
-        modifier_stack: &mut Vec<Modifiers>,
-        arg: &str,
-        input: &mut I,
-    ) -> Result<()> {
-        // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
-        // Handle `@file`option (recursively) - merging in the options contained in the file
-        if let Some(path) = arg.strip_prefix('@') {
-            let file_args = read_args_from_file(Path::new(path))?;
-            let mut file_arg_iter = file_args.iter();
-            while let Some(file_arg) = file_arg_iter.next() {
-                self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
-            }
-            return Ok(());
-        }
-
-        if let Some(stripped) = strip_option(arg) {
-            // Check for option with '=' syntax
-            if let Some(eq_pos) = stripped.find('=') {
-                let option_name = &stripped[..eq_pos];
-                let value = &stripped[eq_pos + 1..];
-
-                if let Some(handler) = self.options.get(option_name) {
-                    match &handler.handler {
-                        OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
-                        OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
-                        OptionHandlerFn::NoParam(_) => return Ok(()),
-                    }
-                    return Ok(());
-                }
-            } else {
-                if stripped == "build-id"
-                    && let Some(handler) = self.options.get(stripped)
-                    && let OptionHandlerFn::WithParam(f) = &handler.handler
-                {
-                    f(args, modifier_stack, "fast")?;
-                    return Ok(());
-                }
-
-                if let Some(handler) = self.options.get(stripped) {
-                    match &handler.handler {
-                        OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
-                        OptionHandlerFn::WithParam(f) => {
-                            let next_arg =
-                                input.next().context(format!("Missing argument to {arg}"))?;
-                            f(args, modifier_stack, next_arg.as_ref())?;
-                        }
-                        OptionHandlerFn::OptionalParam(f) => {
-                            f(args, modifier_stack, None)?;
-                        }
-                    }
-                    return Ok(());
-                }
-            }
-        }
-
-        if arg.starts_with('-') && !arg.starts_with("--") && arg.len() > 1 {
-            let option_name = &arg[1..];
-            if let Some(handler) = self.short_options.get(option_name) {
-                match &handler.handler {
-                    OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
-                    OptionHandlerFn::WithParam(f) => {
-                        let next_arg =
-                            input.next().context(format!("Missing argument to {arg}"))?;
-                        f(args, modifier_stack, next_arg.as_ref())?;
-                    }
-                    OptionHandlerFn::OptionalParam(f) => {
-                        f(args, modifier_stack, None)?;
-                    }
-                }
-                return Ok(());
-            }
-        }
-
-        // Prefix options. These should be handled after processing long and short options,
-        // because some options (like `-hashstyle=gnu`) can be misinterpreted as prefix options.
-        for (prefix, handler) in &self.prefix_options {
-            if let Some(rest) = arg.strip_prefix(&format!("-{prefix}")) {
-                let value = if rest.is_empty() {
-                    let next_arg = input
-                        .next()
-                        .context(format!("Missing argument to -{prefix}"))?;
-                    next_arg.as_ref().to_owned()
-                } else {
-                    rest.to_owned()
-                };
-
-                if let Some((key, param_value)) = value.split_once('=') {
-                    // Value has '=', look up key with trailing '='
-                    if let Some(sub) = handler.sub_options.get(format!("{key}=").as_str()) {
-                        match sub.handler {
-                            SubOptionHandler::NoValue(_) => {
-                                (handler.handler)(args, modifier_stack, &value)?;
-                            }
-                            SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
-                        }
-                    } else {
-                        // Fall back to the main handler
-                        (handler.handler)(args, modifier_stack, &value)?;
-                    }
-                } else {
-                    // No '=' in value, look up exact match
-                    if let Some(sub) = handler.sub_options.get(value.as_str()) {
-                        match sub.handler {
-                            SubOptionHandler::NoValue(f) => f(args, modifier_stack)?,
-                            SubOptionHandler::WithValue(_) => {
-                                bail!("Option -{prefix} {value} requires a value");
-                            }
-                        }
-                    } else {
-                        // Fall back to the main handler
-                        (handler.handler)(args, modifier_stack, &value)?;
-                    }
-                }
-                return Ok(());
-            }
-        }
-
-        if arg.starts_with('-') {
-            if let Some(stripped) = strip_option(arg)
-                && IGNORED_FLAGS.contains(&stripped)
-            {
-                warn_unsupported(arg)?;
-                return Ok(());
-            }
-
-            args.unrecognized_options.push(arg.to_owned());
-            return Ok(());
-        }
-
-        args.save_dir.handle_file(arg);
-        args.inputs.push(Input {
-            spec: InputSpec::File(Box::from(Path::new(arg))),
-            search_first: None,
-            modifiers: *modifier_stack.last().unwrap(),
-        });
-
-        Ok(())
-    }
-
-    #[must_use]
-    fn generate_help(&self) -> String {
-        let mut help = String::new();
-        help.push_str("USAGE:\n    wild [OPTIONS] [FILES...]\n\nOPTIONS:\n");
-
-        let mut prefix_options: Vec<_> = self.prefix_options.iter().collect();
-        prefix_options.sort_by_key(|(prefix, _)| *prefix);
-
-        // TODO: This is ad-hoc
-        help.push_str(&format!(
-            "    {:<31} Read options from a file\n",
-            "@<VALUE>",
-        ));
-
-        let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
-        let mut processed_short_options: HashSet<&str> = HashSet::new();
-
-        // Collect all long options and their associated short options
-        for (long_name, handler) in &self.options {
-            if !handler.help_text.is_empty() {
-                let long_suffix = handler.handler.help_suffix_long();
-                let mut option_names = vec![format!("--{long_name}{long_suffix}")];
-
-                // Add associated short options
-                let short_suffix = handler.handler.help_suffix_short();
-                for short_char in &handler.short_names {
-                    option_names.push(format!("-{short_char}{short_suffix}"));
-                }
-
-                help_to_options
-                    .entry(handler.help_text)
-                    .or_default()
-                    .extend(option_names);
-            }
-
-            // Mark short options of help-less handlers as processed
-            for short_name in &handler.short_names {
-                processed_short_options.insert(short_name);
-            }
-        }
-
-        for (prefix, handler) in prefix_options {
-            if !processed_short_options.contains(prefix) && !handler.help_text.is_empty() {
-                help.push_str(&format!(
-                    "    -{:<30} {}\n",
-                    format!("{prefix} <VALUE>"),
-                    handler.help_text
-                ));
-
-                // Add sub-options if they exist
-                let mut sub_options: Vec<_> = handler.sub_options.iter().collect();
-                sub_options.sort_by_key(|(name, _)| *name);
-
-                for (sub_name, sub) in sub_options {
-                    let display_name = if sub.with_value() && sub_name.ends_with('=') {
-                        // sub_name ends with '=' (e.g., "max-page-size="), so add <VALUE>
-                        format!("{sub_name}<VALUE>")
-                    } else {
-                        sub_name.to_string()
-                    };
-                    help.push_str(&format!(
-                        "      -{prefix} {display_name:<30} {sub_help}\n",
-                        sub_help = sub.help
-                    ));
-                }
-            }
-        }
-
-        // Add short-only options
-        for (short_char, handler) in &self.short_options {
-            if !processed_short_options.contains(short_char) && !handler.help_text.is_empty() {
-                let short_suffix = handler.handler.help_suffix_short();
-                help_to_options
-                    .entry(handler.help_text)
-                    .or_default()
-                    .push(format!("-{short_char}{short_suffix}"));
-            }
-        }
-
-        let mut sorted_help_groups: Vec<_> = help_to_options.into_iter().collect();
-        sorted_help_groups.sort_by_key(|(_, option_names)| {
-            option_names.iter().min().unwrap_or(&String::new()).clone()
-        });
-
-        for (help_text, mut option_names) in sorted_help_groups {
-            option_names.sort_by(|a, b| {
-                let a_is_short = a.len() == 2 && a.starts_with('-');
-                let b_is_short = b.len() == 2 && b.starts_with('-');
-                match (a_is_short, b_is_short) {
-                    (true, false) => std::cmp::Ordering::Less, // short options first
-                    (false, true) => std::cmp::Ordering::Greater, // long options after
-                    _ => a.cmp(b),                             // same type, alphabetical
-                }
-            });
-
-            let option_names_str = option_names.join(", ");
-            help.push_str(&format!("    {option_names_str:<30} {help_text}\n"));
-        }
-
-        help
-    }
-}
-
-impl<'a, T> OptionDeclaration<'a, T> {
-    #[must_use]
-    fn long(mut self, name: &'static str) -> Self {
-        self.long_names.push(name);
-        self
-    }
-
-    #[must_use]
-    fn short(mut self, option: &'static str) -> Self {
-        self.short_names.push(option);
-        self
-    }
-
-    #[must_use]
-    fn help(mut self, text: &'static str) -> Self {
-        self.help_text = text;
-        self
-    }
-
-    fn prefix(mut self, prefix: &'static str) -> Self {
-        self.prefixes.push(prefix);
-        self
-    }
-
-    #[must_use]
-    fn sub_option(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        handler: fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>,
-    ) -> Self {
-        self.sub_options.insert(
-            name,
-            SubOption {
-                help,
-                handler: SubOptionHandler::NoValue(handler),
-            },
-        );
-        self
-    }
-
-    #[must_use]
-    fn sub_option_with_value(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>,
-    ) -> Self {
-        self.sub_options.insert(
-            name,
-            SubOption {
-                help,
-                handler: SubOptionHandler::WithValue(handler),
-            },
-        );
-        self
-    }
-}
-
-impl<'a> OptionDeclaration<'a, NoParam> {
-    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>) {
-        let option_handler = OptionHandler {
-            help_text: self.help_text,
-            handler: OptionHandlerFn::NoParam(handler),
-            short_names: self.short_names.clone(),
-        };
-
-        for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
-        }
-
-        for option in self.short_names {
-            self.parser
-                .short_options
-                .insert(option, option_handler.clone());
-        }
-    }
-}
-
-impl<'a> OptionDeclaration<'a, WithParam> {
-    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>) {
-        let mut short_names = self.short_names.clone();
-        short_names.extend_from_slice(&self.prefixes);
-
-        let option_handler = OptionHandler {
-            help_text: self.help_text,
-            handler: OptionHandlerFn::WithParam(handler),
-            short_names,
-        };
-
-        for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
-        }
-
-        for option in self.short_names {
-            self.parser
-                .short_options
-                .insert(option, option_handler.clone());
-        }
-
-        for prefix in self.prefixes {
-            let prefix_handler = PrefixOptionHandler {
-                help_text: self.help_text,
-                sub_options: self.sub_options.clone(),
-                handler,
-            };
-
-            self.parser.prefix_options.insert(prefix, prefix_handler);
-        }
-    }
-}
-
-impl<'a> OptionDeclaration<'a, WithOptionalParam> {
-    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
-        let option_handler = OptionHandler {
-            help_text: self.help_text,
-            handler: OptionHandlerFn::OptionalParam(handler),
-            short_names: self.short_names.clone(),
-        };
-
-        for name in self.long_names {
-            self.parser.options.insert(name, option_handler.clone());
-        }
-
-        for option in self.short_names {
-            self.parser
-                .short_options
-                .insert(option, option_handler.clone());
-        }
-    }
-}
-
-fn strip_option(arg: &str) -> Option<&str> {
-    arg.strip_prefix("--").or(arg.strip_prefix('-'))
-}
-
-fn setup_argument_parser() -> ArgumentParser {
-    let mut parser = ArgumentParser::new();
+fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
+    let mut parser = ArgumentParser::<ElfArgs>::new();
 
     parser
         .declare_with_param()
@@ -2549,7 +1850,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
 }
 
-fn add_silently_ignored_flags(parser: &mut ArgumentParser) {
+fn add_silently_ignored_flags(parser: &mut ArgumentParser<ElfArgs>) {
     for flag in SILENTLY_IGNORED_FLAGS {
         let mut declaration = parser.declare();
         declaration = declaration.long(flag);
@@ -2562,7 +1863,7 @@ fn add_silently_ignored_flags(parser: &mut ArgumentParser) {
     }
 }
 
-fn add_default_flags(parser: &mut ArgumentParser) {
+fn add_default_flags(parser: &mut ArgumentParser<ElfArgs>) {
     for flag in DEFAULT_FLAGS {
         let mut declaration = parser.declare();
         declaration = declaration.long(flag);
@@ -2598,26 +1899,9 @@ impl FromStr for CounterKind {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum CopyRelocationsDisabledReason {
-    Flag,
-    SharedObject,
-}
-
-impl Display for CopyRelocationsDisabledReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Reason should make sense after the word "because".
-        let reason = match self {
-            CopyRelocationsDisabledReason::Flag => "the flag -z nocopyreloc was supplied",
-            CopyRelocationsDisabledReason::SharedObject => "output is a shared object",
-        };
-
-        Display::fmt(&reason, f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use super::ElfArgs;
     use super::SILENTLY_IGNORED_FLAGS;
     use super::VersionMode;
     use crate::Args;
@@ -2766,7 +2050,7 @@ mod tests {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
     }
 
-    fn input1_assertions(args: &Args) {
+    fn input1_assertions(args: &Args<ElfArgs>) {
         assert_eq!(
             args.inputs
                 .iter()
@@ -2805,7 +2089,7 @@ mod tests {
         );
     }
 
-    fn inline_and_file_options_assertions(args: &Args) {
+    fn inline_and_file_options_assertions(args: &Args<ElfArgs>) {
         assert_contains(&args.lib_search_path, "/lib");
     }
 
@@ -2886,7 +2170,7 @@ mod tests {
 
     #[test]
     fn test_arguments_from_string() {
-        use super::arguments_from_string;
+        use crate::args::arguments_from_string;
 
         assert!(arguments_from_string("").unwrap().is_empty());
         assert!(arguments_from_string("''").unwrap().is_empty());

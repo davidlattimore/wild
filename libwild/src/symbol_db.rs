@@ -1726,20 +1726,20 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
                 self.output_kind.is_executable()
                 || (self.archive_semantics && self.args.exclude_libs.should_exclude(self.lib_name))
                 || (
-                    self.args.b_symbolic == args::elf::BSymbolicKind::All
+                    self.args.b_symbolic == args::BSymbolicKind::All
                     // `-Bsymbolic-functions`
                     || (
-                        self.args.b_symbolic == args::elf::BSymbolicKind::Functions
+                        self.args.b_symbolic == args::BSymbolicKind::Functions
                         && sym.is_func()
                     )
                     // `-Bsymbolic-non-weak`
                     || (
-                        self.args.b_symbolic == args::elf::BSymbolicKind::NonWeak
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeak
                         && !sym.is_weak()
                     )
                     // `-Bsymbolic-non-weak-functions`
                     || (
-                        self.args.b_symbolic == args::elf::BSymbolicKind::NonWeakFunctions
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
                         && (sym.is_func()
                         && !sym.is_weak())
                     )
