@@ -50,6 +50,7 @@ pub(crate) struct ParsedInputObject<'data, P: Platform> {
 pub(crate) struct ProcessedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) assertions: Vec<crate::linker_script::AssertCommand<'data>>,
 }
 
 #[derive(Debug)]

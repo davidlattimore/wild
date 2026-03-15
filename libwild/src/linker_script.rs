@@ -120,7 +120,7 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
     pub(crate) hidden: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct AssertCommand<'a> {
     pub(crate) expression: Expression<'a>,
     pub(crate) message: &'a [u8],
@@ -141,7 +141,7 @@ pub(crate) struct AssertCommand<'a> {
 /// - Logical operators (&&, ||)
 /// - Ternary operator (? :)
 /// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
     Number(u64),
