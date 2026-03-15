@@ -2,8 +2,9 @@
 
 use crate::Args;
 use crate::archive::ArchiveEntry;
+use crate::args::elf::ElfArgs;
 use crate::archive::ArchiveIterator;
-use crate::args::Modifiers;
+use crate::args::elf::Modifiers;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -48,7 +49,7 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self, input_data: &FileLoader, parsed_args: &Args) -> Result {
+    pub(crate) fn finish(&self, input_data: &FileLoader, parsed_args: &Args<ElfArgs>) -> Result {
         if let Some(state) = self.0.as_ref() {
             let mut files_to_copy = state.files_to_copy.clone();
             files_to_copy.extend(
@@ -132,7 +133,7 @@ impl SaveDirState {
     fn finish<'a, I: Iterator<Item = &'a PathBuf>>(
         &self,
         filenames: I,
-        parsed_args: &Args,
+        parsed_args: &Args<ElfArgs>,
     ) -> Result {
         for filename in filenames {
             self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
@@ -148,7 +149,7 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn write_args_file(&self, run_file: &Path, args: &Args) -> Result {
+    fn write_args_file(&self, run_file: &Path, args: &Args<ElfArgs>) -> Result {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
@@ -178,7 +179,7 @@ impl SaveDirState {
 
         while let Some(arg) = args.next() {
             if let Some(args_path) = arg.strip_prefix("@") {
-                let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
+                let args_from_file = crate::args::elf::read_args_from_file(Path::new(args_path))?;
                 self.write_args(&args_from_file, out, original_output_file)?;
                 continue;
             }
@@ -229,7 +230,7 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path, parsed_args: &Args) -> Result {
+    fn copy_file(&self, source_path: &Path, parsed_args: &Args<ElfArgs>) -> Result {
         let dest_path = self.output_path(source_path);
 
         if dest_path.exists() || !source_path.exists() {
@@ -325,7 +326,7 @@ impl SaveDirState {
     }
 
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args) -> Result {
+    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args<ElfArgs>) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
 
@@ -394,7 +395,7 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     let mut absolute_paths = Vec::new();
     script.foreach_input(Modifiers::default(), |input| {
-        if let crate::args::InputSpec::File(path) = input.spec
+        if let crate::args::elf::InputSpec::File(path) = input.spec
             && path.is_absolute()
         {
             absolute_paths.push(path);
@@ -490,7 +491,7 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 
 /// Saves certain environment variables into the script. We only propagate environment variables
 /// that are known to be used for communication between the compiler and say linker plugins.
-fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &Args) -> Result {
+fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &Args<ElfArgs>) -> Result {
     for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
         if let Ok(mut value) = std::env::var(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so

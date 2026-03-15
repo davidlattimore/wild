@@ -5,7 +5,8 @@ use self::elf::get_page_mask;
 use crate::OutputKind;
 use crate::alignment;
 use crate::args::Args;
-use crate::args::BuildIdOption;
+use crate::args::elf::BuildIdOption;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -4228,7 +4229,7 @@ struct DynamicEntryWriter {
 }
 
 struct DynamicEntryInputs<'layout> {
-    args: &'layout Args,
+    args: &'layout Args<ElfArgs>,
     has_static_tls: bool,
     has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,

@@ -1,5 +1,6 @@
 //! An elf-specific extension of `super::Args` and parsing implementation to match gnu style linkers.
 
+use super::ActivatedArgs;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
@@ -14,7 +15,6 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 use indexmap::IndexSet;
 use itertools::Itertools;
-use jobserver::Acquired;
 use jobserver::Client;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
@@ -53,7 +53,7 @@ pub(crate) enum DefsymValue {
 }
 
 #[derive(Debug)]
-pub struct Args {
+pub struct ElfArgs {
     pub(crate) unrecognized_options: Vec<String>,
 
     pub(crate) arch: Architecture,
@@ -177,13 +177,6 @@ pub enum CounterKind {
 pub(crate) enum CopyRelocations {
     Allowed,
     Disallowed(CopyRelocationsDisabledReason),
-}
-
-/// Represents a command-line argument that specifies the number of threads to use,
-/// triggering activation of the thread pool.
-pub struct ActivatedArgs {
-    pub args: Args,
-    _jobserver_tokens: Vec<Acquired>,
 }
 
 #[derive(Debug)]
@@ -398,9 +391,9 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "EL", // little endian
 ];
 
-impl Default for Args {
+impl Default for ElfArgs {
     fn default() -> Self {
-        Args {
+        ElfArgs {
             arch: default_target_arch(),
             unrecognized_options: Vec::new(),
 
@@ -492,7 +485,9 @@ impl Default for Args {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
+    input: F,
+) -> Result<ElfArgs> {
     use crate::input_data::MAX_FILES_PER_GROUP;
 
     // SAFETY: Should be called early before other descriptors are opened and
@@ -511,7 +506,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         );
     }
 
-    let mut args = Args {
+    let mut args = ElfArgs {
         files_per_group,
         jobserver_client,
         ..Default::default()
@@ -584,8 +579,8 @@ pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     arguments_from_string(&contents)
 }
 
-impl Args {
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+impl ElfArgs {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<ElfArgs> {
         timing_phase!("Parse args");
         parse(input)
     }
@@ -648,38 +643,6 @@ impl Args {
             search_first: None,
             modifiers: Modifiers::default(),
         });
-    }
-
-    /// Sets up the thread pool, using the explicit number of threads if specified,
-    /// or falling back to the jobserver protocol if available.
-    ///
-    /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
-    pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
-        timing_phase!("Activate thread pool");
-
-        let mut tokens = Vec::new();
-        self.available_threads = self.num_threads.unwrap_or_else(|| {
-            if let Some(client) = &self.jobserver_client {
-                while let Ok(Some(acquired)) = client.try_acquire() {
-                    tokens.push(acquired);
-                }
-                tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
-                // Our parent "holds" one jobserver token, add it.
-                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
-            } else {
-                std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
-            }
-        });
-
-        // The pool might be already initialized, suppress the error intentionally.
-        let _ = ThreadPoolBuilder::new()
-            .num_threads(self.available_threads.get())
-            .build_global();
-
-        Ok(ActivatedArgs {
-            args: self,
-            _jobserver_tokens: tokens,
-        })
     }
 
     pub(crate) fn numeric_experiment(&self, exp: Experiment, default: u64) -> u64 {
@@ -820,16 +783,16 @@ struct OptionHandler {
 
 struct PrefixOptionHandler {
     help_text: &'static str,
-    handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+    handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>,
     sub_options: HashMap<&'static str, SubOption>,
 }
 
 #[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy)]
 enum OptionHandlerFn {
-    NoParam(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
-    WithParam(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
-    OptionalParam(fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
+    NoParam(fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>),
+    WithParam(fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>),
+    OptionalParam(fn(&mut ElfArgs, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
 }
 
 impl OptionHandlerFn {
@@ -867,9 +830,9 @@ struct WithOptionalParam;
 #[derive(Clone, Copy)]
 enum SubOptionHandler {
     /// Handler without value parameter (exact match)
-    NoValue(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
+    NoValue(fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>),
     /// Handler with value parameter (prefix match)
-    WithValue(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
+    WithValue(fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>),
 }
 
 #[derive(Clone, Copy)]
@@ -938,7 +901,7 @@ impl ArgumentParser {
 
     fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
-        args: &mut Args,
+        args: &mut ElfArgs,
         modifier_stack: &mut Vec<Modifiers>,
         arg: &str,
         input: &mut I,
@@ -1210,7 +1173,7 @@ impl<'a, T> OptionDeclaration<'a, T> {
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>,
+        handler: fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -1227,7 +1190,7 @@ impl<'a, T> OptionDeclaration<'a, T> {
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+        handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -1241,7 +1204,7 @@ impl<'a, T> OptionDeclaration<'a, T> {
 }
 
 impl<'a> OptionDeclaration<'a, NoParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>) {
+    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::NoParam(handler),
@@ -1261,7 +1224,7 @@ impl<'a> OptionDeclaration<'a, NoParam> {
 }
 
 impl<'a> OptionDeclaration<'a, WithParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
+    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, &str) -> Result<()>) {
         let mut short_names = self.short_names.clone();
         short_names.extend_from_slice(&self.prefixes);
 
@@ -1294,7 +1257,7 @@ impl<'a> OptionDeclaration<'a, WithParam> {
 }
 
 impl<'a> OptionDeclaration<'a, WithOptionalParam> {
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
+    fn execute(self, handler: fn(&mut ElfArgs, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::OptionalParam(handler),

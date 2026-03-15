@@ -5,6 +5,7 @@ use crate::InputLinkerScript;
 use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::elf::RawSymbolName;
 use crate::error;
@@ -71,7 +72,7 @@ use symbolic_demangle::demangle;
 
 #[derive(Debug)]
 pub struct SymbolDb<'data, P: Platform> {
-    pub(crate) args: &'data Args,
+    pub(crate) args: &'data Args<ElfArgs>,
 
     pub(crate) groups: Vec<Group<'data, P>>,
 
@@ -321,7 +322,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     pub(crate) fn new(
-        args: &'data Args,
+        args: &'data Args<ElfArgs>,
         output_kind: OutputKind,
         auxiliary: &AuxiliaryFiles<'data>,
         herd: &'data bumpalo_herd::Herd,
@@ -1388,7 +1389,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 fn read_symbols<'data, P: Platform>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, P>],
-    args: &Args,
+    args: &Args<ElfArgs>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
@@ -1416,7 +1417,7 @@ fn read_symbols_for_group<'data, P: Platform>(
     version_script: &VersionScript,
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
-    args: &Args,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
     verbose_timing_phase!(
@@ -1553,7 +1554,7 @@ fn load_symbols_from_file<'data, P: Platform>(
     version_script: &VersionScript,
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
-    args: &Args,
+    args: &Args<ElfArgs>,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
@@ -1680,7 +1681,7 @@ trait SymbolLoader<'data, P: Platform> {
 
 struct RegularObjectSymbolLoader<'a, 'data, P: Platform> {
     object: &'a P::File<'data>,
-    args: &'a Args,
+    args: &'a Args<ElfArgs>,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],
@@ -1725,20 +1726,20 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
                 self.output_kind.is_executable()
                 || (self.archive_semantics && self.args.exclude_libs.should_exclude(self.lib_name))
                 || (
-                    self.args.b_symbolic == args::BSymbolicKind::All
+                    self.args.b_symbolic == args::elf::BSymbolicKind::All
                     // `-Bsymbolic-functions`
                     || (
-                        self.args.b_symbolic == args::BSymbolicKind::Functions
+                        self.args.b_symbolic == args::elf::BSymbolicKind::Functions
                         && sym.is_func()
                     )
                     // `-Bsymbolic-non-weak`
                     || (
-                        self.args.b_symbolic == args::BSymbolicKind::NonWeak
+                        self.args.b_symbolic == args::elf::BSymbolicKind::NonWeak
                         && !sym.is_weak()
                     )
                     // `-Bsymbolic-non-weak-functions`
                     || (
-                        self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+                        self.args.b_symbolic == args::elf::BSymbolicKind::NonWeakFunctions
                         && (sym.is_func()
                         && !sym.is_weak())
                     )
@@ -2064,7 +2065,7 @@ impl<'data> PendingVersionedSymbol<'data> {
 }
 
 /// Decides how many buckets we should use for symbol names.
-fn num_symbol_hash_buckets(args: &Args) -> usize {
+fn num_symbol_hash_buckets(args: &Args<ElfArgs>) -> usize {
     args.available_threads.get()
 }
 

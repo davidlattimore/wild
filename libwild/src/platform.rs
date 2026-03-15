@@ -1,5 +1,6 @@
 use crate::Args;
 use crate::OutputKind;
+use crate::args::elf::ElfArgs;
 use crate::Result;
 use crate::bail;
 use crate::grouping::Group;
@@ -205,7 +206,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
 
     /// Implementations can force certain sections to be kept. Only needs to be done for sections
     /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args);
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<ElfArgs>);
 
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
@@ -223,7 +224,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
 
     fn pre_finalise_sizes_prelude<'data>(
         common: &mut layout::CommonGroupState<'data, Self>,
-        args: &Args,
+        args: &Args<ElfArgs>,
     );
 
     fn finalise_object_sizes<'data>(
@@ -293,7 +294,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args,
+        args: &Args<ElfArgs>,
     );
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
@@ -310,7 +311,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>>;
 
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
-        args: &Args,
+        args: &Args<ElfArgs>,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> Result<Self::LayoutExt>
@@ -339,7 +340,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     ) -> Result;
 
     fn new_epilogue_layout(
-        args: &Args,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayoutExt;
@@ -393,7 +394,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
     /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self>;
+    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self>;
 
     fn is_dynamic(&self) -> bool;
 

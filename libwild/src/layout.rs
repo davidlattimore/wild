@@ -6,7 +6,8 @@ use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
-use crate::args::Strip;
+use crate::args::elf::Strip;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
@@ -1376,7 +1377,7 @@ impl<'data, P: Platform> Layout<'data, P> {
         i
     }
 
-    pub(crate) fn args(&self) -> &'data Args {
+    pub(crate) fn args(&self) -> &'data Args<ElfArgs> {
         self.symbol_db.args
     }
 
@@ -1657,7 +1658,7 @@ fn compute_segment_layout<P: Platform>(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     header_info: &HeaderInfo,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -2564,7 +2565,7 @@ impl<'data, P: Platform> std::fmt::Display for GroupLayout<'data, P> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::FILES_PER_GROUP_ENV
+                crate::args::elf::FILES_PER_GROUP_ENV
             )
         }
     }
@@ -2579,7 +2580,7 @@ impl<'data, P: Platform> std::fmt::Display for GroupState<'data, P> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::FILES_PER_GROUP_ENV
+                crate::args::elf::FILES_PER_GROUP_ENV
             )
         }
     }
@@ -2730,10 +2731,10 @@ pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
             } else if !flags.is_absolute() {
                 match args.copy_relocations {
-                    crate::args::CopyRelocations::Allowed => {
+                    crate::args::elf::CopyRelocations::Allowed => {
                         flags_to_add |= ValueFlags::COPY_RELOCATION;
                     }
-                    crate::args::CopyRelocations::Disallowed(reason) => {
+                    crate::args::elf::CopyRelocations::Disallowed(reason) => {
                         // We don't at present support text relocations, so if we can't apply a copy
                         // relocation, we error instead.
                         bail!(
@@ -3045,7 +3046,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         uses_tlsld: &AtomicBool,
-        args: &Args,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
@@ -3555,7 +3556,7 @@ fn should_emit_undefined_error<P: Platform>(
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
-    args: &Args,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
 ) -> bool {
     if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
@@ -3566,8 +3567,8 @@ fn should_emit_undefined_error<P: Platform>(
         sym_file_id == sym_def_file_id && symbol.is_undefined() && flags.is_absolute();
 
     match args.unresolved_symbols {
-        crate::args::UnresolvedSymbols::IgnoreAll
-        | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
+        crate::args::elf::UnresolvedSymbols::IgnoreAll
+        | crate::args::elf::UnresolvedSymbols::IgnoreInObjectFiles => false,
         _ => is_symbol_undefined,
     }
 }
@@ -3628,7 +3629,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
 
 impl<'data, P: Platform> EpilogueLayoutState<P> {
     fn new(
-        args: &Args,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> Self {
@@ -5026,7 +5027,7 @@ fn layout_section_parts<P: Platform>(
     output_sections: &OutputSections<P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments = compute_segment_alignments::<P>(
         sizes,
@@ -5148,7 +5149,7 @@ fn compute_segment_alignments<P: Platform>(
     sizes: &OutputSectionPartMap<u64>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args,
+    args: &Args<ElfArgs>,
     output_sections: &OutputSections<P>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
@@ -5238,8 +5239,8 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
                     if !symbol.is_weak() {
                         let should_report = !matches!(
                             args.unresolved_symbols,
-                            crate::args::UnresolvedSymbols::IgnoreAll
-                                | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
+                            crate::args::elf::UnresolvedSymbols::IgnoreAll
+                                | crate::args::elf::UnresolvedSymbols::IgnoreInSharedLibs
                         );
 
                         if should_report {
@@ -5675,7 +5676,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
     let (output_order, program_segments) = output_sections.output_order();
-    let args = Args::default();
+    let args = Args::<ElfArgs>::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts::<Elf>(
