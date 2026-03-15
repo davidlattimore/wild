@@ -3857,6 +3857,42 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
                     format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
                 })?;
         }
+    } else if sym.is_common(LittleEndian) {
+        let symbol_id = sym_def.symbol_id;
+        let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+            format!(
+                "Tried to write dynamic symbol definition without a resolution: {}",
+                layout.symbol_debug(symbol_id)
+            )
+        })?;
+
+        let mut sym_value = resolution.value();
+
+        // As common symbols are denoted by setting shndx=SHN_COMMON which is a special section,
+        // we need to put them manually into BSS/TBSS sections depending on whether they are thread
+        // local or not.
+        let section_id = if sym.st_type() == STT_TLS {
+            sym_value -= layout.tls_start_address();
+            output_section_id::TBSS
+        } else {
+            output_section_id::BSS
+        };
+        let section_id = layout.output_sections.primary_output_section(section_id);
+
+        dynamic_symbol_writer
+            .copy_symbol(sym, name, section_id, sym_value, ValueFlags::empty())
+            .with_context(|| {
+                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
+            })?;
+    } else if sym.is_absolute(LittleEndian) {
+        dynamic_symbol_writer
+            .copy_absolute_symbol(sym, name, ValueFlags::empty())
+            .with_context(|| {
+                format!(
+                    "Failed to absolute {}",
+                    layout.symbol_debug(sym_def.symbol_id)
+                )
+            })?;
     } else {
         dynamic_symbol_writer
             .copy_symbol_shndx(sym, name, 0, 0, ValueFlags::empty())
