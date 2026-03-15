@@ -213,7 +213,7 @@ impl<'data> LinkerPlugin<'data> {
             plugin_loaded,
         )?;
 
-        resolver.resolve_symbols_and_select_archive_entries(symbol_db)?;
+        resolver.resolve_symbols_and_select_archive_entries(symbol_db, per_symbol_flags)?;
 
         symbol_db.disable_lto_inputs();
 

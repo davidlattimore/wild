@@ -38,12 +38,14 @@ use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
+use crate::symbol_db;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::SymbolStrength;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
+use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
@@ -71,8 +73,9 @@ impl<'data, P: Platform> Resolver<'data, P> {
     pub(crate) fn resolve_symbols_and_select_archive_entries(
         &mut self,
         symbol_db: &mut SymbolDb<'data, P>,
+        per_symbol_flags: &mut PerSymbolFlags,
     ) -> Result {
-        resolve_symbols_and_select_archive_entries(self, symbol_db)
+        resolve_symbols_and_select_archive_entries(self, symbol_db, per_symbol_flags)
     }
 
     /// For all regular objects that we've decided to load, decide what to do with each section.
@@ -114,6 +117,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
 fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
     resolver: &mut Resolver<'data, P>,
     symbol_db: &mut SymbolDb<'data, P>,
+    per_symbol_flags: &mut PerSymbolFlags,
 ) -> Result {
     timing_phase!("Resolve symbols");
 
@@ -185,10 +189,13 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
         );
     };
 
+    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
+
     let resources = ResolutionResources {
         definitions_per_file: &definitions_per_group_and_file,
         symbol_db,
         outputs: &outputs,
+        per_symbol_flags: &atomic_per_symbol_flags,
     };
 
     rayon::in_place_scope(|scope| {
@@ -431,6 +438,7 @@ pub(crate) struct ResolutionResources<'data, 'scope, P: Platform> {
     definitions_per_file: &'scope Vec<Vec<AtomicTake<&'scope mut [SymbolId]>>>,
     symbol_db: &'scope SymbolDb<'data, P>,
     outputs: &'scope Outputs<'data, P>,
+    per_symbol_flags: &'scope AtomicPerSymbolFlags<'scope>,
 }
 
 impl<'scope, 'data, P: Platform> ResolutionResources<'data, 'scope, P> {
@@ -903,6 +911,16 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
                                 per_symbol_flags
                                     .set_flag(undefined.symbol_id, ValueFlags::NON_INTERPOSABLE);
                             }
+
+                            if visibility != Visibility::Default
+                                && let Some(def_id) = symbol_db.get_unversioned(&pre_hashed)
+                            {
+                                symbol_db::apply_visibility_to_definition(
+                                    per_symbol_flags,
+                                    symbol_db.definition(def_id),
+                                    visibility,
+                                );
+                            }
                         }
 
                         // If the symbol isn't a start/stop symbol, then assign responsibility for
@@ -914,7 +932,18 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
                         symbol_db.replace_definition(undefined.symbol_id, symbol_id);
                     }
                     hashbrown::hash_map::Entry::Occupied(entry) => {
-                        symbol_db.replace_definition(undefined.symbol_id, *entry.get());
+                        let definition_id = symbol_db.definition(*entry.get());
+                        symbol_db.replace_definition(undefined.symbol_id, definition_id);
+                        let visibility = symbol_db.input_symbol_visibility(undefined.symbol_id);
+                        if visibility != Visibility::Default
+                            && let Some(def_id) = symbol_db.get_unversioned(entry.key())
+                        {
+                            symbol_db::apply_visibility_to_definition(
+                                per_symbol_flags,
+                                symbol_db.definition(def_id),
+                                visibility,
+                            );
+                        }
                     }
                 }
             }
@@ -1292,6 +1321,32 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
     match resources.symbol_db.get(&prehashed_name, allow_dynamic) {
         Some(symbol_id) => {
             *definition_out = symbol_id;
+            // If the undefined reference has non-default visibility, the definition must be
+            // downgraded so it cannot leak into dynsym
+            if !local_symbol_attributes.default_visibility {
+                let visibility = resources.symbol_db.input_symbol_visibility(local_symbol_id);
+                match visibility {
+                    Visibility::Hidden => {
+                        resources.per_symbol_flags.get_atomic(symbol_id).or_assign(
+                            ValueFlags::NON_INTERPOSABLE | ValueFlags::DOWNGRADE_TO_LOCAL,
+                        );
+                    }
+                    Visibility::Protected => {
+                        if !resources
+                            .per_symbol_flags
+                            .get_atomic(symbol_id)
+                            .get()
+                            .contains(ValueFlags::DYNAMIC)
+                        {
+                            resources
+                                .per_symbol_flags
+                                .get_atomic(symbol_id)
+                                .or_assign(ValueFlags::NON_INTERPOSABLE);
+                        }
+                    }
+                    Visibility::Default => {}
+                }
+            }
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
 
             if symbol_file_id != file_id && !local_symbol_attributes.is_weak {

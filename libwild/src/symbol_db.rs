@@ -1213,10 +1213,10 @@ fn process_alternatives<'data, P: Platform>(
                 }
 
                 if visibility != Visibility::Default {
-                    handle_non_default_visibility(per_symbol_flags, first);
+                    handle_non_default_visibility(per_symbol_flags, first, visibility);
 
                     for alt in alternatives {
-                        handle_non_default_visibility(per_symbol_flags, alt);
+                        handle_non_default_visibility(per_symbol_flags, alt, visibility);
                     }
                 }
             }
@@ -1228,14 +1228,50 @@ fn process_alternatives<'data, P: Platform>(
 }
 
 /// Update value flags for `symbol_id` given that we've now changed its visibility to something
-/// other than default.
-fn handle_non_default_visibility(per_symbol_flags: &AtomicPerSymbolFlags, symbol_id: SymbolId) {
-    // TODO: Currently we only make the symbol non-interposable, but we should also actually
-    // change its visibility too. We need somewhere to store this information. We also need
-    // linker-diff to report when we get exported dynamic symbols wrong.
+/// other than default. Used during alternative resolution (parallel, atomic flags).
+fn handle_non_default_visibility(
+    per_symbol_flags: &AtomicPerSymbolFlags,
+    symbol_id: SymbolId,
+    visibility: Visibility,
+) {
     let flags = per_symbol_flags.get_atomic(symbol_id);
-    if !flags.get().contains(ValueFlags::DYNAMIC) {
-        flags.or_assign(ValueFlags::NON_INTERPOSABLE);
+    match visibility {
+        Visibility::Hidden => {
+            // Hidden merged visibility must localize the symbol so it cannot leak into dynsym.
+            flags.or_assign(ValueFlags::NON_INTERPOSABLE | ValueFlags::DOWNGRADE_TO_LOCAL);
+        }
+        Visibility::Protected => {
+            if !flags.get().contains(ValueFlags::DYNAMIC) {
+                flags.or_assign(ValueFlags::NON_INTERPOSABLE);
+            }
+        }
+        Visibility::Default => {}
+    }
+}
+
+/// Applies visibility flags from a hidden/protected undefined reference to its definition.
+/// Called during canonicalisation when we find the definition for an undefined symbol.
+pub(crate) fn apply_visibility_to_definition(
+    per_symbol_flags: &mut PerSymbolFlags,
+    definition_id: SymbolId,
+    visibility: Visibility,
+) {
+    match visibility {
+        Visibility::Hidden => {
+            per_symbol_flags.set_flag(
+                definition_id,
+                ValueFlags::NON_INTERPOSABLE | ValueFlags::DOWNGRADE_TO_LOCAL,
+            );
+        }
+        Visibility::Protected => {
+            if !per_symbol_flags
+                .flags_for_symbol(definition_id)
+                .contains(ValueFlags::DYNAMIC)
+            {
+                per_symbol_flags.set_flag(definition_id, ValueFlags::NON_INTERPOSABLE);
+            }
+        }
+        Visibility::Default => {}
     }
 }
 
@@ -1609,6 +1645,7 @@ trait SymbolLoader<'data, P: Platform> {
         for symbol in self.object().symbols_iter() {
             let symbol_id = symbols_out.next;
             let mut flags = self.compute_value_flags(symbol);
+            let local_index = symbol_id.offset_from(base_symbol_id);
 
             if symbol.is_undefined() || self.should_ignore_symbol(symbol) {
                 symbols_out.set_next(flags, SymbolId::undefined(), file_id);
@@ -1616,8 +1653,6 @@ trait SymbolLoader<'data, P: Platform> {
             }
 
             let resolution = symbol_id;
-
-            let local_index = symbol_id.offset_from(base_symbol_id);
 
             if symbol.is_local() {
                 symbols_out.set_next(flags, resolution, file_id);
