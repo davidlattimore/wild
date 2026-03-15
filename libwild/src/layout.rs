@@ -309,6 +309,26 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
+    // Evaluate ASSERT commands from all linker scripts now that layout is complete.
+    let all_assertions: Vec<crate::parsing::ProcessedLinkerScript> = symbol_db
+        .groups
+        .iter()
+        .flat_map(|group| {
+            if let crate::grouping::Group::LinkerScripts(scripts) = group {
+                itertools::Either::Left(scripts.iter().map(|s| {
+                    crate::parsing::ProcessedLinkerScript {
+                        input: s.parsed.input,
+                        symbol_defs: Vec::new(),
+                        assertions: s.parsed.assertions.clone(),
+                    }
+                }))
+            } else {
+                itertools::Either::Right(std::iter::empty())
+            }
+        })
+        .collect();
+    crate::assert_eval::evaluate_assertions(&all_assertions, &section_layouts, &output_sections)?;
+
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     Ok(Layout {
