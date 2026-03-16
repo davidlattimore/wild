@@ -49,12 +49,11 @@ tests = [
   "sort-debug-info-merged.sh",         # `-r`
   "sort-debug-info.sh",                # `-Map`
   "spare-program-headers.sh",
-  "static-archive.sh",                 # `--trace`
+  "static-archive.sh",                 # error: Undefined symbol main, passes with GNU ld
   "synthetic-symbols.sh",              # `--image-base`
-  "thin-archive.sh",                   # `--trace`
+  "thin-archive.sh",                   # error: Undefined symbol main, passes with GNU ld
   "trace-symbol-symver.sh",
   "trace-symbol.sh",
-  "trace.sh",
   "undefined-glob-gc-sections.sh",
   "undefined-glob.sh",
   "warn-common.sh",

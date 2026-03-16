@@ -133,6 +133,7 @@ pub struct ElfArgs {
     pub(crate) z_isa: Option<NonZeroU32>,
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) max_page_size: Option<Alignment>,
+    pub(crate) trace: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -360,6 +361,7 @@ impl Default for ElfArgs {
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
+            trace: false,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -1675,6 +1677,16 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Write dependency rules")
         .execute(|args, _modifier_stack, value| {
             args.dependency_file = Some(PathBuf::from(value));
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .short("t")
+        .long("trace")
+        .help("Print opened input files")
+        .execute(|args, _modifier_stack, _value| {
+            args.trace = true;
             Ok(())
         });
 
