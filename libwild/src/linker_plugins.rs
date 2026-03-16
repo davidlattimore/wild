@@ -355,6 +355,11 @@ impl LoadedPlugin {
 
         let mut transfer_vector = Vec::new();
 
+        // Linker plugins handle entries of this vector serially, which means the message callback
+        // should be registered first. Otherwise, they won't be able to indicate the problem with
+        // entries preceding the callback and, for example, silently skip invalid arguments.
+        transfer_vector.push(LdPluginTv::fn_ptr2(Tag::Message, message));
+
         for arg in &args.plugin_args {
             transfer_vector.push(LdPluginTv::c_str(Tag::Option, arg));
         }
@@ -375,7 +380,6 @@ impl LoadedPlugin {
             register_all_symbols_read_hook,
         ));
         transfer_vector.push(LdPluginTv::fn_ptr6(Tag::GetApiVersion, get_api_version));
-        transfer_vector.push(LdPluginTv::fn_ptr2(Tag::Message, message));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::AddSymbols, add_symbols));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::AddSymbolsV2, add_symbols));
         transfer_vector.push(LdPluginTv::fn_ptr3(Tag::GetSymbolsV3, get_symbols_v3));
