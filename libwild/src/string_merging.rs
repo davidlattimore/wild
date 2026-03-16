@@ -27,7 +27,8 @@
 
 use crate::alignment;
 use crate::args::Args;
-use crate::args::Experiment;
+use crate::args::elf::ElfArgs;
+use crate::args::elf::Experiment;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -215,7 +216,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 pub(crate) fn merge_strings<'data, P: Platform>(
     inputs: &StringMergeInputs<'data>,
     output_sections: &OutputSections<P>,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
     timing_phase!("Merge strings");
 
@@ -426,7 +427,7 @@ impl<'data> MergedStringsSection<'data> {
         &mut self,
         input_sections: &[StringMergeInputSection<'data>],
         reuse_pool: &ReusePool,
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) -> Result {
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
@@ -587,7 +588,7 @@ fn create_split_resources<'data, 'offsets, 'scope>(
     string_offsets: &'offsets mut OffsetMap<BucketOffset, MAP_BLOCK_SIZE>,
     input_sections: &'scope [StringMergeInputSection<'data>],
     reuse_pool: &'scope ReusePool,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> SplitResources<'data, 'offsets, 'scope> {
     verbose_timing_phase!("Create input section groups");
 

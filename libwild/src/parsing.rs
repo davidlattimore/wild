@@ -1,8 +1,9 @@
 use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::Args;
-use crate::args::DefsymValue;
 use crate::args::Modifiers;
+use crate::args::elf::DefsymValue;
+use crate::args::elf::ElfArgs;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -197,7 +198,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data, P: Platform> ParsedInputObject<'data, P> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &Args) -> Result<Box<Self>> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
         let object = P::File::parse(input, args)
@@ -220,7 +221,7 @@ impl<'data, P: Platform> ParsedInputObject<'data, P> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new<P: Platform>(args: &'data Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<P: Platform>(args: &'data Args<ElfArgs>, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();

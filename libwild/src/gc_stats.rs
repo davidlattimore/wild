@@ -17,6 +17,7 @@
 //! ```
 
 use crate::args::Args;
+use crate::args::elf::ElfArgs;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::FileLayout;
@@ -31,7 +32,7 @@ use std::path::PathBuf;
 
 pub(crate) fn maybe_write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
         return Ok(());
@@ -50,7 +51,7 @@ struct InputFile<'data> {
 fn write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
     stats_file: &std::path::Path,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> Result {
     use std::io::Write as _;
 

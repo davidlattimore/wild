@@ -12,6 +12,7 @@
 use crate::Args;
 use crate::args::Input;
 use crate::args::Modifiers;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::elf::Elf;
 use crate::elf::RawSymbolName;
@@ -69,7 +70,7 @@ enum Store<'data> {
 }
 
 struct LoadInfo<'data> {
-    args: &'data Args,
+    args: &'data Args<ElfArgs>,
     arena: &'data Arena<LoadedPlugin>,
 }
 
@@ -129,7 +130,7 @@ pub(crate) struct PluginOutputs {
 
 impl<'data> LinkerPlugin<'data> {
     pub(crate) fn from_args(
-        args: &'data crate::Args,
+        args: &'data crate::Args<ElfArgs>,
         arena: &'data Arena<LoadedPlugin>,
         herd: &'data Herd,
     ) -> Result<Option<LinkerPlugin<'data>>> {
@@ -318,7 +319,7 @@ impl<'data> WrapSymbols<'data> {
 }
 
 impl LoadedPlugin {
-    fn new(plugin_path: &Path, args: &Args) -> Result<LoadedPlugin> {
+    fn new(plugin_path: &Path, args: &Args<ElfArgs>) -> Result<LoadedPlugin> {
         timing_phase!("Load linker plugin");
 
         if cfg!(target_feature = "crt-static") {
@@ -346,8 +347,8 @@ impl LoadedPlugin {
 
         let output_kind = if args.should_output_executable {
             match args.relocation_model {
-                crate::args::RelocationModel::NonRelocatable => OutputFileType::Exec,
-                crate::args::RelocationModel::Relocatable => OutputFileType::Pie,
+                crate::args::elf::RelocationModel::NonRelocatable => OutputFileType::Exec,
+                crate::args::elf::RelocationModel::Relocatable => OutputFileType::Pie,
             }
         } else {
             OutputFileType::Dyn

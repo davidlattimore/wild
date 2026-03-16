@@ -1,7 +1,8 @@
 use crate::OutputKind;
 use crate::args::Args;
-use crate::args::FileWriteMode;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
+use crate::args::elf::ElfArgs;
+use crate::args::elf::FileWriteMode;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -111,7 +112,7 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn new(args: &Args, output_kind: OutputKind) -> Output {
+    pub(crate) fn new(args: &Args<ElfArgs>, output_kind: OutputKind) -> Output {
         let file_write_mode = args
             .file_write_mode
             .unwrap_or_else(|| default_file_write_mode(args, output_kind));
@@ -231,7 +232,7 @@ impl Output {
 }
 
 /// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(args: &Args, output_kind: OutputKind) -> FileWriteMode {
+fn default_file_write_mode(args: &Args<ElfArgs>, output_kind: OutputKind) -> FileWriteMode {
     if output_kind.is_shared_object() {
         return FileWriteMode::UnlinkAndReplace;
     }

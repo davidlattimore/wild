@@ -5,6 +5,7 @@
 use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::args::Args;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf::RawSymbolName;
@@ -687,7 +688,7 @@ pub(crate) struct ResolvedLtoInput {
 fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
     output_sections: &mut OutputSections<'data, P>,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) {
     timing_phase!("Assign section IDs");
 
@@ -1125,7 +1126,7 @@ impl<'data, P: Platform> ResolvedDynamic<'data, P> {
 
 fn resolve_sections_for_object<'data, P: Platform>(
     obj: &mut ResolvedObject<'data, P>,
-    args: &Args,
+    args: &Args<ElfArgs>,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
@@ -1153,7 +1154,7 @@ fn resolve_section<'data, P: Platform>(
     input_section_index: SectionIndex,
     input_section: &P::SectionHeader,
     obj: &mut ResolvedObject<'data, P>,
-    args: &Args,
+    args: &Args<ElfArgs>,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
