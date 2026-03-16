@@ -11,8 +11,8 @@
 
 use crate::Args;
 use crate::args::Input;
-use crate::args::elf::ElfArgs;
 use crate::args::Modifiers;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::elf::Elf;
 use crate::elf::RawSymbolName;

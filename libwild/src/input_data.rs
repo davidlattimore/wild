@@ -6,9 +6,9 @@ use crate::archive::ArchiveIterator;
 use crate::archive::EntryMeta;
 use crate::args::Args;
 use crate::args::Input;
-use crate::args::elf::ElfArgs;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -206,7 +206,10 @@ pub(crate) struct AuxiliaryFiles<'data> {
 }
 
 impl<'data> AuxiliaryFiles<'data> {
-    pub(crate) fn new(args: &'data Args<ElfArgs>, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+    pub(crate) fn new(
+        args: &'data Args<ElfArgs>,
+        inputs_arena: &'data Arena<InputFile>,
+    ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if path.exists() {
                 path.to_owned()

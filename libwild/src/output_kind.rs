@@ -1,6 +1,6 @@
 use crate::Args;
-use crate::args::elf::RelocationModel;
 use crate::args::elf::ElfArgs;
+use crate::args::elf::RelocationModel;
 use crate::input_data::FileLoader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
