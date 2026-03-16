@@ -221,7 +221,7 @@ impl Linker {
 
         file_loader.verify_inputs_unchanged()?;
 
-        // Write dependency file after successful linking
+        // Write the dependency file and inputs trace after successful linking.
         if result.is_ok() {
             if let Some(dep_file_path) = &args.dependency_file {
                 write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
