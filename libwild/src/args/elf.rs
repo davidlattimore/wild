@@ -17,7 +17,6 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
 use crate::timing_phase;
@@ -70,12 +69,9 @@ pub struct ElfArgs {
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_sections: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
-    pub(crate) validate_output: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
-    pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
-    pub(crate) write_trace: bool,
     pub(crate) wrap: Vec<String>,
     pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
@@ -122,9 +118,7 @@ pub struct ElfArgs {
     pub(crate) verbose_gc_stats: bool,
 
     pub(crate) dependency_file: Option<PathBuf>,
-    pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
-    pub(crate) verify_allocation_consistency: bool,
     pub(crate) version_mode: VersionMode,
     pub(crate) demangle: bool,
     pub(crate) got_plt_syms: bool,
@@ -251,18 +245,8 @@ pub(crate) enum FileWriteMode {
     UpdateInPlaceWithFallback,
 }
 
-pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
-pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
-pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
-pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
-pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
-
-/// Set this environment variable if you get a failure during writing due to too much or too little
-/// space being allocated to some section. When set, each time we allocate during layout, we'll
-/// check that what we're doing is consistent with writing and fail in a more easy to debug way. i.e
-/// we'll report the particular combination of value flags, resolution flags etc that triggered the
-/// inconsistency.
-pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
+use super::FILES_PER_GROUP_ENV;
+use super::REFERENCE_LINKER_ENV;
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
@@ -338,15 +322,6 @@ impl Default for ElfArgs {
             merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
             debug_fuel: None,
-            validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
-            write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
-            write_trace: std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
-            verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
-                .is_ok_and(|v| v == "1"),
-            print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .map(FileId::from_encoded),
             relocation_model: RelocationModel::NonRelocatable,
             version_script_path: None,
             debug_address: None,
@@ -454,14 +429,6 @@ impl ElfArgs {
             }
             _ => false,
         }
-    }
-
-    pub(crate) fn trace_span_for_file(
-        &self,
-        file_id: FileId,
-    ) -> Option<tracing::span::EnteredSpan> {
-        let should_trace = self.print_allocations == Some(file_id);
-        should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
     }
 
     pub fn should_fork(&self) -> bool {
