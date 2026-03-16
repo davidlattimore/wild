@@ -69,6 +69,7 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 
 use crate::args::ActivatedArgs;
+use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
@@ -98,7 +99,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(args: Args) -> error::Result {
+pub fn run(args: Args<ElfArgs>) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
@@ -114,7 +115,7 @@ pub fn run(args: Args) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
+pub fn setup_tracing(args: &Args<ElfArgs>) -> Result<(), AlreadyInitialised> {
     if let Some(opts) = args.time_phase_options.as_ref() {
         timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
@@ -179,21 +180,21 @@ impl Linker {
     /// return, the output file should be usable.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
-        args: &'layout_inputs ActivatedArgs,
+        args: &'layout_inputs ActivatedArgs<ElfArgs>,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let args = &args.args;
         match args.version_mode {
-            args::VersionMode::ExitAfterPrint => {
+            args::elf::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{}", linker_identity())?;
                 return Ok(LinkerOutput { layout: None });
             }
-            args::VersionMode::Verbose => {
+            args::elf::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{}", linker_identity())?;
                 // Continue linking
             }
-            args::VersionMode::None => {
+            args::elf::VersionMode::None => {
                 // Don't print version
             }
         }
@@ -210,7 +211,7 @@ impl Linker {
 
     fn link_for_arch<'data, A: Arch<Platform = Elf>>(
         &'data self,
-        args: &'data Args,
+        args: &'data Args<ElfArgs>,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
@@ -239,7 +240,7 @@ impl Linker {
     fn load_inputs_and_link<'data, A: Arch<Platform = Elf>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data Args,
+        args: &'data Args<ElfArgs>,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin =
             linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;

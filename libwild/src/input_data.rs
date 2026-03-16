@@ -8,6 +8,7 @@ use crate::args::Args;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -130,7 +131,7 @@ pub(crate) struct InputLinkerScript<'data> {
 }
 
 struct TemporaryState<'data, P: Platform> {
-    args: &'data Args,
+    args: &'data Args<ElfArgs>,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
     path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
@@ -205,7 +206,10 @@ pub(crate) struct AuxiliaryFiles<'data> {
 }
 
 impl<'data> AuxiliaryFiles<'data> {
-    pub(crate) fn new(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+    pub(crate) fn new(
+        args: &'data Args<ElfArgs>,
+        inputs_arena: &'data Arena<InputFile>,
+    ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if path.exists() {
                 path.to_owned()
@@ -243,7 +247,7 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn load_inputs<P: Platform>(
         &mut self,
         inputs: &[Input],
-        args: &'data Args,
+        args: &'data Args<ElfArgs>,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
@@ -408,7 +412,7 @@ impl<'data> FileLoader<'data> {
 
 fn process_linker_script<'data>(
     input_file: &'data InputFile,
-    args: &Args,
+    args: &Args<ElfArgs>,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
@@ -698,7 +702,7 @@ fn read_script_data<'data>(
 }
 
 impl Input {
-    fn path(&self, args: &Args) -> Result<InputPath> {
+    fn path(&self, args: &Args<ElfArgs>) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()

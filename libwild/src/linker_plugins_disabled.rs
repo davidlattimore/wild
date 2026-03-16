@@ -3,6 +3,7 @@
 #![allow(clippy::unnecessary_wraps)]
 #![allow(clippy::needless_pass_by_ref_mut)]
 
+use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Result;
 use crate::input_data::FileLoader;
@@ -36,7 +37,7 @@ impl<'data> LinkerPlugin<'data> {
     }
 
     pub(crate) fn from_args(
-        _args: &'data crate::Args,
+        _args: &'data crate::Args<ElfArgs>,
         _linker_plugin_arena: &colosseum::sync::Arena<LoadedPlugin>,
         _herd: &bumpalo_herd::Herd,
     ) -> Result<Option<Self>> {

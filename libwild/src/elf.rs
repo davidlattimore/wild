@@ -2,8 +2,9 @@ use crate::Args;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
-use crate::args::BuildIdOption;
-use crate::args::RelocationModel;
+use crate::args::elf::BuildIdOption;
+use crate::args::elf::ElfArgs;
+use crate::args::elf::RelocationModel;
 use crate::bail;
 use crate::elf;
 use crate::elf_writer;
@@ -282,7 +283,7 @@ impl platform::Platform for Elf {
     type DynamicLayoutExt<'data> = DynamicLayoutExt<'data>;
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
 
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args) {
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<ElfArgs>) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
         // keeping, which by inherently needs to be after this method is called.
@@ -368,7 +369,7 @@ impl platform::Platform for Elf {
 
     fn pre_finalise_sizes_prelude<'data>(
         common: &mut layout::CommonGroupState<'data, Elf>,
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
@@ -560,7 +561,7 @@ impl platform::Platform for Elf {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) {
         // If relro is disabled, then discard the relro segment.
         if !args.relro {
@@ -710,7 +711,7 @@ impl platform::Platform for Elf {
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
-        args: &Args,
+        args: &Args<ElfArgs>,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> Result<LayoutExt>
@@ -809,7 +810,7 @@ impl platform::Platform for Elf {
     }
 
     fn new_epilogue_layout(
-        args: &Args,
+        args: &Args<ElfArgs>,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> EpilogueLayoutExt {
@@ -1036,7 +1037,7 @@ impl platform::Platform for Elf {
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Elf;
 
-    fn parse(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
@@ -2360,7 +2361,7 @@ impl LayoutExt {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) -> Result<Self> {
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<A>(states)?;
@@ -2995,7 +2996,7 @@ pub(crate) struct GnuHashLayout {
 }
 
 fn create_gnu_hash_layout(
-    args: &Args,
+    args: &Args<ElfArgs>,
     output_kind: OutputKind,
     dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
 ) -> Option<GnuHashLayout> {

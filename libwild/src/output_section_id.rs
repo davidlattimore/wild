@@ -16,6 +16,7 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
+use crate::args::elf::ElfArgs;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
 use crate::output_section_map::OutputSectionMap;
@@ -607,7 +608,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
-        args: &Args,
+        args: &Args<ElfArgs>,
     ) {
         for custom in custom_sections {
             let name_str = std::str::from_utf8(custom.name.bytes()).ok();
