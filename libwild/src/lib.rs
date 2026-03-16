@@ -222,16 +222,22 @@ impl Linker {
         file_loader.verify_inputs_unchanged()?;
 
         // Write dependency file after successful linking
-        if result.is_ok()
-            && let Some(dep_file_path) = &args.dependency_file
-        {
-            write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
-                .with_context(|| {
-                    format!(
-                        "Failed to write dependency file `{}`",
-                        dep_file_path.display()
-                    )
-                })?;
+        if result.is_ok() {
+            if let Some(dep_file_path) = &args.dependency_file {
+                write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
+                    .with_context(|| {
+                        format!(
+                            "Failed to write dependency file `{}`",
+                            dep_file_path.display()
+                        )
+                    })?;
+            }
+            if args.trace {
+                let mut buf = BufWriter::new(std::io::stdout());
+                for input in &file_loader.loaded_files {
+                    writeln!(buf, "{}", input.filename.display())?;
+                }
+            }
         }
 
         result
