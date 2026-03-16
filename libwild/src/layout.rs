@@ -2565,7 +2565,7 @@ impl<'data, P: Platform> std::fmt::Display for GroupLayout<'data, P> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::elf::FILES_PER_GROUP_ENV
+                crate::args::FILES_PER_GROUP_ENV
             )
         }
     }
@@ -2580,7 +2580,7 @@ impl<'data, P: Platform> std::fmt::Display for GroupState<'data, P> {
                 f,
                 "Group with {} files. Rerun with {}=1",
                 self.files.len(),
-                crate::args::elf::FILES_PER_GROUP_ENV
+                crate::args::FILES_PER_GROUP_ENV
             )
         }
     }

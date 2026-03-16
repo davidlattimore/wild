@@ -16,6 +16,7 @@ use crate::bail;
 use crate::ensure;
 use crate::error::Context;
 use crate::error::Result;
+use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use elf::IGNORED_FLAGS;
 use hashbrown::HashMap;
@@ -29,13 +30,21 @@ use std::path::PathBuf;
 
 pub mod elf;
 
-pub use elf::VALIDATE_ENV;
-pub use elf::WRITE_LAYOUT_ENV;
-pub use elf::WRITE_TRACE_ENV;
-
 use crate::timing_phase;
 
+pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
+pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
+pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
+pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
+pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
+
+/// Set this environment variable if you get a failure during writing due to too much or too little
+/// space being allocated to some section. When set, each time we allocate during layout, we'll
+/// check that what we're doing is consistent with writing and fail in a more easy to debug way. i.e
+/// we'll report the particular combination of value flags, resolution flags etc that triggered the
+/// inconsistency.
+pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 
 #[derive(Debug)]
 pub struct Args<T = TargetArgs> {
@@ -49,6 +58,12 @@ pub struct Args<T = TargetArgs> {
     jobserver_client: Option<Client>,
     pub(crate) inputs: Vec<Input>,
     pub(crate) save_dir: SaveDir,
+
+    pub(crate) validate_output: bool,
+    pub(crate) verify_allocation_consistency: bool,
+    pub(crate) write_layout: bool,
+    pub(crate) write_trace: bool,
+    pub(crate) print_allocations: Option<FileId>,
 
     /// Format-specific arguments.
     pub target_args: T,
@@ -94,6 +109,15 @@ impl<T: Default> Default for Args<T> {
             inputs: Vec::new(),
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
+            validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
+            verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
+                .is_ok_and(|v| v == "1"),
+            write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
+            write_trace: std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
+            print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map(FileId::from_encoded),
         }
     }
 }
@@ -109,9 +133,22 @@ impl<T> Args<T> {
             inputs: self.inputs,
             save_dir: self.save_dir,
             files_per_group: self.files_per_group,
+            validate_output: self.validate_output,
+            verify_allocation_consistency: self.verify_allocation_consistency,
+            write_layout: self.write_layout,
+            write_trace: self.write_trace,
+            print_allocations: self.print_allocations,
             // Format-specific
             target_args: f(self.target_args),
         }
+    }
+
+    pub(crate) fn trace_span_for_file(
+        &self,
+        file_id: FileId,
+    ) -> Option<tracing::span::EnteredSpan> {
+        let should_trace = self.print_allocations == Some(file_id);
+        should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
     }
 
     /// Sets up the thread pool, using the explicit number of threads if specified,
