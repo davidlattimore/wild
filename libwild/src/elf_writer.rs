@@ -577,6 +577,7 @@ struct TableWriter<'layout, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
+    relr_dyn: Option<&'out mut [crate::elf::Relr]>,
     dynsym_writer: SymbolTableWriter<'layout, 'out>,
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
@@ -610,6 +611,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
+            layout.symbol_db.args.pack_relative_relocs,
         )
     }
 
@@ -620,6 +622,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         dynsym_writer: SymbolTableWriter<'layout, 'out>,
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
+        relr: bool,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -639,6 +642,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
+            relr_dyn: relr.then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -693,7 +697,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             *got_entry = 0;
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, false)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 res.flags
@@ -766,7 +771,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, false)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write tpoff with no allocation. {}",
                 res.flags
@@ -788,7 +794,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, false)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 res.flags
@@ -830,7 +837,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
-            *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+            *compute_allocations::<Elf>(res, self.output_kind, false)
+                .get(part_id::RELA_DYN_GENERAL)
+                > 0,
             "Tried to write TLS descriptor with no allocation. {}",
             res.flags
         );
@@ -890,6 +899,15 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 ".rela.dyn (general)",
                 self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE,
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
+            ));
+        }
+        if let Some(relr) = &self.relr_dyn
+            && !relr.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".relr.dyn",
+                relr.len() as u64 * elf::RELR_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELR_DYN),
             ));
         }
         self.dynsym_writer.check_exhausted()?;
@@ -1003,16 +1021,24 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        let rela = self
-            .rela_dyn_relative
-            .split_off_first_mut()
-            .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
-        rela.r_offset.set(e, place);
-        rela.r_addend.set(e, relative_address);
-        rela.r_info.set(
-            e,
-            A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
-        );
+        if let Some(relr) = &mut self.relr_dyn {
+            let relr = relr
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+            // TODO: place calculation might be incorrect
+            relr.0.set(e, place);
+        } else {
+            let rela = self
+                .rela_dyn_relative
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
+            rela.r_offset.set(e, place);
+            rela.r_addend.set(e, relative_address);
+            rela.r_info.set(
+                e,
+                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
+            );
+        }
         Ok(())
     }
 
@@ -4513,6 +4539,23 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(object::elf::DT_RELAENT, has_rela_dyn, |_inputs| {
         elf::RELA_ENTRY_SIZE
     }),
+    // TODO: Missing in object crate
+    DynamicEntryWriter::optional(
+        36,
+        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        // TODO: Yeah, non-sequential numbers are dumb, but what can we do.
+        35,
+        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        37,
+        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |_| elf::RELR_ENTRY_SIZE,
+    ),
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
     DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |inputs| {
@@ -5205,6 +5248,7 @@ pub(crate) fn verify_resolution_allocation(
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution<Elf>,
+    relr: bool,
 ) -> Result {
     // Allocate however much space was requested.
 
@@ -5242,6 +5286,7 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
+        relr,
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)

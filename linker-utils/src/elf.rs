@@ -128,6 +128,7 @@ elf_constant_newtype!(
     SYMTAB,
     STRTAB,
     RELA,
+    RELR,
     HASH,
     DYNAMIC,
     NOTE,
@@ -754,6 +755,8 @@ pub mod secnames {
     pub const DYNSTR_SECTION_NAME: &[u8] = DYNSTR_SECTION_NAME_STR.as_bytes();
     pub const RELA_DYN_SECTION_NAME_STR: &str = ".rela.dyn";
     pub const RELA_DYN_SECTION_NAME: &[u8] = RELA_DYN_SECTION_NAME_STR.as_bytes();
+    pub const RELR_DYN_SECTION_NAME_STR: &str = ".relr.dyn";
+    pub const RELR_DYN_SECTION_NAME: &[u8] = RELR_DYN_SECTION_NAME_STR.as_bytes();
     pub const GCC_EXCEPT_TABLE_SECTION_NAME_STR: &str = ".gcc_except_table";
     pub const GCC_EXCEPT_TABLE_SECTION_NAME: &[u8] = GCC_EXCEPT_TABLE_SECTION_NAME_STR.as_bytes();
     pub const INTERP_SECTION_NAME_STR: &str = ".interp";

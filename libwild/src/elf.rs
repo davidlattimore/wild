@@ -151,6 +151,7 @@ pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
 pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
+pub(crate) type Relr = object::elf::Relr64<LittleEndian>;
 pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 pub(crate) type Verdef = object::elf::Verdef<LittleEndian>;
 pub(crate) type Verdaux = object::elf::Verdaux<LittleEndian>;
@@ -803,6 +804,7 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution<Elf>,
+        relr: bool,
     ) -> Result {
         crate::elf_writer::verify_resolution_allocation(
             output_sections,
@@ -810,6 +812,7 @@ impl platform::Platform for Elf {
             output_kind,
             mem_sizes,
             resolution,
+            relr,
         )
     }
 
@@ -1408,6 +1411,7 @@ impl platform::Platform for Elf {
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
+        relr: bool,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
@@ -1421,14 +1425,22 @@ impl platform::Platform for Elf {
             } else if flags.is_interposable() && has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                if relr {
+                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             }
         }
 
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
             if output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                if relr {
+                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             }
         }
 
@@ -1796,6 +1808,7 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::GNU_VERSION_D);
         builder.add_section(output_section_id::GNU_VERSION_R);
         builder.add_section(output_section_id::RELA_DYN_RELATIVE);
+        builder.add_section(output_section_id::RELR_DYN);
         builder.add_section(output_section_id::RELA_PLT);
         builder.add_section(output_section_id::RODATA);
         builder.add_section(output_section_id::EH_FRAME_HDR);
@@ -2930,6 +2943,7 @@ pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 // the size should be generic over A: Arch.
 pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
+pub(crate) const RELR_ENTRY_SIZE: u64 = 8;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
@@ -4484,6 +4498,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Secondary(output_section_id::RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::RELR_DYN.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELR_DYN_SECTION_NAME)),
+        ty: sht::RELR,
+        section_flags: shf::ALLOC,
+        element_size: RELR_ENTRY_SIZE,
+        // TODO: Probably fine but need to check.
+        min_alignment: alignment::RELA_ENTRY,
+        link: &[output_section_id::DYNSYM],
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
         ty: sht::RISCV_ATTRIBUTES,
@@ -4779,7 +4803,11 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             && flags.is_address()
         {
             if section_is_writable {
-                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                if resources.symbol_db.args.pack_relative_relocs {
+                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             } else if !is_debug_section {
                 bail!(
                     "Cannot apply relocation {} to read-only section. \

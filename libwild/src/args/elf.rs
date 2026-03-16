@@ -113,6 +113,7 @@ pub struct ElfArgs {
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
+    pub(crate) pack_relative_relocs: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -283,6 +284,7 @@ impl Default for ElfArgs {
             relax: true,
             hash_style: HashStyle::Both,
             trace: false,
+            pack_relative_relocs: false,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -597,6 +599,14 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
+        .sub_option("pack-relative-relocs", "", |args, _| {
+            args.pack_relative_relocs = true;
+            Ok(())
+        })
+        .sub_option("nopack-relative-relocs", "", |args, _| {
+            args.pack_relative_relocs = false;
+            Ok(())
+        })
         .sub_option(
             "x86-64-baseline",
             "Mark x86-64-baseline ISA as needed",
@@ -1857,6 +1867,10 @@ impl platform::Args for ElfArgs {
 
     fn should_export_dynamic(&self, lib_name: &[u8]) -> bool {
         !self.exclude_libs.should_exclude(lib_name)
+    }
+
+    fn should_pack_relative_relocs(&self) -> bool {
+        self.pack_relative_relocs
     }
 
     fn loadable_segment_alignment(&self) -> Alignment {

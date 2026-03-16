@@ -987,6 +987,8 @@ impl platform::Platform for MachO {
         flags: crate::value_flags::ValueFlags,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         output_kind: crate::output_kind::OutputKind,
+        // TODO: REMOVE
+        _: bool,
     ) {
         todo!()
     }

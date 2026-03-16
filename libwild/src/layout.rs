@@ -752,10 +752,19 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
 
             P::finalise_sizes_for_symbol(common, symbol_db, symbol_id, flags)?;
 
-            P::allocate_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
+            P::allocate_resolution(
+                flags,
+                &mut common.mem_sizes,
+                symbol_db.output_kind,
+                symbol_db.args.should_pack_relative_relocs(),
+            );
 
             if symbol_db.args.common().verify_allocation_consistency {
-                verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
+                verify_consistent_allocation_handling::<P>(
+                    flags,
+                    symbol_db.output_kind,
+                    symbol_db.args.should_pack_relative_relocs(),
+                )?;
             }
         }
 
@@ -786,12 +795,15 @@ pub(crate) fn export_dynamic<'data, P: Platform>(
 
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
 /// when we're writing, to make sure that we would have allocated memory before we write.
+// TODO: This is always called with `relr = false` as debug assertions seem to care only about
+// general dynamic relocations
 pub(crate) fn compute_allocations<P: Platform>(
     resolution: &Resolution<P>,
     output_kind: OutputKind,
+    relr: bool,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    P::allocate_resolution(resolution.flags, &mut sizes, output_kind);
+    P::allocate_resolution(resolution.flags, &mut sizes, output_kind, relr);
     sizes
 }
 
@@ -3685,7 +3697,12 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
-                P::allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
+                P::allocate_resolution(
+                    section.flags,
+                    &mut common.mem_sizes,
+                    output_kind,
+                    resources.symbol_db.args.should_pack_relative_relocs(),
+                );
             }
         }
 
@@ -5013,11 +5030,12 @@ fn test_no_disallowed_overlaps() {
 fn verify_consistent_allocation_handling<P: Platform>(
     flags: ValueFlags,
     output_kind: OutputKind,
+    relr: bool,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
-    P::allocate_resolution(flags, &mut mem_sizes, output_kind);
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind, relr);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
@@ -5033,6 +5051,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
         output_kind,
         &mem_sizes,
         &resolution,
+        relr,
     )
     .with_context(|| {
         format!(
