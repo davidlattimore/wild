@@ -1,7 +1,7 @@
 use crate::Args;
 use crate::OutputKind;
-use crate::args::elf::ElfArgs;
 use crate::Result;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;

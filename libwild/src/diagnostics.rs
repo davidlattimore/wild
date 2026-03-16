@@ -41,7 +41,10 @@ impl Drop for SymbolInfoPrinter {
 }
 
 impl SymbolInfoPrinter {
-    pub(crate) fn new<'data, P: Platform>(args: &Args<ElfArgs>, groups: &[ResolvedGroup<'data, P>]) -> Self {
+    pub(crate) fn new<'data, P: Platform>(
+        args: &Args<ElfArgs>,
+        groups: &[ResolvedGroup<'data, P>],
+    ) -> Self {
         let Some(name) = args.sym_info.as_ref() else {
             return Self::Disabled;
         };

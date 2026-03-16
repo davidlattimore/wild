@@ -20,7 +20,8 @@ use crate::save_dir::SaveDir;
 use elf::IGNORED_FLAGS;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
-use jobserver::{Acquired, Client};
+use jobserver::Acquired;
+use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
 use std::num::NonZeroUsize;
@@ -28,6 +29,10 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod elf;
+
+pub use elf::VALIDATE_ENV;
+pub use elf::WRITE_LAYOUT_ENV;
+pub use elf::WRITE_TRACE_ENV;
 
 use crate::timing_phase;
 
@@ -68,7 +73,7 @@ impl Args {
     /// or host default, then routes to the format-specific parser.
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
         let mut input = input();
-        // TODO: will be used when supporting mutiple formats
+        // TODO: will be used when supporting multiple formats
         let _executable_name = input
             .next()
             .ok_or_else(|| crate::error!("should always be at least the executable name"))?;
@@ -597,11 +602,13 @@ struct PrefixOptionHandler<T> {
     sub_options: HashMap<&'static str, SubOption<T>>,
 }
 
+type OptionalParamHandler<T> = fn(&mut Args<T>, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
+
 #[allow(clippy::enum_variant_names)]
 enum OptionHandlerFn<T> {
     NoParam(fn(&mut Args<T>, &mut Vec<Modifiers>) -> Result<()>),
     WithParam(fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>),
-    OptionalParam(fn(&mut Args<T>, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
+    OptionalParam(OptionalParamHandler<T>),
 }
 
 impl<T> Clone for OptionHandlerFn<T> {
@@ -791,7 +798,7 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
 }
 
 impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
-    fn execute(self, handler: fn(&mut Args<T>, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
+    fn execute(self, handler: OptionalParamHandler<T>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::OptionalParam(handler),

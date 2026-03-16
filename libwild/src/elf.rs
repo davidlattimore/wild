@@ -1,9 +1,9 @@
 use crate::Args;
 use crate::alignment;
-use crate::args::elf::ElfArgs;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::elf::BuildIdOption;
+use crate::args::elf::ElfArgs;
 use crate::args::elf::RelocationModel;
 use crate::bail;
 use crate::elf;

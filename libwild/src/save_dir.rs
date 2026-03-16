@@ -2,9 +2,9 @@
 
 use crate::Args;
 use crate::archive::ArchiveEntry;
-use crate::args::elf::ElfArgs;
 use crate::archive::ArchiveIterator;
 use crate::args::Modifiers;
+use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;

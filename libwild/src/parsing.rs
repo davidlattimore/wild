@@ -1,9 +1,9 @@
 use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::Args;
+use crate::args::Modifiers;
 use crate::args::elf::DefsymValue;
 use crate::args::elf::ElfArgs;
-use crate::args::Modifiers;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;

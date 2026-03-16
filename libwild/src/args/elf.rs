@@ -1,4 +1,5 @@
-//! An elf-specific extension of `super::Args` and parsing implementation to match gnu style linkers.
+//! An elf-specific extension of `super::Args` and parsing implementation to match gnu style
+//! linkers.
 
 use super::Args;
 use super::ArgumentParser;

@@ -530,7 +530,7 @@ impl TlsGdForm {
 
 #[test]
 fn test_relaxation() {
-    use crate::args::RelocationModel;
+    use crate::args::elf::RelocationModel;
     use crate::platform::Arch as _;
     use crate::platform::Relaxation as _;
 
