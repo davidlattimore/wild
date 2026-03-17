@@ -4522,7 +4522,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         element_size: RELR_ENTRY_SIZE,
         // TODO: Probably fine but need to check.
         min_alignment: alignment::RELA_ENTRY,
-        link: &[output_section_id::DYNSYM],
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
