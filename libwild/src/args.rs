@@ -156,7 +156,7 @@ impl<T> Args<T> {
     /// or falling back to the jobserver protocol if available.
     ///
     /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
-    pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs<T>> {
+    pub fn activate_thread_pool(&mut self) -> Result<ThreadPool> {
         timing_phase!("Activate thread pool");
 
         let mut tokens = Vec::new();
@@ -178,8 +178,7 @@ impl<T> Args<T> {
             .num_threads(self.available_threads.get())
             .build_global();
 
-        Ok(ActivatedArgs {
-            args: self,
+        Ok(ThreadPool {
             _jobserver_tokens: tokens,
         })
     }
@@ -195,12 +194,13 @@ impl<T> Args<T> {
     }
 }
 
-/// Represents a command-line argument that specifies the number of threads to use,
-/// triggering activation of the thread pool.
-pub struct ActivatedArgs<T = TargetArgs> {
-    pub args: Args<T>,
+/// A type that indicates that the global thread pool has been created. Currently, you should only
+/// create one of these at a time. If a jobserver is being used, then dropping this instance will
+/// release jobserver tokens.
+pub struct ThreadPool {
     _jobserver_tokens: Vec<Acquired>,
 }
+
 pub enum TargetArgs {
     Elf(elf::ElfArgs),
 }

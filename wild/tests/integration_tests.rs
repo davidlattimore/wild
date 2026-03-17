@@ -2543,16 +2543,16 @@ impl LinkCommand {
             let linker = libwild::Linker::new();
             let parsed_args =
                 libwild::Args::parse(|| std::iter::once("wild").chain(args.iter().copied()))?;
-            let parsed_args = parsed_args.map_target(|t| match t {
+            let mut parsed_args = parsed_args.map_target(|t| match t {
                 libwild::args::TargetArgs::Elf(elf) => elf,
             });
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);
-            let parsed_args = parsed_args.activate_thread_pool()?;
+            let thread_pool = parsed_args.activate_thread_pool()?;
 
             linker
-                .run(&parsed_args)
+                .run(&parsed_args, &thread_pool)
                 .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
 
             return Ok(());

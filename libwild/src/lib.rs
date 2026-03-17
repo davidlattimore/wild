@@ -68,7 +68,6 @@ pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
 
-use crate::args::ActivatedArgs;
 use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Context;
@@ -99,14 +98,14 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(args: Args<ElfArgs>) -> error::Result {
+pub fn run(mut args: Args<ElfArgs>) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
-    let args = args.activate_thread_pool()?;
+    let thread_pool = args.activate_thread_pool()?;
     let linker = Linker::new();
-    linker.run(&args)?;
+    linker.run(&args, &thread_pool)?;
     drop(linker);
     timing::finalise_perfetto_trace()?;
     Ok(())
@@ -180,9 +179,12 @@ impl Linker {
     /// return, the output file should be usable.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
-        args: &'layout_inputs ActivatedArgs<ElfArgs>,
+        args: &'layout_inputs Args<ElfArgs>,
+        // We don't actually use this, but take it as an argument to ensure that the caller has
+        // created it. We may decide to actually use it in future, if we stop using rayon's global
+        // thread pool.
+        _thread_pool: &crate::args::ThreadPool,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let args = &args.args;
         match args.version_mode {
             args::elf::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
