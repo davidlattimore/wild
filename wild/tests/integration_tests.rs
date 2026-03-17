@@ -3654,6 +3654,8 @@ fn integration_test(
         "tls-apx-relocs.s",
         "as-needed-weak.c",
         "linker-script-unclosed-comment.c",
+        "linker-script-assert-pass.c",
+        "linker-script-assert-fail.c",
         "execstack.s"
     )]
     program_name: &'static str,

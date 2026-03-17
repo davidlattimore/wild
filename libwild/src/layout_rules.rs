@@ -110,6 +110,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         output_sections: &mut OutputSections<'data, P>,
     ) -> Result<ProcessedLinkerScript<'data>> {
         let mut symbol_defs = Vec::new();
+        let mut assertions = Vec::new();
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -214,21 +215,24 @@ impl<'data> LayoutRulesBuilder<'data> {
                         }
                         SectionCommand::SetLocation(new_location) => location = Some(*new_location),
                         SectionCommand::Align(a) => extra_min_alignment = *a,
-                        SectionCommand::Assert(_assert_cmd) => {
-                            // ASSERT commands are parsed but not yet evaluated during layout.
-                            // TODO: Implement assertion evaluation
+                        SectionCommand::Assert(assert_cmd) => {
+                            assertions.push(assert_cmd.clone());
                         }
                     }
                 }
+            } else if let linker_script::Command::Assert(assert_cmd) = cmd {
+                assertions.push(assert_cmd.clone());
             }
         }
 
         Ok(ProcessedLinkerScript {
             symbol_defs,
+            assertions,
             input: InputRef {
                 file: input.input_file,
                 entry: None,
             },
+            file_bytes: input.script_bytes,
         })
     }
 

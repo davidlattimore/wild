@@ -112,6 +112,16 @@ impl InputFile {
     pub(crate) fn data(&self) -> &[u8] {
         self.data.as_deref().unwrap_or_default()
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_testing() -> Self {
+        Self {
+            filename: std::path::PathBuf::new(),
+            original_filename: std::path::PathBuf::new(),
+            modifiers: crate::args::Modifiers::default(),
+            data: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -128,6 +138,8 @@ struct InputPath {
 pub(crate) struct InputLinkerScript<'data> {
     pub(crate) script: LinkerScript<'data>,
     pub(crate) input_file: &'data InputFile,
+    /// Raw bytes of the script file. Used to compute line numbers from `AssertCommand::remainder`.
+    pub(crate) script_bytes: &'data [u8],
 }
 
 struct TemporaryState<'data, P: Platform> {
@@ -438,7 +450,11 @@ fn process_linker_script<'data>(
     })?;
 
     Ok(LoadedLinkerScript {
-        script: InputLinkerScript { script, input_file },
+        script: InputLinkerScript {
+            script,
+            input_file,
+            script_bytes: bytes,
+        },
         extra_inputs,
     })
 }

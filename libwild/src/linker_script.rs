@@ -120,11 +120,22 @@ pub(crate) struct ProvideSymbolDefinition<'a> {
     pub(crate) hidden: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct AssertCommand<'a> {
     pub(crate) expression: Expression<'a>,
     pub(crate) message: &'a [u8],
+    /// Remaining input at the point this ASSERT was parsed. Used to lazily compute
+    /// the line number only when an error occurs.
+    pub(crate) remainder: &'a [u8],
 }
+
+impl<'a> PartialEq for AssertCommand<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.expression == other.expression && self.message == other.message
+    }
+}
+
+impl<'a> Eq for AssertCommand<'a> {}
 
 /// Represents a parsed expression in linker scripts (e.g., in ASSERT commands).
 ///
@@ -141,7 +152,7 @@ pub(crate) struct AssertCommand<'a> {
 /// - Logical operators (&&, ||)
 /// - Ternary operator (? :)
 /// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
     Number(u64),
@@ -312,6 +323,7 @@ fn parse_provide<'input>(
 }
 
 fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertCommand<'input>> {
+    let remainder: &'input [u8] = input;
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
@@ -334,6 +346,7 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
     Ok(AssertCommand {
         expression,
         message,
+        remainder,
     })
 }
 
@@ -1217,6 +1230,7 @@ mod tests {
                             Box::new(Expression::Number(0x10000)),
                         ),
                         message: "Output too large".as_bytes(),
+                        remainder: b"",
                     }),
                 ],
             },
@@ -1250,6 +1264,7 @@ mod tests {
                                 Box::new(Expression::Number(0x1000)),
                             ),
                             message: "Text section too large".as_bytes(),
+                            remainder: b"",
                         }),
                     ],
                 })],

@@ -14,6 +14,7 @@ pub(crate) mod elf_writer;
 pub(crate) mod elf_x86_64;
 pub mod error;
 pub(crate) mod export_list;
+pub(crate) mod expression_eval;
 pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
