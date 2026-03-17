@@ -11,9 +11,6 @@
 //#DiffIgnore:section.rela.dyn
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
-// TODO: There are multiple variants of the test-case that fail with the BFD
-// linker on RISC-V arch.
-//#SkipArch: riscv64
 
 //#AbstractConfig:shared:default
 //#Shared:libc-integration-0.c,libc-integration-0b.c
@@ -159,14 +156,20 @@ get_int_fn_t get_sometimes_weak_fn_ptr(void);
 
 // Make sure that we can refer to a non-default version of a symbol from libc.
 #if defined(__x86_64__)
-__asm__(".symver old_timer_gettime, timer_gettime@GLIBC_2.2.5");
+__asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.2.5");
 #elif defined(__aarch64__)
-__asm__(".symver old_timer_gettime, timer_gettime@GLIBC_2.17");
+__asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.17");
+#elif defined(__riscv)
+__asm__(".symver some_old_fn_version, timer_gettime@GLIBC_2.27");
+#elif defined(__loongarch__)
+__asm__(".symver some_old_fn_version, cfgetispeed@GLIBC_2.36");
+#else
+#error "Missing some_old_fn_version definition for this arch"
 #endif
 
 // The signature here doesn't actually matter since we don't call it. Symbol is
 // weak to prevent the compiler from assuming that it can never be null.
-int __attribute__((weak)) old_timer_gettime();
+int __attribute__((weak)) some_old_fn_version();
 
 void* thread_function(void* data) {
   if (tvar1 != 0) {
@@ -301,7 +304,7 @@ int main() {
   }
 
 #ifdef DYNAMIC_DEP
-  if (&old_timer_gettime == NULL) {
+  if (&some_old_fn_version == NULL) {
     return 125;
   }
 #endif
