@@ -1,9 +1,8 @@
-use crate::Args;
-use crate::args::elf::ElfArgs;
 use crate::elf::RawSymbolName;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::platform::Args as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
@@ -42,10 +41,10 @@ impl Drop for SymbolInfoPrinter {
 
 impl SymbolInfoPrinter {
     pub(crate) fn new<'data, P: Platform>(
-        args: &Args<ElfArgs>,
+        args: &P::Args,
         groups: &[ResolvedGroup<'data, P>],
     ) -> Self {
-        let Some(name) = args.sym_info.as_ref() else {
+        let Some(name) = args.common().sym_info.as_ref() else {
             return Self::Disabled;
         };
 

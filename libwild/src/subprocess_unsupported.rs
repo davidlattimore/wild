@@ -1,6 +1,6 @@
 /// # Safety
 /// See function of the same name in `subprocess.rs`
-pub unsafe fn run_in_subprocess(args: crate::Args<crate::args::elf::ElfArgs>) -> ! {
+pub unsafe fn run_in_subprocess(args: crate::args::elf::ElfArgs) -> ! {
     let exit_code = match crate::run(args) {
         Ok(()) => 0,
         Err(error) => {

@@ -3,9 +3,6 @@
 
 use crate::InputLinkerScript;
 use crate::OutputKind;
-use crate::args;
-use crate::args::Args;
-use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::elf::RawSymbolName;
 use crate::error;
@@ -35,6 +32,7 @@ use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
 use crate::platform;
+use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
@@ -72,7 +70,7 @@ use symbolic_demangle::demangle;
 
 #[derive(Debug)]
 pub struct SymbolDb<'data, P: Platform> {
-    pub(crate) args: &'data Args<ElfArgs>,
+    pub(crate) args: &'data P::Args,
 
     pub(crate) groups: Vec<Group<'data, P>>,
 
@@ -322,7 +320,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     pub(crate) fn new(
-        args: &'data Args<ElfArgs>,
+        args: &'data P::Args,
         output_kind: OutputKind,
         auxiliary: &AuxiliaryFiles<'data>,
         herd: &'data bumpalo_herd::Herd,
@@ -361,7 +359,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             herd,
         };
 
-        for symbol in &args.export_list {
+        for symbol in args.force_export_symbol_names() {
             symbol_db
                 .export_list
                 .get_or_insert_default()
@@ -558,7 +556,8 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     /// affects references to symbols in compilation units where those symbols are defined. Our main
     /// reason for this choice of behaviour is that it's much simpler to implement.
     pub(crate) fn apply_wrapped_symbol_overrides(&mut self) {
-        if self.args.wrap.is_empty() {
+        let wrap = self.args.symbol_names_to_wrap();
+        if wrap.is_empty() {
             return;
         }
 
@@ -566,7 +565,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         let allocator = self.herd.get();
 
-        for name in &self.args.wrap {
+        for name in wrap {
             let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
             let orig_id = self.get_unversioned(&UnversionedSymbolName::prehashed(name_bytes));
             let wrap_name = format!("__wrap_{name}");
@@ -636,7 +635,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     pub(crate) fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolNameDisplay<'data> {
         SymbolNameDisplay {
             name: self.symbol_name(symbol_id).ok(),
-            demangle: self.args.demangle,
+            demangle: self.args.common().demangle,
         }
     }
 
@@ -898,19 +897,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
     }
 
     pub(crate) fn entry_symbol_name(&self) -> &[u8] {
-        // The --entry flag is used first, falling back to what the linker script says, or otherwise
-        // defaults to `_start`.
-        self.args
-            .entry
-            .as_ref()
-            .map(|n| n.as_bytes())
-            .or(self.entry)
-            .unwrap_or(b"_start")
+        self.args.entry_symbol_name(self.entry)
     }
 
     pub(crate) fn defsym_defined_via_cli_option(&self, symbol_name: &[u8]) -> bool {
         self.args
-            .defsym
+            .defsym()
             .iter()
             .any(|(name, _)| name.as_bytes() == symbol_name)
     }
@@ -1269,7 +1261,7 @@ fn select_symbol<'data, P: Platform>(
             // are defined in COMDAT group sections.
             if (!symbol_db.is_in_comdat_group(existing, resolved)
                 || !symbol_db.is_in_comdat_group(id, resolved))
-                && !symbol_db.db.args.allow_multiple_definitions
+                && !symbol_db.db.args.allow_multiple_definitions()
             {
                 bail!(
                     "{}, defined in {} and {}",
@@ -1389,7 +1381,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 fn read_symbols<'data, P: Platform>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, P>],
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
@@ -1417,7 +1409,7 @@ fn read_symbols_for_group<'data, P: Platform>(
     version_script: &VersionScript,
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
     verbose_timing_phase!(
@@ -1554,7 +1546,7 @@ fn load_symbols_from_file<'data, P: Platform>(
     version_script: &VersionScript,
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     export_list: &Option<ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
@@ -1681,7 +1673,7 @@ trait SymbolLoader<'data, P: Platform> {
 
 struct RegularObjectSymbolLoader<'a, 'data, P: Platform> {
     object: &'a P::File<'data>,
-    args: &'a Args<ElfArgs>,
+    args: &'a P::Args,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],
@@ -1708,45 +1700,16 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
     fn compute_value_flags(&self, sym: &P::SymtabEntry) -> ValueFlags {
         let is_undefined = sym.is_undefined();
 
-        let symbol_is_exported = || {
-            if let Some(export_list) = &self.export_list
-                && let Ok(symbol_name) = self.object.symbol_name(sym)
-                && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name))
-            {
-                return false;
-            }
-            true
-        };
-        let non_interposable = !sym.is_interposable()
-            || sym.is_local()
-            || self.output_kind.is_static_executable()
-            // Symbols defined in an executable cannot be interposed since the executable is always the
-            // first place checked for a symbol by the dynamic loader.
-            || (!is_undefined && (
-                self.output_kind.is_executable()
-                || (self.archive_semantics && self.args.exclude_libs.should_exclude(self.lib_name))
-                || (
-                    self.args.b_symbolic == args::BSymbolicKind::All
-                    // `-Bsymbolic-functions`
-                    || (
-                        self.args.b_symbolic == args::BSymbolicKind::Functions
-                        && sym.is_func()
-                    )
-                    // `-Bsymbolic-non-weak`
-                    || (
-                        self.args.b_symbolic == args::BSymbolicKind::NonWeak
-                        && !sym.is_weak()
-                    )
-                    // `-Bsymbolic-non-weak-functions`
-                    || (
-                        self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
-                        && (sym.is_func()
-                        && !sym.is_weak())
-                    )
-                )
-                // Bsymbolic does not affect symbols that are exported
-                && !(self.export_list.is_some() && symbol_is_exported())
-            ));
+        let non_interposable = P::is_symbol_non_interposable(
+            self.object,
+            self.args,
+            sym,
+            self.output_kind,
+            self.export_list.as_ref(),
+            self.lib_name,
+            self.archive_semantics,
+            is_undefined,
+        );
 
         let mut flags: ValueFlags = if sym.is_absolute() {
             ValueFlags::ABSOLUTE
@@ -2065,8 +2028,8 @@ impl<'data> PendingVersionedSymbol<'data> {
 }
 
 /// Decides how many buckets we should use for symbol names.
-fn num_symbol_hash_buckets(args: &Args<ElfArgs>) -> usize {
-    args.available_threads.get()
+fn num_symbol_hash_buckets(args: &impl platform::Args) -> usize {
+    args.common().available_threads.get()
 }
 
 impl<'data> SymbolLoadOutputs<'data> {

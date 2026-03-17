@@ -20,8 +20,8 @@ fn run() -> libwild::error::Result {
 
     let args = libwild::Args::parse(std::env::args)?;
 
-    fn runner(args: libwild::Args<libwild::args::elf::ElfArgs>) -> libwild::error::Result<()> {
-        if args.should_fork() {
+    fn runner(args: libwild::args::elf::ElfArgs) -> libwild::error::Result<()> {
+        if libwild::should_fork(&args) {
             // Safety: We haven't spawned any threads yet.
             unsafe { libwild::run_in_subprocess(args) };
         } else {
@@ -30,12 +30,7 @@ fn run() -> libwild::error::Result {
         }
     }
 
-    match args.target_args {
-        libwild::args::TargetArgs::Elf(_) => {
-            let args = args.map_target(|a| match a {
-                libwild::args::TargetArgs::Elf(elf_args) => elf_args,
-            });
-            runner(args)
-        }
+    match args {
+        libwild::args::Args::Elf(elf_args) => runner(elf_args),
     }
 }

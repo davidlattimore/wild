@@ -4,7 +4,6 @@ use self::elf::NoteProperty;
 use self::elf::get_page_mask;
 use crate::OutputKind;
 use crate::alignment;
-use crate::args::Args;
 use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
 use crate::bail;
@@ -70,6 +69,7 @@ use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::platform;
 use crate::platform::Arch;
+use crate::platform::Args as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
@@ -159,7 +159,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
     layout: &ElfLayout<'data>,
 ) -> Result {
     write_file_contents::<A>(sized_output, layout)?;
-    if layout.args().validate_output {
+    if layout.args().common().validate_output {
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
@@ -1289,7 +1289,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
-    let _file_span = layout.args().trace_span_for_file(object.file_id);
+    let _file_span = layout.args().common().trace_span_for_file(object.file_id);
     for sec in &object.sections {
         match sec {
             SectionSlot::Loaded(sec) => {
@@ -1340,7 +1340,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         }
     }
 
-    if !layout.args().strip_all() {
+    if !layout.args().should_strip_all() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
     Ok(())
@@ -2871,7 +2871,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
 
     write_plt_got_entries::<A>(prelude, layout, table_writer)?;
 
-    if !layout.args().strip_all() {
+    if !layout.args().should_strip_all() {
         write_symbol_table_entries(prelude, &mut table_writer.debug_symbol_writer, layout)?;
     }
 
@@ -3175,7 +3175,7 @@ fn write_synthetic_symbols<'data, A: Arch<Platform = Elf>>(
 
     write_internal_symbols_plt_got_entries::<A>(&syn.internal_symbols, table_writer, layout)?;
 
-    if !layout.args().strip_all() {
+    if !layout.args().should_strip_all() {
         write_internal_symbols(
             &syn.internal_symbols,
             layout,
@@ -4229,7 +4229,7 @@ struct DynamicEntryWriter {
 }
 
 struct DynamicEntryInputs<'layout> {
-    args: &'layout Args<ElfArgs>,
+    args: &'layout ElfArgs,
     has_static_tls: bool,
     has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,

@@ -1,9 +1,7 @@
 use crate::OutputKind;
 use crate::OutputSections;
-use crate::args::Args;
+use crate::args::DefsymValue;
 use crate::args::Modifiers;
-use crate::args::elf::DefsymValue;
-use crate::args::elf::ElfArgs;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -12,6 +10,7 @@ use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSectionId;
+use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::symbol::UnversionedSymbolName;
@@ -202,7 +201,7 @@ impl<'data> InternalSymDefInfo<'data> {
 }
 
 impl<'data, P: Platform> ParsedInputObject<'data, P> {
-    pub(crate) fn new(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Box<Self>> {
+    pub(crate) fn new(input: &InputBytes<'data>, args: &P::Args) -> Result<Box<Self>> {
         verbose_timing_phase!("Parse file");
 
         let object = P::File::parse(input, args)
@@ -225,22 +224,22 @@ impl<'data, P: Platform> ParsedInputObject<'data, P> {
 }
 
 impl<'data> Prelude<'data> {
-    pub(crate) fn new<P: Platform>(args: &'data Args<ElfArgs>, output_kind: OutputKind) -> Self {
+    pub(crate) fn new<P: Platform>(args: &'data P::Args, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();
 
         P::create_linker_defined_symbols(&mut symbols, output_kind);
 
-        args.undefined.iter().for_each(|name| {
+        args.force_undefined_symbol_names().iter().for_each(|name| {
             symbols.add_symbol(InternalSymDefInfo::new(
                 SymbolPlacement::ForceUndefined,
                 name.as_bytes(),
             ));
         });
 
-        // Add symbols defined via --defsym
-        args.defsym.iter().for_each(|(name, value)| {
+        // Add symbols defined via the command line.
+        args.defsym().iter().for_each(|(name, value)| {
             let placement = match value {
                 DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
                 DefsymValue::SymbolWithOffset(target, offset) => {

@@ -1,7 +1,7 @@
-use crate::Args;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
+use crate::args::BSymbolicKind;
 use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
 use crate::args::elf::RelocationModel;
@@ -34,6 +34,7 @@ use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::platform;
 use crate::platform::Arch;
+use crate::platform::Args as _;
 use crate::platform::CommonSymbol;
 use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
@@ -43,6 +44,8 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader as _;
+use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::symbol::UnversionedSymbolName;
@@ -282,8 +285,9 @@ impl platform::Platform for Elf {
     type DynamicLayoutStateExt<'data> = DynamicLayoutStateExt<'data>;
     type DynamicLayoutExt<'data> = DynamicLayoutExt<'data>;
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
+    type Args = ElfArgs;
 
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<ElfArgs>) {
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
         // keeping, which by inherently needs to be after this method is called.
@@ -369,7 +373,7 @@ impl platform::Platform for Elf {
 
     fn pre_finalise_sizes_prelude<'data>(
         common: &mut layout::CommonGroupState<'data, Elf>,
-        args: &Args<ElfArgs>,
+        args: &ElfArgs,
     ) {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
@@ -561,7 +565,7 @@ impl platform::Platform for Elf {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args<ElfArgs>,
+        args: &ElfArgs,
     ) {
         // If relro is disabled, then discard the relro segment.
         if !args.relro {
@@ -711,7 +715,7 @@ impl platform::Platform for Elf {
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
-        args: &Args<ElfArgs>,
+        args: &ElfArgs,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> Result<LayoutExt>
@@ -810,7 +814,7 @@ impl platform::Platform for Elf {
     }
 
     fn new_epilogue_layout(
-        args: &Args<ElfArgs>,
+        args: &ElfArgs,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> EpilogueLayoutExt {
@@ -1022,8 +1026,12 @@ impl platform::Platform for Elf {
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        args: &ElfArgs,
     ) -> Result {
-        allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)
+        if args.hash_style.includes_sysv() {
+            allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)?;
+        }
+        Ok(())
     }
 
     fn finalise_sizes_all<'data>(
@@ -1032,12 +1040,77 @@ impl platform::Platform for Elf {
     ) {
         finalise_gnu_version_size(mem_sizes, symbol_db);
     }
+
+    fn is_symbol_non_interposable<'data>(
+        object: &Self::File<'data>,
+        args: &Self::Args,
+        sym: &Self::SymtabEntry,
+        output_kind: OutputKind,
+        export_list: Option<&crate::export_list::ExportList>,
+        lib_name: &[u8],
+        archive_semantics: bool,
+        is_undefined: bool,
+    ) -> bool {
+        let symbol_is_exported = || {
+            if let Some(export_list) = &export_list
+                && let Ok(symbol_name) = object.symbol_name(sym)
+                && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name))
+            {
+                return false;
+            }
+            true
+        };
+
+        !sym.is_interposable()
+            || sym.is_local()
+            || output_kind.is_static_executable()
+            // Symbols defined in an executable cannot be interposed since the executable is always the
+            // first place checked for a symbol by the dynamic loader.
+            || (!is_undefined && (
+                output_kind.is_executable()
+                || (archive_semantics && !args.should_export_dynamic(lib_name))
+                || (
+                    args.b_symbolic == BSymbolicKind::All
+                    // `-Bsymbolic-functions`
+                    || (
+                        args.b_symbolic == BSymbolicKind::Functions
+                        && sym.is_func()
+                    )
+                    // `-Bsymbolic-non-weak`
+                    || (
+                        args.b_symbolic == BSymbolicKind::NonWeak
+                        && !sym.is_weak()
+                    )
+                    // `-Bsymbolic-non-weak-functions`
+                    || (
+                        args.b_symbolic == BSymbolicKind::NonWeakFunctions
+                        && (sym.is_func()
+                        && !sym.is_weak())
+                    )
+                )
+                // Bsymbolic does not affect symbols that are exported
+                && !(export_list.is_some() && symbol_is_exported())
+            ))
+    }
+
+    fn validate_stack_section(
+        input_section: &Self::SectionHeader,
+        object: &impl std::fmt::Display,
+        args: &Self::Args,
+    ) -> Result {
+        // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
+        // executable stack.
+        if input_section.is_executable() && !args.execstack {
+            bail!("{object}: requires executable stack, but -z execstack is not specified");
+        }
+        Ok(())
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Elf;
 
-    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self> {
+    fn parse(input: &InputBytes<'data>, args: &ElfArgs) -> Result<Self> {
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let file = Self::parse_bytes(input.data, is_dynamic)?;
@@ -2361,7 +2434,7 @@ impl LayoutExt {
     pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
-        args: &Args<ElfArgs>,
+        args: &ElfArgs,
     ) -> Result<Self> {
         let gnu_property_notes = merge_gnu_property_notes::<A>(states.clone(), args.z_isa)?;
         let riscv_attributes = merge_riscv_attributes::<A>(states)?;
@@ -2996,7 +3069,7 @@ pub(crate) struct GnuHashLayout {
 }
 
 fn create_gnu_hash_layout(
-    args: &Args<ElfArgs>,
+    args: &ElfArgs,
     output_kind: OutputKind,
     dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
 ) -> Option<GnuHashLayout> {

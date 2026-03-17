@@ -1,4 +1,5 @@
 pub(crate) mod alignment;
+pub use args::Args;
 pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
@@ -77,9 +78,9 @@ use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
 use crate::platform::Arch;
+use crate::platform::Args as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
-pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
@@ -99,12 +100,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(mut args: Args<ElfArgs>) -> error::Result {
+pub fn run(mut args: ElfArgs) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
-    let thread_pool = args.activate_thread_pool()?;
+    let thread_pool = args.common_mut().activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args, &thread_pool)?;
     drop(linker);
@@ -115,10 +116,10 @@ pub fn run(mut args: Args<ElfArgs>) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &Args<ElfArgs>) -> Result<(), AlreadyInitialised> {
+pub fn setup_tracing(args: &ElfArgs) -> Result<(), AlreadyInitialised> {
     if let Some(opts) = args.time_phase_options.as_ref() {
         timing::init_tracing(opts)
-    } else if args.print_allocations.is_some() {
+    } else if args.common().print_allocations.is_some() {
         debug_trace::init()
     } else {
         tracing_subscriber::registry()
@@ -180,7 +181,7 @@ impl Linker {
     /// return, the output file should be usable.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
-        args: &'layout_inputs Args<ElfArgs>,
+        args: &'layout_inputs ElfArgs,
         // We don't actually use this, but take it as an argument to ensure that the caller has
         // created it. We may decide to actually use it in future, if we stop using rayon's global
         // thread pool.
@@ -214,7 +215,7 @@ impl Linker {
 
     fn link_for_arch<'data, A: Arch<Platform = Elf>>(
         &'data self,
-        args: &'data Args<ElfArgs>,
+        args: &'data ElfArgs,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
@@ -249,14 +250,14 @@ impl Linker {
     fn load_inputs_and_link<'data, A: Arch<Platform = Elf>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data Args<ElfArgs>,
+        args: &'data ElfArgs,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut plugin =
             linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
 
-        let loaded = file_loader.load_inputs(&args.inputs, args, &mut plugin);
+        let loaded = file_loader.load_inputs(&args.common.inputs, args, &mut plugin);
 
-        args.save_dir.finish(file_loader, args)?;
+        args.common.save_dir.finish(file_loader, args)?;
 
         let loaded = loaded?;
 
@@ -411,4 +412,12 @@ fn write_dependency_file(
 /// in the build, otherwise, do nothing. See `BENCHMARKING.md` for details.
 pub fn init_timing() -> Result {
     timing::setup()
+}
+
+pub fn should_fork(args: &ElfArgs) -> bool {
+    args.common().should_fork()
+}
+
+pub fn activate_thread_pool(args: &mut ElfArgs) -> Result<crate::args::ThreadPool> {
+    args.common_mut().activate_thread_pool()
 }

@@ -31,6 +31,7 @@ use std::path::PathBuf;
 
 pub mod elf;
 
+use crate::platform;
 use crate::timing_phase;
 use std::sync::atomic::AtomicI64;
 
@@ -49,7 +50,7 @@ pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 
 #[derive(Debug)]
-pub struct Args<T = TargetArgs> {
+pub struct CommonArgs {
     pub(crate) unrecognized_options: Vec<String>,
 
     /// The number of actually available threads (considering jobserver)
@@ -74,44 +75,27 @@ pub struct Args<T = TargetArgs> {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) sym_info: Option<String>,
     pub(crate) numeric_experiments: Vec<Option<u64>>,
-
-    /// Format-specific arguments.
-    pub target_args: T,
-}
-
-impl<T> std::ops::Deref for Args<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.target_args
-    }
-}
-
-impl<T> std::ops::DerefMut for Args<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.target_args
-    }
 }
 
 impl Args {
     /// Parse CLI arguments. Detects target format from `--target=<triple>`, `-m`,
     /// or host default, then routes to the format-specific parser.
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Self> {
         let mut input = input();
         // TODO: will be used when supporting multiple formats
         let _executable_name = input
             .next()
-            .ok_or_else(|| crate::error!("should always be at least the executable name"))?;
+            .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
         let all_args = input.collect::<Vec<_>>();
 
         let elf_args = elf::parse(|| all_args.iter())?;
-        Ok(elf_args.map_target(TargetArgs::Elf))
+        Ok(Args::Elf(elf_args))
     }
 }
 
-impl<T: Default> Default for Args<T> {
+impl Default for CommonArgs {
     fn default() -> Self {
         Self {
-            target_args: T::default(),
             available_threads: NonZeroUsize::new(1).unwrap(),
             num_threads: None,
             jobserver_client: None,
@@ -140,35 +124,7 @@ impl<T: Default> Default for Args<T> {
     }
 }
 
-impl<T> Args<T> {
-    /// Transform the target-specific part while preserving common fields.
-    pub fn map_target<U>(self, f: impl FnOnce(T) -> U) -> Args<U> {
-        Args {
-            unrecognized_options: self.unrecognized_options,
-            available_threads: self.available_threads,
-            num_threads: self.num_threads,
-            jobserver_client: self.jobserver_client,
-            inputs: self.inputs,
-            file_write_mode: self.file_write_mode,
-            save_dir: self.save_dir,
-            files_per_group: self.files_per_group,
-            prepopulate_maps: self.prepopulate_maps,
-            debug_fuel: self.debug_fuel,
-            should_fork: self.should_fork,
-            demangle: self.demangle,
-            validate_output: self.validate_output,
-            verify_allocation_consistency: self.verify_allocation_consistency,
-            write_layout: self.write_layout,
-            write_trace: self.write_trace,
-            print_allocations: self.print_allocations,
-            sym_info: self.sym_info,
-            mmap_output_file: self.mmap_output_file,
-            numeric_experiments: self.numeric_experiments,
-            // Format-specific
-            target_args: f(self.target_args),
-        }
-    }
-
+impl CommonArgs {
     pub(crate) fn trace_span_for_file(
         &self,
         file_id: FileId,
@@ -292,14 +248,14 @@ pub struct ThreadPool {
     _jobserver_tokens: Vec<Acquired>,
 }
 
-pub enum TargetArgs {
+pub enum Args {
     Elf(elf::ElfArgs),
 }
 
-impl std::fmt::Debug for TargetArgs {
+impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TargetArgs::Elf(e) => e.fmt(f),
+            Args::Elf(e) => e.fmt(f),
         }
     }
 }
@@ -312,6 +268,7 @@ pub(crate) enum CopyRelocations {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CopyRelocationsDisabledReason {
+    Unsupported,
     Flag,
     SharedObject,
 }
@@ -320,6 +277,9 @@ impl Display for CopyRelocationsDisabledReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Reason should make sense after the word "because".
         let reason = match self {
+            CopyRelocationsDisabledReason::Unsupported => {
+                "target platform doesn't support copy relocations"
+            }
             CopyRelocationsDisabledReason::Flag => "the flag -z nocopyreloc was supplied",
             CopyRelocationsDisabledReason::SharedObject => "output is a shared object",
         };
@@ -390,7 +350,15 @@ pub(crate) enum BSymbolicKind {
     NonWeak,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
+pub(crate) enum DefsymValue {
+    /// A numeric value (address)
+    Value(u64),
+    /// Reference to another symbol with an optional offset
+    SymbolWithOffset(String, i64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnresolvedSymbols {
     /// Report all unresolved symbols.
     ReportAll,
@@ -411,13 +379,13 @@ struct ArgumentParser<T> {
     prefix_options: HashMap<&'static str, PrefixOptionHandler<T>>, // For options like -L, -l, etc.
 }
 
-impl<T> Default for ArgumentParser<T> {
+impl<T: platform::Args> Default for ArgumentParser<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> ArgumentParser<T> {
+impl<T: platform::Args> ArgumentParser<T> {
     #[must_use]
     fn new() -> Self {
         Self {
@@ -465,11 +433,13 @@ impl<T> ArgumentParser<T> {
 
     fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
-        args: &mut Args<T>,
+        args: &mut T,
         modifier_stack: &mut Vec<Modifiers>,
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
+        let common = args.common_mut();
+
         // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
@@ -591,12 +561,12 @@ impl<T> ArgumentParser<T> {
                 return Ok(());
             }
 
-            args.unrecognized_options.push(arg.to_owned());
+            common.unrecognized_options.push(arg.to_owned());
             return Ok(());
         }
 
-        args.save_dir.handle_file(arg);
-        args.inputs.push(Input {
+        common.save_dir.handle_file(arg);
+        common.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
             search_first: None,
             modifiers: *modifier_stack.last().unwrap(),
@@ -726,16 +696,16 @@ impl<T> Clone for OptionHandler<T> {
 
 struct PrefixOptionHandler<T> {
     help_text: &'static str,
-    handler: fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>,
+    handler: fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>,
     sub_options: HashMap<&'static str, SubOption<T>>,
 }
 
-type OptionalParamHandler<T> = fn(&mut Args<T>, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
+type OptionalParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
 
 #[allow(clippy::enum_variant_names)]
 enum OptionHandlerFn<T> {
-    NoParam(fn(&mut Args<T>, &mut Vec<Modifiers>) -> Result<()>),
-    WithParam(fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>),
+    NoParam(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
+    WithParam(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
     OptionalParam(OptionalParamHandler<T>),
 }
 
@@ -781,9 +751,9 @@ struct WithOptionalParam;
 
 enum SubOptionHandler<T> {
     /// Handler without value parameter (exact match)
-    NoValue(fn(&mut Args<T>, &mut Vec<Modifiers>) -> Result<()>),
+    NoValue(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
     /// Handler with value parameter (prefix match)
-    WithValue(fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>),
+    WithValue(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
 }
 
 impl<T> Clone for SubOptionHandler<T> {
@@ -842,7 +812,7 @@ impl<'a, T, S> OptionDeclaration<'a, T, S> {
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args<T>, &mut Vec<Modifiers>) -> Result<()>,
+        handler: fn(&mut T, &mut Vec<Modifiers>) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -859,7 +829,7 @@ impl<'a, T, S> OptionDeclaration<'a, T, S> {
         mut self,
         name: &'static str,
         help: &'static str,
-        handler: fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>,
+        handler: fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>,
     ) -> Self {
         self.sub_options.insert(
             name,
@@ -873,7 +843,7 @@ impl<'a, T, S> OptionDeclaration<'a, T, S> {
 }
 
 impl<'a, T> OptionDeclaration<'a, T, NoParam> {
-    fn execute(self, handler: fn(&mut Args<T>, &mut Vec<Modifiers>) -> Result<()>) {
+    fn execute(self, handler: fn(&mut T, &mut Vec<Modifiers>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::NoParam(handler),
@@ -893,7 +863,7 @@ impl<'a, T> OptionDeclaration<'a, T, NoParam> {
 }
 
 impl<'a, T> OptionDeclaration<'a, T, WithParam> {
-    fn execute(self, handler: fn(&mut Args<T>, &mut Vec<Modifiers>, &str) -> Result<()>) {
+    fn execute(self, handler: fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>) {
         let mut short_names = self.short_names.clone();
         short_names.extend_from_slice(&self.prefixes);
 

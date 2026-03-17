@@ -1,8 +1,6 @@
 use crate::OutputKind;
-use crate::args::Args;
 use crate::args::FileWriteMode;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
-use crate::args::elf::ElfArgs;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -12,6 +10,8 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
+use crate::platform;
+use crate::platform::Args;
 use crate::platform::Platform;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
@@ -112,12 +112,13 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn new(args: &Args<ElfArgs>, output_kind: OutputKind) -> Output {
+    pub(crate) fn new(args: &impl platform::Args, output_kind: OutputKind) -> Output {
         let file_write_mode = args
+            .common()
             .file_write_mode
             .unwrap_or_else(|| default_file_write_mode(args, output_kind));
 
-        let creator = if args.available_threads.get() > 1 {
+        let creator = if args.common().available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             FileCreator::Background {
                 sized_output_sender: Some(sized_output_sender),
@@ -128,12 +129,12 @@ impl Output {
         };
 
         Output {
-            path: args.output.clone(),
+            path: args.output().clone(),
             creator,
             config: OutputConfig {
                 file_write_mode,
-                should_write_trace: args.write_trace,
-                use_mmap: args.mmap_output_file,
+                should_write_trace: args.common().write_trace,
+                use_mmap: args.common().mmap_output_file,
             },
         }
     }
@@ -194,7 +195,7 @@ impl Output {
         write_fn: impl FnOnce(&mut SizedOutput, &'layout Layout<'data, P>) -> Result,
     ) -> Result {
         timing_phase!("Write output file");
-        if layout.args().write_layout {
+        if layout.args().common().write_layout {
             write_layout(layout)?;
         }
         let mut sized_output = match &self.creator {
@@ -232,12 +233,12 @@ impl Output {
 }
 
 /// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(args: &Args<ElfArgs>, output_kind: OutputKind) -> FileWriteMode {
+fn default_file_write_mode(args: &impl platform::Args, output_kind: OutputKind) -> FileWriteMode {
     if output_kind.is_shared_object() {
         return FileWriteMode::UnlinkAndReplace;
     }
 
-    if std::fs::metadata(&args.output).is_err() {
+    if std::fs::metadata(args.output()).is_err() {
         return FileWriteMode::UnlinkAndReplace;
     };
 
@@ -423,7 +424,7 @@ pub(crate) fn split_buffers_by_alignment<'out, 'data, P: Platform>(
 }
 
 fn write_layout<P: Platform>(layout: &Layout<P>) -> Result {
-    let layout_path = linker_layout::layout_path(&layout.args().output);
+    let layout_path = linker_layout::layout_path(layout.args().output());
     write_layout_to(layout, &layout_path)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
 }

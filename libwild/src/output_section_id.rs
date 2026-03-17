@@ -15,8 +15,6 @@
 
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::args::Args;
-use crate::args::elf::ElfArgs;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
 use crate::output_section_map::OutputSectionMap;
@@ -24,6 +22,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::platform::Args;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
 use crate::platform::SectionAttributes as _;
@@ -608,15 +607,12 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
         sections: &mut [SectionSlot],
-        args: &Args<ElfArgs>,
+        args: &P::Args,
     ) {
         for custom in custom_sections {
-            let name_str = std::str::from_utf8(custom.name.bytes()).ok();
-            let location = name_str.and_then(|name| {
-                args.section_start
-                    .get(name)
-                    .map(|&address| linker_script::Location { address })
-            });
+            let location = args
+                .start_address_for_section(custom.name)
+                .map(|address| linker_script::Location { address });
             let section_id = self.add_named_section(custom.name, custom.alignment, location);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {

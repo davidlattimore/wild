@@ -1,7 +1,7 @@
-use crate::Args;
 use crate::OutputKind;
 use crate::Result;
-use crate::args::elf::ElfArgs;
+use crate::alignment::Alignment;
+use crate::args::DefsymValue;
 use crate::bail;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;
@@ -14,6 +14,7 @@ use crate::layout::OutputRecordLayout;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
@@ -31,8 +32,11 @@ use rayon::Scope;
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 use std::ops::Range;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
@@ -171,6 +175,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
+    type Args: Args;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -206,7 +211,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
 
     /// Implementations can force certain sections to be kept. Only needs to be done for sections
     /// that need to be emitted even if empty.
-    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Args<ElfArgs>);
+    fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &Self::Args);
 
     /// Returns whether an input section with zero size destined for the specified output section
     /// should be considered content and thus prevent the output section from being discarded.
@@ -224,7 +229,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
 
     fn pre_finalise_sizes_prelude<'data>(
         common: &mut layout::CommonGroupState<'data, Self>,
-        args: &Args<ElfArgs>,
+        args: &Self::Args,
     );
 
     fn finalise_object_sizes<'data>(
@@ -294,7 +299,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn update_segment_keep_list(
         program_segments: &ProgramSegments<Self::ProgramSegmentDef>,
         keep_segments: &mut [bool],
-        args: &Args<ElfArgs>,
+        args: &Self::Args,
     );
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef];
@@ -311,7 +316,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>>;
 
     fn create_layout_properties<'data, 'states, 'files, A: Arch<Platform = Self>>(
-        args: &Args<ElfArgs>,
+        args: &Self::Args,
         objects: impl Iterator<Item = &'files Self::File<'data>>,
         states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> Result<Self::LayoutExt>
@@ -340,7 +345,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     ) -> Result;
 
     fn new_epilogue_layout(
-        args: &Args<ElfArgs>,
+        args: &Self::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
     ) -> Self::EpilogueLayoutExt;
@@ -374,6 +379,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        args: &Self::Args,
     ) -> Result;
 
     fn finalise_layout_epilogue<'data>(
@@ -383,6 +389,23 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         common_state: &Self::LayoutExt,
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    ) -> Result;
+
+    fn is_symbol_non_interposable<'data>(
+        object: &Self::File<'data>,
+        args: &Self::Args,
+        sym: &Self::SymtabEntry,
+        output_kind: OutputKind,
+        export_list: Option<&crate::export_list::ExportList>,
+        lib_name: &[u8],
+        archive_semantics: bool,
+        is_undefined: bool,
+    ) -> bool;
+
+    fn validate_stack_section(
+        section: &Self::SectionHeader,
+        object: &impl std::fmt::Display,
+        args: &Self::Args,
     ) -> Result;
 }
 
@@ -394,7 +417,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     /// As for `parse_bytes` but also validates that the file architecture matches what is expected
     /// based on `args`.
-    fn parse(input: &InputBytes<'data>, args: &Args<ElfArgs>) -> Result<Self>;
+    fn parse(input: &InputBytes<'data>, args: &<Self::Platform as Platform>::Args) -> Result<Self>;
 
     fn is_dynamic(&self) -> bool;
 
@@ -808,3 +831,130 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
 }
 
 pub(crate) trait BuiltInSectionDetails: Send + Sync + 'static {}
+
+pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
+    fn gc_stats_output_file(&self) -> Option<&Path> {
+        None
+    }
+
+    fn gc_stats_ignore(&self) -> &[String] {
+        &[]
+    }
+
+    fn verbose_gc_stats(&self) -> bool {
+        false
+    }
+
+    fn should_strip_debug(&self) -> bool;
+
+    fn should_strip_all(&self) -> bool;
+
+    /// Returns whether a symbol with the specified name should be stripped. Should return false if
+    /// name-based stripping is not being applied.
+    fn should_strip_symbol_named(&self, _name: &[u8]) -> bool {
+        false
+    }
+
+    /// Returns a list of symbol names that should be treated as undefined.
+    fn force_undefined_symbol_names(&self) -> &[String] {
+        &[]
+    }
+
+    fn force_export_symbol_names(&self) -> &[String] {
+        &[]
+    }
+
+    fn symbol_names_to_wrap(&self) -> &[String] {
+        &[]
+    }
+
+    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8];
+
+    fn version_script_path(&self) -> Option<&Path> {
+        None
+    }
+
+    fn lib_search_path(&self) -> &[Box<Path>];
+
+    fn output(&self) -> &Arc<Path>;
+
+    fn common(&self) -> &crate::args::CommonArgs;
+
+    fn common_mut(&mut self) -> &mut crate::args::CommonArgs;
+
+    fn sysroot(&self) -> Option<&Path> {
+        None
+    }
+
+    fn export_list_path(&self) -> Option<&Path> {
+        None
+    }
+
+    fn should_gc_sections(&self) -> bool {
+        true
+    }
+
+    fn should_relax(&self) -> bool {
+        false
+    }
+
+    fn should_emit_got_plt_syms(&self) -> bool {
+        false
+    }
+
+    fn should_export_all_dynamic_symbols(&self) -> bool;
+
+    /// Returns whether all symbols from the specified input should be exported as dynamic symbols.
+    fn should_export_dynamic(&self, lib_name: &[u8]) -> bool;
+
+    /// Returns whether to allow undefined symbols in regular object files.
+    fn should_allow_object_undefined(&self) -> bool {
+        false
+    }
+
+    /// Returns whether multiple symbols with the same name should be permitted.
+    fn allow_multiple_definitions(&self) -> bool {
+        false
+    }
+
+    fn unresolved_symbols_behaviour(&self) -> crate::args::UnresolvedSymbols {
+        crate::args::UnresolvedSymbols::ReportAll
+    }
+
+    fn defsym(&self) -> &[(String, DefsymValue)] {
+        &[]
+    }
+
+    fn stack_size_override(&self) -> Option<NonZeroU64> {
+        None
+    }
+
+    fn copy_relocations_enabled(&self) -> crate::args::CopyRelocations {
+        crate::args::CopyRelocations::Disallowed(
+            crate::args::CopyRelocationsDisabledReason::Unsupported,
+        )
+    }
+
+    fn should_error_on_unresolved_symbols(&self) -> bool {
+        true
+    }
+
+    /// Whether the linker name and version should be written into the output file.
+    fn should_write_linker_identity(&self) -> bool {
+        false
+    }
+
+    fn dynamic_linker(&self) -> Option<&Path> {
+        None
+    }
+
+    /// Gives the command-line the option to force the start address for a section based on its
+    /// name.
+    fn start_address_for_section(&self, _section_name: SectionName) -> Option<u64> {
+        None
+    }
+
+    fn loadable_segment_alignment(&self) -> Alignment;
+
+    fn should_merge_sections(&self) -> bool;
+}
