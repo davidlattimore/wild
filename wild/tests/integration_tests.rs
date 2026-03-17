@@ -1819,8 +1819,8 @@ fn get_c_compiler(
     match (cross_arch, compiler, c_language) {
         (None, "gcc", CLanguage::C) => Ok("gcc".to_string()),
         (None, "gcc", CLanguage::Cpp) => Ok("g++".to_string()),
-        (None, "clang", CLanguage::C) => Ok("clang".to_string()),
-        (None, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
+        (_, "clang", CLanguage::C) => Ok("clang".to_string()),
+        (_, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
             Some(
                 arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
@@ -1883,7 +1883,7 @@ fn build_obj(
         CompilerKind::Rust => ".d",
     };
 
-    let mut command = Command::new(compiler);
+    let mut command = Command::new(&compiler);
 
     let mut compiler_args =
         if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
@@ -1912,6 +1912,8 @@ fn build_obj(
             {
                 command.arg("-fdiagnostics-color=always");
             }
+
+            add_cross_args(&mut command, &compiler_args, cross_arch);
 
             command.arg("-c");
         }
@@ -2039,6 +2041,30 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+/// Adds arguments required for cross-compiling/linking.
+fn add_cross_args(
+    command: &mut Command,
+    compiler_args: &[String],
+    cross_arch: Option<Architecture>,
+) {
+    let Some(cross_arch) = cross_arch else {
+        return;
+    };
+
+    if !command
+        .get_program()
+        .as_encoded_bytes()
+        .starts_with(b"clang")
+    {
+        return;
+    }
+
+    let target = get_target(compiler_args)
+        .cloned()
+        .unwrap_or_else(|_| cross_arch.default_target_triple().to_owned());
+    command.arg(format!("--target={target}"));
 }
 
 impl RustcChannel {
@@ -2387,6 +2413,8 @@ impl LinkCommand {
                                     .to_str()
                                     .expect("Linker path must be valid UTF-8")
                             ));
+
+                            add_cross_args(&mut command, &[], cross_arch);
                         }
                         Compiler::Gcc(_) => {
                             match linker {
