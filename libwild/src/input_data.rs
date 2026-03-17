@@ -137,6 +137,8 @@ struct InputPath {
 pub(crate) struct InputLinkerScript<'data> {
     pub(crate) script: LinkerScript<'data>,
     pub(crate) input_file: &'data InputFile,
+    /// Raw bytes of the script file. Used to compute line numbers from `AssertCommand::remainder`.
+    pub(crate) script_bytes: &'data [u8],
 }
 
 struct TemporaryState<'data, P: Platform> {
@@ -444,7 +446,11 @@ fn process_linker_script<'data>(
     })?;
 
     Ok(LoadedLinkerScript {
-        script: InputLinkerScript { script, input_file },
+        script: InputLinkerScript {
+            script,
+            input_file,
+            script_bytes: bytes,
+        },
         extra_inputs,
     })
 }

@@ -14,6 +14,13 @@ use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::platform::Platform;
 
+/// Compute 1-based line number by counting newlines before `remainder` in `file_bytes`.
+fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
+    let parsed_len = file_bytes.len().saturating_sub(remainder.len());
+    let consumed = &file_bytes[..parsed_len];
+    consumed.iter().filter(|&&b| b == b'\n').count() as u32 + 1
+}
+
 /// Evaluate all ASSERT commands from all processed linker scripts.
 /// Must be called after layout is complete so section sizes/addresses are known.
 pub(crate) fn evaluate_assertions<'data, P: Platform>(
@@ -28,15 +35,16 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
         for script in scripts {
             let parsed = &script.parsed;
             for assertion in &parsed.assertions {
+                let line = line_number(parsed.file_bytes, assertion.remainder);
                 let result =
                     evaluate_expression(&assertion.expression, section_layouts, output_sections)
                         .with_context(|| {
-                            format!("Failed to evaluate assertion from {}", parsed.input)
+                            format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line)
                         })?;
 
                 if result == 0 {
                     let msg = String::from_utf8_lossy(assertion.message);
-                    bail!("{msg}\n  in assertion from {}", parsed.input);
+                    bail!("{}:{}: {msg}", parsed.input, line);
                 }
             }
         }
@@ -474,6 +482,7 @@ mod tests {
                 input: crate::input_data::InputRef { file, entry: None },
                 symbol_defs: Vec::new(),
                 assertions,
+                file_bytes: b"",
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),
@@ -490,6 +499,7 @@ mod tests {
                 Box::new(Expression::Number(1)),
             ),
             message: b"should pass",
+            remainder: b"",
         }]);
         assert!(evaluate_assertions::<Elf>(&[group], &layouts, &sections).is_ok());
     }
@@ -500,6 +510,7 @@ mod tests {
         let group = make_group(vec![AssertCommand {
             expression: Expression::Number(0),
             message: b"intentional failure",
+            remainder: b"",
         }]);
         let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections).unwrap_err();
         assert!(err.to_string().contains("intentional failure"));

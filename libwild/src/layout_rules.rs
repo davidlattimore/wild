@@ -232,6 +232,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 file: input.input_file,
                 entry: None,
             },
+            file_bytes: input.script_bytes,
         })
     }
 

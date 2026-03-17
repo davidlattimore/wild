@@ -51,6 +51,9 @@ pub(crate) struct ProcessedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
     pub(crate) assertions: Vec<crate::linker_script::AssertCommand<'data>>,
+    /// Raw bytes of the linker script file. Used to compute line numbers from
+    /// `AssertCommand::remainder` when reporting errors.
+    pub(crate) file_bytes: &'data [u8],
 }
 
 #[derive(Debug)]
