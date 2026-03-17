@@ -390,7 +390,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         _output_kind: OutputKind,
         _mem_sizes: &OutputSectionPartMap<u64>,
         _resolution: &layout::Resolution<Self>,
-        _relr: bool,
+        _pack_relative_relocs: bool,
     ) -> Result {
         Ok(())
     }
@@ -543,7 +543,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
-        relr: bool,
+        pack_relative_relocs: bool,
     );
 
     fn allocate_object_symtab_space<'data>(

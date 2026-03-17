@@ -622,7 +622,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         dynsym_writer: SymbolTableWriter<'layout, 'out>,
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
-        relr: bool,
+        pack_relative_relocs: bool,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -642,7 +642,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
-            relr_dyn: relr.then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
+            relr_dyn: pack_relative_relocs
+                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -5248,7 +5249,7 @@ pub(crate) fn verify_resolution_allocation(
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution<Elf>,
-    relr: bool,
+    pack_relative_relocs: bool,
 ) -> Result {
     // Allocate however much space was requested.
 
@@ -5286,7 +5287,7 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
-        relr,
+        pack_relative_relocs,
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)

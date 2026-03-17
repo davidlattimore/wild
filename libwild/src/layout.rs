@@ -795,15 +795,20 @@ pub(crate) fn export_dynamic<'data, P: Platform>(
 
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
 /// when we're writing, to make sure that we would have allocated memory before we write.
-// TODO: This is always called with `relr = false` as debug assertions seem to care only about
-// general dynamic relocations
+// TODO: This is always called with `pack_relative_relocs = false` as debug assertions seem to care
+// only about general dynamic relocations
 pub(crate) fn compute_allocations<P: Platform>(
     resolution: &Resolution<P>,
     output_kind: OutputKind,
-    relr: bool,
+    pack_relative_relocs: bool,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    P::allocate_resolution(resolution.flags, &mut sizes, output_kind, relr);
+    P::allocate_resolution(
+        resolution.flags,
+        &mut sizes,
+        output_kind,
+        pack_relative_relocs,
+    );
     sizes
 }
 
@@ -5030,12 +5035,12 @@ fn test_no_disallowed_overlaps() {
 fn verify_consistent_allocation_handling<P: Platform>(
     flags: ValueFlags,
     output_kind: OutputKind,
-    relr: bool,
+    pack_relative_relocs: bool,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
-    P::allocate_resolution(flags, &mut mem_sizes, output_kind, relr);
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind, pack_relative_relocs);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
@@ -5051,7 +5056,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
         output_kind,
         &mem_sizes,
         &resolution,
-        relr,
+        pack_relative_relocs,
     )
     .with_context(|| {
         format!(
