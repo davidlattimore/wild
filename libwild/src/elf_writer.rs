@@ -717,7 +717,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         } else {
             *got_entry = res.raw_value;
             if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
+                self.write_address_relocation::<A>(got_address, res.raw_value)?;
             }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
@@ -733,7 +733,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             let got_entry = self.take_next_got_entry()?;
             *got_entry = res.plt_address()?;
             if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry as i64)?;
+                self.write_address_relocation::<A>(ifunc_got_address, *got_entry)?;
             }
         }
 
@@ -1016,8 +1016,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn write_address_relocation<A: Arch<Platform = Elf>>(
         &mut self,
         place: u64,
-        relative_address: i64,
-    ) -> Result {
+        relative_address: u64,
+    ) -> Result<u64> {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "write_address_relocation called when output is not relocatable"
@@ -1027,21 +1027,21 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             let relr = relr
                 .split_off_first_mut()
                 .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
-            // TODO: place calculation might be incorrect
             relr.0.set(e, place);
+            Ok(relative_address)
         } else {
             let rela = self
                 .rela_dyn_relative
                 .split_off_first_mut()
                 .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
             rela.r_offset.set(e, place);
-            rela.r_addend.set(e, relative_address);
+            rela.r_addend.set(e, relative_address as i64);
             rela.r_info.set(
                 e,
                 A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
             );
+            Ok(0)
         }
-        Ok(())
     }
 
     fn write_ifunc_relocation_for_data<A: Arch<Platform = Elf>>(
@@ -3145,10 +3145,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-
-        table_writer.write_address_relocation::<A>(place, address as i64)?;
-
-        Ok(0)
+        table_writer.write_address_relocation::<A>(place, address)
     } else {
         resolution.value_with_addend(
             addend,
