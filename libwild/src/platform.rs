@@ -727,6 +727,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         lib_name: &[u8],
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        pack_relative_relocs: bool,
     ) -> Result;
 
     fn apply_non_addressable_indexes_dynamic(

@@ -2352,6 +2352,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        pack_relative_relocs: bool,
     ) -> Result {
         let e = LittleEndian;
         let mut version_count = 0;
@@ -2405,6 +2406,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 }
             }
 
+            // When using -z pack-relative-relocs, glibc requires a GLIBC_ABI_DT_RELR version
+            // dependency in the libc verneed entry so that older glibc versions produce a clear
+            // error instead of crashing. glibc 2.38+ recognises the dummy version and ignores it.
+            let has_dt_relr_version =
+                pack_relative_relocs && lib_name.starts_with(b"libc.so.") && version_count > 0;
+
+            if has_dt_relr_version {
+                mem_sizes.increment(part_id::DYNSTR, GLIBC_ABI_DT_RELR.len() as u64 + 1);
+                version_count += 1;
+            }
+
             if version_count > 0 {
                 mem_sizes.increment(part_id::DYNSTR, base_size);
                 mem_sizes.increment(
@@ -2417,6 +2429,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                     defs,
                     string_table_index: link,
                     version_count,
+                    has_dt_relr_version,
                 });
             }
         }
@@ -2956,6 +2969,9 @@ const _ASSERTS: () = {
 
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
+
+/// When `-z pack-relative-relocs` is used, Glibc requires this special version to be defined.
+pub(crate) const GLIBC_ABI_DT_RELR: &[u8] = b"GLIBC_ABI_DT_RELR";
 
 /// For additional information on Elf_Prop, see
 /// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.
@@ -3812,6 +3828,7 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
 pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data>,
     pub(crate) string_table_index: object::SectionIndex,
+    pub(crate) has_dt_relr_version: bool,
 
     /// Number of symbol versions that we're going to emit. This is the number of entries in
     /// `symbol_versions_needed` that are true. Computed after graph traversal.

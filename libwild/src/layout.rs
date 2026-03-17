@@ -2225,7 +2225,10 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
-                s.finalise_sizes(common)?;
+                s.finalise_sizes(
+                    common,
+                    resources.symbol_db.args.should_pack_relative_relocs(),
+                )?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Prelude(s) => {
@@ -4765,13 +4768,18 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
         Ok(())
     }
 
-    fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data, P>) -> Result {
+    fn finalise_sizes(
+        &mut self,
+        common: &mut CommonGroupState<'data, P>,
+        pack_relative_relocs: bool,
+    ) -> Result {
         P::finalise_sizes_dynamic(self, common)?;
 
         self.object.finalise_sizes_dynamic(
             self.lib_name,
             &mut self.format_specific_state,
             &mut common.mem_sizes,
+            pack_relative_relocs,
         )?;
 
         Ok(())

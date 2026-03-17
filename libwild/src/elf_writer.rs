@@ -14,6 +14,7 @@ use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::Elf;
 use crate::elf::FileHeader;
+use crate::elf::GLIBC_ABI_DT_RELR;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
@@ -5067,6 +5068,27 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             .version_writer
             .take_auxes(verneed_info.version_count)?;
         let mut aux_index = 0;
+
+        // Emit GLIBC_ABI_DT_RELR as the first .gnu.version_r entry when using -z
+        // pack-relative-relocs.
+        if verneed_info.has_dt_relr_version {
+            let name_offset = table_writer
+                .dynsym_writer
+                .strtab_writer
+                .write_str(GLIBC_ABI_DT_RELR);
+            let sysv_name_hash = object::elf::hash(GLIBC_ABI_DT_RELR);
+            let aux_out = auxes
+                .get_mut(aux_index)
+                .context("Insufficient vernaux allocation for GLIBC_ABI_DT_RELR")?;
+            aux_out.vna_next.set(e, size_of::<Vernaux>() as u32);
+            // Even though this version is the first .gnu.version_r entry, it's the last version.
+            // So, we put it after built-in and additional versions.
+            aux_out.vna_other.set(e, verneed_info.version_count + 1);
+            aux_out.vna_name.set(e, name_offset);
+            aux_out.vna_hash.set(e, sysv_name_hash);
+            aux_out.vna_flags.set(e, 0);
+            aux_index += 1;
+        }
 
         while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
             let input_version = verdef.vd_ndx.get(e);
