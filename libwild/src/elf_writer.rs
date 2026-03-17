@@ -286,6 +286,17 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
 
     fill_padding(section_buffers);
 
+    // Sort RELR entries by virtual address.
+    if layout.symbol_db.args.pack_relative_relocs {
+        let relr = layout.section_part_layouts.get(part_id::RELR_DYN);
+        if relr.file_size > 0 {
+            let relr_bytes =
+                &mut sized_output.out[relr.file_offset..relr.file_offset + relr.file_size];
+            let relr_entries: &mut [elf::Relr] = slice_from_all_bytes_mut(relr_bytes);
+            relr_entries.sort_unstable_by_key(|r| r.0.get(LittleEndian));
+        }
+    }
+
     Ok(())
 }
 
