@@ -58,6 +58,10 @@ pub(crate) struct SectionRule<'data> {
     /// Whether the section name is allowed to extend beyond what's in `name`.
     is_prefix: bool,
 
+    /// Compiled glob pattern for section name matching, used when the pattern contains 
+    /// metacharacters like `[` or `?`.
+    section_name_pattern: Option<Pattern>,
+
     /// Pre-compiled glob pattern for matching input filenames. `None` means the rule matches all
     /// files.
     input_file_pattern: Option<Pattern>,
@@ -274,10 +278,33 @@ impl<'data> SectionRule<'data> {
             })
             .transpose()?;
 
+        let wildcard_idx = pattern
+            .iter()
+            .position(|&b| b == b'*' || b == b'[' || b == b'?');
+
+        if let Some(idx) = wildcard_idx {
+            if idx < pattern.len() - 1 || pattern[idx] != b'*' {
+                let s = std::str::from_utf8(pattern)
+                    .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+
+                let compiled_pattern = Pattern::new(s)
+                    .map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
+
+                return Ok(Self {
+                    name: &pattern[..idx],
+                    is_prefix: true,
+                    section_name_pattern: Some(compiled_pattern),
+                    input_file_pattern: compiled_file_pattern,
+                    outcome,
+                })
+            }
+        }
+
         if let Some(prefix) = pattern.strip_suffix(b"*") {
             Ok(Self {
                 name: prefix,
                 is_prefix: true,
+                section_name_pattern: None,
                 input_file_pattern: compiled_file_pattern,
                 outcome,
             })
@@ -291,6 +318,7 @@ impl<'data> SectionRule<'data> {
             Ok(Self {
                 name: pattern,
                 is_prefix: false,
+                section_name_pattern: None,
                 input_file_pattern: compiled_file_pattern,
                 outcome,
             })
@@ -307,6 +335,16 @@ impl<'data> SectionRule<'data> {
 
         if !section_matches {
             return false;
+        }
+
+        if let Some(section_pattern) = &self.section_name_pattern {
+            let Ok(section_name_str) = std::str::from_utf8(section_name) else {
+                return false;
+            };
+
+            if !section_pattern.matches(section_name_str) {
+                return false;
+            }
         }
 
         // If the rule has no file pattern, it matches all files.
@@ -365,6 +403,7 @@ impl<'data> SectionRule<'data> {
         SectionRule {
             name,
             is_prefix: false,
+            section_name_pattern: None,
             input_file_pattern: None,
             outcome,
         }
@@ -374,6 +413,7 @@ impl<'data> SectionRule<'data> {
         SectionRule {
             name,
             is_prefix: true,
+            section_name_pattern: None,
             input_file_pattern: None,
             outcome,
         }
@@ -550,4 +590,20 @@ fn test_section_mapping() {
             must_keep: true
         })
     );
+}
+
+#[test]
+fn test_glob_section_matching() {
+    let rule = SectionRule::new(
+        b".mydata.[0-9]",
+        None,
+        SectionRuleOutcome::Discard
+    ).unwrap();
+
+    assert!(rule.matches(b".mydata.0", None));
+    assert!(rule.matches(b".mydata.5", None));
+    assert!(!rule.matches(b".mydata.A", None));
+    assert!(!rule.matches(b".mydata.10", None));
+    assert!(!rule.matches(b".mydata.", None));
+    assert!(!rule.matches(b".other.0", None));
 }
