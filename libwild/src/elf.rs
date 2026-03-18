@@ -1153,6 +1153,59 @@ impl platform::Platform for Elf {
 
         Ok(())
     }
+
+    fn allocate_resolution(
+        flags: ValueFlags,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        output_kind: OutputKind,
+    ) {
+        let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
+
+        if flags.needs_got() && !flags.is_tls() {
+            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            if flags.needs_plt() {
+                mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+            }
+            if flags.is_ifunc() {
+                mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
+            } else if flags.is_interposable() && has_dynamic_symbol {
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            } else if flags.is_address() && output_kind.is_relocatable() {
+                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+            }
+        }
+
+        if flags.needs_ifunc_got_for_address() {
+            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            if output_kind.is_relocatable() {
+                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+            }
+        }
+
+        if flags.needs_got_tls_offset() {
+            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+            if flags.is_interposable() || output_kind.is_shared_object() {
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            }
+        }
+
+        if flags.needs_got_tls_module() {
+            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            // For executables, the TLS module ID is known at link time. For shared objects, we need
+            // a runtime relocation to fill it in.
+            if !output_kind.is_executable() || flags.is_dynamic() {
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            }
+            if flags.is_interposable() && has_dynamic_symbol {
+                mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+            }
+        }
+
+        if flags.needs_got_tls_descriptor() {
+            mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        }
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {

@@ -789,7 +789,7 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
 
             P::finalise_sizes_for_symbol(common, symbol_db, symbol_id, flags)?;
 
-            allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
+            P::allocate_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
             if symbol_db.args.common().verify_allocation_consistency {
                 verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
@@ -821,76 +821,15 @@ fn export_dynamic<'data, P: Platform>(
     Ok(())
 }
 
-fn allocate_symbol_resolution(
-    flags: ValueFlags,
-    mem_sizes: &mut OutputSectionPartMap<u64>,
-    output_kind: OutputKind,
-) {
-    allocate_resolution(flags, mem_sizes, output_kind);
-}
-
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
 /// when we're writing, to make sure that we would have allocated memory before we write.
-pub(crate) fn compute_allocations(
+pub(crate) fn compute_allocations<P: Platform>(
     resolution: &Resolution,
     output_kind: OutputKind,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    allocate_resolution(resolution.flags, &mut sizes, output_kind);
+    P::allocate_resolution(resolution.flags, &mut sizes, output_kind);
     sizes
-}
-
-fn allocate_resolution(
-    flags: ValueFlags,
-    mem_sizes: &mut OutputSectionPartMap<u64>,
-    output_kind: OutputKind,
-) {
-    let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
-
-    if flags.needs_got() && !flags.is_tls() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if flags.needs_plt() {
-            mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
-        }
-        if flags.is_ifunc() {
-            mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
-        } else if flags.is_interposable() && has_dynamic_symbol {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        } else if flags.is_address() && output_kind.is_relocatable() {
-            mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-        }
-    }
-
-    if flags.needs_ifunc_got_for_address() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if output_kind.is_relocatable() {
-            mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-        }
-    }
-
-    if flags.needs_got_tls_offset() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if flags.is_interposable() || output_kind.is_shared_object() {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        }
-    }
-
-    if flags.needs_got_tls_module() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-        // For executables, the TLS module ID is known at link time. For shared objects, we
-        // need a runtime relocation to fill it in.
-        if !output_kind.is_executable() || flags.is_dynamic() {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        }
-        if flags.is_interposable() && has_dynamic_symbol {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        }
-    }
-
-    if flags.needs_got_tls_descriptor() {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-        mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-    }
 }
 
 impl<'data, P: Platform> HandlerData for ObjectLayoutState<'data, P> {
@@ -4027,7 +3966,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
-                allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
+                P::allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
             }
         }
 
@@ -5753,7 +5692,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
-    allocate_symbol_resolution(flags, &mut mem_sizes, output_kind);
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;

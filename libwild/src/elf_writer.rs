@@ -654,7 +654,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             *got_entry = 0;
             debug_assert_bail!(
-                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                    > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 res.flags
             );
@@ -726,7 +727,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
-                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                    > 0,
                 "Tried to write tpoff with no allocation. {}",
                 res.flags
             );
@@ -747,7 +749,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
-                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                    > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 res.flags
             );
@@ -788,7 +791,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
-            *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+            *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
             "Tried to write TLS descriptor with no allocation. {}",
             res.flags
         );
