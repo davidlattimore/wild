@@ -24,6 +24,7 @@ use crate::resolution::LoadedMetrics;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -421,6 +422,13 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
+    );
+
+    fn allocate_object_symtab_space<'data>(
+        state: &ObjectLayoutState<'data, Self>,
+        common: &mut CommonGroupState<'data, Self>,
+        symbol_db: &SymbolDb<'data, Self>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
     );
 }
 

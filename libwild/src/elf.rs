@@ -19,7 +19,10 @@ use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
+use crate::layout::HandlerData as _;
+use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout::SymbolCopyInfo;
 use crate::layout_rules::SectionKind;
 use crate::output_kind::OutputKind;
 use crate::output_section_id;
@@ -56,6 +59,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
+use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::version_script::VersionScript;
 use foldhash::HashSet;
@@ -1212,6 +1216,48 @@ impl platform::Platform for Elf {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
+    }
+
+    fn allocate_object_symtab_space<'data>(
+        state: &ObjectLayoutState<'data, Elf>,
+        common: &mut CommonGroupState<'data, Elf>,
+        symbol_db: &SymbolDb<'data, Elf>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
+    ) {
+        let mut num_locals = 0;
+        let mut num_globals = 0;
+        let mut strings_size = 0;
+        for ((sym_index, sym), flags) in state
+            .object
+            .enumerate_symbols()
+            .zip(per_symbol_flags.range(state.symbol_id_range()))
+        {
+            let symbol_id = state.symbol_id_range.input_to_id(sym_index);
+            if let Some(info) = SymbolCopyInfo::new(
+                state.object,
+                sym_index,
+                sym,
+                symbol_id,
+                symbol_db,
+                flags.get(),
+                &state.sections,
+            ) {
+                // If we've decided to emit the symbol even though it's not referenced (because it's
+                // in a section we're emitting), then make sure we have a resolution for it.
+                flags.fetch_or(ValueFlags::DIRECT);
+                if flags.get().is_symtab_local(sym) {
+                    num_locals += 1;
+                } else {
+                    num_globals += 1;
+                }
+                let name = RawSymbolName::parse(info.name).name();
+                strings_size += name.len() + 1;
+            }
+        }
+        let entry_size = size_of::<elf::SymtabEntry>() as u64;
+        common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
+        common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
+        common.allocate(part_id::STRTAB, strings_size as u64);
     }
 }
 
