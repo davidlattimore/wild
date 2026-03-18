@@ -32,6 +32,7 @@ use std::path::PathBuf;
 pub mod elf;
 
 use crate::timing_phase;
+use std::sync::atomic::AtomicI64;
 
 pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
@@ -58,13 +59,21 @@ pub struct Args<T = TargetArgs> {
 
     jobserver_client: Option<Client>,
     pub(crate) inputs: Vec<Input>,
+    pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) save_dir: SaveDir,
 
+    pub(crate) prepopulate_maps: bool,
+    pub(crate) debug_fuel: Option<AtomicI64>,
+    pub(crate) should_fork: bool,
+    pub(crate) demangle: bool,
+    pub(crate) mmap_output_file: bool,
     pub(crate) validate_output: bool,
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) write_layout: bool,
     pub(crate) write_trace: bool,
     pub(crate) print_allocations: Option<FileId>,
+    pub(crate) sym_info: Option<String>,
+    pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     /// Format-specific arguments.
     pub target_args: T,
@@ -108,8 +117,14 @@ impl<T: Default> Default for Args<T> {
             jobserver_client: None,
             files_per_group: None,
             inputs: Vec::new(),
+            file_write_mode: None,
             unrecognized_options: Vec::new(),
             save_dir: SaveDir::default(),
+            mmap_output_file: true,
+            prepopulate_maps: false,
+            debug_fuel: None,
+            should_fork: true,
+            demangle: true,
             validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
                 .is_ok_and(|v| v == "1"),
@@ -119,6 +134,8 @@ impl<T: Default> Default for Args<T> {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .map(FileId::from_encoded),
+            numeric_experiments: Vec::new(),
+            sym_info: None,
         }
     }
 }
@@ -132,13 +149,21 @@ impl<T> Args<T> {
             num_threads: self.num_threads,
             jobserver_client: self.jobserver_client,
             inputs: self.inputs,
+            file_write_mode: self.file_write_mode,
             save_dir: self.save_dir,
             files_per_group: self.files_per_group,
+            prepopulate_maps: self.prepopulate_maps,
+            debug_fuel: self.debug_fuel,
+            should_fork: self.should_fork,
+            demangle: self.demangle,
             validate_output: self.validate_output,
             verify_allocation_consistency: self.verify_allocation_consistency,
             write_layout: self.write_layout,
             write_trace: self.write_trace,
             print_allocations: self.print_allocations,
+            sym_info: self.sym_info,
+            mmap_output_file: self.mmap_output_file,
+            numeric_experiments: self.numeric_experiments,
             // Format-specific
             target_args: f(self.target_args),
         }
@@ -192,6 +217,72 @@ impl<T> Args<T> {
             modifiers: Modifiers::default(),
         });
     }
+
+    /// Uses 1 debug fuel, returning how much fuel remains. Debug fuel is intended to be used when
+    /// debugging certain kinds of bugs, so this function isn't normally referenced. To use it, the
+    /// caller should take a different branch depending on whether the value is still positive. You
+    /// can then do a binary search.
+    pub(crate) fn use_debug_fuel(&self) -> i64 {
+        let Some(fuel) = self.debug_fuel.as_ref() else {
+            return i64::MAX;
+        };
+        fuel.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) - 1
+    }
+
+    /// Returns whether there was sufficient fuel. If the last bit of fuel was used, then calls
+    /// `last_cb`.
+    #[allow(unused)]
+    pub(crate) fn use_debug_fuel_on_last(&self, last_cb: impl FnOnce()) -> bool {
+        match self.use_debug_fuel() {
+            1.. => true,
+            0 => {
+                last_cb();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn should_fork(&self) -> bool {
+        self.should_fork
+    }
+
+    pub(crate) fn numeric_experiment(&self, exp: Experiment, default: u64) -> u64 {
+        self.numeric_experiments
+            .get(exp as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(default)
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum Experiment {
+    /// How much parallelism to allow when splitting string-merge sections.
+    MergeStringSplitParallelism = 0,
+
+    /// Number of bytes of string-merge sections before we'll break to a new group.
+    MergeStringMinGroupBytes = 1,
+
+    GroupsPerThread = 2,
+
+    MinGroups = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileWriteMode {
+    /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
+    /// name put in its place. Any hard links to the file will not be affected.
+    UnlinkAndReplace,
+
+    /// The existing output file, if any, will be edited in-place. Any hard links to the file will
+    /// update accordingly. If the file is locked due to currently being executed, then our write
+    /// will fail.
+    UpdateInPlace,
+
+    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
+    /// unlinking and replacing.
+    UpdateInPlaceWithFallback,
 }
 
 /// A type that indicates that the global thread pool has been created. Currently, you should only

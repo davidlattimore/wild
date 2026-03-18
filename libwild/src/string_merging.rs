@@ -27,8 +27,8 @@
 
 use crate::alignment;
 use crate::args::Args;
+use crate::args::Experiment;
 use crate::args::elf::ElfArgs;
-use crate::args::elf::Experiment;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;

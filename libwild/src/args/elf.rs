@@ -4,12 +4,15 @@
 use super::Args;
 use super::ArgumentParser;
 use super::BSymbolicKind;
+use super::FILES_PER_GROUP_ENV;
 use super::Input;
 use super::InputSpec;
+use super::REFERENCE_LINKER_ENV;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
+use crate::args::FileWriteMode;
 use crate::args::Modifiers;
 use crate::args::UnresolvedSymbols;
 use crate::args::warn_unsupported;
@@ -65,10 +68,7 @@ pub struct ElfArgs {
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) strip: Strip,
-    pub(crate) prepopulate_maps: bool,
-    pub(crate) sym_info: Option<String>,
     pub(crate) merge_sections: bool,
-    pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
     pub(crate) should_write_eh_frame_hdr: bool,
@@ -77,10 +77,7 @@ pub struct ElfArgs {
     pub(crate) soname: Option<String>,
     pub(crate) exclude_libs: ExcludeLibs,
     pub(crate) gc_sections: bool,
-    pub(crate) should_fork: bool,
-    pub(crate) mmap_output_file: bool,
     pub(crate) build_id: BuildIdOption,
-    pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
     pub(crate) allow_shlib_undefined: bool,
     pub(crate) needs_origin_handling: bool,
@@ -120,7 +117,6 @@ pub struct ElfArgs {
     pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) execstack: bool,
     pub(crate) version_mode: VersionMode,
-    pub(crate) demangle: bool,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -137,8 +133,6 @@ pub struct ElfArgs {
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
-
-    pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     rpath_set: IndexSet<String>,
 }
@@ -217,38 +211,6 @@ pub(crate) enum RelocationModel {
     Relocatable,
 }
 
-#[derive(Debug, Copy, Clone)]
-pub(crate) enum Experiment {
-    /// How much parallelism to allow when splitting string-merge sections.
-    MergeStringSplitParallelism = 0,
-
-    /// Number of bytes of string-merge sections before we'll break to a new group.
-    MergeStringMinGroupBytes = 1,
-
-    GroupsPerThread = 2,
-
-    MinGroups = 3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FileWriteMode {
-    /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
-    /// name put in its place. Any hard links to the file will not be affected.
-    UnlinkAndReplace,
-
-    /// The existing output file, if any, will be edited in-place. Any hard links to the file will
-    /// update accordingly. If the file is locked due to currently being executed, then our write
-    /// will fail.
-    UpdateInPlace,
-
-    /// As for `UpdateInPlace`, but if we get an error opening the file for write, fallback to
-    /// unlinking and replacing.
-    UpdateInPlaceWithFallback,
-}
-
-use super::FILES_PER_GROUP_ENV;
-use super::REFERENCE_LINKER_ENV;
-
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
@@ -318,11 +280,8 @@ impl Default for ElfArgs {
             // slow or slower than --gc-sections. For that reason, the latter is
             // probably a good default.
             gc_sections: true,
-            prepopulate_maps: false,
-            sym_info: None,
             merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
-            debug_fuel: None,
             relocation_model: RelocationModel::NonRelocatable,
             version_script_path: None,
             debug_address: None,
@@ -335,12 +294,9 @@ impl Default for ElfArgs {
             soname: None,
             enable_new_dtags: true,
             execstack: false,
-            should_fork: true,
-            mmap_output_file: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             should_write_linker_identity: true,
-            file_write_mode: None,
             build_id: BuildIdOption::None,
             exclude_libs: ExcludeLibs::None,
             no_undefined: false,
@@ -348,7 +304,6 @@ impl Default for ElfArgs {
             version_mode: VersionMode::None,
             sysroot: None,
             dependency_file: None,
-            demangle: true,
             undefined: Vec::new(),
             relro: true,
             entry: None,
@@ -371,7 +326,6 @@ impl Default for ElfArgs {
             z_isa: None,
             max_page_size: None,
             auxiliary: Vec::new(),
-            numeric_experiments: Vec::new(),
             rpath_set: Default::default(),
             plugin_path: None,
             plugin_args: Vec::new(),
@@ -408,35 +362,6 @@ impl ElfArgs {
         parse(input)
     }
 
-    /// Uses 1 debug fuel, returning how much fuel remains. Debug fuel is intended to be used when
-    /// debugging certain kinds of bugs, so this function isn't normally referenced. To use it, the
-    /// caller should take a different branch depending on whether the value is still positive. You
-    /// can then do a binary search.
-    pub(crate) fn use_debug_fuel(&self) -> i64 {
-        let Some(fuel) = self.debug_fuel.as_ref() else {
-            return i64::MAX;
-        };
-        fuel.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) - 1
-    }
-
-    /// Returns whether there was sufficient fuel. If the last bit of fuel was used, then calls
-    /// `last_cb`.
-    #[allow(unused)]
-    pub(crate) fn use_debug_fuel_on_last(&self, last_cb: impl FnOnce()) -> bool {
-        match self.use_debug_fuel() {
-            1.. => true,
-            0 => {
-                last_cb();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    pub fn should_fork(&self) -> bool {
-        self.should_fork
-    }
-
     pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
         if let Some(max_page_size) = self.max_page_size {
             return max_page_size;
@@ -448,14 +373,6 @@ impl ElfArgs {
             Architecture::RISCV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
         }
-    }
-
-    pub(crate) fn numeric_experiment(&self, exp: Experiment, default: u64) -> u64 {
-        self.numeric_experiments
-            .get(exp as usize)
-            .copied()
-            .flatten()
-            .unwrap_or(default)
     }
 
     pub(crate) fn strip_all(&self) -> bool {
