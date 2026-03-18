@@ -416,6 +416,12 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         symbol_id: SymbolId,
         flags: ValueFlags,
     ) -> Result;
+
+    fn allocate_resolution(
+        flags: ValueFlags,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        output_kind: OutputKind,
+    );
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
