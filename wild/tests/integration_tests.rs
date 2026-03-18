@@ -3606,6 +3606,8 @@ fn integration_test(
         "gnu-unique.c",
         "undef-transitive.c",
         "symbol-versions.c",
+        "common-shared.c",
+        "absolute-symbol.s",
         "simple-version-script.c",
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
