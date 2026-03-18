@@ -16,13 +16,12 @@
 //! cargo rustc --bin rg -- -Clinker=/usr/bin/clang-15 -Clink-arg=--ld-path=wild -Clink-arg=-Wl,--write-gc-stats=/tmp/gc-stats.txt -Clink-arg=-Wl,--verbose-gc-stats
 //! ```
 
-use crate::args::Args;
-use crate::args::elf::ElfArgs;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
+use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::resolution::SectionSlot;
@@ -32,9 +31,9 @@ use std::path::PathBuf;
 
 pub(crate) fn maybe_write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
-    args: &Args<ElfArgs>,
+    args: &P::Args,
 ) -> Result {
-    let Some(stats_file) = args.write_gc_stats.as_ref() else {
+    let Some(stats_file) = args.gc_stats_output_file() else {
         return Ok(());
     };
     write_gc_stats(group_layouts, stats_file, args)
@@ -51,7 +50,7 @@ struct InputFile<'data> {
 fn write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
     stats_file: &std::path::Path,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
 ) -> Result {
     use std::io::Write as _;
 
@@ -66,7 +65,7 @@ fn write_gc_stats<'data, P: Platform>(
             };
             let file_display_name = obj.input.file.filename.to_string_lossy();
             if args
-                .gc_stats_ignore
+                .gc_stats_ignore()
                 .iter()
                 .any(|ignore| file_display_name.contains(ignore))
             {
@@ -92,7 +91,7 @@ fn write_gc_stats<'data, P: Platform>(
                         if unloaded.part_id.output_section_id() == output_section_id::TEXT =>
                     {
                         file_discarded += obj.object.section_size(section)?;
-                        if args.verbose_gc_stats {
+                        if args.verbose_gc_stats() {
                             file_record
                                 .discarded_names
                                 .push(obj.object.section_name(section)?);

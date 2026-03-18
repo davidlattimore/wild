@@ -1,10 +1,8 @@
 //! Support for saving inputs for later use.
 
-use crate::Args;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::args::Modifiers;
-use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -12,6 +10,7 @@ use crate::file_kind::FileKind;
 use crate::input_data::FileData;
 use crate::input_data::FileLoader;
 use crate::linker_script::LinkerScript;
+use crate::platform;
 use foldhash::HashSet;
 use std::borrow::Cow;
 use std::io::BufWriter;
@@ -49,7 +48,11 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self, input_data: &FileLoader, parsed_args: &Args<ElfArgs>) -> Result {
+    pub(crate) fn finish(
+        &self,
+        input_data: &FileLoader,
+        parsed_args: &impl platform::Args,
+    ) -> Result {
         if let Some(state) = self.0.as_ref() {
             let mut files_to_copy = state.files_to_copy.clone();
             files_to_copy.extend(
@@ -133,7 +136,7 @@ impl SaveDirState {
     fn finish<'a, I: Iterator<Item = &'a PathBuf>>(
         &self,
         filenames: I,
-        parsed_args: &Args<ElfArgs>,
+        parsed_args: &impl platform::Args,
     ) -> Result {
         for filename in filenames {
             self.copy_file(&std::path::absolute(filename)?, parsed_args)?;
@@ -149,7 +152,7 @@ impl SaveDirState {
         Ok(())
     }
 
-    fn write_args_file(&self, run_file: &Path, args: &Args<ElfArgs>) -> Result {
+    fn write_args_file(&self, run_file: &Path, args: &impl platform::Args) -> Result {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         out.write_all(PRELUDE.as_bytes())?;
@@ -230,7 +233,7 @@ impl SaveDirState {
     }
 
     /// Copies `source_path` to our output directory.
-    fn copy_file(&self, source_path: &Path, parsed_args: &Args<ElfArgs>) -> Result {
+    fn copy_file(&self, source_path: &Path, parsed_args: &impl platform::Args) -> Result {
         let dest_path = self.output_path(source_path);
 
         if dest_path.exists() || !source_path.exists() {
@@ -282,13 +285,13 @@ impl SaveDirState {
                         self.handle_thin_archive(source_path, parsed_args)?;
                     }
                     Ok(FileKind::Text) => {
-                        let is_in_sysroot = match (
-                            normalize_abs_path(source_path),
-                            parsed_args.sysroot.as_ref(),
-                        ) {
-                            (Some(source_path), Some(sysroot)) => source_path.starts_with(sysroot),
-                            _ => false,
-                        };
+                        let is_in_sysroot =
+                            match (normalize_abs_path(source_path), parsed_args.sysroot()) {
+                                (Some(source_path), Some(sysroot)) => {
+                                    source_path.starts_with(sysroot)
+                                }
+                                _ => false,
+                            };
 
                         // We make paths in linker scripts relative, but only if they're not inside
                         // of the sysroot. If they're inside the sysroot, then they need to remain
@@ -326,7 +329,7 @@ impl SaveDirState {
     }
 
     /// Copies the files listed by the thin archive.
-    fn handle_thin_archive(&self, path: &Path, parsed_args: &Args<ElfArgs>) -> Result {
+    fn handle_thin_archive(&self, path: &Path, parsed_args: &impl platform::Args) -> Result {
         let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
 
@@ -491,12 +494,12 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 
 /// Saves certain environment variables into the script. We only propagate environment variables
 /// that are known to be used for communication between the compiler and say linker plugins.
-fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &Args<ElfArgs>) -> Result {
+fn write_env(out: &mut BufWriter<&mut std::fs::File>, args: &impl platform::Args) -> Result {
     for var in &["COLLECT_GCC", "COLLECT_GCC_OPTIONS"] {
         if let Ok(mut value) = std::env::var(var) {
             // COLLECT_GCC_OPTIONS has things like "-o /path/to/output-file" in it. Update these so
             // that we use the run-with scripts output file instead.
-            if let Some(out) = args.output.to_str() {
+            if let Some(out) = args.output().to_str() {
                 value = value.replace(out, "${OUT}");
             }
             out.write_all(b"export ")?;

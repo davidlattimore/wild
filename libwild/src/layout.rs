@@ -5,9 +5,6 @@
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::args::Args;
-use crate::args::elf::ElfArgs;
-use crate::args::elf::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
@@ -37,6 +34,7 @@ use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::platform::Arch;
+use crate::platform::Args as _;
 use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
@@ -221,7 +219,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         symbol_db.args,
     );
 
-    if symbol_db.args.relax && A::supports_size_reduction_relaxations() {
+    if symbol_db.args.should_relax() && A::supports_size_reduction_relaxations() {
         perform_iterative_relaxation::<A>(
             &mut group_states,
             &mut section_part_sizes,
@@ -780,7 +778,7 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
     ) -> Result {
         let symbol_db = resources.symbol_db;
 
-        let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
+        let _file_span = symbol_db.args.common().trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
         for (local_index, atomic_flags) in symbol_flags.range(symbol_id_range).iter().enumerate() {
@@ -809,13 +807,13 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
                 }
             }
 
-            if symbol_db.args.verify_allocation_consistency {
+            if symbol_db.args.common().verify_allocation_consistency {
                 verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
             }
 
             allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
-            if symbol_db.args.got_plt_syms && flags.needs_got() {
+            if symbol_db.args.should_emit_got_plt_syms() && flags.needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 let name = P::RawSymbolName::parse(name.bytes()).name();
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
@@ -1384,7 +1382,7 @@ impl<'data, P: Platform> Layout<'data, P> {
         i
     }
 
-    pub(crate) fn args(&self) -> &'data Args<ElfArgs> {
+    pub(crate) fn args(&self) -> &'data P::Args {
         self.symbol_db.args
     }
 
@@ -1665,7 +1663,7 @@ fn compute_segment_layout<P: Platform>(
     output_order: &OutputOrder,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     header_info: &HeaderInfo,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
 ) -> Result<SegmentLayouts> {
     #[derive(Clone)]
     struct Record {
@@ -1693,7 +1691,7 @@ fn compute_segment_layout<P: Platform>(
                         file_start: 0,
                         file_end: 0,
                         mem_start: 0,
-                        mem_end: args.z_stack_size.map_or(0, |size| size.get()),
+                        mem_end: args.stack_size_override().map_or(0, |size| size.get()),
                         alignment: alignment::MIN,
                     });
                 } else {
@@ -2706,7 +2704,7 @@ pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
             true,
             None,
         )
-        .filter(|relaxation| args.relax || relaxation.is_mandatory())
+        .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
         {
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
@@ -2737,7 +2735,7 @@ pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
                 flags_to_add.remove(ValueFlags::DIRECT);
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
             } else if !flags.is_absolute() {
-                match args.copy_relocations {
+                match args.copy_relocations_enabled() {
                     crate::args::CopyRelocations::Allowed => {
                         flags_to_add |= ValueFlags::COPY_RELOCATION;
                     }
@@ -2818,7 +2816,7 @@ pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
                     A::get_source_info(object.object, &object.relocations, section, rel_offset)
                         .context("Failed to get source info")?;
 
-                if args.error_unresolved_symbols {
+                if args.should_error_on_unresolved_symbols() {
                     resources.report_error(error!(
                         "Undefined symbol {symbol_name}, referenced by {}\n    {}",
                         source_info, object.input,
@@ -2915,7 +2913,7 @@ impl<'data> PreludeLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        if resources.symbol_db.args.should_write_linker_identity {
+        if resources.symbol_db.args.should_write_linker_identity() {
             // Allocate space to store the identity of the linker in the .comment section.
             common.allocate(
                 output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
@@ -2925,7 +2923,7 @@ impl<'data> PreludeLayoutState<'data> {
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
-        if !resources.symbol_db.args.strip_all() {
+        if !resources.symbol_db.args.should_strip_all() {
             common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
             common.allocate(part_id::STRTAB, 1);
         }
@@ -2942,8 +2940,7 @@ impl<'data> PreludeLayoutState<'data> {
             self.dynamic_linker = resources
                 .symbol_db
                 .args
-                .dynamic_linker
-                .as_ref()
+                .dynamic_linker()
                 .map(|p| CString::new(p.as_os_str().as_encoded_bytes()))
                 .transpose()?;
         }
@@ -3053,7 +3050,7 @@ impl<'data> PreludeLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         uses_tlsld: &AtomicBool,
-        args: &Args<ElfArgs>,
+        args: &P::Args,
         output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
@@ -3140,7 +3137,7 @@ impl<'data> PreludeLayoutState<'data> {
         symbol_db: &SymbolDb<'data, P>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result<(), Error> {
-        if symbol_db.args.strip_all() {
+        if symbol_db.args.should_strip_all() {
             return Ok(());
         }
 
@@ -3360,7 +3357,7 @@ impl<'data> PreludeLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        if resources.symbol_db.args.should_write_linker_identity {
+        if resources.symbol_db.args.should_write_linker_identity() {
             memory_offsets.increment(
                 output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
                 self.identity.len() as u64,
@@ -3563,17 +3560,20 @@ fn should_emit_undefined_error<P: Platform>(
     sym_file_id: FileId,
     sym_def_file_id: FileId,
     flags: ValueFlags,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     output_kind: OutputKind,
 ) -> bool {
-    if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
+    // TODO: Investigate whether this behaviour is correct or if we should actually be calling
+    // `should_allow_shlib_undefined` here instead or as well as `should_allow_object_undefined`.
+    if (output_kind.is_shared_object() && args.should_allow_object_undefined()) || symbol.is_weak()
+    {
         return false;
     }
 
     let is_symbol_undefined =
         sym_file_id == sym_def_file_id && symbol.is_undefined() && flags.is_absolute();
 
-    match args.unresolved_symbols {
+    match args.unresolved_symbols_behaviour() {
         crate::args::UnresolvedSymbols::IgnoreAll
         | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
         _ => is_symbol_undefined,
@@ -3603,7 +3603,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
     ) -> Result {
         let symbol_db = resources.symbol_db;
 
-        if !symbol_db.args.strip_all() {
+        if !symbol_db.args.should_strip_all() {
             self.internal_symbols.allocate_symbol_table_sizes(
                 &mut common.mem_sizes,
                 symbol_db,
@@ -3636,7 +3636,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
 
 impl<'data, P: Platform> EpilogueLayoutState<P> {
     fn new(
-        args: &Args<ElfArgs>,
+        args: &P::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
     ) -> Self {
@@ -3651,19 +3651,18 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         total_sizes: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
-        if resources.symbol_db.args.hash_style.includes_sysv() {
-            let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
-            P::apply_late_size_adjustments_epilogue(
-                &mut self.format_specific,
-                total_sizes,
-                &mut extra_sizes,
-                resources.dynamic_symbol_definitions,
-            )?;
+        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+        P::apply_late_size_adjustments_epilogue(
+            &mut self.format_specific,
+            total_sizes,
+            &mut extra_sizes,
+            resources.dynamic_symbol_definitions,
+            resources.symbol_db.args,
+        )?;
 
-            // See comments in Prelude::apply_late_size_adjustments.
-            total_sizes.merge(&extra_sizes);
-            common.mem_sizes.merge(&extra_sizes);
-        }
+        // See comments in Prelude::apply_late_size_adjustments.
+        total_sizes.merge(&extra_sizes);
+        common.mem_sizes.merge(&extra_sizes);
 
         Ok(())
     }
@@ -3783,7 +3782,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
 
-        let no_gc = !resources.symbol_db.args.gc_sections;
+        let no_gc = !resources.symbol_db.args.should_gc_sections();
 
         for (i, section) in self.sections.iter().enumerate() {
             match section {
@@ -3854,14 +3853,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
 
         let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
-            && !(self.input.has_archive_semantics()
-                && resources
+            && (!self.input.has_archive_semantics()
+                || resources
                     .symbol_db
                     .args
-                    .exclude_libs
-                    .should_exclude(self.input.lib_name()))
+                    .should_export_dynamic(self.input.lib_name()))
             || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.args.export_all_dynamic_symbols;
+                && resources.symbol_db.args.should_export_all_dynamic_symbols();
         if export_all_dynamic
             || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.export_list.is_some()
@@ -4057,7 +4055,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) {
         common.mem_sizes.resize(output_sections.num_parts());
-        if !resources.symbol_db.args.strip_all() {
+        if !resources.symbol_db.args.should_strip_all() {
             self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags);
         }
         let output_kind = resources.symbol_db.output_kind;
@@ -4076,7 +4074,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         symbol_db: &SymbolDb<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) {
-        let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
+        let _file_span = symbol_db.args.common().trace_span_for_file(self.file_id());
 
         let mut num_locals = 0;
         let mut num_globals = 0;
@@ -4120,7 +4118,11 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<ObjectLayout<'data, P>> {
-        let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
+        let _file_span = resources
+            .symbol_db
+            .args
+            .common()
+            .trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
         let sframe_start_address = resources
@@ -4411,9 +4413,7 @@ impl<'data> SymbolCopyInfo<'data> {
             return None;
         }
 
-        if let Strip::Retain(retain) = &symbol_db.args.strip
-            && !retain.contains(name)
-        {
+        if symbol_db.args.should_strip_symbol_named(name) {
             return None;
         }
 
@@ -5034,7 +5034,7 @@ fn layout_section_parts<P: Platform>(
     output_sections: &OutputSections<P>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let segment_alignments = compute_segment_alignments::<P>(
         sizes,
@@ -5156,7 +5156,7 @@ fn compute_segment_alignments<P: Platform>(
     sizes: &OutputSectionPartMap<u64>,
     program_segments: &ProgramSegments<P::ProgramSegmentDef>,
     output_order: &OutputOrder,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     output_sections: &OutputSections<P>,
 ) -> HashMap<ProgramSegmentId, Alignment> {
     timing_phase!("Computing segment alignments");
@@ -5245,7 +5245,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
                     if !symbol.is_weak() {
                         let should_report = !matches!(
-                            args.unresolved_symbols,
+                            args.unresolved_symbols_behaviour(),
                             crate::args::UnresolvedSymbols::IgnoreAll
                                 | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
                         );
@@ -5254,7 +5254,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
                             let symbol_name =
                                 resources.symbol_db.symbol_name_for_display(symbol_id);
 
-                            if args.error_unresolved_symbols {
+                            if args.should_error_on_unresolved_symbols() {
                                 bail!("undefined reference to `{symbol_name}` from {self}");
                             }
                             crate::error::warning(&format!(
@@ -5683,7 +5683,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
     let (output_order, program_segments) = output_sections.output_order();
-    let args = Args::<ElfArgs>::default();
+    let args = crate::args::elf::ElfArgs::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts::<Elf>(

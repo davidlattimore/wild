@@ -4,8 +4,6 @@
 
 use crate::LayoutRules;
 use crate::alignment::Alignment;
-use crate::args::Args;
-use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf::RawSymbolName;
@@ -29,6 +27,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
+use crate::platform::Args as _;
 use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
@@ -688,7 +687,7 @@ pub(crate) struct ResolvedLtoInput {
 fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
     output_sections: &mut OutputSections<'data, P>,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
 ) {
     timing_phase!("Assign section IDs");
 
@@ -1126,7 +1125,7 @@ impl<'data, P: Platform> ResolvedDynamic<'data, P> {
 
 fn resolve_sections_for_object<'data, P: Platform>(
     obj: &mut ResolvedObject<'data, P>,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
@@ -1154,7 +1153,7 @@ fn resolve_section<'data, P: Platform>(
     input_section_index: SectionIndex,
     input_section: &P::SectionHeader,
     obj: &mut ResolvedObject<'data, P>,
-    args: &Args<ElfArgs>,
+    args: &P::Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
@@ -1226,11 +1225,7 @@ fn resolve_section<'data, P: Platform>(
         }
         SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
         SectionRuleOutcome::NoteGnuStack => {
-            // If the .note.GNU-stack section has SHF_EXECINSTR, the input file is requesting an
-            // executable stack.
-            if input_section.is_executable() && !args.execstack {
-                bail!("{obj}: requires executable stack, but -z execstack is not specified");
-            }
+            P::validate_stack_section(input_section, obj, args)?;
             return Ok(SectionSlot::Discard);
         }
         SectionRuleOutcome::EhFrame => {
@@ -1240,7 +1235,7 @@ fn resolve_section<'data, P: Platform>(
             return Ok(SectionSlot::NoteGnuProperty(input_section_index));
         }
         SectionRuleOutcome::Debug => {
-            if args.strip_debug() && !input_section.is_alloc() {
+            if args.should_strip_debug() && !input_section.is_alloc() {
                 return Ok(SectionSlot::Discard);
             }
 

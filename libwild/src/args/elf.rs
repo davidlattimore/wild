@@ -1,7 +1,6 @@
 //! An elf-specific extension of `super::Args` and parsing implementation to match gnu style
 //! linkers.
 
-use super::Args;
 use super::ArgumentParser;
 use super::BSymbolicKind;
 use super::FILES_PER_GROUP_ENV;
@@ -10,8 +9,10 @@ use super::InputSpec;
 use super::REFERENCE_LINKER_ENV;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
+use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
+use crate::args::DefsymValue;
 use crate::args::FileWriteMode;
 use crate::args::Modifiers;
 use crate::args::UnresolvedSymbols;
@@ -21,6 +22,9 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::linker_script::maybe_forced_sysroot;
+use crate::output_section_id::SectionName;
+use crate::platform;
+use crate::platform::Args as _;
 use crate::save_dir::SaveDir;
 use crate::timing_phase;
 use hashbrown::HashMap;
@@ -54,15 +58,9 @@ pub(crate) enum VersionMode {
 }
 
 #[derive(Debug)]
-pub(crate) enum DefsymValue {
-    /// A numeric value (address)
-    Value(u64),
-    /// Reference to another symbol with an optional offset
-    SymbolWithOffset(String, i64),
-}
-
-#[derive(Debug)]
 pub struct ElfArgs {
+    pub(crate) common: super::CommonArgs,
+
     pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) output: Arc<Path>,
@@ -99,7 +97,7 @@ pub struct ElfArgs {
     pub(crate) defsym: Vec<(String, DefsymValue)>,
 
     /// Section start addresses from `--section-start` options. Maps section name to address.
-    pub(crate) section_start: HashMap<String, u64>,
+    pub(crate) section_start: HashMap<Vec<u8>, u64>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -265,6 +263,8 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
 impl Default for ElfArgs {
     fn default() -> Self {
         ElfArgs {
+            common: CommonArgs::default(),
+
             arch: default_target_arch(),
 
             lib_search_path: Vec::new(),
@@ -355,32 +355,9 @@ const fn default_target_arch() -> Architecture {
 }
 
 impl ElfArgs {
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
-        input: F,
-    ) -> Result<Args<Self>> {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Self> {
         timing_phase!("Parse args");
         parse(input)
-    }
-
-    pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
-        if let Some(max_page_size) = self.max_page_size {
-            return max_page_size;
-        }
-
-        match self.arch {
-            Architecture::X86_64 => Alignment { exponent: 12 },
-            Architecture::AArch64 => Alignment { exponent: 16 },
-            Architecture::RISCV64 => Alignment { exponent: 12 },
-            Architecture::LoongArch64 => Alignment { exponent: 16 },
-        }
-    }
-
-    pub(crate) fn strip_all(&self) -> bool {
-        matches!(self.strip, Strip::All)
-    }
-
-    pub(crate) fn strip_debug(&self) -> bool {
-        matches!(self.strip, Strip::All | Strip::Debug)
     }
 }
 
@@ -403,7 +380,7 @@ fn parse_defsym_expression(s: &str) -> DefsymValue {
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
     input: F,
-) -> Result<Args<ElfArgs>> {
+) -> Result<ElfArgs> {
     use crate::input_data::MAX_FILES_PER_GROUP;
 
     // SAFETY: Should be called early before other descriptors are opened and
@@ -422,21 +399,24 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         );
     }
 
-    let mut args: Args<ElfArgs> = Args {
-        files_per_group,
-        jobserver_client,
+    let mut args = ElfArgs {
+        common: CommonArgs {
+            files_per_group,
+            jobserver_client,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    args.save_dir = SaveDir::new(&input)?;
+    args.common.save_dir = SaveDir::new(&input)?;
 
     let mut input = input();
 
     let mut modifier_stack = vec![Modifiers::default()];
 
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
-        args.write_layout = true;
-        args.write_trace = true;
+        args.common.write_layout = true;
+        args.common.write_trace = true;
     }
 
     let arg_parser = setup_argument_parser();
@@ -456,8 +436,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         args.rpath = Some(std::mem::take(&mut args.rpath_set).into_iter().join(":"));
     }
 
-    if !args.unrecognized_options.is_empty() {
-        let options_list = args.unrecognized_options.join(", ");
+    if !args.common.unrecognized_options.is_empty() {
+        let options_list = args.common.unrecognized_options.join(", ");
         bail!("unrecognized option(s): {}", options_list);
     }
 
@@ -484,7 +464,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             };
 
             let dir = handle_sysroot(Path::new(value));
-            args.save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_file(value);
             args.lib_search_path.push(dir);
             Ok(())
         });
@@ -499,7 +479,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             |args, modifier_stack, value| {
                 let stripped = value.strip_prefix(':').unwrap_or(value);
                 let spec = InputSpec::File(Box::from(Path::new(stripped)));
-                args.inputs.push(Input {
+                args.common_mut().inputs.push(Input {
                     spec,
                     search_first: None,
                     modifiers: *modifier_stack.last().unwrap(),
@@ -512,7 +492,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             "Link with library libname.so or libname.a",
             |args, modifier_stack, value| {
                 let spec = InputSpec::Lib(Box::from(value));
-                args.inputs.push(Input {
+                args.common_mut().inputs.push(Input {
                     spec,
                     search_first: None,
                     modifiers: *modifier_stack.last().unwrap(),
@@ -526,7 +506,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             } else {
                 InputSpec::Lib(Box::from(value))
             };
-            args.inputs.push(Input {
+            args.common_mut().inputs.push(Input {
                 spec,
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
@@ -727,7 +707,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Add runtime library search path")
         .execute(|args, _modifier_stack, value| {
             if Path::new(value).is_file() {
-                args.unrecognized_options
+                args.common_mut()
+                    .unrecognized_options
                     .push(format!("-R,{value}(filename)"));
             } else {
                 args.rpath_set.insert(value.to_string());
@@ -891,7 +872,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("demangle")
         .help("Enable symbol demangling")
         .execute(|args, _modifier_stack| {
-            args.demangle = true;
+            args.common_mut().demangle = true;
             Ok(())
         });
 
@@ -900,7 +881,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-demangle")
         .help("Disable symbol demangling")
         .execute(|args, _modifier_stack| {
-            args.demangle = false;
+            args.common_mut().demangle = false;
             Ok(())
         });
 
@@ -939,7 +920,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("mmap-output-file")
         .help("Write output file using mmap (default)")
         .execute(|args, _modifier_stack| {
-            args.mmap_output_file = true;
+            args.common_mut().mmap_output_file = true;
             Ok(())
         });
 
@@ -948,7 +929,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-mmap-output-file")
         .help("Write output file without mmap")
         .execute(|args, _modifier_stack| {
-            args.mmap_output_file = false;
+            args.common_mut().mmap_output_file = false;
             Ok(())
         });
 
@@ -969,10 +950,11 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .execute(|args, _modifier_stack, value| {
             match value {
                 Some(v) => {
-                    args.num_threads = Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
+                    args.common_mut().num_threads =
+                        Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
                 }
                 None => {
-                    args.num_threads = None; // Default behaviour
+                    args.common_mut().num_threads = None; // Default behaviour
                 }
             }
             Ok(())
@@ -983,7 +965,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-threads")
         .help("Use a single thread")
         .execute(|args, _modifier_stack| {
-            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
+            args.common_mut().num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
 
@@ -992,7 +974,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("wild-experiments")
         .help("List of numbers. Used to tweak internal parameters. '_' keeps default value.")
         .execute(|args, _modifier_stack, value| {
-            args.numeric_experiments = value
+            args.common_mut().numeric_experiments = value
                 .split(',')
                 .map(|p| {
                     if p == "_" {
@@ -1167,7 +1149,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare()
         .long("validate-output")
         .execute(|args, _modifier_stack| {
-            args.validate_output = true;
+            args.common_mut().validate_output = true;
             Ok(())
         });
 
@@ -1175,7 +1157,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare()
         .long("write-layout")
         .execute(|args, _modifier_stack| {
-            args.write_layout = true;
+            args.common_mut().write_layout = true;
             Ok(())
         });
 
@@ -1183,7 +1165,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare()
         .long("write-trace")
         .execute(|args, _modifier_stack| {
-            args.write_trace = true;
+            args.common_mut().write_trace = true;
             Ok(())
         });
 
@@ -1246,7 +1228,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("thread-count")
         .help("Set the number of threads to use")
         .execute(|args, _modifier_stack, value| {
-            args.num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
+            args.common_mut().num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
             Ok(())
         });
 
@@ -1286,7 +1268,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("version-script")
         .help("Use version script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_file(value);
             args.version_script_path = Some(PathBuf::from(value));
             Ok(())
         });
@@ -1297,8 +1279,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value);
-            args.add_script(value);
+            args.common_mut().save_dir.handle_file(value);
+            args.common_mut().add_script(value);
             Ok(())
         });
 
@@ -1370,8 +1352,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare_with_param()
         .long("debug-fuel")
         .execute(|args, _modifier_stack, value| {
-            args.debug_fuel = Some(AtomicI64::new(value.parse()?));
-            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
+            args.common_mut().debug_fuel = Some(AtomicI64::new(value.parse()?));
+            args.common_mut().num_threads = Some(NonZeroUsize::new(1).unwrap());
             Ok(())
         });
 
@@ -1443,7 +1425,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                     parts[1], value
                 )
             })?;
-            args.section_start.insert(section_name, address);
+            args.section_start
+                .insert(section_name.into_bytes(), address);
 
             Ok(())
         });
@@ -1557,7 +1540,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("sysroot")
         .help("Set system root")
         .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value);
+            args.common_mut().save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
             args.sysroot = Some(Box::from(sysroot.as_path()));
             for path in &mut args.lib_search_path {
@@ -1630,7 +1613,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("sym-info")
         .help("Show symbol information. Accepts symbol name or ID.")
         .execute(|args, _modifier_stack, value| {
-            args.sym_info = Some(value.to_owned());
+            args.common_mut().sym_info = Some(value.to_owned());
             Ok(())
         });
 
@@ -1657,7 +1640,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-fork")
         .help("Do not fork while linking")
         .execute(|args, _modifier_stack| {
-            args.should_fork = false;
+            args.common_mut().should_fork = false;
             Ok(())
         });
 
@@ -1666,7 +1649,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("update-in-place")
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
-            args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
             Ok(())
         });
 
@@ -1675,7 +1658,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-update-in-place")
         .help("Delete and recreate the file")
         .execute(|args, _modifier_stack| {
-            args.file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
+            args.common_mut().file_write_mode = Some(FileWriteMode::UnlinkAndReplace);
             Ok(())
         });
 
@@ -1692,7 +1675,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("prepopulate-maps")
         .help("Prepopulate maps")
         .execute(|args, _modifier_stack| {
-            args.prepopulate_maps = true;
+            args.common_mut().prepopulate_maps = true;
             Ok(())
         });
 
@@ -1796,12 +1779,167 @@ impl FromStr for CounterKind {
     }
 }
 
+impl platform::Args for ElfArgs {
+    fn gc_stats_output_file(&self) -> Option<&Path> {
+        self.write_gc_stats.as_deref()
+    }
+
+    fn gc_stats_ignore(&self) -> &[String] {
+        &self.gc_stats_ignore
+    }
+
+    fn verbose_gc_stats(&self) -> bool {
+        self.verbose_gc_stats
+    }
+
+    fn common(&self) -> &crate::args::CommonArgs {
+        &self.common
+    }
+
+    fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
+        &mut self.common
+    }
+
+    fn output(&self) -> &Arc<Path> {
+        &self.output
+    }
+
+    fn should_strip_debug(&self) -> bool {
+        matches!(self.strip, Strip::All | Strip::Debug)
+    }
+
+    fn should_strip_all(&self) -> bool {
+        matches!(self.strip, Strip::All)
+    }
+
+    fn should_strip_symbol_named(&self, name: &[u8]) -> bool {
+        let Strip::Retain(retain) = &self.strip else {
+            return false;
+        };
+        !retain.contains(name)
+    }
+
+    fn force_undefined_symbol_names(&self) -> &[String] {
+        &self.undefined
+    }
+
+    fn lib_search_path(&self) -> &[Box<Path>] {
+        &self.lib_search_path
+    }
+
+    fn sysroot(&self) -> Option<&Path> {
+        self.sysroot.as_deref()
+    }
+
+    fn should_gc_sections(&self) -> bool {
+        self.gc_sections
+    }
+
+    fn should_merge_sections(&self) -> bool {
+        self.merge_sections
+    }
+
+    fn force_export_symbol_names(&self) -> &[String] {
+        &self.export_list
+    }
+
+    fn symbol_names_to_wrap(&self) -> &[String] {
+        &self.wrap
+    }
+
+    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+        // The --entry flag is used first, falling back to what the linker script says, or otherwise
+        // defaults to `_start`.
+        self.entry
+            .as_ref()
+            .map(|n| n.as_bytes())
+            .or(linker_script_entry)
+            .unwrap_or(b"_start")
+    }
+
+    fn start_address_for_section(&self, section_name: SectionName) -> Option<u64> {
+        self.section_start.get(section_name.bytes()).copied()
+    }
+
+    fn version_script_path(&self) -> Option<&Path> {
+        self.version_script_path.as_deref()
+    }
+
+    fn export_list_path(&self) -> Option<&Path> {
+        self.export_list_path.as_deref()
+    }
+
+    fn defsym(&self) -> &[(String, DefsymValue)] {
+        &self.defsym
+    }
+
+    fn should_relax(&self) -> bool {
+        self.relax
+    }
+
+    fn should_emit_got_plt_syms(&self) -> bool {
+        self.got_plt_syms
+    }
+
+    fn copy_relocations_enabled(&self) -> crate::args::CopyRelocations {
+        self.copy_relocations
+    }
+
+    fn should_error_on_unresolved_symbols(&self) -> bool {
+        self.error_unresolved_symbols
+    }
+
+    fn should_write_linker_identity(&self) -> bool {
+        self.should_write_linker_identity
+    }
+
+    fn dynamic_linker(&self) -> Option<&Path> {
+        self.dynamic_linker.as_deref()
+    }
+
+    fn should_allow_object_undefined(&self) -> bool {
+        !self.no_undefined
+    }
+
+    fn allow_multiple_definitions(&self) -> bool {
+        self.allow_multiple_definitions
+    }
+
+    fn stack_size_override(&self) -> Option<NonZeroU64> {
+        self.z_stack_size
+    }
+
+    fn unresolved_symbols_behaviour(&self) -> crate::args::UnresolvedSymbols {
+        self.unresolved_symbols
+    }
+
+    fn should_export_all_dynamic_symbols(&self) -> bool {
+        self.export_all_dynamic_symbols
+    }
+
+    fn should_export_dynamic(&self, lib_name: &[u8]) -> bool {
+        !self.exclude_libs.should_exclude(lib_name)
+    }
+
+    fn loadable_segment_alignment(&self) -> Alignment {
+        if let Some(max_page_size) = self.max_page_size {
+            return max_page_size;
+        }
+
+        match self.arch {
+            Architecture::X86_64 => Alignment { exponent: 12 },
+            Architecture::AArch64 => Alignment { exponent: 16 },
+            Architecture::RISCV64 => Alignment { exponent: 12 },
+            Architecture::LoongArch64 => Alignment { exponent: 16 },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ElfArgs;
     use super::SILENTLY_IGNORED_FLAGS;
     use super::VersionMode;
-    use crate::Args;
     use crate::args::InputSpec;
     use itertools::Itertools;
     use std::fs::File;
@@ -1947,9 +2085,10 @@ mod tests {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
     }
 
-    fn input1_assertions(args: &Args<ElfArgs>) {
+    fn input1_assertions(args: &ElfArgs) {
         assert_eq!(
-            args.inputs
+            args.common
+                .inputs
                 .iter()
                 .filter_map(|i| match &i.spec {
                     InputSpec::File(_) | InputSpec::Search(_) => None,
@@ -1960,7 +2099,7 @@ mod tests {
         );
         assert_contains(&args.lib_search_path, "/lib");
         assert_contains(&args.lib_search_path, "/usr/lib");
-        assert!(!args.inputs.iter().any(|i| match &i.spec {
+        assert!(!args.common.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
             InputSpec::Lib(_) | InputSpec::Search(_) => false,
         }));
@@ -1969,13 +2108,13 @@ mod tests {
             Some(PathBuf::from_str("a.ver").unwrap())
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
-        assert_eq!(args.num_threads, Some(NonZeroUsize::new(1).unwrap()));
+        assert_eq!(args.common.num_threads, Some(NonZeroUsize::new(1).unwrap()));
         assert_eq!(args.version_mode, VersionMode::Verbose);
         assert_eq!(
             args.sysroot,
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
         );
-        assert!(args.inputs.iter().any(|i| match &i.spec {
+        assert!(args.common.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(_) | InputSpec::Lib(_) => false,
             InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
@@ -1986,7 +2125,7 @@ mod tests {
         );
     }
 
-    fn inline_and_file_options_assertions(args: &Args<ElfArgs>) {
+    fn inline_and_file_options_assertions(args: &ElfArgs) {
         assert_contains(&args.lib_search_path, "/lib");
     }
 

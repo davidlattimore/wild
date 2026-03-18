@@ -4,11 +4,9 @@ use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::archive::EntryMeta;
-use crate::args::Args;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
-use crate::args::elf::ElfArgs;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -18,6 +16,8 @@ use crate::linker_plugins::LinkerPlugin;
 use crate::linker_plugins::LtoInputInfo;
 use crate::linker_script::LinkerScript;
 use crate::parsing::ParsedInputObject;
+use crate::platform;
+use crate::platform::Args;
 use crate::platform::Platform;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
@@ -143,7 +143,7 @@ pub(crate) struct InputLinkerScript<'data> {
 }
 
 struct TemporaryState<'data, P: Platform> {
-    args: &'data Args<ElfArgs>,
+    args: &'data P::Args,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
     path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
@@ -219,13 +219,13 @@ pub(crate) struct AuxiliaryFiles<'data> {
 
 impl<'data> AuxiliaryFiles<'data> {
     pub(crate) fn new(
-        args: &'data Args<ElfArgs>,
+        args: &'data impl platform::Args,
         inputs_arena: &'data Arena<InputFile>,
     ) -> Result<Self> {
         let resolve_script_path = |path: &Path| -> PathBuf {
             if path.exists() {
                 path.to_owned()
-            } else if let Some(found) = search_for_file(&args.lib_search_path, None, path) {
+            } else if let Some(found) = search_for_file(args.lib_search_path(), None, path) {
                 found
             } else {
                 path.to_owned()
@@ -234,13 +234,11 @@ impl<'data> AuxiliaryFiles<'data> {
 
         Ok(Self {
             version_script_data: args
-                .version_script_path
-                .as_ref()
+                .version_script_path()
                 .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
                 .transpose()?,
             export_list_data: args
-                .export_list_path
-                .as_ref()
+                .export_list_path()
                 .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
                 .transpose()?,
         })
@@ -259,7 +257,7 @@ impl<'data> FileLoader<'data> {
     pub(crate) fn load_inputs<P: Platform>(
         &mut self,
         inputs: &[Input],
-        args: &'data Args<ElfArgs>,
+        args: &'data P::Args,
         plugin: &mut Option<LinkerPlugin<'data>>,
     ) -> Result<LoadedInputs<'data, P>> {
         timing_phase!("Open input files");
@@ -424,7 +422,7 @@ impl<'data> FileLoader<'data> {
 
 fn process_linker_script<'data>(
     input_file: &'data InputFile,
-    args: &Args<ElfArgs>,
+    args: &impl platform::Args,
 ) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
@@ -437,7 +435,7 @@ fn process_linker_script<'data>(
     script.foreach_input(input_file.modifiers, |mut input| {
         input.search_first = Some(directory.to_owned());
 
-        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot.as_ref(), &mut input.spec)
+        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot(), &mut input.spec)
             && let Some(new_file) =
                 crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
         {
@@ -506,13 +504,14 @@ fn process_thin_archive<'data, P: Platform>(
                 let path = entry.ident.as_path();
                 let entry_path = parent_path.join(path);
 
-                let (file_data, file) = FileData::open(&entry_path, state.args.prepopulate_maps)
-                    .with_context(|| {
-                        format!(
-                            "Failed to open file referenced by thin archive `{}`",
-                            input_file.filename.display()
-                        )
-                    })?;
+                let (file_data, file) =
+                    FileData::open(&entry_path, state.args.common().prepopulate_maps)
+                        .with_context(|| {
+                            format!(
+                                "Failed to open file referenced by thin archive `{}`",
+                                input_file.filename.display()
+                            )
+                        })?;
 
                 let input_file = InputFile {
                     filename: entry_path.clone(),
@@ -568,7 +567,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         verbose_timing_phase!("Open file");
 
         let absolute_path = &request.paths.absolute;
-        let result = FileData::open(absolute_path.as_path(), self.args.prepopulate_maps);
+        let result = FileData::open(absolute_path.as_path(), self.args.common().prepopulate_maps);
         let (data, file) = match request.referenced_by.as_ref() {
             Some(referenced_by) => {
                 result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
@@ -718,12 +717,12 @@ fn read_script_data<'data>(
 }
 
 impl Input {
-    fn path(&self, args: &Args<ElfArgs>) -> Result<InputPath> {
+    fn path(&self, args: &impl platform::Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some()
                     && let Some(path) = search_for_file(
-                        &args.lib_search_path,
+                        args.lib_search_path(),
                         self.search_first.as_ref(),
                         p.as_ref(),
                     )
@@ -742,7 +741,7 @@ impl Input {
                 if self.modifiers.allow_shared {
                     let filename = format!("lib{lib_name}.so");
                     if let Some(path) = search_for_file(
-                        &args.lib_search_path,
+                        args.lib_search_path(),
                         self.search_first.as_ref(),
                         &filename,
                     ) {
@@ -753,9 +752,11 @@ impl Input {
                     }
                 }
                 let filename = format!("lib{lib_name}.a");
-                if let Some(path) =
-                    search_for_file(&args.lib_search_path, self.search_first.as_ref(), &filename)
-                {
+                if let Some(path) = search_for_file(
+                    args.lib_search_path(),
+                    self.search_first.as_ref(),
+                    &filename,
+                ) {
                     return Ok(InputPath {
                         absolute: std::path::absolute(&path)?,
                         original: PathBuf::from(filename),
@@ -765,7 +766,7 @@ impl Input {
             }
             InputSpec::Search(filename) => {
                 if let Some(path) = search_for_file(
-                    &args.lib_search_path,
+                    args.lib_search_path(),
                     self.search_first.as_ref(),
                     filename.as_ref(),
                 ) {
