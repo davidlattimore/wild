@@ -549,8 +549,9 @@ impl platform::Platform for Elf {
         resolutions_out: &mut layout::ResolutionWriter<Self>,
     ) -> Result<Self::DynamicLayoutExt<'data>> {
         let mut is_last_verneed = false;
+        let mut verneed_info = &mut state.format_specific_state.verneed_info;
 
-        if let Some(v) = state.format_specific_state.verneed_info.as_ref()
+        if let Some(v) = &mut verneed_info
             && v.version_count > 0
         {
             memory_offsets.increment(
@@ -565,6 +566,19 @@ impl platform::Platform for Elf {
 
             is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
                 == version_r_layout.mem_offset + version_r_layout.mem_size;
+
+            if is_last_verneed && let Some(dt_relr_version_index) = &mut v.dt_relr_version_index {
+                // So far we only accounted for custom versions in this object, but we need to also
+                // account for others. This is what `non_addressable_indexes` gives us, but we need
+                // to shift back by local and global version to avoid double-counting them.
+                let other_obj_versions_count = state
+                    .format_specific_state
+                    .non_addressable_indexes
+                    .next_gnu_version_r_index
+                    .checked_sub(2)
+                    .expect("Invalid non-addressable index");
+                *dt_relr_version_index += other_obj_versions_count;
+            }
         }
 
         let version_mapping = compute_version_mapping(
@@ -2406,7 +2420,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 }
             }
 
-            // When using -z pack-relative-relocs, glibc requires a GLIBC_ABI_DT_RELR version
+            // When using -z pack-relative-relocs, glibc requires GLIBC_ABI_DT_RELR version
             // dependency in the libc verneed entry so that older glibc versions produce a clear
             // error instead of crashing. glibc 2.38+ recognises the dummy version and ignores it.
             let has_dt_relr_version =
@@ -2429,7 +2443,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                     defs,
                     string_table_index: link,
                     version_count,
-                    has_dt_relr_version,
+                    // Index of our special version, accounting local and global version indexes.
+                    dt_relr_version_index: has_dt_relr_version
+                        .then_some(version_count + object::elf::VER_NDX_GLOBAL),
                 });
             }
         }
@@ -3828,7 +3844,7 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
 pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data>,
     pub(crate) string_table_index: object::SectionIndex,
-    pub(crate) has_dt_relr_version: bool,
+    pub(crate) dt_relr_version_index: Option<u16>,
 
     /// Number of symbol versions that we're going to emit. This is the number of entries in
     /// `symbol_versions_needed` that are true. Computed after graph traversal.
