@@ -229,7 +229,7 @@ impl<'data> Prelude<'data> {
 
         let mut symbols = InternalSymbolsBuilder::default();
 
-        P::create_linker_defined_symbols(&mut symbols, output_kind);
+        P::create_linker_defined_symbols(&mut symbols, output_kind, args);
 
         args.force_undefined_symbol_names().iter().for_each(|name| {
             symbols.add_symbol(InternalSymDefInfo::new(

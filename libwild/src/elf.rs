@@ -607,6 +607,7 @@ impl platform::Platform for Elf {
     fn create_linker_defined_symbols(
         symbols: &mut crate::parsing::InternalSymbolsBuilder,
         output_kind: OutputKind,
+        args: &ElfArgs,
     ) {
         // The undefined symbol must always be symbol 0.
         symbols
@@ -672,11 +673,12 @@ impl platform::Platform for Elf {
             .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
-        // TODO: define the symbol only on RISC-V target
-        symbols.section_start(
-            output_section_id::DATA,
-            crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
-        );
+        if args.arch == Architecture::RISCV64 {
+            symbols.section_start(
+                output_section_id::DATA,
+                crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
+            );
+        }
 
         symbols
             .section_end(output_section_id::DATA, "edata")

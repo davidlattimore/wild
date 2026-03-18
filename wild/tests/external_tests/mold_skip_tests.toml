@@ -128,7 +128,6 @@ tests = [
 [skipped_groups.arch_riscv64]
 reason = "RISC-V specific tests"
 tests = [
-  "arch-riscv64-global-pointer.sh",
   "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
   "arch-riscv64-reloc-overflow.sh",
@@ -150,6 +149,7 @@ tests  = ["tls-common.sh", "tls-le-error.sh"]
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
 tests = [
+  "arch-riscv64-global-pointer.sh", # GNU ld and lld do not export `__global_pointer$` to `.dynsym`.
   "arch-riscv64-obj-compatible.sh", # Different message formats
   "arch-riscv64-relax-j.sh",        # Passes when `--no-gc-sections` is passed.
   "arch-x86_64-empty-arg.sh",       # Different message formats

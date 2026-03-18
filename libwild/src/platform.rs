@@ -313,6 +313,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     fn create_linker_defined_symbols(
         symbols: &mut crate::parsing::InternalSymbolsBuilder,
         output_kind: OutputKind,
+        args: &Self::Args,
     );
 
     fn built_in_section_infos<'data>()
