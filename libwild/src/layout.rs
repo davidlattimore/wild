@@ -787,44 +787,12 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
             }
             let flags = atomic_flags.get();
 
-            // It might be tempting to think that this code should only be run for dynamic objects,
-            // however regular objects can own dynamic symbols too if the symbol is an undefined
-            // weak symbol.
-            if flags.is_dynamic() && flags.has_resolution() {
-                let name = symbol_db.symbol_name(symbol_id)?;
-                let name = P::RawSymbolName::parse(name.bytes()).name();
-
-                if flags.needs_copy_relocation() {
-                    // The dynamic symbol is a definition, so is handled by the epilogue. We only
-                    // need to deal with the symtab entry here.
-                    let entry_size = size_of::<P::SymtabEntry>() as u64;
-                    common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
-                    common.allocate(part_id::STRTAB, name.len() as u64 + 1);
-                } else {
-                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
-                    common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
-                }
-            }
-
-            if symbol_db.args.common().verify_allocation_consistency {
-                verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
-            }
+            P::finalise_sizes_for_symbol(common, symbol_db, symbol_id, flags)?;
 
             allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
-            if symbol_db.args.should_emit_got_plt_syms() && flags.needs_got() {
-                let name = symbol_db.symbol_name(symbol_id)?;
-                let name = P::RawSymbolName::parse(name.bytes()).name();
-                let name_len = name.len() + 4; // "$got" or "$plt" suffix
-
-                let entry_size = size_of::<elf::SymtabEntry>() as u64;
-                common.allocate(part_id::SYMTAB_LOCAL, entry_size);
-                common.allocate(part_id::STRTAB, name_len as u64 + 1);
-
-                if flags.needs_plt() {
-                    common.allocate(part_id::SYMTAB_LOCAL, entry_size);
-                    common.allocate(part_id::STRTAB, name_len as u64 + 1);
-                }
+            if symbol_db.args.common().verify_allocation_consistency {
+                verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
             }
         }
 

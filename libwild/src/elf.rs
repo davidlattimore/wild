@@ -17,6 +17,7 @@ use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
+use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
@@ -54,6 +55,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
+use crate::value_flags::ValueFlags;
 use crate::version_script::VersionScript;
 use foldhash::HashSet;
 use hashbrown::HashMap;
@@ -1109,6 +1111,46 @@ impl platform::Platform for Elf {
         if input_section.is_executable() && !args.execstack {
             bail!("{object}: requires executable stack, but -z execstack is not specified");
         }
+        Ok(())
+    }
+
+    fn finalise_sizes_for_symbol<'data>(
+        common: &mut CommonGroupState<'data, Self>,
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_id: SymbolId,
+        flags: ValueFlags,
+    ) -> Result {
+        if flags.is_dynamic() && flags.has_resolution() {
+            let name = symbol_db.symbol_name(symbol_id)?;
+            let name = Self::RawSymbolName::parse(name.bytes()).name();
+
+            if flags.needs_copy_relocation() {
+                // The dynamic symbol is a definition, so is handled by the epilogue. We only
+                // need to deal with the symtab entry here.
+                let entry_size = size_of::<Self::SymtabEntry>() as u64;
+                common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
+                common.allocate(part_id::STRTAB, name.len() as u64 + 1);
+            } else {
+                common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+                common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
+            }
+        }
+
+        if symbol_db.args.should_emit_got_plt_syms() && flags.needs_got() {
+            let name = symbol_db.symbol_name(symbol_id)?;
+            let name = Self::RawSymbolName::parse(name.bytes()).name();
+            let name_len = name.len() + 4; // "$got" or "$plt" suffix
+
+            let entry_size = size_of::<elf::SymtabEntry>() as u64;
+            common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+            common.allocate(part_id::STRTAB, name_len as u64 + 1);
+
+            if flags.needs_plt() {
+                common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                common.allocate(part_id::STRTAB, name_len as u64 + 1);
+            }
+        }
+
         Ok(())
     }
 }
