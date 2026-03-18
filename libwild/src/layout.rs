@@ -222,6 +222,12 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     );
 
     if symbol_db.args.relax && A::supports_size_reduction_relaxations() {
+        let initial_addresses = compute_section_and_symbol_addresses(
+            &group_states,
+            &section_part_layouts,
+            &symbol_db,
+            &output_sections,
+        );
         perform_iterative_relaxation::<A>(
             &mut group_states,
             &mut section_part_sizes,
@@ -231,6 +237,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             &output_order,
             &symbol_db,
             &per_symbol_flags,
+            Some(initial_addresses),
         );
     }
 
@@ -4811,15 +4818,18 @@ fn relaxation_scan_pass<'data, A: Arch>(
     section_part_sizes: &mut OutputSectionPartMap<u64>,
     prev_rescan: Option<&RescanSections>,
     output_sections: &OutputSections<A::Platform>,
+    precomputed_addresses: Option<(Vec<Vec<Vec<u64>>>, SymbolOutputInfos)>,
 ) -> (u64, RescanCandidates) {
     timing_phase!("Relaxation scan pass");
 
-    let (section_addresses, symbol_infos) = compute_section_and_symbol_addresses(
-        group_states,
-        section_part_layouts,
-        symbol_db,
-        output_sections,
-    );
+    let (section_addresses, symbol_infos) = precomputed_addresses.unwrap_or_else(|| {
+        compute_section_and_symbol_addresses(
+            group_states,
+            section_part_layouts,
+            symbol_db,
+            output_sections,
+        )
+    });
 
     // Scan each group.
     #[expect(clippy::type_complexity)]
@@ -4970,10 +4980,12 @@ fn perform_iterative_relaxation<'data, A: Arch>(
     output_order: &OutputOrder,
     symbol_db: &SymbolDb<'data, A::Platform>,
     per_symbol_flags: &PerSymbolFlags,
+    initial_addresses: Option<(Vec<Vec<Vec<u64>>>, SymbolOutputInfos)>,
 ) {
     timing_phase!("Iterative relaxation");
 
     let mut rescan_sections: Option<RescanSections> = None;
+    let mut precomputed_addresses = initial_addresses;
 
     for _iteration in 0..MAX_RELAXATION_ITERATIONS {
         if let Some(ref rescan) = rescan_sections
@@ -4992,6 +5004,7 @@ fn perform_iterative_relaxation<'data, A: Arch>(
             section_part_sizes,
             rescan_sections.as_ref(),
             output_sections,
+            precomputed_addresses.take(),
         );
 
         if deleted == 0 {
