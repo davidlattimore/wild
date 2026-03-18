@@ -2425,6 +2425,7 @@ fn apply_relocation<
                     .wrapping_sub(place),
                 RelocationKind::TlsLd => layout
                     .prelude()
+                    .format_specific
                     .tlsld_got_entry
                     .unwrap()
                     .get()
@@ -2529,6 +2530,7 @@ fn apply_relocation<
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TlsLd => layout
             .prelude()
+            .format_specific
             .tlsld_got_entry
             .unwrap()
             .get()
@@ -2538,6 +2540,7 @@ fn apply_relocation<
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsLdGot => layout
             .prelude()
+            .format_specific
             .tlsld_got_entry
             .unwrap()
             .get()
@@ -2546,6 +2549,7 @@ fn apply_relocation<
             .bitand(mask.got_entry),
         RelocationKind::TlsLdGotBase => layout
             .prelude()
+            .format_specific
             .tlsld_got_entry
             .unwrap()
             .get()
@@ -2849,7 +2853,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
 }
 
 fn write_prelude<'data, A: Arch<Platform = Elf>>(
-    prelude: &PreludeLayout,
+    prelude: &PreludeLayout<Elf>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
@@ -2904,7 +2908,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
     Ok(())
 }
 
-fn write_interp(prelude: &PreludeLayout, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
+fn write_interp(prelude: &PreludeLayout<Elf>, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
     if let Some(dynamic_linker) = prelude.dynamic_linker.as_ref() {
         buffers
             .get_mut(part_id::INTERP)
@@ -2913,7 +2917,7 @@ fn write_interp(prelude: &PreludeLayout, buffers: &mut OutputSectionPartMap<&mut
 }
 
 fn write_merged_strings(
-    prelude: &PreludeLayout,
+    prelude: &PreludeLayout<Elf>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &ElfLayout,
 ) {
@@ -2947,12 +2951,12 @@ fn write_merged_strings(
 }
 
 fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
-    prelude: &PreludeLayout,
+    prelude: &PreludeLayout<Elf>,
     layout: &ElfLayout<'data>,
     table_writer: &mut TableWriter,
 ) -> Result {
     // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
-    if let Some(got_address) = prelude.tlsld_got_entry {
+    if let Some(got_address) = prelude.format_specific.tlsld_got_entry {
         let mut raw_value = 0;
 
         if layout.symbol_db.output_kind.is_executable() {
@@ -2992,7 +2996,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
 }
 
 fn write_symbol_table_entries(
-    prelude: &PreludeLayout,
+    prelude: &PreludeLayout<Elf>,
     symbol_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,
 ) -> Result {
@@ -3650,7 +3654,7 @@ fn write_prelude_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,
     symbol_id: SymbolId,
-    prelude: &PreludeLayout,
+    prelude: &PreludeLayout<Elf>,
 ) -> Result {
     let offset = symbol_id.offset_from(prelude.internal_symbols.start_symbol_id);
     let def_info = prelude

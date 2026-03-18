@@ -113,8 +113,10 @@ use std::io::Cursor;
 use std::io::Read as _;
 use std::mem::offset_of;
 use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 use std::ops::Range;
 use std::sync::atomic;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -284,6 +286,8 @@ impl platform::Platform for Elf {
     type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
+    type PreludeLayoutStateExt = PreludeLayoutStateExt;
+    type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = u16;
     type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
@@ -381,11 +385,27 @@ impl platform::Platform for Elf {
             .sum::<usize>(), "resolved relocations");
     }
 
-    fn pre_finalise_sizes_prelude<'data>(
-        common: &mut layout::CommonGroupState<'data, Elf>,
-        args: &ElfArgs,
+    fn pre_finalise_sizes_prelude<'scope, 'data>(
+        prelude: &mut layout::PreludeLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        resources: &layout::GraphResources<'data, 'scope, Self>,
     ) {
-        if args.should_write_eh_frame_hdr {
+        if resources
+            .layout_resources_ext
+            .uses_tlsld
+            .load(atomic::Ordering::Relaxed)
+        {
+            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
+            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            prelude.format_specific.needs_tlsld_got_entry = true;
+            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
+            // number.
+            if !resources.symbol_db.output_kind.is_executable() {
+                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+            }
+        }
+
+        if resources.symbol_db.args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<EhFrameHdr>() as u64);
         }
     }
@@ -423,6 +443,7 @@ impl platform::Platform for Elf {
     ) -> LayoutResourcesExt<'data> {
         LayoutResourcesExt {
             sonames: Sonames::new(groups),
+            uses_tlsld: AtomicBool::new(false),
         }
     }
 
@@ -1258,6 +1279,20 @@ impl platform::Platform for Elf {
         common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
+    }
+
+    fn finalise_prelude_layout(
+        prelude: &layout::PreludeLayoutState<Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) -> Self::PreludeLayoutExt {
+        let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
+            let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
+                .expect("GOT address must never be zero");
+            memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            address
+        });
+
+        PreludeLayoutExt { tlsld_got_entry }
     }
 }
 
@@ -3411,6 +3446,7 @@ fn has_complete_deps<'data>(
 #[derive(Debug)]
 pub(crate) struct LayoutResourcesExt<'data> {
     sonames: Sonames<'data>,
+    uses_tlsld: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -4019,12 +4055,12 @@ fn load_debug_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>
 }
 
 #[inline(always)]
-fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
-    object: &layout::ObjectLayoutState<'data, A::Platform>,
-    common: &mut CommonGroupState<'data, A::Platform>,
+fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
+    object: &layout::ObjectLayoutState<'data, Elf>,
+    common: &mut CommonGroupState<'data, Elf>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
-    resources: &'scope layout::GraphResources<'data, '_, A::Platform>,
+    resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
@@ -4072,9 +4108,15 @@ fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
             }
 
             if layout::needs_tlsld(rel_info.kind)
-                && !resources.uses_tlsld.load(atomic::Ordering::Relaxed)
+                && !resources
+                    .layout_resources_ext
+                    .uses_tlsld
+                    .load(atomic::Ordering::Relaxed)
             {
-                resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
+                resources
+                    .layout_resources_ext
+                    .uses_tlsld
+                    .store(true, atomic::Ordering::Relaxed);
             }
         } else if flags_to_add.needs_direct() && flags.is_interposable() {
             if section_is_writable {
@@ -4191,4 +4233,14 @@ fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
 /// runtime loader that the shared object cannot be loaded at runtime (e.g. with dlopen).
 fn does_relocation_require_static_tls(rel_kind: RelocationKind) -> bool {
     layout::resolution_flags(rel_kind) == ValueFlags::GOT_TLS_OFFSET
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct PreludeLayoutStateExt {
+    needs_tlsld_got_entry: bool,
+}
+
+#[derive(Default, Debug)]
+pub(crate) struct PreludeLayoutExt {
+    pub(crate) tlsld_got_entry: Option<NonZeroU64>,
 }

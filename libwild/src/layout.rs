@@ -596,7 +596,7 @@ pub(crate) struct SymbolResolutions {
 }
 
 pub(crate) enum FileLayout<'data, P: Platform> {
-    Prelude(PreludeLayout<'data>),
+    Prelude(PreludeLayout<'data, P>),
     Object(ObjectLayout<'data, P>),
     Dynamic(DynamicLayout<'data, P>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data>),
@@ -659,7 +659,7 @@ impl SectionResolution {
 }
 
 enum FileLayoutState<'data, P: Platform> {
-    Prelude(PreludeLayoutState<'data>),
+    Prelude(PreludeLayoutState<'data, P>),
     Object(ObjectLayoutState<'data, P>),
     Dynamic(DynamicLayoutState<'data, P>),
     NotLoaded(NotLoaded),
@@ -669,16 +669,16 @@ enum FileLayoutState<'data, P: Platform> {
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
-struct PreludeLayoutState<'data> {
+pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols<'data>,
     entry_symbol_id: Option<SymbolId>,
-    needs_tlsld_got_entry: bool,
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
+    pub(crate) format_specific: P::PreludeLayoutStateExt,
 }
 
 pub(crate) struct SyntheticSymbolsLayoutState<'data> {
@@ -726,13 +726,13 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct PreludeLayout<'data> {
+pub(crate) struct PreludeLayout<'data, P: Platform> {
     pub(crate) entry_symbol_id: Option<SymbolId>,
-    pub(crate) tlsld_got_entry: Option<NonZeroU64>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols<'data>,
     pub(crate) dynamic_linker: Option<CString>,
+    pub(crate) format_specific: P::PreludeLayoutExt,
 }
 
 #[derive(Debug)]
@@ -908,7 +908,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for DynamicLayoutState<'
     }
 }
 
-impl HandlerData for PreludeLayoutState<'_> {
+impl<P: Platform> HandlerData for PreludeLayoutState<'_, P> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -918,7 +918,7 @@ impl HandlerData for PreludeLayoutState<'_> {
     }
 }
 
-impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'data> {
+impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'data, P> {
     fn load_symbol<'scope, A: Arch<Platform = P>>(
         &mut self,
         _common: &mut CommonGroupState<'data, P>,
@@ -1204,8 +1204,6 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     has_variant_pcs: AtomicBool,
 
-    pub(crate) uses_tlsld: AtomicBool,
-
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
@@ -1275,7 +1273,7 @@ impl WorkItem {
 }
 
 impl<'data, P: Platform> Layout<'data, P> {
-    pub(crate) fn prelude(&self) -> &PreludeLayout<'data> {
+    pub(crate) fn prelude(&self) -> &PreludeLayout<'data, P> {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
             panic!("Prelude layout not found at expected offset");
@@ -1734,7 +1732,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         unreachable!();
     };
 
-    prelude.apply_late_size_adjustments::<P>(
+    prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
         must_keep_sections,
@@ -1923,7 +1921,6 @@ fn find_required_sections<'data, A: Arch>(
         must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
-        uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
         activations_remaining: AtomicUsize::new(num_groups),
         delay_processing: ArrayQueue::new(1),
@@ -1942,7 +1939,6 @@ fn find_required_sections<'data, A: Arch>(
     }
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
-    let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
     <A::Platform as Platform>::finalise_find_required_sections(&group_states);
 
@@ -1952,12 +1948,14 @@ fn find_required_sections<'data, A: Arch>(
     let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
         unreachable!("Prelude must be first");
     };
-    prelude.pre_finalise_sizes::<A::Platform>(
+
+    <A::Platform as Platform>::pre_finalise_sizes_prelude(
+        prelude,
         &mut prelude_group.common,
-        &resources.uses_tlsld,
-        resources.symbol_db.args,
-        resources.symbol_db.output_kind,
+        &resources,
     );
+
+    let must_keep_sections = resources.must_keep_sections.into_map(|v| v.into_inner());
 
     Ok(GcOutputs {
         group_states,
@@ -2410,7 +2408,7 @@ fn compute_file_sizes<P: Platform>(
     })
 }
 
-impl std::fmt::Display for PreludeLayoutState<'_> {
+impl<P: Platform> std::fmt::Display for PreludeLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<prelude>", f)
     }
@@ -2616,7 +2614,7 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     }
 }
 
-impl<'data> PreludeLayoutState<'data> {
+impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     fn new(input_state: resolution::ResolvedPrelude<'data>) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
@@ -2626,11 +2624,11 @@ impl<'data> PreludeLayoutState<'data> {
                 start_symbol_id: SymbolId::zero(),
             },
             entry_symbol_id: None,
-            needs_tlsld_got_entry: false,
             identity: format!("Linker: {}", crate::identity::linker_identity()),
             header_info: None,
             dynamic_linker: None,
             shstrtab_size: 0,
+            format_specific: Default::default(),
         }
     }
 
@@ -2774,28 +2772,7 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn pre_finalise_sizes<P: Platform>(
-        &mut self,
-        common: &mut CommonGroupState<'data, P>,
-        uses_tlsld: &AtomicBool,
-        args: &P::Args,
-        output_kind: OutputKind,
-    ) {
-        if uses_tlsld.load(atomic::Ordering::Relaxed) {
-            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
-            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-            self.needs_tlsld_got_entry = true;
-            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
-            // number.
-            if !output_kind.is_executable() {
-                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
-            }
-        }
-
-        P::pre_finalise_sizes_prelude(common, args);
-    }
-
-    fn finalise_sizes<P: Platform>(
+    fn finalise_sizes(
         common: &mut CommonGroupState<'data, P>,
         merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     ) {
@@ -2813,7 +2790,7 @@ impl<'data> PreludeLayoutState<'data> {
     /// of the section headers table, which depends on which sections we're writing, which depends
     /// on which sections are non-empty. We also decide which internal symtab entries we'll write
     /// here, since that also depends on which sections we're writing.
-    fn apply_late_size_adjustments<P: Platform>(
+    fn apply_late_size_adjustments(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         total_sizes: &mut OutputSectionPartMap<u64>,
@@ -2858,7 +2835,7 @@ impl<'data> PreludeLayoutState<'data> {
     /// Allocates space for our internal symbols. For unreferenced symbols, we also update the
     /// symbol so that it is treated as referenced, but only for symbols in sections that we're
     /// going to emit.
-    fn allocate_symbol_table_sizes<P: Platform>(
+    fn allocate_symbol_table_sizes(
         &self,
         output_sections: &OutputSections<P>,
         per_symbol_flags: &mut PerSymbolFlags,
@@ -2901,7 +2878,7 @@ impl<'data> PreludeLayoutState<'data> {
         )
     }
 
-    fn determine_header_sizes<P: Platform>(
+    fn determine_header_sizes(
         &mut self,
         total_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
@@ -3059,23 +3036,18 @@ impl<'data> PreludeLayoutState<'data> {
         self.header_info = Some(header_info);
     }
 
-    fn finalise_layout<P: Platform>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<PreludeLayout<'data>> {
+    ) -> Result<PreludeLayout<'data, P>> {
         let header_layout = resources
             .section_layouts
             .get(output_section_id::FILE_HEADER);
         assert_eq!(header_layout.file_offset, 0);
 
-        let tlsld_got_entry = self.needs_tlsld_got_entry.then(|| {
-            let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
-                .expect("GOT address must never be zero");
-            memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-            address
-        });
+        let format_specific = P::finalise_prelude_layout(&self, memory_offsets);
 
         // Take the null symbol's index.
         if resources.symbol_db.output_kind.needs_dynsym() {
@@ -3104,12 +3076,12 @@ impl<'data> PreludeLayoutState<'data> {
         Ok(PreludeLayout {
             internal_symbols: self.internal_symbols,
             entry_symbol_id: self.entry_symbol_id,
-            tlsld_got_entry,
             identity: self.identity,
             dynamic_linker: self.dynamic_linker,
             header_info: self
                 .header_info
                 .expect("we should have computed header info by now"),
+            format_specific,
         })
     }
 }

@@ -193,6 +193,8 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
     type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
+    type PreludeLayoutStateExt: std::fmt::Debug + Default + Send + Sync + 'static;
+    type PreludeLayoutExt: std::fmt::Debug + Default + Send + Sync + 'static;
 
     /// Format-specific per-file state used during the layout phase.
     type ObjectLayoutStateExt<'data>: Default + Send + Sync + 'data;
@@ -230,9 +232,10 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
 
-    fn pre_finalise_sizes_prelude<'data>(
+    fn pre_finalise_sizes_prelude<'scope, 'data>(
+        prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
-        args: &Self::Args,
+        resources: &layout::GraphResources<'data, 'scope, Self>,
     );
 
     fn finalise_object_sizes<'data>(
@@ -430,6 +433,11 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     );
+
+    fn finalise_prelude_layout(
+        prelude: &layout::PreludeLayoutState<Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) -> Self::PreludeLayoutExt;
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
