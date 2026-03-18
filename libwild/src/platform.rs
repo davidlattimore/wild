@@ -179,6 +179,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
+    type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -298,7 +299,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         output_order: &OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution,
+        resolution: &layout::Resolution<Self>,
     ) -> Result;
 
     /// Updates the list of segments to keep.
@@ -439,6 +440,20 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) -> Self::PreludeLayoutExt;
+
+    fn create_resolution(
+        flags: ValueFlags,
+        raw_value: u64,
+        dynamic_symbol_index: Option<NonZeroU32>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) -> layout::Resolution<Self>;
+
+    fn validate_resolution(
+        name: &[u8],
+        resolution: &crate::layout::Resolution<Self>,
+        got: &Self::SectionHeader,
+        got_data: &[u8],
+    ) -> Result;
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

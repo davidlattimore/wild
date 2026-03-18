@@ -93,7 +93,6 @@ use std::mem::size_of;
 use std::mem::swap;
 use std::mem::take;
 use std::num::NonZeroU32;
-use std::num::NonZeroU64;
 use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
@@ -345,7 +344,7 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
 /// Update resolutions for defsym symbols that reference other symbols.
 fn update_defsym_symbol_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
-    resolutions: &mut [Option<Resolution>],
+    resolutions: &mut [Option<Resolution<P>>],
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
@@ -385,7 +384,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     symbol_id: SymbolId,
     def_info: &InternalSymDefInfo,
     symbol_db: &SymbolDb<'data, P>,
-    resolutions: &mut [Option<Resolution>],
+    resolutions: &mut [Option<Resolution<P>>],
 ) -> Result {
     let SymbolPlacement::DefsymSymbol(target_name, offset) = def_info.placement else {
         return Ok(());
@@ -418,7 +417,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
 fn update_dynamic_symbol_resolutions<'data, P: Platform>(
     resources: &FinaliseLayoutResources<'_, 'data, P>,
     layouts: &[GroupLayout<'data, P>],
-    resolutions: &mut [Option<Resolution>],
+    resolutions: &mut [Option<Resolution<P>>],
 ) {
     timing_phase!("Update dynamic symbol resolutions");
 
@@ -551,7 +550,7 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 #[derive(Debug)]
 pub struct Layout<'data, P: Platform> {
     pub(crate) symbol_db: SymbolDb<'data, P>,
-    pub(crate) symbol_resolutions: SymbolResolutions,
+    pub(crate) symbol_resolutions: SymbolResolutions<P>,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
 
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
@@ -591,8 +590,8 @@ pub(crate) struct SegmentLayout {
 }
 
 #[derive(Debug)]
-pub(crate) struct SymbolResolutions {
-    resolutions: Vec<Option<Resolution>>,
+pub(crate) struct SymbolResolutions<P: Platform> {
+    resolutions: Vec<Option<Resolution<P>>>,
 }
 
 pub(crate) enum FileLayout<'data, P: Platform> {
@@ -607,20 +606,15 @@ pub(crate) enum FileLayout<'data, P: Platform> {
 
 /// Address information for a symbol.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) struct Resolution {
+pub(crate) struct Resolution<P: Platform> {
     /// An address or absolute value.
     pub(crate) raw_value: u64,
 
     pub(crate) dynamic_symbol_index: Option<NonZeroU32>,
 
-    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will
-    /// contain a single pointer. For TLS variables there can be up to 3 pointers. If
-    /// ValueFlags::GOT_TLS_OFFSET is set, then that will be the first value. If
-    /// ValueFlags::GOT_TLS_MODULE is set, then there will be a pair of values (module and
-    /// offset within module).
-    pub(crate) got_address: Option<NonZeroU64>,
-    pub(crate) plt_address: Option<NonZeroU64>,
     pub(crate) flags: ValueFlags,
+
+    pub(crate) format_specific: P::ResolutionExt,
 }
 
 /// Address information for a section.
@@ -646,14 +640,13 @@ impl SectionResolution {
     }
 
     /// Converts to a resolution compatible with what's used for symbols.
-    pub(crate) fn full_resolution(self) -> Option<Resolution> {
+    pub(crate) fn full_resolution<P: Platform>(self) -> Option<Resolution<P>> {
         let address = self.address()?;
         Some(Resolution {
             raw_value: address,
             dynamic_symbol_index: None,
-            got_address: None,
-            plt_address: None,
             flags: ValueFlags::empty(),
+            format_specific: Default::default(),
         })
     }
 }
@@ -820,7 +813,7 @@ fn export_dynamic<'data, P: Platform>(
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
 /// when we're writing, to make sure that we would have allocated memory before we write.
 pub(crate) fn compute_allocations<P: Platform>(
-    resolution: &Resolution,
+    resolution: &Resolution<P>,
     output_kind: OutputKind,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
@@ -1294,7 +1287,7 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 
     #[inline(always)]
-    pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution> {
+    pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution<P>> {
         self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
             .copied()
             .map(|mut res| {
@@ -1306,14 +1299,14 @@ impl<'data, P: Platform> Layout<'data, P> {
             })
     }
 
-    pub(crate) fn local_symbol_resolution(&self, symbol_id: SymbolId) -> Option<&Resolution> {
+    pub(crate) fn local_symbol_resolution(&self, symbol_id: SymbolId) -> Option<&Resolution<P>> {
         self.symbol_resolutions.resolutions[symbol_id.as_usize()].as_ref()
     }
 
     pub(crate) fn resolutions_in_range(
         &self,
         range: SymbolIdRange,
-    ) -> impl Iterator<Item = (SymbolId, Option<&Resolution>)> {
+    ) -> impl Iterator<Item = (SymbolId, Option<&Resolution<P>>)> {
         self.symbol_resolutions.resolutions[range.as_usize()]
             .iter()
             .enumerate()
@@ -1518,7 +1511,7 @@ fn compute_start_offsets_by_group<P: Platform>(
 fn compute_symbols_and_layouts<'data, P: Platform>(
     group_states: Vec<GroupState<'data, P>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
-    per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
+    per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution<P>>>],
     resources: &FinaliseLayoutResources<'_, 'data, P>,
 ) -> Result<Vec<GroupLayout<'data, P>>> {
     timing_phase!("Assign symbol addresses");
@@ -2057,7 +2050,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
+        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution<P>>>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<GroupLayout<'data, P>> {
         let format_specific = P::finalise_group_layout(memory_offsets);
@@ -2349,7 +2342,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
+        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution<P>>>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<FileLayout<'data, P>> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
@@ -3039,7 +3032,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<PreludeLayout<'data, P>> {
         let header_layout = resources
@@ -3159,7 +3152,7 @@ impl<'data> InternalSymbols<'data> {
     fn finalise_layout<P: Platform>(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
@@ -3184,7 +3177,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     resources: &FinaliseLayoutResources<'_, 'data, P>,
     def_info: InternalSymDefInfo,
     symbol_id: SymbolId,
-) -> Option<Resolution> {
+) -> Option<Resolution<P>> {
     if !resources.symbol_db.is_canonical(symbol_id) {
         return None;
     }
@@ -3245,7 +3238,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
             .map(|seg| seg.sizes.mem_offset)?,
     };
 
-    Some(create_resolution(
+    Some(P::create_resolution(
         resources
             .symbol_db
             .flags_for_symbol(resources.per_symbol_flags, symbol_id),
@@ -3322,7 +3315,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
     fn finalise_layout<P: Platform>(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<SyntheticSymbolsLayout<'data>> {
         self.internal_symbols
@@ -3393,14 +3386,9 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
                 .section_layouts
                 .get(output_section_id::DYNSYM)
                 .mem_offset)
-            / elf::SYMTAB_ENTRY_SIZE)
+            / size_of::<P::SymtabEntry>() as u64)
             .try_into()
             .context("Too many dynamic symbols")?;
-
-        memory_offsets.increment(
-            part_id::DYNSYM,
-            resources.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
-        );
 
         P::finalise_layout_epilogue(
             &mut self.format_specific,
@@ -3710,7 +3698,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<ObjectLayout<'data, P>> {
         let _file_span = resources
@@ -3796,7 +3784,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
     ) -> Result {
         let resolution = self.create_symbol_resolution(
             resources,
@@ -3818,7 +3806,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Result<Option<Resolution>> {
+    ) -> Result<Option<Resolution<P>>> {
         let symbol_id_range = self.symbol_id_range();
         let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
 
@@ -3883,7 +3871,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             );
         }
 
-        Ok(Some(create_resolution(
+        Ok(Some(P::create_resolution(
             flags,
             raw_value,
             dynamic_symbol_index,
@@ -4054,76 +4042,15 @@ fn can_export_symbol<'data, P: Platform>(
     true
 }
 
-struct ResolutionWriter<'writer, 'out> {
-    resolutions_out: &'writer mut sharded_vec_writer::Shard<'out, Option<Resolution>>,
+struct ResolutionWriter<'writer, 'out, P: Platform> {
+    resolutions_out: &'writer mut sharded_vec_writer::Shard<'out, Option<Resolution<P>>>,
 }
 
-impl ResolutionWriter<'_, '_> {
-    fn write(&mut self, res: Option<Resolution>) -> Result {
+impl<P: Platform> ResolutionWriter<'_, '_, P> {
+    fn write(&mut self, res: Option<Resolution<P>>) -> Result {
         self.resolutions_out.try_push(res)?;
         Ok(())
     }
-}
-
-#[inline(always)]
-fn create_resolution(
-    flags: ValueFlags,
-    raw_value: u64,
-    dynamic_symbol_index: Option<NonZeroU32>,
-    memory_offsets: &mut OutputSectionPartMap<u64>,
-) -> Resolution {
-    let mut resolution = Resolution {
-        raw_value,
-        dynamic_symbol_index,
-        got_address: None,
-        plt_address: None,
-        flags,
-    };
-    if flags.needs_plt() {
-        let plt_address = allocate_plt(memory_offsets);
-        resolution.plt_address = Some(plt_address);
-        if flags.is_dynamic() {
-            resolution.raw_value = plt_address.get();
-        }
-        // For ifunc with address equality needs, allocate 2 GOT entries
-        // - First entry: Used by PLT
-        // - Second entry: Used by GOT-relative references
-        let num_got_entries = if flags.needs_ifunc_got_for_address() {
-            2
-        } else {
-            1
-        };
-        resolution.got_address = Some(allocate_got(num_got_entries, memory_offsets));
-    } else if flags.is_tls() {
-        // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
-        let mut num_got_slots = 0;
-        if flags.needs_got_tls_offset() {
-            num_got_slots += 1;
-        }
-        if flags.needs_got_tls_module() {
-            num_got_slots += 2;
-        }
-        if flags.needs_got_tls_descriptor() {
-            num_got_slots += 2;
-        }
-        debug_assert!(num_got_slots > 0);
-        resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
-    } else if flags.needs_got() {
-        resolution.got_address = Some(allocate_got(1, memory_offsets));
-    }
-    resolution
-}
-
-fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
-    memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
-    got_address
-}
-
-fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
-    memory_offsets.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
-    plt_address
 }
 
 impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
@@ -4149,54 +4076,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
     }
 }
 
-impl Resolution {
-    pub(crate) fn got_address(&self) -> Result<u64> {
-        Ok(self.got_address.context("Missing GOT address")?.get())
-    }
-
-    pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
-        let mut got_address = self.got_address()?;
-        if self.flags.needs_ifunc_got_for_address() {
-            got_address += elf::GOT_ENTRY_SIZE;
-        }
-        Ok(got_address)
-    }
-
-    pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
-        debug_assert_bail!(
-            self.flags.needs_got_tls_module(),
-            "Called tlsgd_got_address without GOT_TLS_MODULE being set"
-        );
-        // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
-        let mut got_address = self.got_address()?;
-        if self.flags.needs_got_tls_offset() {
-            got_address += elf::GOT_ENTRY_SIZE;
-        }
-        Ok(got_address)
-    }
-
-    pub(crate) fn tls_descriptor_got_address(&self) -> Result<u64> {
-        debug_assert_bail!(
-            self.flags.needs_got_tls_descriptor(),
-            "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
-        );
-        // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
-        // for a single symbol. Then the TLS descriptor comes as the last one.
-        let mut got_address = self.got_address()?;
-        if self.flags.needs_got_tls_offset() {
-            got_address += elf::GOT_ENTRY_SIZE;
-        }
-        if self.flags.needs_got_tls_module() {
-            got_address += 2 * elf::GOT_ENTRY_SIZE;
-        }
-
-        Ok(got_address)
-    }
-
-    pub(crate) fn plt_address(&self) -> Result<u64> {
-        Ok(self.plt_address.context("Missing PLT address")?.get())
-    }
-
+impl<P: Platform> Resolution<P> {
     pub(crate) fn flags(self) -> ValueFlags {
         self.flags
     }
@@ -4225,41 +4105,6 @@ impl Resolution {
             .dynamic_symbol_index
             .context("Missing dynamic_symbol_index")?
             .get())
-    }
-
-    #[inline(always)]
-    pub(crate) fn value_with_addend<'data, P: Platform>(
-        &self,
-        addend: i64,
-        symbol_index: object::SymbolIndex,
-        object_layout: &ObjectLayout<'data, P>,
-        merged_strings: &OutputSectionMap<MergedStringsSection>,
-        merged_string_start_addresses: &MergedStringStartAddresses,
-    ) -> Result<u64> {
-        if self.flags.is_ifunc() {
-            return Ok(self.plt_address()?.wrapping_add(addend as u64));
-        }
-
-        // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
-        // section to see if it's a string-merge section. For string-merge symbols with names,
-        // `raw_value` will have already been computed, so we can avoid computing it again.
-        if self.raw_value == 0
-            && let Some(r) = get_merged_string_output_address::<P>(
-                symbol_index,
-                addend,
-                object_layout.object,
-                &object_layout.sections,
-                merged_strings,
-                merged_string_start_addresses,
-                false,
-            )?
-        {
-            if self.raw_value != 0 {
-                bail!("Merged string resolution has value 0x{}", self.raw_value);
-            }
-            return Ok(r);
-        }
-        Ok(self.raw_value.wrapping_add(addend as u64))
     }
 }
 
@@ -4967,7 +4812,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<DynamicLayout<'data, P>> {
         let copy_relocation_symbols = self
@@ -5018,7 +4863,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
             }
 
             let resolution =
-                create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
+                P::create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
 
             resolutions_out.write(Some(resolution))?;
         }
@@ -5096,7 +4941,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
     fn finalise_layout<P: Platform>(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut ResolutionWriter,
+        resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result {
         self.internal_symbols
@@ -5390,7 +5235,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
         flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
 
-    let resolution = create_resolution(flags, 0, dynamic_symbol_index, &mut memory_offsets);
+    let resolution = P::create_resolution(flags, 0, dynamic_symbol_index, &mut memory_offsets);
 
     P::verify_resolution_allocation(
         &output_sections,
