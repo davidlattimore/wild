@@ -267,6 +267,7 @@ impl platform::Platform for Elf {
     type BuiltInSectionDetails = BuiltInSectionDetails;
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
+    type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
     type LayoutExt = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
@@ -487,7 +488,7 @@ impl platform::Platform for Elf {
     fn create_dynamic_symbol_definition<'data>(
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
-    ) -> Result<layout::DynamicSymbolDefinition<'data>> {
+    ) -> Result<layout::DynamicSymbolDefinition<'data, Self>> {
         let symbol_name = symbol_db.symbol_name(symbol_id)?;
         let RawSymbolName {
             name,
@@ -506,9 +507,14 @@ impl platform::Platform for Elf {
                 version |= object::elf::VERSYM_HIDDEN;
             }
         }
-        Ok(layout::DynamicSymbolDefinition::new(
-            symbol_id, name, version,
-        ))
+        Ok(layout::DynamicSymbolDefinition {
+            symbol_id,
+            name,
+            format_specific: DynamicSymbolDefinitionExt {
+                hash: object::elf::gnu_hash(name),
+                version,
+            },
+        })
     }
 
     fn validate_section<'data>(
@@ -816,7 +822,7 @@ impl platform::Platform for Elf {
     fn new_epilogue_layout(
         args: &ElfArgs,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
     ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
@@ -866,7 +872,7 @@ impl platform::Platform for Elf {
     fn finalise_sizes_epilogue<'data>(
         state: &mut EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         properties: &LayoutExt,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
@@ -977,7 +983,7 @@ impl platform::Platform for Elf {
         symbol_db: &SymbolDb<'data, Self>,
         common_state: &LayoutExt,
         dynsym_start_index: u32,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
     ) -> Result {
         if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size() {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
@@ -1025,7 +1031,7 @@ impl platform::Platform for Elf {
         state: &mut crate::elf::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         args: &ElfArgs,
     ) -> Result {
         if args.hash_style.includes_sysv() {
@@ -1865,7 +1871,7 @@ fn allocate_sysv_hash(
     state: &mut EpilogueLayoutExt,
     current_sizes: &OutputSectionPartMap<u64>,
     extra_sizes: &mut OutputSectionPartMap<u64>,
-    dynamic_symbol_defs: &[DynamicSymbolDefinition],
+    dynamic_symbol_defs: &[DynamicSymbolDefinition<Elf>],
 ) -> Result {
     let num_defs = dynamic_symbol_defs.len();
     if num_defs == 0 {
@@ -3071,7 +3077,7 @@ pub(crate) struct GnuHashLayout {
 fn create_gnu_hash_layout(
     args: &ElfArgs,
     output_kind: OutputKind,
-    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+    dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Elf>],
 ) -> Option<GnuHashLayout> {
     if !args.hash_style.includes_gnu() || !output_kind.needs_dynamic() {
         return None;
@@ -3093,8 +3099,12 @@ fn create_gnu_hash_layout(
     // Tie-break by name for determinism. We can use an unstable sort because names should be
     // unique. We use a parallel sort because we're processing symbols from potentially many
     // input objects, so there can be a lot.
-    dynamic_symbol_definitions
-        .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+    dynamic_symbol_definitions.par_sort_unstable_by_key(|d| {
+        (
+            gnu_hash_layout.bucket_for_hash(d.format_specific.hash),
+            d.name,
+        )
+    });
 
     Some(gnu_hash_layout)
 }
@@ -3782,3 +3792,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 };
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DynamicSymbolDefinitionExt {
+    pub(crate) hash: u32,
+    pub(crate) version: u16,
+}

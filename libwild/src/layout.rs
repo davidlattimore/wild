@@ -83,7 +83,6 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::relaxation::opt_input_to_output;
 use object::SectionIndex;
-use object::elf::gnu_hash;
 use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
@@ -341,7 +340,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 }
 
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
-    dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data>],
+    dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data, P>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     format_specific: &'scope P::LayoutExt,
@@ -480,7 +479,7 @@ fn finalise_all_sizes<'data, P: Platform>(
 fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
-) -> Result<Vec<DynamicSymbolDefinition<'data>>> {
+) -> Result<Vec<DynamicSymbolDefinition<'data, P>>> {
     timing_phase!("Merge dynamic symbol definitions");
 
     let mut dynamic_symbol_definitions = Vec::new();
@@ -500,7 +499,7 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
-    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
+    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data, P>>,
 ) -> Result {
     if symbol_db.output_kind.needs_dynsym()
         && let Some(first_group) = group_states.first()
@@ -577,7 +576,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) has_static_tls: bool,
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
-    pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
     pub(crate) properties_and_attributes: P::LayoutExt,
 }
 
@@ -1102,7 +1101,7 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
     /// is stored is non-deterministic and is whichever object first requested export of that
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
-    dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
 
     pub(crate) format_specific: P::CommonGroupStateExt,
 }
@@ -1228,12 +1227,11 @@ struct CopyRelocationInfo {
 }
 
 #[derive(derive_more::Debug, Clone, Copy)]
-pub(crate) struct DynamicSymbolDefinition<'data> {
+pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
     pub(crate) symbol_id: SymbolId,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
-    pub(crate) hash: u32,
-    pub(crate) version: u16,
+    pub(crate) format_specific: P::DynamicSymbolDefinitionExt,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1327,7 +1325,7 @@ struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-    dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data>>,
+    dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
     format_specific: &'scope P::LayoutExt,
@@ -3638,7 +3636,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
     fn new(
         args: &P::Args,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<P>],
     ) -> Self {
         EpilogueLayoutState {
             format_specific: P::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
@@ -5635,17 +5633,6 @@ fn section_debug<P: Platform>(
             |name| String::from_utf8_lossy(name).into_owned(),
         );
     std::fmt::from_fn(move |f| write!(f, "`{name}`"))
-}
-
-impl<'data> DynamicSymbolDefinition<'data> {
-    pub(crate) fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
-        Self {
-            symbol_id,
-            name,
-            hash: gnu_hash(name),
-            version,
-        }
-    }
 }
 
 impl SectionLoadRequest {

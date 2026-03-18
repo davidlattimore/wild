@@ -1067,7 +1067,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
     fn take_dynsym_prefix(
         &mut self,
-        defs: &[crate::layout::DynamicSymbolDefinition],
+        defs: &[crate::layout::DynamicSymbolDefinition<Elf>],
     ) -> VersionedDynsymWriter<'layout, 'out> {
         let num_symbols = defs.len();
         let strtab_size = defs.iter().map(|d| d.name.len() + 1).sum();
@@ -3440,22 +3440,23 @@ fn write_gnu_hash_tables(
         // For each symbol, we set two bits in the bloom filter. This speeds up dynamic loading,
         // since most symbols not defined by the shared object can be rejected just by the bloom
         // filter.
-        let bloom_index = ((sym_def.hash / elf_class_bits) % gnu_hash_layout.bloom_count) as usize;
-        let bit1 = 1 << (sym_def.hash % elf_class_bits);
-        let bit2 = 1 << ((sym_def.hash >> gnu_hash_layout.bloom_shift) % elf_class_bits);
+        let hash = sym_def.format_specific.hash;
+        let bloom_index = ((hash / elf_class_bits) % gnu_hash_layout.bloom_count) as usize;
+        let bit1 = 1 << (hash % elf_class_bits);
+        let bit2 = 1 << ((hash >> gnu_hash_layout.bloom_shift) % elf_class_bits);
         bloom[bloom_index] |= bit1 | bit2;
 
         // Chain values are the hashes for the corresponding symbols (shifted by symbol_base). Bit 0
         // is cleared and then later set to 1 to indicate the end of the chain.
-        *chain_out = sym_def.hash & !1;
-        let bucket = gnu_hash_layout.bucket_for_hash(sym_def.hash);
+        *chain_out = hash & !1;
+        let bucket = gnu_hash_layout.bucket_for_hash(hash);
         if start_of_chain {
             buckets[bucket as usize] = (i as u32) + gnu_hash_layout.symbol_base;
             start_of_chain = false;
         }
-        let last_in_chain = sym_defs
-            .peek()
-            .is_none_or(|next| gnu_hash_layout.bucket_for_hash(next.hash) != bucket);
+        let last_in_chain = sym_defs.peek().is_none_or(|next| {
+            gnu_hash_layout.bucket_for_hash(next.format_specific.hash) != bucket
+        });
         if last_in_chain {
             *chain_out |= 1;
             start_of_chain = true;
@@ -3487,7 +3488,7 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Elf
                         )?;
 
                         if let Some(versym) = table_writer.versym.as_mut() {
-                            write_symbol_version(versym, sym_def.version)?;
+                            write_symbol_version(versym, sym_def.format_specific.version)?;
                         }
                     }
                     FileLayout::Dynamic(object) => {
@@ -3529,7 +3530,7 @@ fn write_dynamic_symbol_definitions(table_writer: &mut TableWriter, layout: &Elf
                             prelude,
                         )?;
                         if let Some(versym) = table_writer.versym.as_mut() {
-                            write_symbol_version(versym, sym_def.version)?;
+                            write_symbol_version(versym, sym_def.format_specific.version)?;
                         }
                     }
                     _ => bail!(
@@ -3751,7 +3752,7 @@ fn write_defsym_dynsym(
 }
 
 fn write_copy_relocation_dynamic_symbol_definition<'data>(
-    sym_def: &crate::layout::DynamicSymbolDefinition,
+    sym_def: &crate::layout::DynamicSymbolDefinition<Elf>,
     object: &DynamicLayout<'data, Elf>,
     layout: &ElfLayout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
@@ -3784,7 +3785,7 @@ fn write_copy_relocation_dynamic_symbol_definition<'data>(
 }
 
 fn write_regular_object_dynamic_symbol_definition<'data>(
-    sym_def: &crate::layout::DynamicSymbolDefinition,
+    sym_def: &crate::layout::DynamicSymbolDefinition<Elf>,
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout,
     dynamic_symbol_writer: &mut SymbolTableWriter,

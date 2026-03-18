@@ -157,7 +157,7 @@ pub(crate) struct RelaxSymbolInfo {
 }
 
 /// A platform for which we support writing producing linked outputs.
-pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
+pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'static {
     type File<'data>: ObjectFile<'data, Platform = Self>;
     type SymtabEntry: Symbol;
     type SectionHeader: SectionHeader;
@@ -169,6 +169,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     type BuiltInSectionDetails: BuiltInSectionDetails;
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
+    type DynamicSymbolDefinitionExt: Copy + Send + Sync + std::fmt::Debug + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
     type EpilogueLayoutExt: Send + Sync + 'static;
@@ -274,7 +275,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn create_dynamic_symbol_definition<'data>(
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
-    ) -> Result<layout::DynamicSymbolDefinition<'data>>;
+    ) -> Result<layout::DynamicSymbolDefinition<'data, Self>>;
 
     fn validate_section<'data>(
         section_info: &crate::output_section_id::SectionOutputInfo<Self>,
@@ -347,7 +348,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn new_epilogue_layout(
         args: &Self::Args,
         output_kind: OutputKind,
-        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_>],
+        dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
     ) -> Self::EpilogueLayoutExt;
 
     fn apply_non_addressable_indexes_epilogue(
@@ -364,7 +365,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
     fn finalise_sizes_epilogue<'data>(
         state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data>],
+        dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         properties: &Self::LayoutExt,
         symbol_db: &SymbolDb<'data, Self>,
     );
@@ -378,7 +379,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         state: &mut Self::EpilogueLayoutExt,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         args: &Self::Args,
     ) -> Result;
 
@@ -388,7 +389,7 @@ pub(crate) trait Platform: Send + Sync + Sized + std::fmt::Debug + 'static {
         symbol_db: &SymbolDb<'data, Self>,
         common_state: &Self::LayoutExt,
         dynsym_start_index: u32,
-        dynamic_symbol_defs: &[DynamicSymbolDefinition],
+        dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
     ) -> Result;
 
     fn is_symbol_non_interposable<'data>(
