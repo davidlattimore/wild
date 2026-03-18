@@ -7,6 +7,7 @@ use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
+use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
@@ -407,6 +408,13 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         section: &Self::SectionHeader,
         object: &impl std::fmt::Display,
         args: &Self::Args,
+    ) -> Result;
+
+    fn finalise_sizes_for_symbol<'data>(
+        common: &mut CommonGroupState<'data, Self>,
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_id: SymbolId,
+        flags: ValueFlags,
     ) -> Result;
 }
 
