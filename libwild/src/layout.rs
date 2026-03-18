@@ -10,7 +10,6 @@ use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::ensure;
-use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
@@ -41,8 +40,6 @@ use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
-use crate::platform::Relaxation as _;
-use crate::platform::Relocation;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -79,7 +76,6 @@ use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelaxDeltaMap;
-use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
 use linker_utils::relaxation::opt_input_to_output;
 use object::SectionIndex;
@@ -1083,8 +1079,8 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
 }
 
 pub(crate) struct ObjectLayoutState<'data, P: Platform> {
-    input: InputRef<'data>,
-    file_id: FileId,
+    pub(crate) input: InputRef<'data>,
+    pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) object: &'data P::File<'data>,
 
@@ -1092,7 +1088,7 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     pub(crate) sections: Vec<SectionSlot>,
 
     /// Mapping from sections to their corresponding relocation section.
-    relocations: P::RelocationSections,
+    pub(crate) relocations: P::RelocationSections,
 
     pub(crate) format_specific: P::ObjectLayoutStateExt<'data>,
 
@@ -1199,16 +1195,16 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     errors: Mutex<Vec<Error>>,
 
-    per_symbol_flags: &'scope AtomicPerSymbolFlags<'scope>,
+    pub(crate) per_symbol_flags: &'scope AtomicPerSymbolFlags<'scope>,
 
     /// Sections that we'll keep, even if their total size is zero.
     must_keep_sections: OutputSectionMap<AtomicBool>,
 
-    has_static_tls: AtomicBool,
+    pub(crate) has_static_tls: AtomicBool,
 
     has_variant_pcs: AtomicBool,
 
-    uses_tlsld: AtomicBool,
+    pub(crate) uses_tlsld: AtomicBool,
 
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
@@ -2137,7 +2133,7 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data, 'scope, A: Arch>(
+    pub(crate) fn send_symbol_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
@@ -2153,7 +2149,7 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<'data, 'scope, A: Arch>(
+    pub(crate) fn send_copy_relocation_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
@@ -2171,7 +2167,7 @@ impl LocalWorkQueue {
 }
 
 impl<'data, P: Platform> GraphResources<'data, '_, P> {
-    fn report_error(&self, error: Error) {
+    pub(crate) fn report_error(&self, error: Error) {
         self.errors.lock().unwrap().push(error);
     }
 
@@ -2199,11 +2195,11 @@ impl<'data, P: Platform> GraphResources<'data, '_, P> {
         }
     }
 
-    fn local_flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
+    pub(crate) fn local_flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
         self.per_symbol_flags.flags_for_symbol(symbol_id)
     }
 
-    fn symbol_debug<'a>(&'a self, symbol_id: SymbolId) -> SymbolDebug<'a, 'data, P> {
+    pub(crate) fn symbol_debug<'a>(&'a self, symbol_id: SymbolId) -> SymbolDebug<'a, 'data, P> {
         self.symbol_db
             .symbol_debug(self.per_symbol_flags, symbol_id)
     }
@@ -2576,180 +2572,7 @@ impl Section {
     }
 }
 
-#[inline(always)]
-pub(crate) fn process_relocation<'data, 'scope, A: Arch, R: Relocation>(
-    object: &ObjectLayoutState<'data, A::Platform>,
-    common: &mut CommonGroupState<'data, A::Platform>,
-    rel: &R,
-    section: &<A::Platform as Platform>::SectionHeader,
-    resources: &'scope GraphResources<'data, '_, A::Platform>,
-    queue: &mut LocalWorkQueue,
-    is_debug_section: bool,
-    scope: &Scope<'scope>,
-) -> Result<RelocationModifier> {
-    let args = resources.symbol_db.args;
-    let mut next_modifier = RelocationModifier::Normal;
-    if let Some(local_sym_index) = rel.symbol() {
-        let symbol_db = resources.symbol_db;
-        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
-        let symbol_id = symbol_db.definition(local_symbol_id);
-        let mut flags = resources.local_flags_for_symbol(symbol_id);
-        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
-        let rel_offset = rel.offset();
-        let r_type = rel.raw_type();
-        let section_flags = <A::Platform as Platform>::section_flags(section);
-
-        let rel_info = if let Some(relaxation) = A::new_relaxation(
-            r_type,
-            object.object.raw_section_data(section)?,
-            rel_offset,
-            flags,
-            symbol_db.output_kind,
-            section_flags,
-            true,
-            None,
-        )
-        .filter(|relaxation| args.should_relax() || relaxation.is_mandatory())
-        {
-            next_modifier = relaxation.next_modifier();
-            relaxation.rel_info()
-        } else {
-            A::relocation_from_raw(r_type)?
-        };
-
-        let section_is_writable = section.is_writable();
-        let mut flags_to_add = resolution_flags(rel_info.kind);
-
-        if !section_flags.is_alloc() {
-            // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
-        } else if rel_info.kind.is_tls() {
-            if does_relocation_require_static_tls(rel_info.kind) {
-                resources
-                    .has_static_tls
-                    .store(true, atomic::Ordering::Relaxed);
-            }
-
-            if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
-                resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
-            }
-        } else if flags_to_add.needs_direct() && flags.is_interposable() {
-            if section_is_writable {
-                common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if flags.is_function() {
-                // Create a PLT entry for the function and refer to that instead.
-                flags_to_add.remove(ValueFlags::DIRECT);
-                flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
-            } else if !flags.is_absolute() {
-                match args.copy_relocations_enabled() {
-                    crate::args::CopyRelocations::Allowed => {
-                        flags_to_add |= ValueFlags::COPY_RELOCATION;
-                    }
-                    crate::args::CopyRelocations::Disallowed(reason) => {
-                        // We don't at present support text relocations, so if we can't apply a copy
-                        // relocation, we error instead.
-                        bail!(
-                            "Direct relocation ({}) to dynamic symbol from non-writable section, \
-                            but copy relocations are disabled because {reason}. {}",
-                            A::rel_type_to_string(r_type),
-                            resources.symbol_debug(symbol_id),
-                        );
-                    }
-                }
-            }
-        } else if flags.is_ifunc()
-            && rel_info.kind == RelocationKind::Absolute
-            && section_is_writable
-            && symbol_db.output_kind.is_relocatable()
-        {
-            common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        } else if symbol_db.output_kind.is_relocatable()
-            && rel_info.kind == RelocationKind::Absolute
-            && flags.is_address()
-        {
-            if section_is_writable {
-                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-            } else if !is_debug_section {
-                bail!(
-                    "Cannot apply relocation {} to read-only section. \
-                    Please recompile with -fPIC or link with -no-pie",
-                    A::rel_type_to_string(r_type),
-                );
-            }
-        }
-
-        // For ifunc symbols with GOT-relative references (like R_X86_64_GOTPCRELX), we need a
-        // separate GOT entry for address equality. The main GOT entry will be used by the PLT stub
-        // with an IRELATIVE relocation, while this extra entry will contain the PLT stub address so
-        // that all references to the ifunc return the same address.
-
-        let relocation_needs_got = flags_to_add.needs_got();
-
-        if flags.is_ifunc() && !symbol_db.output_kind.is_static_executable() {
-            flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
-        }
-
-        if flags.is_ifunc() && relocation_needs_got && !symbol_db.output_kind.is_relocatable() {
-            flags_to_add |= ValueFlags::IFUNC_GOT_FOR_ADDRESS;
-        }
-
-        let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
-        let previous_flags = atomic_flags.fetch_or(flags_to_add);
-
-        if !previous_flags.has_resolution() {
-            if flags.is_ifunc() && symbol_db.output_kind.is_static_executable() {
-                atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
-            }
-
-            queue.send_symbol_request::<A>(symbol_id, resources, scope);
-            // If the canonical symbol belongs to a shared object, use the file ID of symbols that
-            // made the reference.
-            let undefined_check_file_id = symbol_db.file_id_for_symbol(if flags.is_dynamic() {
-                local_symbol_id
-            } else {
-                symbol_id
-            });
-            if should_emit_undefined_error::<A::Platform>(
-                object.object.symbol(local_sym_index)?,
-                object.file_id,
-                undefined_check_file_id,
-                flags,
-                args,
-                symbol_db.output_kind,
-            ) {
-                let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                let source_info =
-                    A::get_source_info(object.object, &object.relocations, section, rel_offset)
-                        .context("Failed to get source info")?;
-
-                if args.should_error_on_unresolved_symbols() {
-                    resources.report_error(error!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                } else {
-                    crate::error::warning(&format!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                }
-            }
-        }
-
-        if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-            queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
-        }
-    }
-    Ok(next_modifier)
-}
-
-/// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
-/// shared object, then the STATIC_TLS will be set in the shared object which is a signal to the
-/// runtime loader that the shared object cannot be loaded at runtime (e.g. with dlopen).
-fn does_relocation_require_static_tls(rel_kind: RelocationKind) -> bool {
-    resolution_flags(rel_kind) == ValueFlags::GOT_TLS_OFFSET
-}
-
-fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
+pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
     match rel_kind {
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
             ValueFlags::PLT | ValueFlags::GOT
@@ -3460,7 +3283,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     ))
 }
 
-fn should_emit_undefined_error<P: Platform>(
+pub(crate) fn should_emit_undefined_error<P: Platform>(
     symbol: &P::SymtabEntry,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
@@ -3856,42 +3679,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         Ok(())
     }
 
-    pub(crate) fn load_section_relocations<'scope, A: Arch<Platform = P>, R: Relocation>(
-        &self,
-        common: &mut CommonGroupState<'data, P>,
-        queue: &mut LocalWorkQueue,
-        resources: &'scope GraphResources<'data, '_, P>,
-        section: Section,
-        relocations: impl Iterator<Item = R>,
-        scope: &Scope<'scope>,
-    ) -> Result {
-        let mut modifier = RelocationModifier::Normal;
-        for rel in relocations {
-            if modifier == RelocationModifier::SkipNextRelocation {
-                modifier = RelocationModifier::Normal;
-                continue;
-            }
-            modifier = process_relocation::<A, R>(
-                self,
-                common,
-                &rel,
-                self.object.section(section.index)?,
-                resources,
-                queue,
-                false,
-                scope,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy section {} from file {self}",
-                    section_debug::<P>(self.object, section.index)
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-
     fn load_debug_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
@@ -3913,41 +3700,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section, resources.output_sections);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
-
-        Ok(())
-    }
-
-    pub(crate) fn load_debug_relocations<'scope, A: Arch<Platform = P>, R: Relocation>(
-        &self,
-        common: &mut CommonGroupState<'data, P>,
-        queue: &mut LocalWorkQueue,
-        resources: &'scope GraphResources<'data, '_, P>,
-        section: Section,
-        relocations: impl Iterator<Item = R>,
-        scope: &Scope<'scope>,
-    ) -> Result<(), Error> {
-        for rel in relocations {
-            let modifier = process_relocation::<A, R>(
-                self,
-                common,
-                &rel,
-                self.object.section(section.index)?,
-                resources,
-                queue,
-                true,
-                scope,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy section {} from file {self}",
-                    section_debug::<P>(self.object, section.index)
-                )
-            })?;
-            ensure!(
-                modifier == RelocationModifier::Normal,
-                "All debug relocations must be processed"
-            );
-        }
 
         Ok(())
     }
@@ -5528,7 +5280,7 @@ impl<'data, P: Platform> std::fmt::Debug for FileLayoutState<'data, P> {
     }
 }
 
-fn section_debug<P: Platform>(
+pub(crate) fn section_debug<P: Platform>(
     object: &P::File<'_>,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
@@ -5555,7 +5307,7 @@ impl SectionLoadRequest {
     }
 }
 
-fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
+pub(crate) fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
     matches!(
         relocation_kind,
         RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase
