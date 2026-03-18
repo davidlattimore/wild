@@ -613,9 +613,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_resolution<'data, A: Arch<Platform = Elf>>(
         &mut self,
         layout: Option<&ElfLayout<'data>>,
-        res: &Resolution,
+        res: &Resolution<Elf>,
     ) -> Result {
-        let Some(got_address) = res.got_address else {
+        let Some(got_address) = res.format_specific.got_address else {
             return Ok(());
         };
 
@@ -674,7 +674,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
             }
         }
-        if let Some(plt_address) = res.plt_address {
+        if let Some(plt_address) = res.format_specific.plt_address {
             self.write_plt_entry::<A>(got_address, plt_address.get())?;
         }
 
@@ -696,7 +696,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn process_got_tls_offset<'data, A: Arch<Platform = Elf>>(
         &mut self,
-        res: &Resolution,
+        res: &Resolution<Elf>,
         layout: &ElfLayout<'data>,
         got_address: u64,
     ) -> Result {
@@ -739,7 +739,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn process_got_tls_mod_and_offset<A: Arch<Platform = Elf>>(
         &mut self,
-        res: &Resolution,
+        res: &Resolution<Elf>,
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
@@ -777,7 +777,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn process_got_tls_descriptor<A: Arch<Platform = Elf>>(
         &mut self,
-        res: &Resolution,
+        res: &Resolution<Elf>,
         got_address: u64,
     ) -> Result {
         // TLS descriptor occupies 2 entries
@@ -880,11 +880,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation<A: Arch<Platform = Elf>>(&mut self, res: &Resolution) -> Result {
+    fn write_ifunc_relocation<A: Arch<Platform = Elf>>(&mut self, res: &Resolution<Elf>) -> Result {
         let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
         let got_address = res
+            .format_specific
             .got_address
             .context("Missing GOT entry for ifunc")?
             .get();
@@ -2055,7 +2056,7 @@ fn get_resolution<'data, R: Relocation>(
     rel: &R,
     object_layout: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout,
-) -> Result<(Resolution, SymbolIndex, SymbolId)> {
+) -> Result<(Resolution<Elf>, SymbolIndex, SymbolId)> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
     let sym = object_layout.object.symbol(symbol_index)?;
@@ -2098,7 +2099,7 @@ fn write_got_plt_syms(
 
     let mut write_sym = |suffix: &[u8],
                          section_id: OutputSectionId,
-                         get_value: fn(&Resolution) -> Result<u64>|
+                         get_value: fn(&Resolution<Elf>) -> Result<u64>|
      -> Result {
         let mut symbol_name = layout.symbol_db.symbol_name(symbol_id)?.to_string();
         symbol_name.push_str(std::str::from_utf8(suffix).unwrap_or("unknown"));
@@ -2178,7 +2179,7 @@ fn get_pair_subtraction_relocation_value<'data, A: Arch<Platform = Elf>, R: Relo
     object_layout: &ObjectLayout<'data, Elf>,
     rel: &R,
     layout: &ElfLayout,
-    resolution: Resolution,
+    resolution: Resolution<Elf>,
     symbol_index: SymbolIndex,
     addend: i64,
     set_rel: &R,
@@ -2791,7 +2792,7 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
 #[inline(always)]
 fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
-    resolution: Resolution,
+    resolution: Resolution<Elf>,
     place: u64,
     addend: i64,
     section_info: SectionInfo<<A::Platform as Platform>::SectionFlags>,
@@ -2965,8 +2966,10 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
                 &Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                     dynamic_symbol_index: None,
-                    got_address: Some(got_address),
-                    plt_address: None,
+                    format_specific: crate::elf::ResolutionExt {
+                        got_address: Some(got_address),
+                        plt_address: None,
+                    },
                     flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
                 },
             )?;
@@ -2984,8 +2987,10 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
             &Resolution {
                 raw_value,
                 dynamic_symbol_index: None,
-                got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
-                plt_address: None,
+                format_specific: crate::elf::ResolutionExt {
+                    got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
+                    plt_address: None,
+                },
                 flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
             },
         )?;
@@ -3824,7 +3829,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
         if resolution.flags.is_ifunc()
             && layout.symbol_db.output_kind.is_executable()
             && !layout.symbol_db.output_kind.is_relocatable()
-            && let Some(plt_address) = resolution.plt_address
+            && let Some(plt_address) = resolution.format_specific.plt_address
         {
             let plt_output_section_id = layout
                 .output_sections
@@ -4827,7 +4832,7 @@ pub(crate) fn verify_resolution_allocation(
     output_order: &OutputOrder,
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
-    resolution: &Resolution,
+    resolution: &Resolution<Elf>,
 ) -> Result {
     // Allocate however much space was requested.
 

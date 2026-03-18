@@ -6,6 +6,7 @@ use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
 use crate::args::elf::RelocationModel;
 use crate::bail;
+use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf_writer;
 use crate::ensure;
@@ -20,8 +21,10 @@ use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::HandlerData as _;
+use crate::layout::ObjectLayout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
 use crate::layout_rules::SectionKind;
 use crate::output_kind::OutputKind;
@@ -53,6 +56,8 @@ use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
+use crate::string_merging::MergedStringStartAddresses;
+use crate::string_merging::MergedStringsSection;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
@@ -300,6 +305,7 @@ impl platform::Platform for Elf {
     type DynamicLayoutExt<'data> = DynamicLayoutExt<'data>;
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
     type Args = ElfArgs;
+    type ResolutionExt = ResolutionExt;
 
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
@@ -591,7 +597,7 @@ impl platform::Platform for Elf {
         output_order: &output_section_id::OutputOrder,
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution,
+        resolution: &layout::Resolution<Elf>,
     ) -> Result {
         crate::elf_writer::verify_resolution_allocation(
             output_sections,
@@ -1021,6 +1027,11 @@ impl platform::Platform for Elf {
         dynsym_start_index: u32,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
     ) -> Result {
+        memory_offsets.increment(
+            part_id::DYNSYM,
+            dynamic_symbol_defs.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
+        );
+
         if let Some(build_id_sec_size) = epilogue_state.gnu_build_id_note_section_size() {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
@@ -1295,6 +1306,95 @@ impl platform::Platform for Elf {
         });
 
         PreludeLayoutExt { tlsld_got_entry }
+    }
+
+    #[inline(always)]
+    fn create_resolution(
+        flags: ValueFlags,
+        raw_value: u64,
+        dynamic_symbol_index: Option<NonZeroU32>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) -> Resolution<Elf> {
+        let mut resolution: Resolution<Elf> = Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            format_specific: ResolutionExt {
+                got_address: None,
+                plt_address: None,
+            },
+            flags,
+        };
+        if flags.needs_plt() {
+            let plt_address = allocate_plt(memory_offsets);
+            resolution.format_specific.plt_address = Some(plt_address);
+            if flags.is_dynamic() {
+                resolution.raw_value = plt_address.get();
+            }
+            // For ifunc with address equality needs, allocate 2 GOT entries
+            // - First entry: Used by PLT
+            // - Second entry: Used by GOT-relative references
+            let num_got_entries = if flags.needs_ifunc_got_for_address() {
+                2
+            } else {
+                1
+            };
+            resolution.format_specific.got_address =
+                Some(allocate_got(num_got_entries, memory_offsets));
+        } else if flags.is_tls() {
+            // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
+            let mut num_got_slots = 0;
+            if flags.needs_got_tls_offset() {
+                num_got_slots += 1;
+            }
+            if flags.needs_got_tls_module() {
+                num_got_slots += 2;
+            }
+            if flags.needs_got_tls_descriptor() {
+                num_got_slots += 2;
+            }
+            debug_assert!(num_got_slots > 0);
+            resolution.format_specific.got_address =
+                Some(allocate_got(num_got_slots, memory_offsets));
+        } else if flags.needs_got() {
+            resolution.format_specific.got_address = Some(allocate_got(1, memory_offsets));
+        }
+        resolution
+    }
+
+    fn validate_resolution(
+        name: &[u8],
+        resolution: &crate::layout::Resolution<Elf>,
+        got: &SectionHeader,
+        got_data: &[u8],
+    ) -> Result {
+        let flags = resolution.flags;
+        if flags.is_ifunc()
+            || flags.needs_got_tls_module()
+            || flags.needs_got_tls_offset()
+            || flags.needs_got_tls_descriptor()
+        {
+            return Ok(());
+        };
+        if let Some(got_address) = resolution.format_specific.got_address {
+            let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
+            let end_offset = start_offset + size_of::<u64>();
+            if end_offset > got_data.len() {
+                bail!("GOT offset beyond end of GOT 0x{end_offset}");
+            }
+            if resolution.flags.is_dynamic() || resolution.flags.is_ifunc() {
+                return Ok(());
+            }
+            let expected = resolution.raw_value;
+            let address = u64::read_from_bytes(&got_data[start_offset..end_offset]).unwrap();
+            if expected != address {
+                let name = String::from_utf8_lossy(name);
+                bail!(
+                    "flags={flags:?} `{name}` has address 0x{expected:x}, but GOT \
+                 (at 0x{got_address:x}) points to 0x{address:x}"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4245,4 +4345,119 @@ pub(crate) struct PreludeLayoutStateExt {
 #[derive(Default, Debug)]
 pub(crate) struct PreludeLayoutExt {
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ResolutionExt {
+    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will
+    /// contain a single pointer. For TLS variables there can be up to 3 pointers. If
+    /// ValueFlags::GOT_TLS_OFFSET is set, then that will be the first value. If
+    /// ValueFlags::GOT_TLS_MODULE is set, then there will be a pair of values (module and
+    /// offset within module).
+    pub(crate) got_address: Option<NonZeroU64>,
+    pub(crate) plt_address: Option<NonZeroU64>,
+}
+
+fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
+    memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
+    got_address
+}
+
+fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
+    memory_offsets.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
+    plt_address
+}
+
+impl Resolution<Elf> {
+    pub(crate) fn got_address(&self) -> Result<u64> {
+        Ok(self
+            .format_specific
+            .got_address
+            .context("Missing GOT address")?
+            .get())
+    }
+
+    pub(crate) fn got_address_for_relocation(&self) -> Result<u64> {
+        let mut got_address = self.got_address()?;
+        if self.flags.needs_ifunc_got_for_address() {
+            got_address += elf::GOT_ENTRY_SIZE;
+        }
+        Ok(got_address)
+    }
+
+    pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
+        debug_assert_bail!(
+            self.flags.needs_got_tls_module(),
+            "Called tlsgd_got_address without GOT_TLS_MODULE being set"
+        );
+        // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
+        let mut got_address = self.got_address()?;
+        if self.flags.needs_got_tls_offset() {
+            got_address += elf::GOT_ENTRY_SIZE;
+        }
+        Ok(got_address)
+    }
+
+    pub(crate) fn tls_descriptor_got_address(&self) -> Result<u64> {
+        debug_assert_bail!(
+            self.flags.needs_got_tls_descriptor(),
+            "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
+        );
+        // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
+        // for a single symbol. Then the TLS descriptor comes as the last one.
+        let mut got_address = self.got_address()?;
+        if self.flags.needs_got_tls_offset() {
+            got_address += elf::GOT_ENTRY_SIZE;
+        }
+        if self.flags.needs_got_tls_module() {
+            got_address += 2 * elf::GOT_ENTRY_SIZE;
+        }
+
+        Ok(got_address)
+    }
+
+    pub(crate) fn plt_address(&self) -> Result<u64> {
+        Ok(self
+            .format_specific
+            .plt_address
+            .context("Missing PLT address")?
+            .get())
+    }
+
+    #[inline(always)]
+    pub(crate) fn value_with_addend<'data>(
+        &self,
+        addend: i64,
+        symbol_index: object::SymbolIndex,
+        object_layout: &ObjectLayout<'data, Elf>,
+        merged_strings: &OutputSectionMap<MergedStringsSection>,
+        merged_string_start_addresses: &MergedStringStartAddresses,
+    ) -> Result<u64> {
+        if self.flags.is_ifunc() {
+            return Ok(self.plt_address()?.wrapping_add(addend as u64));
+        }
+
+        // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
+        // section to see if it's a string-merge section. For string-merge symbols with names,
+        // `raw_value` will have already been computed, so we can avoid computing it again.
+        if self.raw_value == 0
+            && let Some(r) = crate::string_merging::get_merged_string_output_address::<Elf>(
+                symbol_index,
+                addend,
+                object_layout.object,
+                &object_layout.sections,
+                merged_strings,
+                merged_string_start_addresses,
+                false,
+            )?
+        {
+            if self.raw_value != 0 {
+                bail!("Merged string resolution has value 0x{}", self.raw_value);
+            }
+            return Ok(r);
+        }
+        Ok(self.raw_value.wrapping_add(addend as u64))
+    }
 }

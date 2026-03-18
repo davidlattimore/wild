@@ -1,15 +1,14 @@
 //! Code to double-check that we did certain things correctly. Generally only used in debug builds.
 
-use crate::bail;
 use crate::elf::Elf;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::platform::ObjectFile as _;
+use crate::platform::Platform;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
-use zerocopy::FromBytes;
 
 type ElfLayout<'data> = Layout<'data, Elf>;
 
@@ -37,7 +36,12 @@ fn validate_object(object: &crate::elf::File, layout: &ElfLayout) -> Result {
         match layout.local_symbol_resolution(*symbol_id) {
             None => {}
             Some(resolution) => {
-                validate_resolution(symbol_name.bytes(), resolution, got, got_data)?;
+                <Elf as Platform>::validate_resolution(
+                    symbol_name.bytes(),
+                    resolution,
+                    got,
+                    got_data,
+                )?;
             }
         }
     }
@@ -49,7 +53,7 @@ fn validate_object(object: &crate::elf::File, layout: &ElfLayout) -> Result {
                         if let Some(resolution) =
                             obj.section_resolutions[sec_index.0].full_resolution()
                         {
-                            validate_resolution(
+                            <Elf as Platform>::validate_resolution(
                                 obj.object.section_name(sec)?,
                                 &resolution,
                                 got,
@@ -60,42 +64,6 @@ fn validate_object(object: &crate::elf::File, layout: &ElfLayout) -> Result {
                 }
                 _ => {}
             }
-        }
-    }
-    Ok(())
-}
-
-fn validate_resolution(
-    name: &[u8],
-    resolution: &crate::layout::Resolution,
-    got: &crate::elf::SectionHeader,
-    got_data: &[u8],
-) -> Result {
-    let flags = resolution.flags;
-    if flags.is_ifunc()
-        || flags.needs_got_tls_module()
-        || flags.needs_got_tls_offset()
-        || flags.needs_got_tls_descriptor()
-    {
-        return Ok(());
-    };
-    if let Some(got_address) = resolution.got_address {
-        let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
-        let end_offset = start_offset + size_of::<u64>();
-        if end_offset > got_data.len() {
-            bail!("GOT offset beyond end of GOT 0x{end_offset}");
-        }
-        if resolution.flags.is_dynamic() || resolution.flags.is_ifunc() {
-            return Ok(());
-        }
-        let expected = resolution.raw_value;
-        let address = u64::read_from_bytes(&got_data[start_offset..end_offset]).unwrap();
-        if expected != address {
-            let name = String::from_utf8_lossy(name);
-            bail!(
-                "flags={flags:?} `{name}` has address 0x{expected:x}, but GOT \
-                 (at 0x{got_address:x}) points to 0x{address:x}"
-            );
         }
     }
     Ok(())
