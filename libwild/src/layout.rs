@@ -758,7 +758,7 @@ pub(crate) struct DynamicLayout<'data, P: Platform> {
     pub(crate) format_specific_layout: P::DynamicLayoutExt<'data>,
 }
 
-trait HandlerData {
+pub(crate) trait HandlerData {
     fn symbol_id_range(&self) -> SymbolIdRange;
 
     fn file_id(&self) -> FileId;
@@ -3732,41 +3732,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) {
         let _file_span = symbol_db.args.common().trace_span_for_file(self.file_id());
-
-        let mut num_locals = 0;
-        let mut num_globals = 0;
-        let mut strings_size = 0;
-        for ((sym_index, sym), flags) in self
-            .object
-            .enumerate_symbols()
-            .zip(per_symbol_flags.range(self.symbol_id_range()))
-        {
-            let symbol_id = self.symbol_id_range.input_to_id(sym_index);
-            if let Some(info) = SymbolCopyInfo::new(
-                self.object,
-                sym_index,
-                sym,
-                symbol_id,
-                symbol_db,
-                flags.get(),
-                &self.sections,
-            ) {
-                // If we've decided to emit the symbol even though it's not referenced (because it's
-                // in a section we're emitting), then make sure we have a resolution for it.
-                flags.fetch_or(ValueFlags::DIRECT);
-                if flags.get().is_symtab_local(sym) {
-                    num_locals += 1;
-                } else {
-                    num_globals += 1;
-                }
-                let name = P::RawSymbolName::parse(info.name).name();
-                strings_size += name.len() + 1;
-            }
-        }
-        let entry_size = size_of::<elf::SymtabEntry>() as u64;
-        common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
-        common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
-        common.allocate(part_id::STRTAB, strings_size as u64);
+        P::allocate_object_symtab_space(self, common, symbol_db, per_symbol_flags);
     }
 
     fn finalise_layout(
