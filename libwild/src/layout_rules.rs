@@ -58,7 +58,7 @@ pub(crate) struct SectionRule<'data> {
     /// Whether the section name is allowed to extend beyond what's in `name`.
     is_prefix: bool,
 
-    /// Compiled glob pattern for section name matching, used when the pattern contains 
+    /// Compiled glob pattern for section name matching, used when the pattern contains
     /// metacharacters like `[` or `?`.
     section_name_pattern: Option<Pattern>,
 
@@ -282,22 +282,22 @@ impl<'data> SectionRule<'data> {
             .iter()
             .position(|&b| b == b'*' || b == b'[' || b == b'?');
 
-        if let Some(idx) = wildcard_idx {
-            if idx < pattern.len() - 1 || pattern[idx] != b'*' {
-                let s = std::str::from_utf8(pattern)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+        if let Some(idx) = wildcard_idx
+            && (idx < pattern.len() - 1 || pattern[idx] != b'*')
+        {
+            let s = std::str::from_utf8(pattern)
+                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
 
-                let compiled_pattern = Pattern::new(s)
-                    .map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
+            let compiled_pattern =
+                Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
 
-                return Ok(Self {
-                    name: &pattern[..idx],
-                    is_prefix: true,
-                    section_name_pattern: Some(compiled_pattern),
-                    input_file_pattern: compiled_file_pattern,
-                    outcome,
-                })
-            }
+            return Ok(Self {
+                name: &pattern[..idx],
+                is_prefix: true,
+                section_name_pattern: Some(compiled_pattern),
+                input_file_pattern: compiled_file_pattern,
+                outcome,
+            });
         }
 
         if let Some(prefix) = pattern.strip_suffix(b"*") {
@@ -594,11 +594,7 @@ fn test_section_mapping() {
 
 #[test]
 fn test_glob_section_matching() {
-    let rule = SectionRule::new(
-        b".mydata.[0-9]",
-        None,
-        SectionRuleOutcome::Discard
-    ).unwrap();
+    let rule = SectionRule::new(b".mydata.[0-9]", None, SectionRuleOutcome::Discard).unwrap();
 
     assert!(rule.matches(b".mydata.0", None));
     assert!(rule.matches(b".mydata.5", None));
