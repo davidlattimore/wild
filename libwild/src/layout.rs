@@ -8,7 +8,6 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
-use crate::elf;
 use crate::ensure;
 use crate::error::Context;
 use crate::error::Error;
@@ -38,7 +37,6 @@ use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
-use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
@@ -3108,16 +3106,7 @@ impl<'data> InternalSymbols<'data> {
                 continue;
             }
 
-            // PROVIDE_HIDDEN symbols are local, others are global
-            let symtab_part = if def_info.is_hidden {
-                part_id::SYMTAB_LOCAL
-            } else {
-                part_id::SYMTAB_GLOBAL
-            };
-            sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
-            let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let symbol_name = P::RawSymbolName::parse(symbol_name.bytes()).name();
-            sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
+            P::allocate_internal_symbol(symbol_id, def_info, sizes, symbol_db)?;
         }
         Ok(())
     }

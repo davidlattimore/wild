@@ -1361,6 +1361,26 @@ impl platform::Platform for Elf {
         common.allocate(part_id::STRTAB, strings_size as u64);
     }
 
+    fn allocate_internal_symbol(
+        symbol_id: SymbolId,
+        def_info: &InternalSymDefInfo,
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<Self>,
+    ) -> Result {
+        // PROVIDE_HIDDEN symbols are local, others are global
+        let symtab_part = if def_info.is_hidden {
+            part_id::SYMTAB_LOCAL
+        } else {
+            part_id::SYMTAB_GLOBAL
+        };
+        sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
+        let symbol_name = symbol_db.symbol_name(symbol_id)?;
+        let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name();
+        sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
+
+        Ok(())
+    }
+
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
