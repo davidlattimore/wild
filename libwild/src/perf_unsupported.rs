@@ -1,4 +1,4 @@
-use crate::args::elf::CounterKind;
+use crate::args::CounterKind;
 
 pub(crate) struct CounterList {}
 

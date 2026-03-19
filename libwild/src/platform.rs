@@ -206,6 +206,12 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VersionNames<'data>;
 
+    /// Invoke the linker for requested architecture.
+    fn link_for_arch<'data>(
+        linker: &'data crate::Linker,
+        args: &'data Self::Args,
+    ) -> Result<crate::LinkerOutput<'data>>;
+
     fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;

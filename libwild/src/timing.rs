@@ -1,6 +1,6 @@
 //! Code for reporting how long each phase of linking takes when the --time argument is supplied.
 
-use crate::args::elf::CounterKind;
+use crate::args::CounterKind;
 use crate::error::AlreadyInitialised;
 use crate::error::Result;
 use crate::perf::CounterList;

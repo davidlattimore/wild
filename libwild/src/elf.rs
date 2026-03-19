@@ -307,6 +307,26 @@ impl platform::Platform for Elf {
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
 
+    fn link_for_arch<'data>(
+        linker: &'data crate::Linker,
+        args: &'data Self::Args,
+    ) -> Result<crate::LinkerOutput<'data>> {
+        match args.arch {
+            crate::arch::Architecture::X86_64 => {
+                linker.link_for_arch::<crate::elf_x86_64::ElfX86_64>(args)
+            }
+            crate::arch::Architecture::AArch64 => {
+                linker.link_for_arch::<crate::elf_aarch64::ElfAArch64>(args)
+            }
+            crate::arch::Architecture::RISCV64 => {
+                linker.link_for_arch::<crate::elf_riscv64::ElfRiscV64>(args)
+            }
+            crate::arch::Architecture::LoongArch64 => {
+                linker.link_for_arch::<crate::elf_loongarch64::ElfLoongArch64>(args)
+            }
+        }
+    }
+
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
