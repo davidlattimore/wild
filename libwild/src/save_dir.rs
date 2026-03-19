@@ -391,6 +391,11 @@ fn create_symlink(target: &Path, dest_path: &Path) -> Result {
         })?;
         Ok(())
     }
+    #[cfg(target_os = "wasi")]
+    {
+        let _ = (target, dest_path);
+        panic!("creating symlinks on wasi not supported on stable rust");
+    }
 }
 
 fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u8>> {

@@ -203,9 +203,13 @@ impl CommonArgs {
         });
 
         // The pool might be already initialized, suppress the error intentionally.
-        let _ = ThreadPoolBuilder::new()
-            .num_threads(self.available_threads.get())
-            .build_global();
+        if self.available_threads.get() <= 1 {
+            let _ = ThreadPoolBuilder::new().use_current_thread().build_global();
+        } else {
+            let _ = ThreadPoolBuilder::new()
+                .num_threads(self.available_threads.get())
+                .build_global();
+        }
 
         Ok(ThreadPool {
             _jobserver_tokens: tokens,
