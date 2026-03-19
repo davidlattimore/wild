@@ -1361,6 +1361,21 @@ impl platform::Platform for Elf {
         common.allocate(part_id::STRTAB, strings_size as u64);
     }
 
+    fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
+        // The first entry in the symbol table must be null. Similarly, the first string in the
+        // strings table must be empty.
+        if !symbol_db.args.should_strip_all() {
+            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
+            common.allocate(part_id::STRTAB, 1);
+        }
+
+        if symbol_db.output_kind.needs_dynsym() {
+            // Allocate space for the null symbol.
+            common.allocate(part_id::DYNSTR, 1);
+            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
+        }
+    }
+
     fn finalise_prelude_layout(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,

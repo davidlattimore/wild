@@ -2623,10 +2623,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn activate<'scope, A: Arch>(
+    fn activate<'scope, A: Arch<Platform = P>>(
         &mut self,
-        common: &mut CommonGroupState<'data, A::Platform>,
-        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        common: &mut CommonGroupState<'data, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -2638,20 +2638,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             );
         }
 
-        // The first entry in the symbol table must be null. Similarly, the first string in the
-        // strings table must be empty.
-        if !resources.symbol_db.args.should_strip_all() {
-            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
-            common.allocate(part_id::STRTAB, 1);
-        }
-
         self.load_entry_point::<A>(resources, queue, scope);
 
-        if resources.symbol_db.output_kind.needs_dynsym() {
-            // Allocate space for the null symbol.
-            common.allocate(part_id::DYNSTR, 1);
-            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
-        }
+        P::allocate_prelude(common, resources.symbol_db);
 
         if resources.symbol_db.output_kind.is_dynamic_executable() {
             self.dynamic_linker = resources
@@ -2728,9 +2717,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn load_entry_point<'scope, A: Arch>(
+    fn load_entry_point<'scope, A: Arch<Platform = P>>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        resources: &'scope GraphResources<'data, '_, P>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
