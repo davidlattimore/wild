@@ -15,6 +15,7 @@ use crate::args::CopyRelocationsDisabledReason;
 use crate::args::DefsymValue;
 use crate::args::FileWriteMode;
 use crate::args::Modifiers;
+use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
 use crate::args::warn_unsupported;
@@ -173,12 +174,6 @@ impl HashStyle {
     pub(crate) const fn includes_sysv(self) -> bool {
         matches!(self, HashStyle::Sysv | HashStyle::Both)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelocationModel {
-    NonRelocatable,
-    Relocatable,
 }
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
@@ -1879,6 +1874,22 @@ impl platform::Args for ElfArgs {
             Architecture::RISCV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
         }
+    }
+
+    fn dependency_file(&self) -> Option<&Path> {
+        self.dependency_file.as_deref()
+    }
+
+    fn should_write_trace_file(&self) -> bool {
+        self.trace
+    }
+
+    fn relocation_model(&self) -> crate::args::RelocationModel {
+        self.relocation_model
+    }
+
+    fn should_output_executable(&self) -> bool {
+        self.should_output_executable
     }
 }
 

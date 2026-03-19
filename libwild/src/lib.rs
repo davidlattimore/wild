@@ -70,7 +70,6 @@ pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
 
-use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
@@ -78,6 +77,7 @@ use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
 use crate::platform::Arch;
+use crate::platform::Args as _;
 use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
@@ -157,10 +157,11 @@ pub struct Linker {
 }
 
 pub struct LinkerOutput<'layout_inputs> {
+    #[allow(dyn_drop)]
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<layout::Layout<'layout_inputs, Elf>>,
+    layout: Option<Box<dyn Drop + 'layout_inputs>>,
 }
 
 impl Linker {
@@ -208,22 +209,22 @@ impl Linker {
         }
     }
 
-    fn link_for_arch<'data, A: Arch<Platform = Elf>>(
+    fn link_for_arch<'data, P: Platform, A: Arch<Platform = P>>(
         &'data self,
-        args: &'data ElfArgs,
+        args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<P, A>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
         // Write the dependency file and inputs trace after successful linking.
         if result.is_ok() {
-            if let Some(dep_file_path) = &args.dependency_file {
-                write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
+            if let Some(dep_file_path) = &args.dependency_file() {
+                write_dependency_file(dep_file_path, args.output(), &file_loader.loaded_files)
                     .with_context(|| {
                         format!(
                             "Failed to write dependency file `{}`",
@@ -231,7 +232,7 @@ impl Linker {
                         )
                     })?;
             }
-            if args.trace {
+            if args.should_write_trace_file() {
                 let mut buf = BufWriter::new(std::io::stdout());
                 for input in &file_loader.loaded_files {
                     writeln!(buf, "{}", input.filename.display())?;
@@ -242,17 +243,16 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: Arch<Platform = Elf>>(
+    fn load_inputs_and_link<'data, P: Platform, A: Arch<Platform = P>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data ElfArgs,
+        args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut plugin =
-            linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
+        let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
 
-        let loaded = file_loader.load_inputs(&args.common.inputs, args, &mut plugin);
+        let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
 
-        args.common.save_dir.finish(file_loader, args)?;
+        args.common().save_dir.finish(file_loader, args)?;
 
         let loaded = loaded?;
 
@@ -295,7 +295,8 @@ impl Linker {
         if let Some(plugin) = plugin.as_mut()
             && plugin.is_initialised()
         {
-            plugin.all_symbols_read(
+            P::plugin_all_symbols_read(
+                plugin,
                 &mut symbol_db,
                 &mut resolver,
                 file_loader,
@@ -320,7 +321,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<Elf, A>(
+        let layout = layout::compute::<P, A>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -328,7 +329,7 @@ impl Linker {
             &mut output,
         )?;
 
-        output.write(&layout, elf_writer::write::<A>)?;
+        P::write_output_file::<A>(&output, &layout)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
@@ -336,7 +337,7 @@ impl Linker {
         self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
         Ok(LinkerOutput {
-            layout: Some(layout),
+            layout: Some(Box::new(layout)),
         })
     }
 }

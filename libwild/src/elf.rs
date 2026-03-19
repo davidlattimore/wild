@@ -2,9 +2,9 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BSymbolicKind;
+use crate::args::RelocationModel;
 use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
-use crate::args::elf::RelocationModel;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -313,18 +313,52 @@ impl platform::Platform for Elf {
     ) -> Result<crate::LinkerOutput<'data>> {
         match args.arch {
             crate::arch::Architecture::X86_64 => {
-                linker.link_for_arch::<crate::elf_x86_64::ElfX86_64>(args)
+                linker.link_for_arch::<Elf, crate::elf_x86_64::ElfX86_64>(args)
             }
             crate::arch::Architecture::AArch64 => {
-                linker.link_for_arch::<crate::elf_aarch64::ElfAArch64>(args)
+                linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
             }
             crate::arch::Architecture::RISCV64 => {
-                linker.link_for_arch::<crate::elf_riscv64::ElfRiscV64>(args)
+                linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
             }
             crate::arch::Architecture::LoongArch64 => {
-                linker.link_for_arch::<crate::elf_loongarch64::ElfLoongArch64>(args)
+                linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
             }
         }
+    }
+
+    fn write_output_file<'data, A: Arch<Platform = Self>>(
+        output: &crate::file_writer::Output,
+        layout: &layout::Layout<'data, Self>,
+    ) -> Result {
+        output.write(layout, elf_writer::write::<A>)
+    }
+
+    fn maybe_init_linker_plugin<'data>(
+        args: &'data Self::Args,
+        linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
+        herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        crate::linker_plugins::LinkerPlugin::from_args(args, linker_plugin_arena, herd)
+    }
+
+    fn plugin_all_symbols_read<'data>(
+        plugin: &mut crate::linker_plugins::LinkerPlugin<'data>,
+        symbol_db: &mut SymbolDb<'data, Self>,
+        resolver: &mut crate::resolution::Resolver<'data, Self>,
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        per_symbol_flags: &mut crate::value_flags::PerSymbolFlags,
+        output_sections: &mut OutputSections<'data, Self>,
+        layout_rules_builder: &mut crate::layout_rules::LayoutRulesBuilder<'data>,
+    ) -> Result {
+        plugin.all_symbols_read(
+            symbol_db,
+            resolver,
+            file_loader,
+            per_symbol_flags,
+            output_sections,
+            layout_rules_builder,
+        )
     }
 
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {

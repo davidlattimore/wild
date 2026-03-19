@@ -346,8 +346,8 @@ impl LoadedPlugin {
 
         let output_kind = if args.should_output_executable {
             match args.relocation_model {
-                crate::args::elf::RelocationModel::NonRelocatable => OutputFileType::Exec,
-                crate::args::elf::RelocationModel::Relocatable => OutputFileType::Pie,
+                crate::args::RelocationModel::NonRelocatable => OutputFileType::Exec,
+                crate::args::RelocationModel::Relocatable => OutputFileType::Pie,
             }
         } else {
             OutputFileType::Dyn
