@@ -4,7 +4,6 @@
 use crate::InputLinkerScript;
 use crate::OutputKind;
 use crate::bail;
-use crate::elf::RawSymbolName;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -2112,22 +2111,6 @@ impl ShardKey for SymbolId {
                 .try_into()
                 .expect("Symbol ID overflowed 32 bits"),
         )
-    }
-}
-
-impl Display for RawSymbolName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(self.name))?;
-        if let Some(version) = self.version_name {
-            if self.is_default {
-                write!(f, "@@")?;
-            } else {
-                write!(f, "@")?;
-            }
-            write!(f, "{}", String::from_utf8_lossy(version))?;
-        }
-
-        Ok(())
     }
 }
 

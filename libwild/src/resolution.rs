@@ -6,7 +6,6 @@ use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
-use crate::elf::RawSymbolName;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -32,10 +31,8 @@ use crate::platform::DynamicTagValues as _;
 use crate::platform::FrameIndex;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
-use crate::platform::RawSymbolName as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
-use crate::platform::VerneedTable as _;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
@@ -432,7 +429,7 @@ impl LoadedMetrics {
     }
 }
 
-struct ResolutionResources<'data, 'scope, P: Platform> {
+pub(crate) struct ResolutionResources<'data, 'scope, P: Platform> {
     definitions_per_file: &'scope Vec<Vec<AtomicTake<&'scope mut [SymbolId]>>>,
     symbol_db: &'scope SymbolDb<'data, P>,
     outputs: &'scope Outputs<'data, P>,
@@ -807,54 +804,11 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
         Group::LtoInputs(objects) => {
             let obj = &objects[file_id.file()];
             resources.handle_result(
-                resolve_lto_symbols(obj, resources, definitions_out, scope)
+                P::resolve_lto_symbols(obj, resources, definitions_out, scope)
                     .with_context(|| format!("Failed to resolve symbols in {obj}")),
             );
         }
     }
-}
-
-#[cfg(feature = "plugins")]
-fn resolve_lto_symbols<'data, 'scope, P: Platform>(
-    obj: &crate::linker_plugins::LtoInput<'data>,
-    resources: &'scope ResolutionResources<'data, 'scope, P>,
-    definitions_out: &mut [SymbolId],
-    scope: &Scope<'scope>,
-) -> Result {
-    obj.symbols
-        .iter()
-        .enumerate()
-        .zip(definitions_out)
-        .try_for_each(
-            |((local_symbol_index, local_symbol), definition)| -> Result {
-                if !local_symbol.is_definition() {
-                    let mut name_info = RawSymbolName::parse(local_symbol.name.bytes());
-                    if let Some(version) = local_symbol.version {
-                        name_info.version_name = Some(version);
-                    }
-
-                    let symbol_attributes = SymbolAttributes {
-                        name_info,
-                        is_local: false,
-                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT,
-                        is_weak: local_symbol.kind
-                            == Some(crate::linker_plugins::SymbolKind::WeakUndef),
-                    };
-
-                    resolve_symbol(
-                        obj.symbol_id_range.offset_to_id(local_symbol_index),
-                        &symbol_attributes,
-                        definition,
-                        resources,
-                        false,
-                        obj.file_id,
-                        scope,
-                    )?;
-                }
-
-                Ok(())
-            },
-        )
 }
 
 struct UndefinedSymbol<'data> {
@@ -1297,7 +1251,7 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
-    let verneed = obj.parsed.object.verneed_table()?;
+    let verneed_table = obj.parsed.object.verneed_table()?;
 
     obj.parsed.object.symbols()[start_symbol_offset..]
         .iter()
@@ -1318,17 +1272,11 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
 
                 let name_bytes = obj.parsed.object.symbol_name(local_symbol)?;
 
-                let name_info = if let Some(version_name) =
-                    verneed.version_name(object::SymbolIndex(local_symbol_index))
-                {
-                    RawSymbolName {
-                        name: name_bytes,
-                        version_name: Some(version_name),
-                        is_default: false,
-                    }
-                } else {
-                    RawSymbolName::parse(name_bytes)
-                };
+                let name_info = P::raw_symbol_name(
+                    name_bytes,
+                    &verneed_table,
+                    object::SymbolIndex(local_symbol_index),
+                );
 
                 let symbol_attributes = SymbolAttributes {
                     name_info,
@@ -1352,17 +1300,17 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
 }
 
 #[derive(Debug)]
-struct SymbolAttributes<'data> {
-    is_local: bool,
-    default_visibility: bool,
-    is_weak: bool,
-    name_info: RawSymbolName<'data>,
+pub(crate) struct SymbolAttributes<'data, P: Platform> {
+    pub(crate) is_local: bool,
+    pub(crate) default_visibility: bool,
+    pub(crate) is_weak: bool,
+    pub(crate) name_info: P::RawSymbolName<'data>,
 }
 
 #[inline(always)]
-fn resolve_symbol<'data, 'scope, P: Platform>(
+pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
     local_symbol_id: SymbolId,
-    local_symbol_attributes: &SymbolAttributes<'data>,
+    local_symbol_attributes: &SymbolAttributes<'data, P>,
     definition_out: &mut SymbolId,
     resources: &'scope ResolutionResources<'data, 'scope, P>,
     is_dynamic: bool,

@@ -1,11 +1,9 @@
-use crate::elf::RawSymbolName;
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::platform::Args as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
-use crate::platform::RawSymbolName as _;
 use crate::platform::Symbol as _;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -92,7 +90,7 @@ impl SymbolInfoPrinter {
         target_ids.extend(name.parse().ok().map(SymbolId::from_usize));
 
         let symbol_id = symbol_db.get(
-            &PreHashedSymbolName::from_raw(&RawSymbolName::parse(name.as_bytes())),
+            &PreHashedSymbolName::from_raw(&P::parse_raw_symbol_name(name.as_bytes())),
             true,
         );
         let _ = writeln!(&mut out, "Global name `{name}` refers to: {symbol_id:?}");
