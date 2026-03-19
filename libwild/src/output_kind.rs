@@ -1,6 +1,6 @@
-use crate::args::elf::ElfArgs;
-use crate::args::elf::RelocationModel;
+use crate::args::RelocationModel;
 use crate::input_data::FileLoader;
+use crate::platform;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
@@ -10,24 +10,23 @@ pub(crate) enum OutputKind {
 }
 
 impl OutputKind {
-    pub(crate) fn new(args: &ElfArgs, input_data: &FileLoader<'_>) -> OutputKind {
-        if !args.should_output_executable {
+    pub(crate) fn new(args: &impl platform::Args, input_data: &FileLoader<'_>) -> OutputKind {
+        let model = args.relocation_model();
+        if !args.should_output_executable() {
             OutputKind::SharedObject
-        } else if args.dynamic_linker.is_some()
-            && args.relocation_model == RelocationModel::Relocatable
-        {
+        } else if args.dynamic_linker().is_some() && model == RelocationModel::Relocatable {
             // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
             // set.
-            OutputKind::DynamicExecutable(args.relocation_model)
+            OutputKind::DynamicExecutable(model)
         } else if input_data.has_dynamic {
             // When attempting to create static executable, but DSO is added as an input we need to
             // proceed with dynamic executable.
             // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded,
             // it'll go back to static one. This would add a lot of complexity with the
             // current design, so we just stick to LLD behaviour.
-            OutputKind::DynamicExecutable(args.relocation_model)
+            OutputKind::DynamicExecutable(model)
         } else {
-            OutputKind::StaticExecutable(args.relocation_model)
+            OutputKind::StaticExecutable(model)
         }
     }
 

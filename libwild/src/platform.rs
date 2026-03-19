@@ -4,6 +4,7 @@ use crate::alignment::Alignment;
 use crate::args::DefsymValue;
 use crate::bail;
 use crate::grouping::Group;
+use crate::input_data::FileLoader;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -12,6 +13,8 @@ use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout_rules::LayoutRulesBuilder;
+use crate::linker_plugins::LinkerPlugin;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -21,10 +24,12 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id::PartId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
+use crate::resolution::Resolver;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
+use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -211,6 +216,32 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         linker: &'data crate::Linker,
         args: &'data Self::Args,
     ) -> Result<crate::LinkerOutput<'data>>;
+
+    fn write_output_file<'data, A: Arch<Platform = Self>>(
+        output: &crate::file_writer::Output,
+        layout: &Layout<'data, Self>,
+    ) -> Result;
+
+    fn maybe_init_linker_plugin<'data>(
+        _args: &'data Self::Args,
+        _linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
+        _herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        Ok(None)
+    }
+
+    fn plugin_all_symbols_read<'data>(
+        _plugin: &mut LinkerPlugin<'data>,
+        _symbol_db: &mut SymbolDb<'data, Self>,
+        _resolver: &mut Resolver<'data, Self>,
+        _file_loader: &mut FileLoader<'data>,
+        _per_symbol_flags: &mut PerSymbolFlags,
+        _output_sections: &mut OutputSections<'data, Self>,
+        _layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+    ) -> Result {
+        // Platforms that implement maybe_init_linker_plugin must implement this method too.
+        unimplemented!();
+    }
 
     fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
 
@@ -1010,4 +1041,16 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn loadable_segment_alignment(&self) -> Alignment;
 
     fn should_merge_sections(&self) -> bool;
+
+    fn dependency_file(&self) -> Option<&Path> {
+        None
+    }
+
+    fn should_write_trace_file(&self) -> bool {
+        false
+    }
+
+    fn relocation_model(&self) -> crate::args::RelocationModel;
+
+    fn should_output_executable(&self) -> bool;
 }

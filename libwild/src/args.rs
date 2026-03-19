@@ -133,6 +133,12 @@ pub enum CounterKind {
     L1dMiss,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelocationModel {
+    NonRelocatable,
+    Relocatable,
+}
+
 impl Default for CommonArgs {
     fn default() -> Self {
         Self {

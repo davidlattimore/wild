@@ -5274,3 +5274,9 @@ impl OutputRecordLayout {
         }
     }
 }
+
+// This implementation is just here so that we can store a Box<dyn Drop> elsewhere in order to erase
+// the type parameter P, allowing deferred dropping to occur.
+impl<'data, P: Platform> Drop for Layout<'data, P> {
+    fn drop(&mut self) {}
+}
