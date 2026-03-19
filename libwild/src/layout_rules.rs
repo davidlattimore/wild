@@ -48,19 +48,34 @@ pub(crate) struct SectionRules<'data> {
     rules: HashTable<SectionRule<'data>>,
 }
 
+/// Determines how a section name pattern is matched against input section names.
+#[derive(Debug, Clone)]
+pub(crate) enum SectionNameMatcher<'data> {
+    /// Matches sections whose name is exactly equal to the stored bytes.
+    Exact(&'data [u8]),
+
+    /// Matches sections whose name starts with the stored bytes.
+    Prefix(&'data [u8]),
+
+    /// Matches sections whose name matches the glob pattern. The byte slice is the
+    /// literal prefix used as hash table key.
+    Glob(&'data [u8], Pattern),
+}
+
+/// Return the literal byte prefix of this matcher, used for hash table keying.
+impl<'data> SectionNameMatcher<'data> {
+    fn prefix_bytes(&self) -> &'data [u8] {
+        match self {
+            Self::Exact(n) | Self::Prefix(n) | Self::Glob(n, _) => n,
+        }
+    }
+}
+
 /// A rule for determining what should be done with some input sections.
 #[derive(Debug, Clone)]
 pub(crate) struct SectionRule<'data> {
-    /// The name that the section needs to have in order for this rule to match, or if `is_prefix`
-    /// is true, then the prefix of the section name required.
-    name: &'data [u8],
-
-    /// Whether the section name is allowed to extend beyond what's in `name`.
-    is_prefix: bool,
-
-    /// Compiled glob pattern for section name matching, used when the pattern contains
-    /// metacharacters like `[` or `?`.
-    section_name_pattern: Option<Pattern>,
+    /// Determine how the section rule matches against input section names.
+    name_matcher: SectionNameMatcher<'data>,
 
     /// Pre-compiled glob pattern for matching input filenames. `None` means the rule matches all
     /// files.
@@ -292,9 +307,7 @@ impl<'data> SectionRule<'data> {
                 Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
 
             return Ok(Self {
-                name: &pattern[..idx],
-                is_prefix: true,
-                section_name_pattern: Some(compiled_pattern),
+                name_matcher: SectionNameMatcher::Glob(&pattern[..idx], compiled_pattern),
                 input_file_pattern: compiled_file_pattern,
                 outcome,
             });
@@ -302,9 +315,7 @@ impl<'data> SectionRule<'data> {
 
         if let Some(prefix) = pattern.strip_suffix(b"*") {
             Ok(Self {
-                name: prefix,
-                is_prefix: true,
-                section_name_pattern: None,
+                name_matcher: SectionNameMatcher::Prefix(prefix),
                 input_file_pattern: compiled_file_pattern,
                 outcome,
             })
@@ -316,9 +327,7 @@ impl<'data> SectionRule<'data> {
             );
 
             Ok(Self {
-                name: pattern,
-                is_prefix: false,
-                section_name_pattern: None,
+                name_matcher: SectionNameMatcher::Exact(pattern),
                 input_file_pattern: compiled_file_pattern,
                 outcome,
             })
@@ -327,24 +336,20 @@ impl<'data> SectionRule<'data> {
 
     #[inline(always)]
     fn matches(&self, section_name: &[u8], file_name: Option<&[u8]>) -> bool {
-        let section_matches = if self.is_prefix {
-            section_name.starts_with(self.name)
-        } else {
-            section_name == self.name
+        let section_matches = match &self.name_matcher {
+            SectionNameMatcher::Exact(name) => section_name == *name,
+            SectionNameMatcher::Prefix(prefix) => section_name.starts_with(prefix),
+            SectionNameMatcher::Glob(_, pattern) => {
+                if let Ok(name_str) = std::str::from_utf8(section_name) {
+                    pattern.matches(name_str)
+                } else {
+                    false
+                }
+            }
         };
 
         if !section_matches {
             return false;
-        }
-
-        if let Some(section_pattern) = &self.section_name_pattern {
-            let Ok(section_name_str) = std::str::from_utf8(section_name) else {
-                return false;
-            };
-
-            if !section_pattern.matches(section_name_str) {
-                return false;
-            }
         }
 
         // If the rule has no file pattern, it matches all files.
@@ -401,9 +406,7 @@ impl<'data> SectionRule<'data> {
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
         SectionRule {
-            name,
-            is_prefix: false,
-            section_name_pattern: None,
+            name_matcher: SectionNameMatcher::Exact(name),
             input_file_pattern: None,
             outcome,
         }
@@ -411,9 +414,7 @@ impl<'data> SectionRule<'data> {
 
     const fn prefix(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
         SectionRule {
-            name,
-            is_prefix: true,
-            section_name_pattern: None,
+            name_matcher: SectionNameMatcher::Prefix(name),
             input_file_pattern: None,
             outcome,
         }
@@ -496,11 +497,11 @@ impl<'data> SectionRules<'data> {
             rules: HashTable::with_capacity(rules.len() * RULE_TABLE_CAPACITY_MULTIPLIER),
         };
         for rule in rules {
-            let hash = section_name_prefix_hash(rule.name)
+            let hash = section_name_prefix_hash(rule.name_matcher.prefix_bytes())
                 .expect("Prefixes of length less than 4 not yet supported");
 
             map.rules.insert_unique(hash, rule.clone(), |existing| {
-                section_name_prefix_hash(existing.name).unwrap_or(0)
+                section_name_prefix_hash(existing.name_matcher.prefix_bytes()).unwrap_or(0)
             });
         }
 

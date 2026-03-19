@@ -3682,6 +3682,7 @@ fn integration_test(
         "linker-script-unclosed-comment.c",
         "linker-script-assert-pass.c",
         "linker-script-assert-fail.c",
+        "linker-script-glob.c",
         "execstack.s"
     )]
     program_name: &'static str,
