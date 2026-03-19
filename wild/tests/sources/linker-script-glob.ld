@@ -2,11 +2,11 @@ SECTIONS {
     mydata : {
         KEEP(*(.mydata.[0-9]))
     }
-    foobar : {
-        KEEP(*(foo[_-]bar))
+    helloworld : {
+        KEEP(*(hello[_-]world))
     }
     other : {
         KEEP(*(.mydata.*))
-        KEEP(*(foo*))
+        KEEP(*(hello*))
     }
 }

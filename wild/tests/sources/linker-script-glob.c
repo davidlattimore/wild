@@ -9,9 +9,9 @@
 //#ExpectSym:val_A section="other"
 //#ExpectSym:val_a section="other"
 //#ExpectSym:val_underscore section="other"
-//#ExpectSym:val_foo_bar section="foobar"
-//#ExpectSym:val_foo_dash_bar section="foobar"
-//#ExpectSym:val_foo_baz section="other"
+//#ExpectSym:val_hello_world section="helloworld"
+//#ExpectSym:val_hello_dash_world section="helloworld"
+//#ExpectSym:val_hello_baz section="other"
 //#DiffIgnore:section.riscv.attributes
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 // GNU ld emits `.riscv.attributes`, but Wild does not
@@ -26,7 +26,8 @@ static int val_A __attribute__((used, section(".mydata.A"))) = 10;
 static int val_a __attribute__((used, section(".mydata.a"))) = 11;
 static int val_underscore __attribute__((used, section(".mydata._"))) = 12;
 
-static int val_foo_bar __attribute__((used, section("foo_bar"))) = 100;
-static int val_foo_dash_bar __attribute__((used, section("foo-bar"))) = 101;
+static int val_hello_world __attribute__((used, section("hello_world"))) = 100;
+static int val_hello_dash_world __attribute__((used, section("hello-world"))) =
+    101;
 
-static int val_foo_baz __attribute__((used, section("foo_baz"))) = 102;
+static int val_hello_baz __attribute__((used, section("hello_baz"))) = 102;
