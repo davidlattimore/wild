@@ -75,6 +75,11 @@ pub struct CommonArgs {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) sym_info: Option<String>,
     pub(crate) numeric_experiments: Vec<Option<u64>>,
+    pub(crate) version_mode: VersionMode,
+
+    /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
+    /// counters, if any.
+    pub(crate) time_phase_options: Option<Vec<CounterKind>>,
 }
 
 impl Args {
@@ -91,6 +96,41 @@ impl Args {
         let elf_args = elf::parse(|| all_args.iter())?;
         Ok(Args::Elf(elf_args))
     }
+
+    pub(crate) fn common(&self) -> &CommonArgs {
+        match self {
+            Args::Elf(elf_args) => &elf_args.common,
+        }
+    }
+
+    pub(crate) fn common_mut(&mut self) -> &mut CommonArgs {
+        match self {
+            Args::Elf(elf_args) => &mut elf_args.common,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionMode {
+    /// Don't print version
+    None,
+    /// Print version and continue linking (-v)
+    Verbose,
+    /// Print version and exit immediately (--version)
+    ExitAfterPrint,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CounterKind {
+    Cycles,
+    Instructions,
+    CacheMisses,
+    BranchMisses,
+    PageFaults,
+    PageFaultsMinor,
+    PageFaultsMajor,
+    L1dRead,
+    L1dMiss,
 }
 
 impl Default for CommonArgs {
@@ -109,6 +149,7 @@ impl Default for CommonArgs {
             debug_fuel: None,
             should_fork: true,
             demangle: true,
+            version_mode: VersionMode::None,
             validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
                 .is_ok_and(|v| v == "1"),
@@ -120,6 +161,7 @@ impl Default for CommonArgs {
                 .map(FileId::from_encoded),
             numeric_experiments: Vec::new(),
             sym_info: None,
+            time_phase_options: None,
         }
     }
 }
@@ -1001,4 +1043,27 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
     }
 
     Ok(out)
+}
+
+fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
+    input.split(',').map(|s| s.parse()).collect()
+}
+
+impl std::str::FromStr for CounterKind {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "cycles" => CounterKind::Cycles,
+            "instructions" => CounterKind::Instructions,
+            "cache-misses" => CounterKind::CacheMisses,
+            "branch-misses" => CounterKind::BranchMisses,
+            "page-faults" => CounterKind::PageFaults,
+            "page-faults-minor" => CounterKind::PageFaultsMinor,
+            "page-faults-major" => CounterKind::PageFaultsMajor,
+            "l1d-read" => CounterKind::L1dRead,
+            "l1d-miss" => CounterKind::L1dMiss,
+            other => bail!("Unsupported performance counter `{other}`"),
+        })
+    }
 }

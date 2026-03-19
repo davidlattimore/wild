@@ -1,8 +1,7 @@
-use crate::args::elf::ElfArgs;
+use crate::Args;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::platform::Args as _;
 use libc::c_char;
 use libc::fork;
 use libc::pid_t;
@@ -21,7 +20,7 @@ use std::ffi::c_void;
 /// # Safety
 /// Must not be called once threads have been spawned. Calling this function from main is generally
 /// the best way to ensure this.
-pub unsafe fn run_in_subprocess(args: ElfArgs) -> ! {
+pub unsafe fn run_in_subprocess(args: Args) -> ! {
     let exit_code = match subprocess_result(args) {
         Ok(code) => code,
         Err(error) => crate::error::report_error_and_exit(&error),
@@ -29,7 +28,7 @@ pub unsafe fn run_in_subprocess(args: ElfArgs) -> ! {
     std::process::exit(exit_code);
 }
 
-fn subprocess_result(mut args: ElfArgs) -> Result<i32> {
+fn subprocess_result(mut args: Args) -> Result<i32> {
     let mut fds: [c_int; 2] = [0; 2];
     // create the pipe used to communicate between the parent and child processes - exit on failure
     make_pipe(&mut fds).context("make_pipe")?;
