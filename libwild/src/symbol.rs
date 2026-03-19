@@ -1,4 +1,5 @@
 use crate::hash::PreHashed;
+use crate::platform;
 use std::fmt::Display;
 use std::ops::BitXor as _;
 
@@ -69,10 +70,10 @@ impl Display for UnversionedSymbolName<'_> {
 
 impl<'data> PreHashedSymbolName<'data> {
     pub(crate) fn from_raw(
-        name_info: &crate::elf::RawSymbolName<'data>,
+        name_info: &impl platform::RawSymbolName<'data>,
     ) -> PreHashedSymbolName<'data> {
-        let name = UnversionedSymbolName::prehashed(name_info.name);
-        if let Some(version) = name_info.version_name {
+        let name = UnversionedSymbolName::prehashed(name_info.name());
+        if let Some(version) = name_info.version_name() {
             PreHashedSymbolName::Versioned(VersionedSymbolName::prehashed(name, version))
         } else {
             PreHashedSymbolName::Unversioned(name)

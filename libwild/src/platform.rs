@@ -243,6 +243,16 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         unimplemented!();
     }
 
+    #[allow(dead_code)]
+    fn resolve_lto_symbols<'data, 'scope>(
+        _obj: &crate::linker_plugins::LtoInput<'data>,
+        _resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
+        _definitions_out: &mut [SymbolId],
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
     fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
@@ -491,6 +501,16 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         got: &Self::SectionHeader,
         got_data: &[u8],
     ) -> Result;
+
+    fn raw_symbol_name<'data>(
+        name_bytes: &'data [u8],
+        verneed_table: &Self::VerneedTable<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> Self::RawSymbolName<'data>;
+
+    fn parse_raw_symbol_name<'data>(name_bytes: &'data [u8]) -> Self::RawSymbolName<'data> {
+        <Self::RawSymbolName<'data> as RawSymbolName>::parse(name_bytes)
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -805,7 +825,7 @@ pub(crate) trait RelocationSequence<'data> {
     fn num_relocations(&self) -> usize;
 }
 
-pub(crate) trait RawSymbolName<'data>: Send + Sync + 'data {
+pub(crate) trait RawSymbolName<'data>: Send + Sync + std::fmt::Display + 'data {
     fn parse(bytes: &'data [u8]) -> Self;
 
     fn name(&self) -> &'data [u8];

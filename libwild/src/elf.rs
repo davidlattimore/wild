@@ -54,6 +54,7 @@ use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
+use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::string_merging::MergedStringStartAddresses;
@@ -359,6 +360,15 @@ impl platform::Platform for Elf {
             output_sections,
             layout_rules_builder,
         )
+    }
+
+    fn resolve_lto_symbols<'data, 'scope>(
+        obj: &crate::linker_plugins::LtoInput<'data>,
+        resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
+        definitions_out: &mut [SymbolId],
+        scope: &Scope<'scope>,
+    ) -> Result {
+        crate::linker_plugins::resolve_lto_symbols(obj, resources, definitions_out, scope)
     }
 
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
@@ -1449,6 +1459,22 @@ impl platform::Platform for Elf {
             }
         }
         Ok(())
+    }
+
+    fn raw_symbol_name<'data>(
+        name_bytes: &'data [u8],
+        verneed_table: &Self::VerneedTable<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> Self::RawSymbolName<'data> {
+        if let Some(version_name) = verneed_table.version_name(symbol_index) {
+            RawSymbolName {
+                name: name_bytes,
+                version_name: Some(version_name),
+                is_default: false,
+            }
+        } else {
+            RawSymbolName::parse(name_bytes)
+        }
     }
 }
 
@@ -3286,6 +3312,22 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
 
     fn is_default(&self) -> bool {
         self.is_default
+    }
+}
+
+impl std::fmt::Display for RawSymbolName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(self.name))?;
+        if let Some(version) = self.version_name {
+            if self.is_default {
+                write!(f, "@@")?;
+            } else {
+                write!(f, "@")?;
+            }
+            write!(f, "{}", String::from_utf8_lossy(version))?;
+        }
+
+        Ok(())
     }
 }
 
