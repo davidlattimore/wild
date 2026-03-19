@@ -1509,6 +1509,29 @@ impl platform::Platform for Elf {
 
         Ok(())
     }
+
+    fn allocate_header_sizes(
+        prelude: &mut layout::PreludeLayoutState<Self>,
+        sizes: &mut OutputSectionPartMap<u64>,
+        header_info: &layout::HeaderInfo,
+        output_sections: &OutputSections<Self>,
+    ) {
+        sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
+        sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
+        sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
+        prelude.format_specific.shstrtab_size = output_sections
+            .ids_with_info()
+            .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
+            .map(|(_id, info)| {
+                if let SectionKind::Primary(name) = info.kind {
+                    name.len() as u64 + 1
+                } else {
+                    0
+                }
+            })
+            .sum::<u64>();
+        sizes.increment(part_id::SHSTRTAB, prelude.format_specific.shstrtab_size);
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -4470,6 +4493,7 @@ fn does_relocation_require_static_tls(rel_kind: RelocationKind) -> bool {
 #[derive(Default, Debug)]
 pub(crate) struct PreludeLayoutStateExt {
     needs_tlsld_got_entry: bool,
+    shstrtab_size: u64,
 }
 
 #[derive(Default, Debug)]
@@ -4695,4 +4719,12 @@ fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
 
     let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
     Some(u16::try_from(value).unwrap_or(u16::MAX))
+}
+
+pub(crate) fn program_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(elf::PROGRAM_HEADER_SIZE) * header_info.active_segment_ids.len() as u64
+}
+
+fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(elf::SECTION_HEADER_SIZE) * u64::from(header_info.num_output_sections_with_content)
 }

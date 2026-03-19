@@ -13,6 +13,7 @@ use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout::PreludeLayoutState;
 use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
@@ -467,6 +468,14 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// Verifies that it's OK to load a section with the given name. Mostly just used to detect
     /// linker plugin inputs, since we shouldn't be loading those.
     fn verify_allowed_input_section_name(name: &[u8]) -> Result;
+
+    /// Allocate space for headers based on segment and section counts.
+    fn allocate_header_sizes(
+        prelude: &mut PreludeLayoutState<Self>,
+        sizes: &mut OutputSectionPartMap<u64>,
+        header_info: &layout::HeaderInfo,
+        output_sections: &OutputSections<Self>,
+    );
 
     fn validate_stack_section(
         section: &Self::SectionHeader,
