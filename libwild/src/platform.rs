@@ -13,7 +13,9 @@ use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::layout_rules::SectionRule;
 use crate::linker_plugins::LinkerPlugin;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -511,6 +513,10 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     fn parse_raw_symbol_name<'data>(name_bytes: &'data [u8]) -> Self::RawSymbolName<'data> {
         <Self::RawSymbolName<'data> as RawSymbolName>::parse(name_bytes)
     }
+
+    fn default_layout_rules() -> &'static [SectionRule<'static>];
+
+    fn linker_script_rules_pre_build(_rule_builder: &mut layout_rules::LayoutRulesBuilder) {}
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
