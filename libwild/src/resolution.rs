@@ -38,7 +38,6 @@ use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
-use crate::symbol_db;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
@@ -51,7 +50,6 @@ use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use linker_utils::elf::secnames;
 use object::SectionIndex;
 use rayon::Scope;
 use rayon::iter::IntoParallelIterator;
@@ -702,46 +700,6 @@ fn assign_section_ids<'data, P: Platform>(
     }
 }
 
-fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
-    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-
-    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
-    Some(u16::try_from(value).unwrap_or(u16::MAX))
-}
-
-fn init_fini_priority(name: &[u8]) -> Option<u16> {
-    if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
-        return Some(u16::MAX);
-    }
-
-    if let Some(rest) = name.strip_prefix(b".init_array.") {
-        return parse_priority_suffix(rest);
-    }
-
-    if let Some(rest) = name.strip_prefix(b".fini_array.") {
-        return parse_priority_suffix(rest);
-    }
-
-    // .ctors and .dtors without suffix have the same priority as .init_array/.fini_array
-    if name == secnames::CTORS_SECTION_NAME || name == secnames::DTORS_SECTION_NAME {
-        return Some(u16::MAX);
-    }
-
-    // .ctors uses descending order (65535 = lowest priority, 0 = highest)
-    // while .init_array uses ascending order (0 = highest priority, 65535 = lowest)
-    if let Some(rest) = name.strip_prefix(b".ctors.") {
-        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
-    }
-
-    if let Some(rest) = name.strip_prefix(b".dtors.") {
-        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
-    }
-
-    None
-}
-
 struct Outputs<'data, P: Platform> {
     /// Where we put objects once we've loaded them.
     loaded: ArrayQueue<ResolvedFile<'data, P>>,
@@ -1118,12 +1076,7 @@ fn resolve_section<'data, P: Platform>(
         .section_name(input_section)
         .unwrap_or_default();
 
-    if section_name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-        if cfg!(feature = "plugins") {
-            bail!("Found GCC LTO input that we didn't supply to linker plugin");
-        }
-        return Err(symbol_db::linker_plugin_disabled_error());
-    }
+    P::verify_allowed_input_section_name(section_name)?;
 
     let raw_alignment = obj.common.object.section_alignment(input_section)?;
     let alignment = Alignment::new(raw_alignment.max(1))?;
@@ -1164,7 +1117,7 @@ fn resolve_section<'data, P: Platform>(
             } else {
                 output_info.section_id.base_part_id()
             };
-            if let Some(priority) = init_fini_priority(section_name) {
+            if let Some(priority) = P::init_section_priority(section_name) {
                 obj.init_fini_sections.push(InitFiniSectionDetail {
                     index: input_section_index.0 as u32,
                     primary: output_info.section_id,

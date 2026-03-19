@@ -459,6 +459,15 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         is_undefined: bool,
     ) -> bool;
 
+    /// Given the name of an init/fini section, returns the sort priority, if any.
+    fn init_section_priority(_name: &[u8]) -> Option<u16> {
+        None
+    }
+
+    /// Verifies that it's OK to load a section with the given name. Mostly just used to detect
+    /// linker plugin inputs, since we shouldn't be loading those.
+    fn verify_allowed_input_section_name(name: &[u8]) -> Result;
+
     fn validate_stack_section(
         section: &Self::SectionHeader,
         object: &impl std::fmt::Display,

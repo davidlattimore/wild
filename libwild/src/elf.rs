@@ -1494,6 +1494,21 @@ impl platform::Platform for Elf {
             output_section_id::COMMENT,
         ));
     }
+
+    fn init_section_priority(name: &[u8]) -> Option<u16> {
+        init_fini_priority(name)
+    }
+
+    fn verify_allowed_input_section_name(name: &[u8]) -> Result {
+        if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
+            if cfg!(feature = "plugins") {
+                bail!("Found GCC LTO input that we didn't supply to linker plugin");
+            }
+            return Err(crate::symbol_db::linker_plugin_disabled_error());
+        }
+
+        Ok(())
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -4640,3 +4655,43 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];
+
+fn init_fini_priority(name: &[u8]) -> Option<u16> {
+    if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
+        return Some(u16::MAX);
+    }
+
+    if let Some(rest) = name.strip_prefix(b".init_array.") {
+        return parse_priority_suffix(rest);
+    }
+
+    if let Some(rest) = name.strip_prefix(b".fini_array.") {
+        return parse_priority_suffix(rest);
+    }
+
+    // .ctors and .dtors without suffix have the same priority as .init_array/.fini_array
+    if name == secnames::CTORS_SECTION_NAME || name == secnames::DTORS_SECTION_NAME {
+        return Some(u16::MAX);
+    }
+
+    // .ctors uses descending order (65535 = lowest priority, 0 = highest)
+    // while .init_array uses ascending order (0 = highest priority, 65535 = lowest)
+    if let Some(rest) = name.strip_prefix(b".ctors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
+    if let Some(rest) = name.strip_prefix(b".dtors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
+    None
+}
+
+fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+
+    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
+    Some(u16::try_from(value).unwrap_or(u16::MAX))
+}
