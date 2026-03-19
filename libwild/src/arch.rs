@@ -12,6 +12,7 @@ pub(crate) enum Architecture {
     AArch64,
     RISCV64,
     LoongArch64,
+    Unsupported,
 }
 
 impl TryFrom<u16> for Architecture {
@@ -35,6 +36,7 @@ impl Display for Architecture {
             Architecture::AArch64 => "aarch64",
             Architecture::RISCV64 => "riscv64",
             Architecture::LoongArch64 => "loongarch64",
+            Architecture::Unsupported => "unsupported",
         };
         write!(f, "{arch}")
     }

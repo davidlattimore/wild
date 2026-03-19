@@ -303,20 +303,23 @@ const fn default_target_arch() -> Architecture {
     // architectures that we can't target.
     #[cfg(target_arch = "x86_64")]
     {
-        Architecture::X86_64
+        return Architecture::X86_64;
     }
     #[cfg(target_arch = "aarch64")]
     {
-        Architecture::AArch64
+        return Architecture::AArch64;
     }
     #[cfg(target_arch = "riscv64")]
     {
-        Architecture::RISCV64
+        return Architecture::RISCV64;
     }
     #[cfg(target_arch = "loongarch64")]
     {
-        Architecture::LoongArch64
+        return Architecture::LoongArch64;
     }
+
+    #[allow(unreachable_code)]
+    Architecture::Unsupported
 }
 
 impl ElfArgs {
@@ -1873,6 +1876,7 @@ impl platform::Args for ElfArgs {
             Architecture::AArch64 => Alignment { exponent: 16 },
             Architecture::RISCV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
+            Architecture::Unsupported => unreachable!(),
         }
     }
 

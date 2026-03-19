@@ -328,6 +328,12 @@ impl platform::Platform for Elf {
             crate::arch::Architecture::LoongArch64 => {
                 linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
             }
+            crate::arch::Architecture::Unsupported => {
+                bail!(
+                    "No default target architecture known for host platform. \
+                    Please specify an architecture with -m"
+                )
+            }
         }
     }
 
