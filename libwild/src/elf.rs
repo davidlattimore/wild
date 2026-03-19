@@ -566,19 +566,6 @@ impl platform::Platform for Elf {
 
             is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
                 == version_r_layout.mem_offset + version_r_layout.mem_size;
-
-            if is_last_verneed && let Some(dt_relr_version_index) = &mut v.dt_relr_version_index {
-                // So far we only accounted for custom versions in this object, but we need to also
-                // account for others. This is what `non_addressable_indexes` gives us, but we need
-                // to shift back by local and global version to avoid double-counting them.
-                let other_obj_versions_count = state
-                    .format_specific_state
-                    .non_addressable_indexes
-                    .next_gnu_version_r_index
-                    .checked_sub(2)
-                    .expect("Invalid non-addressable index");
-                *dt_relr_version_index += other_obj_versions_count;
-            }
         }
 
         let version_mapping = compute_version_mapping(
@@ -1118,9 +1105,12 @@ impl platform::Platform for Elf {
 
     fn apply_non_addressable_indexes<'data, 'groups>(
         symbol_db: &SymbolDb<'data, Self>,
-        counts: &NonAddressableCounts,
+        counts: &mut NonAddressableCounts,
+        indexes: &NonAddressableIndexes,
         mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
     ) {
+        counts.final_version_index = indexes.next_gnu_version_r_index - 1;
+
         // If we were going to output symbol versions, but we didn't actually use any, then we drop
         // all versym allocations. This is partly to avoid wasting unnecessary space in the output
         // file, but mostly in order match what GNU ld does.
@@ -2443,9 +2433,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                     defs,
                     string_table_index: link,
                     version_count,
-                    // Index of our special version, accounting local and global version indexes.
-                    dt_relr_version_index: has_dt_relr_version
-                        .then_some(version_count + object::elf::VER_NDX_GLOBAL),
+                    has_dt_relr_version,
                 });
             }
         }
@@ -3844,7 +3832,7 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
 pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data>,
     pub(crate) string_table_index: object::SectionIndex,
-    pub(crate) dt_relr_version_index: Option<u16>,
+    pub(crate) has_dt_relr_version: bool,
 
     /// Number of symbol versions that we're going to emit. This is the number of entries in
     /// `symbol_versions_needed` that are true. Computed after graph traversal.
@@ -3911,6 +3899,7 @@ pub(crate) struct NonAddressableCounts {
     pub(crate) verneed_count: u64,
     /// The number of verdef records provided in version script.
     pub(crate) verdef_count: u16,
+    pub(crate) final_version_index: u16,
 }
 
 #[derive(Debug)]

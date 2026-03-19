@@ -5079,7 +5079,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
 
         // Emit GLIBC_ABI_DT_RELR as the first .gnu.version_r entry when using -z
         // pack-relative-relocs.
-        if let Some(ver) = verneed_info.dt_relr_version_index {
+        if verneed_info.has_dt_relr_version {
             let name_offset = table_writer
                 .dynsym_writer
                 .strtab_writer
@@ -5089,9 +5089,9 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 .get_mut(aux_index)
                 .context("Insufficient vernaux allocation for GLIBC_ABI_DT_RELR")?;
             aux_out.vna_next.set(e, size_of::<Vernaux>() as u32);
-            // Even though this version is the first .gnu.version_r entry, it's the last version.
-            // So, we put it after built-in and additional versions.
-            aux_out.vna_other.set(e, ver);
+            aux_out
+                .vna_other
+                .set(e, layout.non_addressable_counts.final_version_index);
             aux_out.vna_name.set(e, name_offset);
             aux_out.vna_hash.set(e, sysv_name_hash);
             aux_out.vna_flags.set(e, 0);

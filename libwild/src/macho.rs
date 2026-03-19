@@ -908,7 +908,8 @@ impl platform::Platform for MachO {
 
     fn apply_non_addressable_indexes<'data, 'groups>(
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
+        counts: &mut Self::NonAddressableCounts,
+        indexes: &Self::NonAddressableIndexes,
         mem_sizes_iter: impl Iterator<
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
