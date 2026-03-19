@@ -27,6 +27,8 @@ use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
 use crate::layout_rules::SectionKind;
+use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::output_kind::OutputKind;
 use crate::output_section_id;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
@@ -94,6 +96,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::secnames;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
@@ -1475,6 +1478,21 @@ impl platform::Platform for Elf {
         } else {
             RawSymbolName::parse(name_bytes)
         }
+    }
+
+    fn default_layout_rules() -> &'static [SectionRule<'static>] {
+        DEFAULT_SECTION_RULES
+    }
+
+    fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {
+        // Even when we have a linker script, we still need to map .comment to .comment. It's a
+        // special section because both input objects and the linker write to it. At least for
+        // linkers that put their version in the .comment section. GNU ld doesn't, but LLD does and
+        // still does so even when a linker script supposedly suppresses built-in rules.
+        rule_builder.add_section_rule(SectionRule::exact_section_keep(
+            secnames::COMMENT_SECTION_NAME,
+            output_section_id::COMMENT,
+        ));
     }
 }
 
@@ -4557,3 +4575,68 @@ impl Resolution<Elf> {
         Ok(self.raw_value.wrapping_add(addend as u64))
     }
 }
+
+const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+    SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
+    SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
+    SectionRule::exact_section_keep(
+        secnames::PREINIT_ARRAY_SECTION_NAME,
+        output_section_id::PREINIT_ARRAY,
+    ),
+    SectionRule::exact_section_keep(secnames::COMMENT_SECTION_NAME, output_section_id::COMMENT),
+    SectionRule::exact_section_keep(
+        secnames::NOTE_ABI_TAG_SECTION_NAME,
+        output_section_id::NOTE_ABI_TAG,
+    ),
+    SectionRule::exact_section(
+        secnames::NOTE_GNU_BUILD_ID_SECTION_NAME,
+        output_section_id::NOTE_GNU_BUILD_ID,
+    ),
+    SectionRule::prefix_section(secnames::RODATA_SECTION_NAME, output_section_id::RODATA),
+    SectionRule::prefix_section(secnames::TEXT_SECTION_NAME, output_section_id::TEXT),
+    SectionRule::prefix_section(
+        secnames::DATA_REL_RO_SECTION_NAME,
+        output_section_id::DATA_REL_RO,
+    ),
+    SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
+    SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
+    SectionRule::prefix_section_sort(
+        secnames::INIT_ARRAY_SECTION_NAME,
+        output_section_id::INIT_ARRAY,
+    ),
+    SectionRule::prefix_section_sort(secnames::CTORS_SECTION_NAME, output_section_id::INIT_ARRAY),
+    SectionRule::prefix_section_sort(
+        secnames::FINI_ARRAY_SECTION_NAME,
+        output_section_id::FINI_ARRAY,
+    ),
+    SectionRule::prefix_section_sort(secnames::DTORS_SECTION_NAME, output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
+    SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
+    SectionRule::prefix_section(
+        secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
+        output_section_id::GCC_EXCEPT_TABLE,
+    ),
+    SectionRule::prefix(b".rela", SectionRuleOutcome::Discard),
+    SectionRule::prefix(b".crel", SectionRuleOutcome::Discard),
+    SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::NoteGnuStack),
+    SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
+    SectionRule::exact(
+        secnames::SFRAME_SECTION_NAME,
+        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+            output_section_id::SFRAME,
+        )),
+    ),
+    SectionRule::exact(
+        secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
+        SectionRuleOutcome::NoteGnuProperty,
+    ),
+    SectionRule::exact(
+        secnames::RISCV_ATTRIBUTES_SECTION_NAME,
+        SectionRuleOutcome::RiscVAttribute,
+    ),
+    SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
+];
