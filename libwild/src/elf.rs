@@ -2056,8 +2056,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             && info.version_count > 0
         {
             counts.verneed_count += 1;
-            indexes.gnu_version_r_index = indexes
-                .gnu_version_r_index
+            indexes.next_gnu_version_r_index = indexes
+                .next_gnu_version_r_index
                 .checked_add(info.version_count)
                 .context("Symbol versions overflowed 2**16")?;
         }
@@ -2286,7 +2286,7 @@ fn compute_version_mapping(
     non_addressable_indexes: NonAddressableIndexes,
 ) -> Vec<u16> {
     let mut out = vec![object::elf::VER_NDX_GLOBAL; symbol_versions_needed.len()];
-    let mut next_output_version = non_addressable_indexes.gnu_version_r_index;
+    let mut next_output_version = non_addressable_indexes.next_gnu_version_r_index;
     for (input_version, needed) in symbol_versions_needed.iter().enumerate() {
         if *needed {
             out[input_version] = next_output_version;
@@ -3434,7 +3434,8 @@ pub(crate) struct DynamicLayoutExt<'data> {
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NonAddressableIndexes {
-    gnu_version_r_index: u16,
+    /// The version index that will be used for the next `.gnu.version_r` entry that we define.
+    next_gnu_version_r_index: u16,
 }
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
@@ -3442,7 +3443,7 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
         Self {
             // Allocate version indexes starting from after the local and global indexes and any
             // versions defined by a version script.
-            gnu_version_r_index: object::elf::VER_NDX_GLOBAL
+            next_gnu_version_r_index: object::elf::VER_NDX_GLOBAL
                 + 1.max(symbol_db.version_script.version_count()),
         }
     }
