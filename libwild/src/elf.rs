@@ -2599,7 +2599,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn visibility(&self) -> Visibility {
-        Visibility::from_elf_st_visibility(self.st_visibility())
+        convert_elf_visibility(self.st_visibility())
     }
 
     fn is_absolute(&self) -> bool {
@@ -2655,6 +2655,14 @@ impl platform::Symbol for SymtabEntry {
 
     fn is_gnu_unique(&self) -> bool {
         self.st_bind() == object::elf::STB_GNU_UNIQUE
+    }
+}
+
+pub(crate) fn convert_elf_visibility(st_visibility: u8) -> Visibility {
+    match st_visibility {
+        object::elf::STV_PROTECTED => Visibility::Protected,
+        object::elf::STV_HIDDEN => Visibility::Hidden,
+        _ => Visibility::Default,
     }
 }
 
