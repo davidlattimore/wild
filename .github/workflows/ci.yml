@@ -206,6 +206,24 @@ jobs:
       - run: cp .cargo/config.toml.cross-loongarch64 .cargo/config.toml
       - run: cargo build --target loongarch64-unknown-linux-gnu
 
+  wasip1-build:
+    name: wasip1 build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ubuntu:25.10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target wasm32-wasip1
+
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
