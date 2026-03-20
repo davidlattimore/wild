@@ -2,8 +2,10 @@
 
 use crate::OutputSections;
 use crate::alignment;
-use crate::ensure;
 use crate::error::Result;
+use crate::glob_match::GlobPatternType;
+use crate::glob_match::analyze_glob_pattern;
+use crate::glob_match::compile_glob_pattern;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
@@ -286,52 +288,32 @@ impl<'data> SectionRule<'data> {
         outcome: SectionRuleOutcome,
     ) -> Result<Self> {
         let compiled_file_pattern = input_file_pattern
-            .map(|p| {
-                let s = std::str::from_utf8(p)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in input file pattern"))?;
-                Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))
-            })
+            .map(|pattern| compile_glob_pattern(pattern).map_err(|e| crate::error!("{e}")))
             .transpose()?;
 
-        let wildcard_idx = pattern
-            .iter()
-            .position(|&b| b == b'*' || b == b'[' || b == b'?');
+        let name_matcher = match analyze_glob_pattern(pattern) {
+            GlobPatternType::Exact => SectionNameMatcher::Exact(pattern),
+            GlobPatternType::Star | GlobPatternType::EscapedExact | GlobPatternType::NonStar => {
+                let wildcard_idx = pattern
+                    .iter()
+                    .position(|&b| b == b'*' || b == b'?' || b == b'\\' || b == b'[' || b == b']')
+                    .unwrap();
 
-        if let Some(idx) = wildcard_idx
-            && (idx < pattern.len() - 1 || pattern[idx] != b'*')
-        {
-            let s = std::str::from_utf8(pattern)
-                .map_err(|_| crate::error!("Invalid UTF-8 in section pattern"))?;
+                if wildcard_idx == pattern.len() - 1 && pattern[wildcard_idx] == b'*' {
+                    SectionNameMatcher::Prefix(&pattern[..wildcard_idx])
+                } else {
+                    let compiled_pattern =
+                        compile_glob_pattern(pattern).map_err(|e| crate::error!("{}", e))?;
+                    SectionNameMatcher::Glob(&pattern[..wildcard_idx], compiled_pattern)
+                }
+            }
+        };
 
-            let compiled_pattern =
-                Pattern::new(s).map_err(|_| crate::error!("Invalid glob pattern '{}'", s))?;
-
-            return Ok(Self {
-                name_matcher: SectionNameMatcher::Glob(&pattern[..idx], compiled_pattern),
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            });
-        }
-
-        if let Some(prefix) = pattern.strip_suffix(b"*") {
-            Ok(Self {
-                name_matcher: SectionNameMatcher::Prefix(prefix),
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
-        } else {
-            ensure!(
-                !pattern.contains(&b'*'),
-                "Wildcards are only supported at the end, found '{}'",
-                String::from_utf8_lossy(pattern)
-            );
-
-            Ok(Self {
-                name_matcher: SectionNameMatcher::Exact(pattern),
-                input_file_pattern: compiled_file_pattern,
-                outcome,
-            })
-        }
+        Ok(Self {
+            name_matcher,
+            input_file_pattern: compiled_file_pattern,
+            outcome,
+        })
     }
 
     #[inline(always)]
@@ -603,4 +585,12 @@ fn test_glob_section_matching() {
     assert!(!rule.matches(b".mydata.10", None));
     assert!(!rule.matches(b".mydata.", None));
     assert!(!rule.matches(b".other.0", None));
+}
+
+#[test]
+fn test_glob_star_anywhere() {
+    let rule = SectionRule::new(b".text.*.foo", None, SectionRuleOutcome::Discard).unwrap();
+    assert!(rule.matches(b".text.bar.foo", None));
+    assert!(rule.matches(b".text.baz.foo", None));
+    assert!(!rule.matches(b".text.bar.baz", None));
 }
