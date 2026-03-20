@@ -95,14 +95,20 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
-      - uses: actions/cache@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --profile ci --workspace --no-default-features
+
+  macos-build:
+    name: macOS build
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
         with:
-          path: |
-            C:\Users\runneradmin\.cargo\registry\index\
-            C:\Users\runneradmin\.cargo\registry\cache\
-            C:\Users\runneradmin\.cargo\git\db\
-            target\
-          key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+      - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile ci --workspace --no-default-features
 
   minimal-versions:
