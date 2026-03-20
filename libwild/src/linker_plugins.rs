@@ -515,7 +515,7 @@ impl<'data> LtoInput<'data> {
         symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::symbol_db::Visibility {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        crate::symbol_db::Visibility::from_elf_st_visibility(self.symbols[local_index].visibility)
+        crate::elf::convert_elf_visibility(self.symbols[local_index].visibility)
     }
 
     pub(crate) fn symbols_iter(&self) -> impl Iterator<Item = (SymbolId, &PluginSymbol<'data>)> {

@@ -1165,16 +1165,6 @@ pub(crate) enum Visibility {
     Hidden,
 }
 
-impl Visibility {
-    pub(crate) fn from_elf_st_visibility(st_visibility: u8) -> Visibility {
-        match st_visibility {
-            object::elf::STV_PROTECTED => Visibility::Protected,
-            object::elf::STV_HIDDEN => Visibility::Hidden,
-            _ => Visibility::Default,
-        }
-    }
-}
-
 fn process_alternatives<'data, P: Platform>(
     alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
     error_queue: &SegQueue<Error>,
