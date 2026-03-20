@@ -4766,7 +4766,7 @@ fn write_copy_relocations<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout,
 ) -> Result {
-    for &symbol_id in &object.copy_relocation_symbols {
+    for &symbol_id in &object.format_specific_layout.copy_relocation_symbols {
         write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
             || {
                 format!(
