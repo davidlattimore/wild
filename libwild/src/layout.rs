@@ -1076,7 +1076,7 @@ pub(crate) struct DynamicLayoutState<'data, P: Platform> {
     input: InputRef<'data>,
     file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    lib_name: &'data [u8],
+    pub(crate) lib_name: &'data [u8],
 
     pub(crate) format_specific_state: P::DynamicLayoutStateExt<'data>,
 }
@@ -4554,15 +4554,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        self.object
-            .activate_dynamic(&mut self.format_specific_state);
-
-        common.allocate(
-            part_id::DYNAMIC,
-            size_of::<crate::elf::DynamicEntry>() as u64,
-        );
-
-        common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
+        P::activate_dynamic(self, common);
 
         self.request_all_undefined_symbols::<A>(resources, queue, scope)
     }
