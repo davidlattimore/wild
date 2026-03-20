@@ -384,7 +384,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
     header.e_shoff.set(
         e,
-        u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
+        u64::from(elf::FILE_HEADER_SIZE) + crate::elf::program_headers_size(header_info),
     );
     header
         .e_flags

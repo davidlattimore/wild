@@ -670,7 +670,6 @@ pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
-    shstrtab_size: u64,
     pub(crate) format_specific: P::PreludeLayoutStateExt,
 }
 
@@ -2620,7 +2619,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             identity: format!("Linker: {}", crate::identity::linker_identity()),
             header_info: None,
             dynamic_linker: None,
-            shstrtab_size: 0,
             format_specific: Default::default(),
         }
     }
@@ -3010,21 +3008,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         };
 
         // Allocate space for headers based on segment and section counts.
-        extra_sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
-        extra_sizes.increment(part_id::PROGRAM_HEADERS, header_info.program_headers_size());
-        extra_sizes.increment(part_id::SECTION_HEADERS, header_info.section_headers_size());
-        self.shstrtab_size = output_sections
-            .ids_with_info()
-            .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
-            .map(|(_id, info)| {
-                if let SectionKind::Primary(name) = info.kind {
-                    name.len() as u64 + 1
-                } else {
-                    0
-                }
-            })
-            .sum::<u64>();
-        extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
+        P::allocate_header_sizes(self, extra_sizes, &header_info, output_sections);
 
         self.header_info = Some(header_info);
     }
@@ -3410,16 +3394,6 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
-}
-
-impl HeaderInfo {
-    pub(crate) fn program_headers_size(&self) -> u64 {
-        u64::from(elf::PROGRAM_HEADER_SIZE) * self.active_segment_ids.len() as u64
-    }
-
-    pub(crate) fn section_headers_size(&self) -> u64 {
-        u64::from(elf::SECTION_HEADER_SIZE) * u64::from(self.num_output_sections_with_content)
-    }
 }
 
 /// Construct a new inactive instance, which means we don't yet load non-GC sections and only
