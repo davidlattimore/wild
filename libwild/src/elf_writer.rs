@@ -914,12 +914,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
             ));
         }
-        if let Some(relr) = &self.relr_dyn
-            && !relr.is_empty()
+        if let Some(relr_dyn) = &self.relr_dyn
+            && !relr_dyn.is_empty()
         {
             return Err(excessive_allocation(
                 ".relr.dyn",
-                relr.len() as u64 * elf::RELR_ENTRY_SIZE,
+                relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
                 *mem_sizes.get(part_id::RELR_DYN),
             ));
         }
