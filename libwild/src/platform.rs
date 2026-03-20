@@ -284,6 +284,13 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
 
+    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
+    /// of `state`.
+    fn activate_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut CommonGroupState<'data, Self>,
+    );
+
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -662,13 +669,6 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     ) -> Result<Option<object::SectionIndex>>;
 
     fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
-
-    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
-    /// of `state`.
-    fn activate_dynamic(
-        &self,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-    );
 
     fn dynamic_symbol_used(
         &self,

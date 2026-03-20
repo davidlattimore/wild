@@ -460,6 +460,21 @@ impl platform::Platform for Elf {
             .sum::<usize>(), "resolved relocations");
     }
 
+    fn activate_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut CommonGroupState<'data, Self>,
+    ) {
+        common.allocate(
+            part_id::DYNAMIC,
+            size_of::<crate::elf::DynamicEntry>() as u64,
+        );
+
+        common.allocate(part_id::DYNSTR, state.lib_name.len() as u64 + 1);
+
+        state.format_specific_state.symbol_versions_needed =
+            vec![false; state.object.verdefnum as usize];
+    }
+
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -2162,10 +2177,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
 
         Ok(())
-    }
-
-    fn activate_dynamic(&self, state: &mut DynamicLayoutStateExt<'data>) {
-        state.symbol_versions_needed = vec![false; self.verdefnum as usize];
     }
 
     fn finalise_sizes_dynamic(
