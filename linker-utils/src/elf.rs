@@ -1474,7 +1474,7 @@ impl AllowedRange {
     /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument
     /// because the `min` and `max` are `i64` type
     pub const fn from_byte_size(n_bytes: usize, sign: Sign) -> Self {
-        Self::from_bit_size(u8::BITS as usize * n_bytes, sign)
+        Self::from_bit_size(8 * n_bytes, sign)
     }
 
     #[must_use]
@@ -1604,5 +1604,15 @@ mod tests {
             AllowedRange::from_bit_size(10, Sign::Unsigned),
             AllowedRange::new(0, 1024),
         );
+
+        let r_riscv_branch_range = AllowedRange::new(-(2i64.pow(12)), 2i64.pow(12) - 1);
+        assert!(r_riscv_branch_range.contains(-4096));
+        assert!(r_riscv_branch_range.contains(4094));
+        assert!(!r_riscv_branch_range.contains(4095));
+
+        let r_riscv_rvc_branch_range = AllowedRange::new(-(2i64.pow(8)), 2i64.pow(8) - 1);
+        assert!(r_riscv_rvc_branch_range.contains(-256));
+        assert!(r_riscv_rvc_branch_range.contains(254));
+        assert!(!r_riscv_rvc_branch_range.contains(255));
     }
 }
