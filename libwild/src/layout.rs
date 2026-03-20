@@ -8,7 +8,6 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
-use crate::elf;
 use crate::ensure;
 use crate::error::Context;
 use crate::error::Error;
@@ -38,7 +37,6 @@ use crate::platform::NonAddressableIndexes as _;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
-use crate::platform::RawSymbolName as _;
 use crate::platform::RelaxSymbolInfo;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
@@ -2623,10 +2621,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn activate<'scope, A: Arch>(
+    fn activate<'scope, A: Arch<Platform = P>>(
         &mut self,
-        common: &mut CommonGroupState<'data, A::Platform>,
-        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        common: &mut CommonGroupState<'data, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
@@ -2638,20 +2636,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             );
         }
 
-        // The first entry in the symbol table must be null. Similarly, the first string in the
-        // strings table must be empty.
-        if !resources.symbol_db.args.should_strip_all() {
-            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
-            common.allocate(part_id::STRTAB, 1);
-        }
-
         self.load_entry_point::<A>(resources, queue, scope);
 
-        if resources.symbol_db.output_kind.needs_dynsym() {
-            // Allocate space for the null symbol.
-            common.allocate(part_id::DYNSTR, 1);
-            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
-        }
+        P::allocate_prelude(common, resources.symbol_db);
 
         if resources.symbol_db.output_kind.is_dynamic_executable() {
             self.dynamic_linker = resources
@@ -2728,9 +2715,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn load_entry_point<'scope, A: Arch>(
+    fn load_entry_point<'scope, A: Arch<Platform = P>>(
         &mut self,
-        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        resources: &'scope GraphResources<'data, '_, P>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
@@ -3119,16 +3106,7 @@ impl<'data> InternalSymbols<'data> {
                 continue;
             }
 
-            // PROVIDE_HIDDEN symbols are local, others are global
-            let symtab_part = if def_info.is_hidden {
-                part_id::SYMTAB_LOCAL
-            } else {
-                part_id::SYMTAB_GLOBAL
-            };
-            sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
-            let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            let symbol_name = P::RawSymbolName::parse(symbol_name.bytes()).name();
-            sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
+            P::allocate_internal_symbol(symbol_id, def_info, sizes, symbol_db)?;
         }
         Ok(())
     }

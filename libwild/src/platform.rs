@@ -24,6 +24,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::InternalSymDefInfo;
 use crate::part_id::PartId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
@@ -502,6 +503,15 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     );
+
+    fn allocate_internal_symbol(
+        symbol_id: SymbolId,
+        def_info: &InternalSymDefInfo,
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<Self>,
+    ) -> Result;
+
+    fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>);
 
     fn finalise_prelude_layout(
         prelude: &layout::PreludeLayoutState<Self>,
