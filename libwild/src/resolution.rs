@@ -92,7 +92,7 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         let mut syn = symbol_db.new_synthetic_symbols_group();
 
-        assign_section_ids(&mut self.resolved_groups, output_sections, symbol_db.args)?;
+        assign_section_ids(&mut self.resolved_groups, output_sections, symbol_db.args);
 
         canonicalise_undefined_symbols(
             self.undefined_symbols,
@@ -683,7 +683,7 @@ fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
     output_sections: &mut OutputSections<'data, P>,
     args: &P::Args,
-) -> Result {
+) {
     timing_phase!("Assign section IDs");
 
     for group in resolved {
@@ -698,7 +698,6 @@ fn assign_section_ids<'data, P: Platform>(
             }
         }
     }
-    Ok(())
 }
 
 struct Outputs<'data, P: Platform> {
@@ -1101,10 +1100,11 @@ fn resolve_section<'data, P: Platform>(
     };
 
     let rule_outcome = if args.should_output_partial_object() {
-        rules.lookup_for_partial_link(section_name, input_section)
+        P::lookup_for_partial_link(section_name, input_section)
     } else {
         rules.lookup(section_name, file_name, input_section)
     };
+
     match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {

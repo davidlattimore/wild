@@ -1449,8 +1449,8 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
-        | "LinkerScript") => {
+        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive"
+        | "Shared" | "LinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
 
             let mut arg = arg;

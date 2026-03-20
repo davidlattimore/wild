@@ -15,7 +15,6 @@
 
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
-use crate::elf::Elf;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
 use crate::output_kind::OutputKind;
@@ -28,7 +27,6 @@ use crate::platform::Args;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
 use crate::platform::SectionAttributes;
-use crate::platform::SectionType as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::SectionSlot;
@@ -569,18 +567,6 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
-    pub(crate) fn add_rela_section(&mut self, name: SectionName<'data>) -> OutputSectionId {
-        *self.custom_by_name.entry(name).or_insert_with(|| {
-            self.section_infos.add_new(SectionOutputInfo {
-                kind: SectionKind::Primary(name),
-                section_attributes: SectionAttributes::new_relocation_type(),
-                min_alignment: crate::alignment::RELA_ENTRY,
-                location: None,
-                secondary_order: None,
-            })
-        })
-    }
-
     pub(crate) fn add_named_section(
         &mut self,
         name: SectionName<'data>,
@@ -783,29 +769,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     }
 
     pub(crate) fn will_emit_section_symbol(&self, section_id: OutputSectionId) -> bool {
-        if !self.will_emit_section(section_id) {
-            return false;
-        }
-
-        if matches!(section_id, FILE_HEADER | PROGRAM_HEADERS | SECTION_HEADERS) {
-            return false;
-        }
-
-        let section_attr = self.output_info(section_id).section_attributes;
-        let segment_type = section_id
-            .opt_built_in_details::<Elf>()
-            .and_then(|d| d.target_segment_type)
-            .unwrap_or(linker_utils::elf::pt::LOAD);
-        if section_attr.is_null() {
-            false
-        } else {
-            let type_id = section_attr.ty();
-            !type_id.is_rela()
-                && !type_id.is_rel()
-                && !type_id.is_symtab()
-                && !type_id.is_strtab()
-                && segment_type == linker_utils::elf::pt::LOAD
-        }
+        P::will_emit_section_symbol(self, section_id)
     }
 
     #[cfg(test)]

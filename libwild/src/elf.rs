@@ -56,8 +56,10 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
+use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
@@ -1834,6 +1836,71 @@ impl platform::Platform for Elf {
 
         builder.build()
     }
+
+    fn will_emit_section_symbol(
+        output_sections: &OutputSections<Self>,
+        section_id: OutputSectionId,
+    ) -> bool {
+        if !output_sections.will_emit_section(section_id) {
+            return false;
+        }
+
+        if matches!(
+            section_id,
+            output_section_id::FILE_HEADER
+                | output_section_id::PROGRAM_HEADERS
+                | output_section_id::SECTION_HEADERS
+        ) {
+            return false;
+        }
+
+        let section_attr = output_sections.output_info(section_id).section_attributes;
+        let segment_type = section_id
+            .opt_built_in_details::<Elf>()
+            .and_then(|d| d.target_segment_type)
+            .unwrap_or(linker_utils::elf::pt::LOAD);
+        if section_attr.is_null() {
+            false
+        } else {
+            let type_id = section_attr.ty();
+            !type_id.is_rela()
+                && !type_id.is_rel()
+                && !type_id.is_symtab()
+                && !type_id.is_strtab()
+                && segment_type == linker_utils::elf::pt::LOAD
+        }
+    }
+
+    fn lookup_for_partial_link(
+        section_name: &[u8],
+        section: &Self::SectionHeader,
+    ) -> SectionRuleOutcome {
+        if section.should_exclude() {
+            return SectionRuleOutcome::Discard;
+        }
+
+        if section_name.is_empty() {
+            return crate::layout_rules::unnamed_section_output(section);
+        }
+
+        match section_name {
+            secnames::STRTAB_SECTION_NAME
+            | secnames::SYMTAB_SECTION_NAME
+            | secnames::SHSTRTAB_SECTION_NAME
+            | secnames::GROUP_SECTION_NAME => {
+                return SectionRuleOutcome::Discard;
+            }
+            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
+            secnames::NOTE_ABI_TAG_SECTION_NAME => {
+                return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                    output_section_id::NOTE_ABI_TAG,
+                ));
+            }
+            _ => {}
+        }
+
+        SectionRuleOutcome::Custom
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -3605,14 +3672,6 @@ impl platform::SectionAttributes for SectionAttributes {
 
     fn is_no_bits(&self) -> bool {
         self.ty == sht::NOBITS
-    }
-
-    fn new_relocation_type() -> Self {
-        Self {
-            flags: linker_utils::elf::shf::INFO_LINK,
-            ty: sht::RELA,
-            entsize: elf::RELA_ENTRY_SIZE,
-        }
     }
 }
 

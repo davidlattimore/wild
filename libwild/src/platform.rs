@@ -18,6 +18,7 @@ use crate::layout::PreludeLayoutState;
 use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::linker_plugins::LinkerPlugin;
 use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
@@ -200,7 +201,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
-    type RelocationList<'data>: RelocationList<'data> + Send + Sync + 'data;
+    type RelocationList<'data>: RelocationList<'data>;
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
     type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
@@ -617,6 +618,20 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>);
+
+    fn will_emit_section_symbol(
+        _output_sections: &OutputSections<Self>,
+        _section_id: OutputSectionId,
+    ) -> bool {
+        false
+    }
+
+    fn lookup_for_partial_link(
+        _section_name: &[u8],
+        _section: &Self::SectionHeader,
+    ) -> SectionRuleOutcome {
+        SectionRuleOutcome::Custom
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -914,7 +929,7 @@ pub(crate) trait RelocationSequence<'data> {
     fn num_relocations(&self) -> usize;
 }
 
-pub(crate) trait RelocationList<'data> {
+pub(crate) trait RelocationList<'data>: Send + Sync + 'data {
     fn num_relocations(&self) -> usize;
 }
 
@@ -971,8 +986,6 @@ pub(crate) trait SectionAttributes:
 
     /// Called for custom sections that return true to `is_null`.
     fn set_to_default_type(&mut self);
-
-    fn new_relocation_type() -> Self;
 }
 
 pub(crate) struct SourceInfo(pub(crate) Option<SourceInfoDetails>);

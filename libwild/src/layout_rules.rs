@@ -24,7 +24,6 @@ use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
 use std::borrow::Cow;
-use linker_utils::elf::secnames;
 use std::mem::replace;
 
 pub(crate) struct LayoutRules<'data> {
@@ -454,40 +453,6 @@ impl<'data> SectionRules<'data> {
 
         SectionRuleOutcome::Custom
     }
-
-    #[inline(always)]
-    pub(crate) fn lookup_for_partial_link(
-        &self,
-        section_name: &[u8],
-        section_header: &impl SectionHeader,
-    ) -> SectionRuleOutcome {
-        let _ = self;
-        if section_header.should_exclude() {
-            return SectionRuleOutcome::Discard;
-        }
-
-        if section_name.is_empty() {
-            return unnamed_section_output(section_header);
-        }
-
-        match section_name {
-            secnames::STRTAB_SECTION_NAME
-            | secnames::SYMTAB_SECTION_NAME
-            | secnames::SHSTRTAB_SECTION_NAME
-            | secnames::GROUP_SECTION_NAME => {
-                return SectionRuleOutcome::Discard;
-            }
-            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
-            secnames::NOTE_ABI_TAG_SECTION_NAME => {
-                return SectionRuleOutcome::Section(SectionOutputInfo::keep(
-                    output_section_id::NOTE_ABI_TAG,
-                ));
-            }
-            _ => {}
-        }
-
-        SectionRuleOutcome::Custom
-    }
 }
 
 /// Returns a hash of the first four bytes of the supplied name or `None` if the name is shorter
@@ -498,7 +463,7 @@ fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
-fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
+pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
     if !section_header.is_alloc() {
         SectionRuleOutcome::Discard
     } else if section_header.is_prog_bits() {

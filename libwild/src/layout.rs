@@ -2032,20 +2032,18 @@ impl<'data, P: Platform> GroupState<'data, P> {
             .collect::<Result<Vec<_>>>()?;
 
         let entry_size = size_of::<P::SymtabEntry>() as u64;
-        let symtab_local_start_index =
-            ((*memory_offsets.get(part_id::SYMTAB_LOCAL)).saturating_sub(
-                resources
-                    .section_layouts
-                    .get(output_section_id::SYMTAB_LOCAL)
-                    .mem_offset,
-            ) / entry_size) as u32;
-        let symtab_global_start_index =
-            ((*memory_offsets.get(part_id::SYMTAB_GLOBAL)).saturating_sub(
-                resources
-                    .section_layouts
-                    .get(output_section_id::SYMTAB_GLOBAL)
-                    .mem_offset,
-            ) / entry_size) as u32;
+        let symtab_local_start_index = ((memory_offsets.get(part_id::SYMTAB_LOCAL)
+            - resources
+                .section_layouts
+                .get(output_section_id::SYMTAB_LOCAL)
+                .mem_offset)
+            / entry_size) as u32;
+        let symtab_global_start_index = ((memory_offsets.get(part_id::SYMTAB_GLOBAL)
+            - resources
+                .section_layouts
+                .get(output_section_id::SYMTAB_GLOBAL)
+                .mem_offset)
+            / entry_size) as u32;
 
         let strtab_start_offset = self
             .common
