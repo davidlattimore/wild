@@ -13,6 +13,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_kind::FileKind;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;
@@ -69,6 +70,7 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
 use foldhash::HashSet;
 use hashbrown::HashMap;
@@ -483,6 +485,13 @@ impl platform::Platform for Elf {
         }
     }
 
+    fn finalise_sizes_dynamic<'data>(
+        object: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+    ) -> Result {
+        allocate_for_copy_relocations(object, common)
+    }
+
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Elf>,
         common: &mut layout::CommonGroupState<'data, Elf>,
@@ -500,6 +509,99 @@ impl platform::Platform for Elf {
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
+    }
+
+    fn finalise_layout_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut layout::ResolutionWriter<Self>,
+    ) -> Result<Self::DynamicLayoutExt<'data>> {
+        let mut is_last_verneed = false;
+
+        if let Some(v) = state.format_specific_state.verneed_info.as_ref()
+            && v.version_count > 0
+        {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_R,
+                size_of::<crate::elf::Verneed>() as u64
+                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
+            );
+
+            let version_r_layout = resources
+                .section_layouts
+                .get(output_section_id::GNU_VERSION_R);
+
+            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
+                == version_r_layout.mem_offset + version_r_layout.mem_size;
+        }
+
+        let version_mapping = compute_version_mapping(
+            &state.format_specific_state.symbol_versions_needed,
+            state.format_specific_state.non_addressable_indexes,
+        );
+
+        let copy_relocation_symbols = state
+            .format_specific_state
+            .copy_relocations
+            .values()
+            .map(|info| info.symbol_id)
+            // We'll write the copy relocations in this order, so we need to sort it to ensure
+            // deterministic output.
+            .sorted()
+            .collect_vec();
+
+        let copy_relocation_addresses =
+            assign_copy_relocation_addresses(state, &copy_relocation_symbols, memory_offsets)?;
+
+        for (local_symbol, &flags) in state.object.symbols_iter().zip(
+            resources
+                .per_symbol_flags
+                .raw_range(state.symbol_id_range()),
+        ) {
+            let flags = flags.get();
+
+            if !flags.has_resolution() {
+                resolutions_out.write(None)?;
+                continue;
+            }
+
+            let address;
+            let dynamic_symbol_index;
+
+            if flags.needs_copy_relocation() {
+                let input_address = local_symbol.value();
+
+                address = *copy_relocation_addresses
+                    .get(&input_address)
+                    .context("Internal error: Missing copy relocation address")?;
+
+                // Since this is a definition, the dynamic symbol index will be determined by the
+                // epilogue and set by `update_dynamic_symbol_resolutions`.
+                dynamic_symbol_index = None;
+            } else {
+                address = 0;
+                let symbol_index =
+                    Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+
+                dynamic_symbol_index = Some(
+                    NonZeroU32::new(symbol_index)
+                        .context("Tried to create dynamic symbol index 0")?,
+                );
+            }
+
+            let resolution =
+                Self::create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
+
+            resolutions_out.write(Some(resolution))?;
+        }
+
+        Ok(DynamicLayoutExt {
+            version_mapping,
+            verneed_info: core::mem::take(&mut state.format_specific_state.verneed_info),
+            is_last_verneed,
+            copy_relocation_symbols,
+        })
     }
 
     fn compute_object_addresses<'data>(
@@ -1396,10 +1498,16 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn finalise_prelude_layout(
+    fn finalise_prelude_layout<'data>(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Self::PreludeLayoutExt {
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Elf>,
+    ) -> Result<Self::PreludeLayoutExt> {
+        // Take the null symbol's index.
+        if resources.symbol_db.output_kind.needs_dynsym() {
+            Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+        }
+
         let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
             let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
                 .expect("GOT address must never be zero");
@@ -1407,7 +1515,7 @@ impl platform::Platform for Elf {
             address
         });
 
-        PreludeLayoutExt { tlsld_got_entry }
+        Ok(PreludeLayoutExt { tlsld_got_entry })
     }
 
     #[inline(always)]
@@ -1426,6 +1534,7 @@ impl platform::Platform for Elf {
             },
             flags,
         };
+
         if flags.needs_plt() {
             let plt_address = allocate_plt(memory_offsets);
             resolution.format_specific.plt_address = Some(plt_address);
@@ -1460,6 +1569,7 @@ impl platform::Platform for Elf {
         } else if flags.needs_got() {
             resolution.format_specific.got_address = Some(allocate_got(1, memory_offsets));
         }
+
         resolution
     }
 
@@ -1566,6 +1676,56 @@ impl platform::Platform for Elf {
             })
             .sum::<u64>();
         sizes.increment(part_id::SHSTRTAB, prelude.format_specific.shstrtab_size);
+    }
+
+    fn copy_relocate_symbol<'scope, 'data>(
+        state: &mut layout::DynamicLayoutState<Elf>,
+        symbol_id: SymbolId,
+        resources: &layout::GraphResources<'data, 'scope, Elf>,
+    ) -> Result {
+        let symbol = state
+            .object
+            .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
+
+        // Note, we're a shared object, so this is the address relative to the load address of the
+        // shared object, not an offset within a section like with regular input objects. That means
+        // that we don't need to take the section into account.
+        let address = symbol.value();
+
+        let info = state
+            .format_specific_state
+            .copy_relocations
+            .entry(address)
+            .or_insert_with(|| CopyRelocationInfo {
+                symbol_id,
+                is_weak: symbol.is_weak(),
+            });
+
+        info.add_symbol(symbol_id, symbol.is_weak(), resources);
+
+        Ok(())
+    }
+
+    fn finalise_copy_relocations<'data>(
+        group_states: &mut [layout::GroupState<'data, Self>],
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        finalise_copy_relocations(group_states, symbol_db, symbol_flags)
+    }
+
+    fn take_dynsym_index(
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Result<u32> {
+        let index = u32::try_from(
+            (memory_offsets.get(part_id::DYNSYM)
+                - section_layouts.get(output_section_id::DYNSYM).mem_offset)
+                / crate::elf::SYMTAB_ENTRY_SIZE,
+        )
+        .context("Too many dynamic symbols")?;
+        memory_offsets.increment(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
+        Ok(index)
     }
 }
 
@@ -2083,39 +2243,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
 
         Ok(())
-    }
-
-    fn finalise_layout_dynamic(
-        &self,
-        state: DynamicLayoutStateExt<'data>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> DynamicLayoutExt<'data> {
-        let mut is_last_verneed = false;
-
-        if let Some(v) = state.verneed_info.as_ref()
-            && v.version_count > 0
-        {
-            memory_offsets.increment(
-                part_id::GNU_VERSION_R,
-                size_of::<crate::elf::Verneed>() as u64
-                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
-            );
-
-            let version_r_layout = section_layouts.get(output_section_id::GNU_VERSION_R);
-
-            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
-                == version_r_layout.mem_offset + version_r_layout.mem_size;
-        }
-
-        let version_mapping =
-            compute_version_mapping(&state.symbol_versions_needed, state.non_addressable_indexes);
-
-        DynamicLayoutExt {
-            version_mapping,
-            verneed_info: state.verneed_info,
-            is_last_verneed,
-        }
     }
 
     fn apply_non_addressable_indexes_dynamic(
@@ -3492,6 +3619,9 @@ pub(crate) struct DynamicLayoutStateExt<'data> {
     verneed_info: Option<VerneedInfo<'data>>,
 
     non_addressable_indexes: NonAddressableIndexes,
+
+    /// Maps from addresses within the shared object to copy relocations at that address.
+    copy_relocations: HashMap<u64, CopyRelocationInfo>,
 }
 
 #[derive(Debug)]
@@ -3503,6 +3633,8 @@ pub(crate) struct DynamicLayoutExt<'data> {
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
+
+    pub(crate) copy_relocation_symbols: Vec<SymbolId>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3520,6 +3652,16 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
                 + 1.max(symbol_db.version_script.version_count()),
         }
     }
+}
+
+struct CopyRelocationInfo {
+    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is
+    /// just the first symbol at a particular address for which we requested a copy relocation,
+    /// then later we may update it to point to a different symbol if that first symbol was
+    /// weak.
+    symbol_id: SymbolId,
+
+    is_weak: bool,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -4762,4 +4904,171 @@ pub(crate) fn program_headers_size(header_info: &layout::HeaderInfo) -> u64 {
 
 fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
     u64::from(elf::SECTION_HEADER_SIZE) * u64::from(header_info.num_output_sections_with_content)
+}
+
+/// Where we've decided that we need copy relocations, look for symbols with the same address as the
+/// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
+/// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
+/// For that reason, this needs to be done before we merge dynamic symbol definitions.
+fn finalise_copy_relocations<'data>(
+    group_states: &mut [layout::GroupState<'data, Elf>],
+    symbol_db: &SymbolDb<'data, Elf>,
+    symbol_flags: &AtomicPerSymbolFlags,
+) -> Result {
+    timing_phase!("Finalise copy relocations");
+
+    group_states.par_iter_mut().try_for_each(|group| {
+        verbose_timing_phase!("Finalise copy relocations for group");
+        for file in &mut group.files {
+            if let layout::FileLayoutState::Dynamic(dynamic) = file {
+                // Skip iterating over our symbol table if we don't have any copy relocations.
+                if dynamic.format_specific_state.copy_relocations.is_empty() {
+                    continue;
+                }
+
+                select_copy_relocation_alternatives(
+                    dynamic,
+                    symbol_flags,
+                    &mut group.common,
+                    symbol_db,
+                )?;
+            }
+        }
+
+        Ok(())
+    })
+}
+
+/// Looks for any non-weak symbols at the same addresses as any of our copy relocations. If
+/// found, we'll generate the copy relocation for the strong symbol instead of weak symbol at
+/// the same address.
+fn select_copy_relocation_alternatives<'data>(
+    state: &mut layout::DynamicLayoutState<'data, Elf>,
+    per_symbol_flags: &AtomicPerSymbolFlags,
+    common: &mut CommonGroupState<'data, Elf>,
+    symbol_db: &SymbolDb<'data, Elf>,
+) -> Result {
+    for (i, symbol) in state.object.enumerate_symbols() {
+        let address = symbol.value();
+        let Some(info) = state
+            .format_specific_state
+            .copy_relocations
+            .get_mut(&address)
+        else {
+            continue;
+        };
+
+        let symbol_id = state.symbol_id_range.input_to_id(i);
+
+        if !symbol_db.is_canonical(symbol_id) {
+            continue;
+        }
+
+        layout::export_dynamic(common, symbol_id, symbol_db)?;
+
+        per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::COPY_RELOCATION);
+
+        if symbol.is_weak() || !info.is_weak || info.symbol_id == symbol_id {
+            continue;
+        }
+
+        info.symbol_id = symbol_id;
+        info.is_weak = false;
+    }
+
+    Ok(())
+}
+
+fn allocate_for_copy_relocations<'data>(
+    state: &layout::DynamicLayoutState<'data, Elf>,
+    common: &mut CommonGroupState<'data, Elf>,
+) -> Result {
+    for value in state.format_specific_state.copy_relocations.values() {
+        let symbol_id = value.symbol_id;
+
+        let symbol = state
+            .object
+            .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
+
+        let section_index = symbol.section_index();
+
+        let section = state.object.section(section_index)?;
+
+        let alignment = Alignment::new(state.object.section_alignment(section)?)?;
+
+        // Allocate space in BSS for the copy of the symbol.
+        let size = symbol.size();
+        common.allocate(
+            output_section_id::BSS.part_id_with_alignment(alignment),
+            alignment.align_up(size),
+        );
+
+        // Allocate space required for the copy relocation itself.
+        common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+    }
+
+    Ok(())
+}
+
+fn assign_copy_relocation_addresses<'data>(
+    state: &layout::DynamicLayoutState<'data, Elf>,
+    copy_relocation_symbols: &[SymbolId],
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<HashMap<u64, u64>> {
+    copy_relocation_symbols
+        .iter()
+        .map(|symbol_id| {
+            let symbol = state
+                .object
+                .symbol(state.symbol_id_range.id_to_input(*symbol_id))?;
+
+            let input_address = symbol.value();
+
+            let output_address =
+                assign_copy_relocation_address(state.object, symbol, memory_offsets)?;
+
+            Ok((input_address, output_address))
+        })
+        .try_collect()
+}
+
+/// Assigns the address in BSS for the copy relocation of a symbol.
+fn assign_copy_relocation_address<'data>(
+    file: &File<'data>,
+    local_symbol: &SymtabEntry,
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<u64> {
+    let section_index = local_symbol.section_index();
+    let section = file.section(section_index)?;
+    let alignment = Alignment::new(file.section_alignment(section)?)?;
+    let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
+    let a = *bss;
+    *bss += alignment.align_up(local_symbol.size());
+    Ok(a)
+}
+
+impl CopyRelocationInfo {
+    fn add_symbol<'data, P: Platform>(
+        &mut self,
+        symbol_id: SymbolId,
+        is_weak: bool,
+        resources: &layout::GraphResources<'data, '_, P>,
+    ) {
+        if self.symbol_id == symbol_id || is_weak {
+            return;
+        }
+
+        if !self.is_weak {
+            warning(&format!(
+                "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
+                resources.symbol_debug(self.symbol_id),
+                resources.symbol_debug(symbol_id)
+            ));
+        }
+
+        self.symbol_id = symbol_id;
+        self.is_weak = false;
+    }
 }

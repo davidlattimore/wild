@@ -290,6 +290,11 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         resources: &layout::GraphResources<'data, 'scope, Self>,
     );
 
+    fn finalise_sizes_dynamic<'data>(
+        object: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+    ) -> Result;
+
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -299,6 +304,20 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         object: &layout::ObjectLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
+
+    fn finalise_layout_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut layout::ResolutionWriter<Self>,
+    ) -> Result<Self::DynamicLayoutExt<'data>>;
+
+    /// Returns the next dynamic symbol index, bumping `memory_offsets` to point to the subsequent
+    /// one.
+    fn take_dynsym_index(
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Result<u32>;
 
     fn compute_object_addresses<'data>(
         object: &layout::ObjectLayoutState<'data, Self>,
@@ -513,10 +532,11 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>);
 
-    fn finalise_prelude_layout(
+    fn finalise_prelude_layout<'data>(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Self::PreludeLayoutExt;
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Self::PreludeLayoutExt>;
 
     fn create_resolution(
         flags: ValueFlags,
@@ -545,6 +565,18 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     fn default_layout_rules() -> &'static [SectionRule<'static>];
 
     fn linker_script_rules_pre_build(_rule_builder: &mut layout_rules::LayoutRulesBuilder) {}
+
+    fn copy_relocate_symbol<'scope, 'data>(
+        state: &mut layout::DynamicLayoutState<Self>,
+        symbol_id: SymbolId,
+        resources: &layout::GraphResources<'data, 'scope, Self>,
+    ) -> Result;
+
+    fn finalise_copy_relocations<'data>(
+        group_states: &mut [layout::GroupState<'data, Self>],
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result;
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -657,13 +689,6 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
-
-    fn finalise_layout_dynamic(
-        &self,
-        state: <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> <Self::Platform as Platform>::DynamicLayoutExt<'data>;
 
     fn section_name(
         &self,
