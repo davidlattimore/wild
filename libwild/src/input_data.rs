@@ -31,6 +31,7 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
+use std::fs::File;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
@@ -94,15 +95,33 @@ pub(crate) struct InputFile {
 
 #[derive(Debug)]
 pub(crate) struct FileData {
-    #[cfg(not(target_family = "wasm"))]
-    bytes: Mmap,
-
-    #[cfg(target_family = "wasm")]
-    bytes: Vec<u8>,
+    bytes: FileBytes,
 
     /// The modification timestamp of the input file just before we opened it. We expect our input
     /// files not to change while we're running.
     modification_time: std::time::SystemTime,
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct FileBytes(Mmap);
+
+#[cfg(target_family = "wasm")]
+struct FileBytes(Vec<u8>);
+
+#[cfg(target_family = "wasm")]
+impl std::fmt::Debug for FileBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FileBytes").finish_non_exhaustive()
+    }
+}
+
+impl Deref for FileBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 /// Identifies an input object that may not be a regular file on disk, or may be an entry in an
@@ -792,7 +811,6 @@ impl FileData {
     }
 
     fn open(path: &Path, prepopulate_maps: bool) -> Result<(Self, std::fs::File)> {
-        #[cfg_attr(not(target_family = "wasm"), expect(unused_mut))]
         let mut file = std::fs::File::open(path)
             .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
 
@@ -803,58 +821,55 @@ impl FileData {
                 format!("Failed to read file modification time `{}`", path.display())
             })?;
 
-        #[cfg(target_family = "wasm")]
-        {
-            use std::io::Read;
-            let _ = prepopulate_maps;
-            let mut bytes = vec![];
-            file.read_to_end(&mut bytes)
-                .with_context(|| format!("Failed to read file `{}`", path.display()))?;
-            Ok((
-                FileData {
-                    bytes,
-                    modification_time,
-                },
-                file,
-            ))
+        Ok((
+            FileData {
+                bytes: FileBytes::read(&mut file, path, prepopulate_maps)?,
+                modification_time,
+            },
+            file,
+        ))
+    }
+}
+
+impl FileBytes {
+    #[cfg(not(target_family = "wasm"))]
+    fn read(file: &mut File, path: &Path, prepopulate_maps: bool) -> Result<Self> {
+        // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if
+        // our users manage to avoid editing the input files while we've got them
+        // mapped. It'd be great if there were a way to protect against unsoundness
+        // when the input files were modified externally, but there isn't - at least
+        // on Linux. Not only could the bytes change without notice, but the mapped
+        // file could be truncated causing any access to result in a SIGBUS.
+        //
+        // For our use case, mmap just has too many advantages. There are likely large parts of
+        // our input files that we don't need to read, so reading all our input
+        // files up front isn't really an option. Reading just the parts we need
+        // might be an option, but would add substantial complexity. Also, using
+        // mmap means that if the system needs to reclaim memory, it can just
+        // release some of our pages.
+
+        let mut mmap_options = memmap2::MmapOptions::new();
+
+        // Prepopulating maps generally slows things down, so is off by default, however it's
+        // useful when profiling, since it means that you don't see false positive
+        // slowness in the parts of the code that first read a bit of memory.
+        if prepopulate_maps {
+            mmap_options.populate();
         }
 
-        #[cfg(not(target_family = "wasm"))]
-        {
-            // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if
-            // our users manage to avoid editing the input files while we've got them
-            // mapped. It'd be great if there were a way to protect against unsoundness
-            // when the input files were modified externally, but there isn't - at least
-            // on Linux. Not only could the bytes change without notice, but the mapped
-            // file could be truncated causing any access to result in a SIGBUS.
-            //
-            // For our use case, mmap just has too many advantages. There are likely large parts of
-            // our input files that we don't need to read, so reading all our input
-            // files up front isn't really an option. Reading just the parts we need
-            // might be an option, but would add substantial complexity. Also, using
-            // mmap means that if the system needs to reclaim memory, it can just
-            // release some of our pages.
+        let bytes = unsafe { mmap_options.map(&*file) }
+            .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
 
-            let mut mmap_options = memmap2::MmapOptions::new();
+        Ok(FileBytes(bytes))
+    }
 
-            // Prepopulating maps generally slows things down, so is off by default, however it's
-            // useful when profiling, since it means that you don't see false positive
-            // slowness in the parts of the code that first read a bit of memory.
-            if prepopulate_maps {
-                mmap_options.populate();
-            }
-
-            let bytes = unsafe { mmap_options.map(&file) }
-                .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
-
-            Ok((
-                FileData {
-                    bytes,
-                    modification_time,
-                },
-                file,
-            ))
-        }
+    #[cfg(target_family = "wasm")]
+    fn read(file: &mut File, path: &Path, _prepopulate_maps: bool) -> Result<Self> {
+        use std::io::Read;
+        let mut bytes = vec![];
+        file.read_to_end(&mut bytes)
+            .with_context(|| format!("Failed to read file `{}`", path.display()))?;
+        Ok(FileBytes(bytes))
     }
 }
 
