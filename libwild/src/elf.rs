@@ -549,9 +549,8 @@ impl platform::Platform for Elf {
         resolutions_out: &mut layout::ResolutionWriter<Self>,
     ) -> Result<Self::DynamicLayoutExt<'data>> {
         let mut is_last_verneed = false;
-        let mut verneed_info = &mut state.format_specific_state.verneed_info;
 
-        if let Some(v) = &mut verneed_info
+        if let Some(v) = &state.format_specific_state.verneed_info
             && v.version_count > 0
         {
             memory_offsets.increment(
