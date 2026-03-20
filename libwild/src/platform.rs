@@ -199,7 +199,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: Send + Sync + 'data;
-    type VerneedTable<'data>: VerneedTable<'data>;
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
     type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
@@ -215,6 +214,9 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VersionNames<'data>;
 
+    /// For platforms that don't support symbol versioning, this can just be the unit type.
+    type VerneedTable<'data>: VerneedTable<'data>;
+
     /// Invoke the linker for requested architecture.
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -226,6 +228,8 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         layout: &Layout<'data, Self>,
     ) -> Result;
 
+    /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
+    /// that one should be used.
     fn maybe_init_linker_plugin<'data>(
         _args: &'data Self::Args,
         _linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
@@ -234,6 +238,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         Ok(None)
     }
 
+    /// Called once all symbols have been read, but only if a linker plugin is active.
     fn plugin_all_symbols_read<'data>(
         _plugin: &mut LinkerPlugin<'data>,
         _symbol_db: &mut SymbolDb<'data, Self>,
@@ -257,8 +262,8 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         Ok(())
     }
 
-    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
-
+    /// Returns attributes of the supplied section. This is type+flags and doesn't include other
+    /// information like name, size etc.
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
 
     /// Validate that the supplied sizes are internally consistent.
@@ -361,23 +366,27 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> Result<layout::DynamicSymbolDefinition<'data, Self>>;
 
     fn validate_section<'data>(
-        section_info: &crate::output_section_id::SectionOutputInfo<Self>,
-        section_flags: Self::SectionFlags,
-        section_layout: &OutputRecordLayout,
-        merge_target: OutputSectionId,
-        output_sections: &OutputSections<'data, Self>,
-        section_id: OutputSectionId,
-    ) -> Result;
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        _section_flags: Self::SectionFlags,
+        _section_layout: &OutputRecordLayout,
+        _merge_target: OutputSectionId,
+        _output_sections: &OutputSections<'data, Self>,
+        _section_id: OutputSectionId,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Called when we detect an internal error with allocation in order to try and help determine
-    /// what we did wrong.
+    /// what we did wrong. Can optionally return a more helpful error.
     fn verify_resolution_allocation(
-        output_sections: &OutputSections<Self>,
-        output_order: &OutputOrder,
-        output_kind: OutputKind,
-        mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution<Self>,
-    ) -> Result;
+        _output_sections: &OutputSections<Self>,
+        _output_order: &OutputOrder,
+        _output_kind: OutputKind,
+        _mem_sizes: &OutputSectionPartMap<u64>,
+        _resolution: &layout::Resolution<Self>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Updates the list of segments to keep.
     fn update_segment_keep_list(
@@ -494,7 +503,9 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     /// Verifies that it's OK to load a section with the given name. Mostly just used to detect
     /// linker plugin inputs, since we shouldn't be loading those.
-    fn verify_allowed_input_section_name(name: &[u8]) -> Result;
+    fn verify_allowed_input_section_name(_name: &[u8]) -> Result {
+        Ok(())
+    }
 
     /// Allocate space for headers based on segment and section counts.
     fn allocate_header_sizes(
@@ -504,11 +515,15 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         output_sections: &OutputSections<Self>,
     );
 
+    /// Gives the platform an opportunity to error out if an input stack section is requesting an
+    /// executable stack, but that's not permitted due to flags.
     fn validate_stack_section(
-        section: &Self::SectionHeader,
-        object: &impl std::fmt::Display,
-        args: &Self::Args,
-    ) -> Result;
+        _section: &Self::SectionHeader,
+        _object: &impl std::fmt::Display,
+        _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
 
     fn finalise_sizes_for_symbol<'data>(
         common: &mut CommonGroupState<'data, Self>,
@@ -553,11 +568,13 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> layout::Resolution<Self>;
 
     fn validate_resolution(
-        name: &[u8],
-        resolution: &crate::layout::Resolution<Self>,
-        got: &Self::SectionHeader,
-        got_data: &[u8],
-    ) -> Result;
+        _name: &[u8],
+        _resolution: &crate::layout::Resolution<Self>,
+        _got: &Self::SectionHeader,
+        _got_data: &[u8],
+    ) -> Result {
+        Ok(())
+    }
 
     fn raw_symbol_name<'data>(
         name_bytes: &'data [u8],
@@ -571,19 +588,26 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     fn default_layout_rules() -> &'static [SectionRule<'static>];
 
+    /// Only called if a linker script that provides custom sections and layout rules is present.
+    /// Gives the platform a chance to add extra built-in rules that need to be present even when a
+    /// linker script is providing most of the rules.
     fn linker_script_rules_pre_build(_rule_builder: &mut layout_rules::LayoutRulesBuilder) {}
 
     fn copy_relocate_symbol<'scope, 'data>(
-        state: &mut layout::DynamicLayoutState<Self>,
-        symbol_id: SymbolId,
-        resources: &layout::GraphResources<'data, 'scope, Self>,
-    ) -> Result;
+        _state: &mut layout::DynamicLayoutState<Self>,
+        _symbol_id: SymbolId,
+        _resources: &layout::GraphResources<'data, 'scope, Self>,
+    ) -> Result {
+        bail!("Platform does not support copy relocations");
+    }
 
     fn finalise_copy_relocations<'data>(
-        group_states: &mut [layout::GroupState<'data, Self>],
-        symbol_db: &SymbolDb<'data, Self>,
-        symbol_flags: &AtomicPerSymbolFlags,
-    ) -> Result;
+        _group_states: &mut [layout::GroupState<'data, Self>],
+        _symbol_db: &SymbolDb<'data, Self>,
+        _symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        Ok(())
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

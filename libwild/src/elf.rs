@@ -407,10 +407,6 @@ impl platform::Platform for Elf {
         &SECTION_DEFINITIONS
     }
 
-    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags {
-        SectionFlags::from_header(header)
-    }
-
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes {
             flags: SectionFlags::from_header(header),
@@ -4526,7 +4522,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = <A::Platform as Platform>::section_flags(section);
+        let section_flags = SectionFlags::from_header(section);
 
         let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,
