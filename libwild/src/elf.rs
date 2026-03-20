@@ -2409,18 +2409,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 }
             }
 
-            // When using -z pack-relative-relocs, glibc requires GLIBC_ABI_DT_RELR version
-            // dependency in the libc verneed entry so that older glibc versions produce a clear
-            // error instead of crashing. glibc 2.38+ recognises the dummy version and ignores it.
-            let has_dt_relr_version =
-                pack_relative_relocs && lib_name.starts_with(b"libc.so.") && version_count > 0;
-
-            if has_dt_relr_version {
-                mem_sizes.increment(part_id::DYNSTR, GLIBC_ABI_DT_RELR.len() as u64 + 1);
-                version_count += 1;
-            }
-
             if version_count > 0 {
+                let has_dt_relr_version = pack_relative_relocs && lib_name.starts_with(b"libc.so.");
+                if has_dt_relr_version {
+                    mem_sizes.increment(part_id::DYNSTR, GLIBC_ABI_DT_RELR.len() as u64 + 1);
+                    version_count += 1;
+                }
+
                 mem_sizes.increment(part_id::DYNSTR, base_size);
                 mem_sizes.increment(
                     part_id::GNU_VERSION_R,
