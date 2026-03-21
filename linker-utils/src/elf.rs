@@ -736,6 +736,10 @@ pub mod secnames {
     pub const INIT_SECTION_NAME: &[u8] = INIT_SECTION_NAME_STR.as_bytes();
     pub const FINI_SECTION_NAME_STR: &str = ".fini";
     pub const FINI_SECTION_NAME: &[u8] = FINI_SECTION_NAME_STR.as_bytes();
+    pub const RELA_SECTION_NAME_STR: &str = ".rela";
+    pub const RELA_SECTION_NAME: &[u8] = RELA_SECTION_NAME_STR.as_bytes();
+    pub const CREL_SECTION_NAME_STR: &str = ".crel";
+    pub const CREL_SECTION_NAME: &[u8] = CREL_SECTION_NAME_STR.as_bytes();
     pub const RELA_PLT_SECTION_NAME_STR: &str = ".rela.plt";
     pub const RELA_PLT_SECTION_NAME: &[u8] = RELA_PLT_SECTION_NAME_STR.as_bytes();
     pub const COMMENT_SECTION_NAME_STR: &str = ".comment";
