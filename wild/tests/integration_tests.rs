@@ -1040,243 +1040,23 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
     let mut config_name_to_index = HashMap::new();
     let mut config = default_config.clone();
 
-    for line in source.lines() {
+    for (i, line) in source.lines().enumerate() {
         if let Some(rest) = line.trim().strip_prefix("//#") {
-            let (directive, arg) = rest.split_once(':').context("Missing arg")?;
-            let arg = arg.trim();
-            match directive {
-                "Config" | "AbstractConfig" => {
-                    if &config != default_config {
-                        let index = configs.len();
-                        config_name_to_index.insert(config.name.clone(), index);
-                        configs.push(config);
-                    }
-                    let name = if let Some((name, inherit)) = arg.split_once(':') {
-                        let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
-                            error!("Config `{name}` inherits from unknown config named `{inherit}`")
-                        })?;
-
-                        config = configs[*inherit_index].clone();
-
-                        // Clear any fields that we want to not inherit.
-                        config.variant_num = None;
-
-                        name
-                    } else {
-                        config = default_config.clone();
-                        arg
-                    };
-                    config.is_abstract = directive == "AbstractConfig";
-                    if config_name_to_index.contains_key(name) {
-                        bail!("Duplicate config `{name}`");
-                    }
-                    name.clone_into(&mut config.name);
-                }
-                "Variant" => {
-                    if config.variant_num.is_some() {
-                        bail!("Variant can only be specified once per config");
-                    }
-                    config.variant_num = Some(
-                        arg.parse()
-                            .with_context(|| format!("Failed to parse '{arg}'"))?,
-                    )
-                }
-                "LinkArgs" => {
-                    if is_rust {
-                        bail!("LinkArgs is not used when building Rust code");
-                    }
-                    if let Some((_, rest)) = arg.split_once("./") {
-                        let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
-                        let src_path = src_path(filename);
-                        config.tracked_files.push(src_path.clone());
-                        let with_replaced_path =
-                            arg.replace(&format!("./{filename}"), &src_path.display().to_string());
-                        config.linker_args = ArgumentSet::parse(&with_replaced_path)?
-                    } else {
-                        config.linker_args = ArgumentSet::parse(arg)?
-                    }
-                }
-                "LinkSoArgs" => {
-                    if is_rust {
-                        bail!("LinkSoArgs is not used when building Rust code");
-                    }
-                    config.linker_so_args = ArgumentSet::parse(arg)?
-                }
-                "LinkerDriver" => {
-                    config.linker_driver = LinkerDriver::parse(arg)?;
-                }
-                "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
-                "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
-                "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
-                "ExpectSym" => config.assertions.expected_symtab_entries.push(
-                    ExpectedSymtabEntry::parse(arg.trim())
-                        .context("Failed to parse ExpectSym arguments")?,
-                ),
-                "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
-                    ExpectedSymtabEntry::parse(arg.trim())
-                        .context("Failed to parse ExpectDynSym arguments")?,
-                ),
-                "ExpectComment" => config
-                    .assertions
-                    .expected_comments
-                    .push(arg.trim().to_owned()),
-                "NoSym" => {
-                    config.assertions.no_sym.insert(arg.trim().to_owned());
-                }
-                "NoDynSym" => {
-                    config.assertions.no_dynsym.insert(arg.trim().to_owned());
-                }
-                "DoesNotContain" => config
-                    .assertions
-                    .does_not_contain
-                    .push(arg.trim().to_owned()),
-                "Contains" => config
-                    .assertions
-                    .contains_strings
-                    .push(arg.trim().to_owned()),
-                "ExpectDynamic" => config
-                    .assertions
-                    .expected_dynamic_entries
-                    .push(arg.trim().to_owned()),
-                "NoDynamic" => config
-                    .assertions
-                    .absent_dynamic_entries
-                    .push(arg.trim().to_owned()),
-                "ExpectLoadAlignment" => {
-                    let alignment_str = arg.trim();
-                    let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
-                        u64::from_str_radix(hex, 16)
-                            .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
-                    } else {
-                        alignment_str
-                            .parse()
-                            .with_context(|| format!("Invalid alignment: {alignment_str}"))?
-                    };
-                    config.assertions.expected_load_alignment = Some(alignment);
-                }
-                "Mode" => {
-                    let mode: Mode = arg
-                        .parse()
-                        .with_context(|| format!("Invalid Mode `{arg}`"))?;
-                    if mode == Mode::Dynamic {
-                        config.assertions.expect_dynamic = true;
-                    }
-                    config.linker_driver.direct_mut()?.mode = mode;
-                }
-                "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
-                "DiffEnabled" => {
-                    config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
-                }
-                "RunEnabled" => {
-                    config.should_run = arg.parse().context("Invalid bool for RunEnabled")?
-                }
-                "SkipLinker" => {
-                    config.skip_linkers.insert(arg.trim().to_owned());
-                }
-                "EnableLinker" => {
-                    config.enabled_linkers.insert(arg.trim().to_owned());
-                }
-                "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
-                "ExpectError" => {
-                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
-                    config.should_error = true;
-                    // If there are errors, then there's nothing to run and nothing to diff.
-                    config.should_run = false;
-                    config.should_diff = false;
-                }
-                "ExpectMessage" => {
-                    config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
-                }
-                "SecEquiv" => config.section_equiv.push(
-                    arg.trim()
-                        .split_once('=')
-                        .ok_or_else(|| error!("DiffIgnore missing '='"))
-                        .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
-                ),
-                "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-                input_type @ ("Object" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
-                | "LinkerScript") => {
-                    let input_type = InputType::from_str(input_type)?;
-
-                    let mut arg = arg;
-                    let mut template = None;
-                    if let Some(rest) = arg.strip_prefix("template(") {
-                        let (t, rest) = rest
-                            .split_once("):")
-                            .with_context(|| format!("Missing '):' in {arg}"))?;
-                        let parts = t.split(' ').map(|p| p.to_owned()).collect_vec();
-                        if !parts.iter().any(|a| a.contains(TEMPLATE_PLACEHOLDER)) {
-                            bail!("Template `{t}` must contain {TEMPLATE_PLACEHOLDER}");
-                        }
-                        template = Some(parts);
-                        arg = rest;
-                    }
-
-                    let files = arg
-                        .split(",")
-                        .map(|arg| {
-                            let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
-                            Ok(FilenameArgumentPair::new(
-                                filename,
-                                ArgumentSet::parse(comp_args)?,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-
-                    config.deps.push(Dep {
-                        files,
-                        input_type,
-                        template,
-                    })
-                }
-                "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
-                "Compiler" => config.compiler = arg.trim().to_owned(),
-                "Arch" => {
-                    config.support_architectures = arg
-                        .trim()
-                        .split(",")
-                        .map(|arch| Architecture::parse(arch.trim()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                }
-                "SkipArch" => {
-                    let skipped = arg
-                        .trim()
-                        .split(",")
-                        .map(|arch| Architecture::parse(arch.trim()))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    config.support_architectures = ALL_ARCHITECTURES
-                        .to_owned()
-                        .into_iter()
-                        .filter(|arch| !skipped.contains(arch))
-                        .collect();
-                }
-                "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
-                "RequiresGlibcVersion" => {
-                    config.requires_glibc = true;
-                    config.requires_glibc_version = Some(arg.trim().to_owned())
-                }
-                "RequiresSFrameBacktrace" => {
-                    config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
-                }
-                "RequiresCompilerFlags" => {
-                    config
-                        .requires_compiler_flags
-                        .extend(arg.trim().split(' ').map(str::to_owned));
-                }
-                "RequiresNightlyRustc" => {
-                    config.requires_nightly_rustc = arg.to_lowercase().parse()?;
-                }
-                "RequiresRustMusl" => {
-                    config.requires_rust_musl = arg.to_lowercase().parse()?;
-                }
-                "RequiresLinkerPlugin" => {
-                    config.requires_linker_plugin = arg.to_lowercase().parse()?;
-                }
-                "TestUpdateInPlace" => {
-                    config.test_update_in_place = arg.to_lowercase().parse()?;
-                }
-                other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
-            }
+            process_directive(
+                rest,
+                &mut config,
+                default_config,
+                &mut config_name_to_index,
+                &mut configs,
+                is_rust,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to process test directive {}:{}",
+                    src_filename.display(),
+                    i + 1
+                )
+            })?;
         }
     }
 
@@ -1289,6 +1069,252 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
     }
 
     Ok(configs)
+}
+
+fn process_directive(
+    rest: &str,
+    config: &mut Config,
+    default_config: &Config,
+    config_name_to_index: &mut HashMap<String, usize>,
+    configs: &mut Vec<Config>,
+    is_rust: bool,
+) -> Result {
+    let (directive, arg) = rest.split_once(':').context("Missing arg")?;
+    let arg = arg.trim();
+    match directive {
+        "Config" | "AbstractConfig" => {
+            if config != default_config {
+                let index = configs.len();
+                config_name_to_index.insert(config.name.clone(), index);
+                configs.push(config.clone());
+            }
+
+            let name = if let Some((name, inherit)) = arg.split_once(':') {
+                let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
+                    error!("Config `{name}` inherits from unknown config named `{inherit}`")
+                })?;
+
+                *config = configs[*inherit_index].clone();
+
+                // Clear any fields that we want to not inherit.
+                config.variant_num = None;
+
+                name
+            } else {
+                *config = default_config.clone();
+                arg
+            };
+            config.is_abstract = directive == "AbstractConfig";
+            if config_name_to_index.contains_key(name) {
+                bail!("Duplicate config `{name}`");
+            }
+            name.clone_into(&mut config.name);
+        }
+        "Variant" => {
+            if config.variant_num.is_some() {
+                bail!("Variant can only be specified once per config");
+            }
+            config.variant_num = Some(
+                arg.parse()
+                    .with_context(|| format!("Failed to parse '{arg}'"))?,
+            )
+        }
+        "LinkArgs" => {
+            if is_rust {
+                bail!("LinkArgs is not used when building Rust code");
+            }
+            if let Some((_, rest)) = arg.split_once("./") {
+                let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
+                let src_path = src_path(filename);
+                config.tracked_files.push(src_path.clone());
+                let with_replaced_path =
+                    arg.replace(&format!("./{filename}"), &src_path.display().to_string());
+                config.linker_args = ArgumentSet::parse(&with_replaced_path)?
+            } else {
+                config.linker_args = ArgumentSet::parse(arg)?
+            }
+        }
+        "LinkSoArgs" => {
+            if is_rust {
+                bail!("LinkSoArgs is not used when building Rust code");
+            }
+            config.linker_so_args = ArgumentSet::parse(arg)?
+        }
+        "LinkerDriver" => {
+            config.linker_driver = LinkerDriver::parse(arg)?;
+        }
+        "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
+        "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
+        "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
+        "ExpectSym" => config.assertions.expected_symtab_entries.push(
+            ExpectedSymtabEntry::parse(arg.trim())
+                .context("Failed to parse ExpectSym arguments")?,
+        ),
+        "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
+            ExpectedSymtabEntry::parse(arg.trim())
+                .context("Failed to parse ExpectDynSym arguments")?,
+        ),
+        "ExpectComment" => config
+            .assertions
+            .expected_comments
+            .push(arg.trim().to_owned()),
+        "NoSym" => {
+            config.assertions.no_sym.insert(arg.trim().to_owned());
+        }
+        "NoDynSym" => {
+            config.assertions.no_dynsym.insert(arg.trim().to_owned());
+        }
+        "DoesNotContain" => config
+            .assertions
+            .does_not_contain
+            .push(arg.trim().to_owned()),
+        "Contains" => config
+            .assertions
+            .contains_strings
+            .push(arg.trim().to_owned()),
+        "ExpectDynamic" => config
+            .assertions
+            .expected_dynamic_entries
+            .push(arg.trim().to_owned()),
+        "NoDynamic" => config
+            .assertions
+            .absent_dynamic_entries
+            .push(arg.trim().to_owned()),
+        "ExpectLoadAlignment" => {
+            let alignment_str = arg.trim();
+            let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
+                u64::from_str_radix(hex, 16)
+                    .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
+            } else {
+                alignment_str
+                    .parse()
+                    .with_context(|| format!("Invalid alignment: {alignment_str}"))?
+            };
+            config.assertions.expected_load_alignment = Some(alignment);
+        }
+        "Mode" => {
+            let mode: Mode = arg
+                .parse()
+                .with_context(|| format!("Invalid Mode `{arg}`"))?;
+            if mode == Mode::Dynamic {
+                config.assertions.expect_dynamic = true;
+            }
+            config.linker_driver.direct_mut()?.mode = mode;
+        }
+        "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
+        "DiffEnabled" => {
+            config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
+        }
+        "RunEnabled" => config.should_run = arg.parse().context("Invalid bool for RunEnabled")?,
+        "SkipLinker" => {
+            config.skip_linkers.insert(arg.trim().to_owned());
+        }
+        "EnableLinker" => {
+            config.enabled_linkers.insert(arg.trim().to_owned());
+        }
+        "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
+        "ExpectError" => {
+            config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+            config.should_error = true;
+            // If there are errors, then there's nothing to run and nothing to diff.
+            config.should_run = false;
+            config.should_diff = false;
+        }
+        "ExpectMessage" => {
+            config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+        }
+        "SecEquiv" => config.section_equiv.push(
+            arg.trim()
+                .split_once('=')
+                .ok_or_else(|| error!("DiffIgnore missing '='"))
+                .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
+        ),
+        "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
+        input_type @ ("Object" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
+        | "LinkerScript") => {
+            let input_type = InputType::from_str(input_type)?;
+
+            let mut arg = arg;
+            let mut template = None;
+            if let Some(rest) = arg.strip_prefix("template(") {
+                let (t, rest) = rest
+                    .split_once("):")
+                    .with_context(|| format!("Missing '):' in {arg}"))?;
+                let parts = t.split(' ').map(|p| p.to_owned()).collect_vec();
+                if !parts.iter().any(|a| a.contains(TEMPLATE_PLACEHOLDER)) {
+                    bail!("Template `{t}` must contain {TEMPLATE_PLACEHOLDER}");
+                }
+                template = Some(parts);
+                arg = rest;
+            }
+
+            let files = arg
+                .split(",")
+                .map(|arg| {
+                    let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
+                    Ok(FilenameArgumentPair::new(
+                        filename,
+                        ArgumentSet::parse(comp_args)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            config.deps.push(Dep {
+                files,
+                input_type,
+                template,
+            })
+        }
+        "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
+        "Compiler" => config.compiler = arg.trim().to_owned(),
+        "Arch" => {
+            config.support_architectures = arg
+                .trim()
+                .split(",")
+                .map(|arch| Architecture::parse(arch.trim()))
+                .collect::<Result<Vec<_>, _>>()?;
+        }
+        "SkipArch" => {
+            let skipped = arg
+                .trim()
+                .split(",")
+                .map(|arch| Architecture::parse(arch.trim()))
+                .collect::<Result<Vec<_>, _>>()?;
+            config.support_architectures = ALL_ARCHITECTURES
+                .to_owned()
+                .into_iter()
+                .filter(|arch| !skipped.contains(arch))
+                .collect();
+        }
+        "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
+        "RequiresGlibcVersion" => {
+            config.requires_glibc = true;
+            config.requires_glibc_version = Some(arg.trim().to_owned())
+        }
+        "RequiresSFrameBacktrace" => {
+            config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
+        }
+        "RequiresCompilerFlags" => {
+            config
+                .requires_compiler_flags
+                .extend(arg.trim().split(' ').map(str::to_owned));
+        }
+        "RequiresNightlyRustc" => {
+            config.requires_nightly_rustc = arg.to_lowercase().parse()?;
+        }
+        "RequiresRustMusl" => {
+            config.requires_rust_musl = arg.to_lowercase().parse()?;
+        }
+        "RequiresLinkerPlugin" => {
+            config.requires_linker_plugin = arg.to_lowercase().parse()?;
+        }
+        "TestUpdateInPlace" => {
+            config.test_update_in_place = arg.to_lowercase().parse()?;
+        }
+        other => bail!("Unknown directive '{other}'"),
+    }
+
+    Ok(())
 }
 
 fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
@@ -3708,8 +3734,7 @@ fn integration_test(
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))
-        .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
+    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))?;
 
     let host_arch = get_host_architecture();
 
