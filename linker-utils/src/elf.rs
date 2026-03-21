@@ -1463,6 +1463,7 @@ impl AllowedRange {
     pub const fn from_bit_size(n_bits: usize, sign: Sign) -> Self {
         match n_bits {
             0 | 64 => Self::no_check(),
+            63 if matches!(sign, Sign::Unsigned) => panic!("2^63 cannot be represented as i64"),
             1..64 => {
                 let n_bits = n_bits as u32;
                 match sign {
