@@ -4634,17 +4634,17 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             }
 
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
-
-            layout::check_for_undefined::<A>(
-                object,
-                section,
-                rel_offset,
-                local_sym_index,
-                flags,
-                symbol_id,
-                resources,
-            )?;
         }
+
+        layout::check_for_undefined::<A>(
+            object,
+            section,
+            rel_offset,
+            local_sym_index,
+            flags,
+            symbol_id,
+            resources,
+        )?;
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
             queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
