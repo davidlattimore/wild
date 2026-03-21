@@ -89,6 +89,9 @@
 //! Arch:{arch1}[,{arch2}...] Specifies which architectures this test should be run with. Defaults
 //! to all supported architectures.
 //!
+//! SkipArch:{arch1}[,{arch2}...] The opposite of Arch. Tests for all architectures that aren't in
+//! the supplied list.
+//!
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
@@ -403,6 +406,10 @@ impl Architecture {
 
     fn get_cross_sysroot_path(&self) -> String {
         format!("/usr/{self}-linux-gnu")
+    }
+
+    fn parse(name: &str) -> Result<Architecture> {
+        Self::from_str(name).map_err(|_| error!("Unknown arch '{name}'"))
     }
 }
 
@@ -1228,14 +1235,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     config.support_architectures = arg
                         .trim()
                         .split(",")
-                        .map(|arch| Architecture::from_str(arch.trim()))
+                        .map(|arch| Architecture::parse(arch.trim()))
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 "SkipArch" => {
                     let skipped = arg
                         .trim()
                         .split(",")
-                        .map(|arch| Architecture::from_str(arch.trim()))
+                        .map(|arch| Architecture::parse(arch.trim()))
                         .collect::<Result<Vec<_>, _>>()?;
                     config.support_architectures = ALL_ARCHITECTURES
                         .to_owned()
