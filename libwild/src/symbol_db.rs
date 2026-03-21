@@ -1157,14 +1157,14 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
 
     drop(atomic_symbol_db);
 
-    let mut duplicate_errors: Vec<Error> = error_queue.into_iter().collect();
+    let mut duplicate_errors = error_queue.into_iter().collect_vec();
     duplicate_errors.sort_by_key(|e| e.to_string());
 
     if !duplicate_errors.is_empty() {
         let error_details = duplicate_errors
             .iter()
             .map(|e| e.to_string())
-            .collect::<Vec<_>>()
+            .collect_vec()
             .join("\n");
 
         bail!("Duplicate symbols detected: {error_details}");

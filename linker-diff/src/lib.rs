@@ -829,7 +829,7 @@ impl Display for Coverage {
 }
 
 fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
-    let paths: Vec<&PathBuf> = config.filenames().collect();
+    let paths = config.filenames().collect_vec();
     if !config.display_names.is_empty() {
         if config.display_names.len() != paths.len() {
             bail!(

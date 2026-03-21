@@ -1624,7 +1624,7 @@ fn compute_segment_layout<P: Platform>(
     assert_eq!(complete.len(), program_segments.len());
     let mut tls_layout = None;
 
-    let mut segments: Vec<SegmentLayout> = header_info
+    let mut segments = header_info
         .active_segment_ids
         .iter()
         .map(|&id| {
@@ -1644,7 +1644,7 @@ fn compute_segment_layout<P: Platform>(
 
             SegmentLayout { id, sizes }
         })
-        .collect();
+        .collect_vec();
 
     segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
 
