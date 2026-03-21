@@ -1458,21 +1458,34 @@ impl AllowedRange {
     }
 
     #[must_use]
-    /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument
+    /// Note: for the 64-bit size, we actually do signed checks regardless of the `sign` argument
     /// because the `min` and `max` are `i64` type
-    pub const fn from_byte_size(n_bytes: usize, sign: Sign) -> Self {
-        match n_bytes {
-            0 | 8 => Self::no_check(),
-            1..=7 => {
-                let bits = n_bytes * 8;
-                let half_range = 1i64 << (bits - 1);
+    pub const fn from_bit_size(n_bits: usize, sign: Sign) -> Self {
+        match n_bits {
+            0 | 64 => Self::no_check(),
+            63 if matches!(sign, Sign::Unsigned) => panic!("2^63 cannot be represented as i64"),
+            1..64 => {
+                let n_bits = n_bits as u32;
                 match sign {
-                    Sign::Unsigned => Self::new(0, half_range * 2 - 1),
-                    Sign::Signed => Self::new(-half_range, half_range - 1),
+                    Sign::Unsigned => Self::new(0, 2i64.pow(n_bits)),
+                    Sign::Signed => Self::new(-2i64.pow(n_bits - 1), 2i64.pow(n_bits - 1)),
                 }
             }
             _ => panic!("Only sizes up to 8 bytes are supported"),
         }
+    }
+
+    #[must_use]
+    /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument
+    /// because the `min` and `max` are `i64` type
+    pub const fn from_byte_size(n_bytes: usize, sign: Sign) -> Self {
+        Self::from_bit_size(8 * n_bytes, sign)
+    }
+
+    #[must_use]
+    /// Return true if the value is present in the allowed range.
+    pub fn contains(&self, value: i64) -> bool {
+        self.min <= value && value < self.max
     }
 }
 
@@ -1490,12 +1503,12 @@ impl RelocationKindInfo {
     #[inline(always)]
     pub fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
-            (value as usize) & (self.alignment - 1) == 0,
+            (value as usize).is_multiple_of(self.alignment),
             "Relocation {value} not aligned to {} bytes",
             self.alignment
         );
         anyhow::ensure!(
-            self.range.min <= value && value < self.range.max,
+            self.range.contains(value),
             format!(
                 "Relocation {value} outside of bounds [{}, {})",
                 self.range.min, self.range.max
@@ -1556,19 +1569,23 @@ mod tests {
         );
         assert_eq!(
             AllowedRange::from_byte_size(1, Sign::Signed),
-            AllowedRange::new(-128, 127)
+            AllowedRange::new(-128, 128)
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(1, Sign::Signed),
+            AllowedRange::new(-128, 128)
         );
         assert_eq!(
             AllowedRange::from_byte_size(1, Sign::Unsigned),
-            AllowedRange::new(0, 255)
+            AllowedRange::new(0, 256)
         );
         assert_eq!(
             AllowedRange::from_byte_size(4, Sign::Signed),
-            AllowedRange::new(i32::MIN.into(), i32::MAX.into())
+            AllowedRange::new(i64::from(i32::MIN), i64::from(i32::MAX) + 1)
         );
         assert_eq!(
             AllowedRange::from_byte_size(4, Sign::Unsigned),
-            AllowedRange::new(u32::MIN.into(), u32::MAX.into())
+            AllowedRange::new(i64::from(u32::MIN), i64::from(u32::MAX) + 1)
         );
         assert_eq!(
             AllowedRange::from_byte_size(8, Sign::Signed),
@@ -1579,5 +1596,28 @@ mod tests {
             AllowedRange::from_byte_size(8, Sign::Unsigned),
             AllowedRange::no_check()
         );
+
+        assert_eq!(
+            AllowedRange::from_bit_size(1, Sign::Signed),
+            AllowedRange::new(-1, 1),
+        );
+        assert_eq!(
+            AllowedRange::from_bit_size(10, Sign::Signed),
+            AllowedRange::new(-512, 512),
+        );
+        assert_eq!(
+            AllowedRange::from_bit_size(10, Sign::Unsigned),
+            AllowedRange::new(0, 1024),
+        );
+
+        let r_riscv_branch_range = AllowedRange::new(-(2i64.pow(12)), 2i64.pow(12) - 1);
+        assert!(r_riscv_branch_range.contains(-4096));
+        assert!(r_riscv_branch_range.contains(4094));
+        assert!(!r_riscv_branch_range.contains(4095));
+
+        let r_riscv_rvc_branch_range = AllowedRange::new(-(2i64.pow(8)), 2i64.pow(8) - 1);
+        assert!(r_riscv_rvc_branch_range.contains(-256));
+        assert!(r_riscv_rvc_branch_range.contains(254));
+        assert!(!r_riscv_rvc_branch_range.contains(255));
     }
 }

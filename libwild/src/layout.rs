@@ -9,6 +9,7 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
+use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
@@ -1623,7 +1624,7 @@ fn compute_segment_layout<P: Platform>(
     assert_eq!(complete.len(), program_segments.len());
     let mut tls_layout = None;
 
-    let mut segments: Vec<SegmentLayout> = header_info
+    let mut segments = header_info
         .active_segment_ids
         .iter()
         .map(|&id| {
@@ -1643,7 +1644,7 @@ fn compute_segment_layout<P: Platform>(
 
             SegmentLayout { id, sizes }
         })
-        .collect();
+        .collect_vec();
 
     segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
 
@@ -3169,28 +3170,71 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     ))
 }
 
-pub(crate) fn should_emit_undefined_error<P: Platform>(
-    symbol: &P::SymtabEntry,
-    sym_file_id: FileId,
-    sym_def_file_id: FileId,
+/// Emits an undefined symbol error or warning if applicable.
+pub(crate) fn check_for_undefined<A: Arch>(
+    object: &ObjectLayoutState<A::Platform>,
+    section: &<A::Platform as Platform>::SectionHeader,
+    rel_offset: u64,
+    local_sym_index: object::SymbolIndex,
     flags: ValueFlags,
-    args: &P::Args,
-    output_kind: OutputKind,
+    symbol_id: SymbolId,
+    resources: &GraphResources<A::Platform>,
+) -> Result {
+    let symbol_db = resources.symbol_db;
+
+    if !should_emit_undefined_error(object, local_sym_index, flags, symbol_id, symbol_db) {
+        return Ok(());
+    }
+
+    let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
+    let source_info = A::get_source_info(object.object, &object.relocations, section, rel_offset)
+        .context("Failed to get source info")?;
+
+    if symbol_db.args.should_error_on_unresolved_symbols() {
+        resources.report_error(error!(
+            "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+            source_info, object.input,
+        ));
+    } else {
+        crate::error::warning(&format!(
+            "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+            source_info, object.input,
+        ));
+    }
+
+    Ok(())
+}
+
+fn should_emit_undefined_error<P: Platform>(
+    object: &ObjectLayoutState<P>,
+    local_sym_index: object::SymbolIndex,
+    flags: ValueFlags,
+    symbol_id: SymbolId,
+    symbol_db: &SymbolDb<P>,
 ) -> bool {
-    // TODO: Investigate whether this behaviour is correct or if we should actually be calling
-    // `should_allow_shlib_undefined` here instead or as well as `should_allow_object_undefined`.
-    if (output_kind.is_shared_object() && args.should_allow_object_undefined()) || symbol.is_weak()
+    // We always mark undefined symbols with the absolute flag, so if that's not set, we know the
+    // symbol isn't undefined and we can save other checks.
+    if !flags.is_absolute() {
+        return false;
+    }
+
+    let Ok(local_symbol) = object.object.symbol(local_sym_index) else {
+        // If we can't read the symbol, the error will be reported elsewhere.
+        return false;
+    };
+
+    if symbol_db
+        .args
+        .should_allow_object_undefined(symbol_db.output_kind)
+        || local_symbol.is_weak()
     {
         return false;
     }
 
-    let is_symbol_undefined =
-        sym_file_id == sym_def_file_id && symbol.is_undefined() && flags.is_absolute();
-
-    match args.unresolved_symbols_behaviour() {
+    match symbol_db.args.unresolved_symbols_behaviour() {
         crate::args::UnresolvedSymbols::IgnoreAll
         | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
-        _ => is_symbol_undefined,
+        _ => symbol_db.is_undefined(symbol_id),
     }
 }
 

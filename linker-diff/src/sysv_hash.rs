@@ -3,6 +3,7 @@ use crate::Result;
 use anyhow::Context;
 use anyhow::bail;
 use anyhow::ensure;
+use itertools::Itertools;
 use linker_utils::elf::secnames::HASH_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::Object as _;
@@ -61,7 +62,7 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
     let buckets = data[offset..offset + bucket_len]
         .chunks_exact(4)
         .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-        .collect::<Vec<_>>();
+        .collect_vec();
     offset += bucket_len;
 
     let chain_len = usize::try_from(nchain).unwrap() * 4;
@@ -72,7 +73,7 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
     let chains = data[offset..offset + chain_len]
         .chunks_exact(4)
         .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
-        .collect::<Vec<_>>();
+        .collect_vec();
 
     for sym in obj.elf_file.dynamic_symbols() {
         if !sym.is_definition() {

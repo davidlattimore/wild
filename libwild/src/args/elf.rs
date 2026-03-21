@@ -24,6 +24,7 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::linker_script::maybe_forced_sysroot;
+use crate::output_kind::OutputKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
 use crate::platform::Args as _;
@@ -67,7 +68,12 @@ pub struct ElfArgs {
     pub(crate) exclude_libs: ExcludeLibs,
     pub(crate) gc_sections: bool,
     pub(crate) build_id: BuildIdOption,
-    pub(crate) no_undefined: bool,
+
+    // Whether to emit errors if our input objects have undefined symbols that we can't resolve. If
+    // not specified, then the behaviour depends on whether we're emitting a shared object or an
+    // executable.
+    no_undefined: Option<bool>,
+
     pub(crate) allow_shlib_undefined: bool,
     pub(crate) needs_origin_handling: bool,
     pub(crate) needs_nodelete_handling: bool,
@@ -265,7 +271,7 @@ impl Default for ElfArgs {
             should_write_linker_identity: true,
             build_id: BuildIdOption::None,
             exclude_libs: ExcludeLibs::None,
-            no_undefined: false,
+            no_undefined: None,
             allow_shlib_undefined: false,
             sysroot: None,
             dependency_file: None,
@@ -589,17 +595,17 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         )
         .sub_option(
             "defs",
-            "Report unresolved symbol references in object files",
+            "Report unresolved symbol references when writing shared object",
             |args, _| {
-                args.no_undefined = true;
+                args.no_undefined = Some(true);
                 Ok(())
             },
         )
         .sub_option(
             "undefs",
-            "Do not report unresolved symbol references in object files",
+            "Do not report unresolved symbol references when writing shared object",
             |args, _| {
-                args.no_undefined = false;
+                args.no_undefined = Some(false);
                 Ok(())
             },
         )
@@ -1079,7 +1085,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("no-undefined")
         .help("Do not allow unresolved symbols in object files")
         .execute(|args, _modifier_stack| {
-            args.no_undefined = true;
+            args.no_undefined = Some(true);
             Ok(())
         });
 
@@ -1839,8 +1845,8 @@ impl platform::Args for ElfArgs {
         self.dynamic_linker.as_deref()
     }
 
-    fn should_allow_object_undefined(&self) -> bool {
-        !self.no_undefined
+    fn should_allow_object_undefined(&self, output_kind: OutputKind) -> bool {
+        !self.no_undefined.unwrap_or(output_kind.is_executable())
     }
 
     fn allow_multiple_definitions(&self) -> bool {

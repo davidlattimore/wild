@@ -153,20 +153,23 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::BType),
             None,
-            AllowedRange::new(-(2i64.pow(12)), 2i64.pow(13) - 2),
-            1,
+            // Can represent an even signed 13-bit offset (-4096 to +4094).
+            AllowedRange::new(-(2i64.pow(12)), 2i64.pow(12) - 1),
+            2,
         ),
         object::elf::R_RISCV_JAL => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::JType),
             None,
-            AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20) - 2),
-            1,
+            // Can represent an even signed 21-bit offset (-1MiB to +1MiB-2).
+            AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20) - 1),
+            2,
         ),
         object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => (
             RelocationKind::PltRelative,
             RelocationSize::bit_mask_riscv(0, 64, RiscVInstruction::UiType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -174,6 +177,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -181,6 +185,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -188,6 +193,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::TlsGd,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -195,6 +201,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -202,6 +209,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::RelativeRiscVLow12,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::IType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -209,6 +217,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::RelativeRiscVLow12,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::SType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -216,6 +225,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Absolute,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -223,6 +233,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Absolute,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::IType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -230,6 +241,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Absolute,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::SType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -237,6 +249,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::TpOff,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::UType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -244,6 +257,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::TpOff,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::IType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -251,6 +265,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::TpOff,
             RelocationSize::bit_mask_riscv(0, 32, RiscVInstruction::SType),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -321,6 +336,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::GotRelative,
             RelocationSize::ByteSize(4),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -335,15 +351,15 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 16, RiscVInstruction::CbType),
             None,
-            AllowedRange::new(-(2i64.pow(8)), 2i64.pow(9) - 2),
-            1,
+            AllowedRange::new(-(2i64.pow(8)), 2i64.pow(8) - 1),
+            2,
         ),
         object::elf::R_RISCV_RVC_JUMP => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 16, RiscVInstruction::CjType),
             None,
-            AllowedRange::new(-(2i64.pow(11)), 2i64.pow(12) - 2),
-            1,
+            AllowedRange::new(-(2i64.pow(11)), 2i64.pow(11) - 1),
+            2,
         ),
         object::elf::R_RISCV_RELAX => (
             RelocationKind::None,
@@ -391,6 +407,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
@@ -398,6 +415,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::PltRelative,
             RelocationSize::ByteSize(4),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
         ),
