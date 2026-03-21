@@ -291,15 +291,10 @@ impl<'data> SectionRule<'data> {
                 SectionNameMatcher::Exact(Cow::Owned(unescape_pattern(pattern)))
             }
             GlobPatternType::Star | GlobPatternType::NonStar => {
-                let wildcard_idx = pattern
-                    .iter()
-                    .position(|&b| b == b'*' || b == b'?' || b == b'\\' || b == b'[' || b == b']')
-                    .unwrap();
-
                 let compiled_pattern =
                     compile_glob_pattern(pattern).map_err(|e| crate::error!("{}", e))?;
 
-                SectionNameMatcher::Glob(&pattern[..wildcard_idx], compiled_pattern)
+                SectionNameMatcher::Glob(pattern, compiled_pattern)
             }
         };
 
@@ -546,4 +541,18 @@ fn test_glob_section_character_class() {
     assert!(!rule.matches(b"foobar", None));
     assert!(!rule.matches(b"foo_barbaz", None));
     assert!(!rule.matches(b"fooxbar", None));
+
+    // [a-z] alphabet range match
+    let range_rule = SectionRule::new(b"foo[a-z]bar", None, SectionRuleOutcome::Discard).unwrap();
+    assert!(range_rule.matches(b"fooabar", None));
+    assert!(range_rule.matches(b"foozbar", None));
+    assert!(range_rule.matches(b"foombar", None));
+    assert!(!range_rule.matches(b"fooAbar", None));
+    assert!(!range_rule.matches(b"foo1bar", None));
+
+    // escaped character match
+    let escape_rule = SectionRule::new(b"foo\\*bar", None, SectionRuleOutcome::Discard).unwrap();
+    assert!(escape_rule.matches(b"foo*bar", None));
+    assert!(!escape_rule.matches(b"fooxbar", None));
+    assert!(!escape_rule.matches(b"foobar", None));
 }
