@@ -88,10 +88,9 @@ macro_rules! debug_assert_bail {
     };
 }
 
-/// Prints a warning. By using our own macro for this, it'll be easier to find places that issue
-/// warnings if we want to say have a flag to suppress them.
+/// Prints a warning.
 pub(crate) fn warning(message: &str) {
-    println!("WARNING: wild: {message}");
+    println!("wild: {} {message}", "warning:".yellow());
 }
 
 impl Display for AlreadyInitialised {
