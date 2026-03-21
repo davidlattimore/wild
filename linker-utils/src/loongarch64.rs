@@ -9,6 +9,7 @@ use crate::elf::SIZE_2GB;
 use crate::elf::SIZE_2KB;
 use crate::elf::SIZE_4GB;
 use crate::elf::SIZE_4KB;
+use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
@@ -60,6 +61,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Absolute,
             RelocationSize::ByteSize(4),
             None,
+            // Can represent signed or unsigned value.
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             1,
             0,
@@ -258,7 +260,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::ByteSize(4),
             None,
             // with check 32-bit signed overflow
-            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(31)),
+            AllowedRange::from_bit_size(32, Sign::Signed),
             1,
             0,
         ),
@@ -267,7 +269,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask_loongarch64(2, 22, LoongArch64Instruction::Shift5),
             None,
             // with check 22-bit signed overflow and a multiple of 4
-            AllowedRange::new(-(2i64.pow(21)), 2i64.pow(21)),
+            AllowedRange::from_bit_size(22, Sign::Signed),
             4,
             0,
         ),
@@ -328,7 +330,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask_loongarch64(2, 18, LoongArch64Instruction::Shift10),
             None,
             // with check 18-bit signed overflow and a multiple of 4
-            AllowedRange::new(-(2i64.pow(17)), 2i64.pow(17)),
+            AllowedRange::from_bit_size(18, Sign::Signed),
             4,
             0,
         ),
@@ -337,7 +339,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask_loongarch64(2, 23, LoongArch64Instruction::Branch21or26),
             None,
             // with check 23-bit signed overflow and a multiple of 4
-            AllowedRange::new(-(2i64.pow(22)), 2i64.pow(22)),
+            AllowedRange::from_bit_size(23, Sign::Signed),
             4,
             0,
         ),
@@ -346,7 +348,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask_loongarch64(2, 28, LoongArch64Instruction::Branch21or26),
             None,
             // with check 28-bit signed overflow and a multiple of 4
-            AllowedRange::new(-(2i64.pow(27)), 2i64.pow(27)),
+            AllowedRange::from_bit_size(28, Sign::Signed),
             4,
             0,
         ),
@@ -355,7 +357,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Call36),
             None,
             // with check 38-bit signed overflow and a multiple of 4
-            AllowedRange::new(-(2i64.pow(37)), 2i64.pow(37)),
+            AllowedRange::from_bit_size(38, Sign::Signed),
             4,
             0,
         ),
