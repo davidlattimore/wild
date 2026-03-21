@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::glob_match::GlobPatternType;
 use crate::glob_match::analyze_glob_pattern;
 use crate::glob_match::compile_glob_pattern;
+use crate::glob_match::unescape_pattern;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
@@ -23,6 +24,7 @@ use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
 use linker_utils::elf::secnames;
+use std::borrow::Cow;
 use std::mem::replace;
 
 pub(crate) struct LayoutRules<'data> {
@@ -54,7 +56,7 @@ pub(crate) struct SectionRules<'data> {
 #[derive(Debug, Clone)]
 pub(crate) enum SectionNameMatcher<'data> {
     /// Matches sections whose name is exactly equal to the stored bytes.
-    Exact(&'data [u8]),
+    Exact(Cow<'data, [u8]>),
 
     /// Matches sections whose name starts with the stored bytes.
     Prefix(&'data [u8]),
@@ -66,9 +68,10 @@ pub(crate) enum SectionNameMatcher<'data> {
 
 /// Return the literal byte prefix of this matcher, used for hash table keying.
 impl<'data> SectionNameMatcher<'data> {
-    fn prefix_bytes(&self) -> &'data [u8] {
+    fn prefix_bytes(&self) -> &[u8] {
         match self {
-            Self::Exact(n) | Self::Prefix(n) | Self::Glob(n, _) => n,
+            Self::Exact(n) => n.as_ref(),
+            Self::Prefix(n) | Self::Glob(n, _) => n,
         }
     }
 }
@@ -292,20 +295,20 @@ impl<'data> SectionRule<'data> {
             .transpose()?;
 
         let name_matcher = match analyze_glob_pattern(pattern) {
-            GlobPatternType::Exact => SectionNameMatcher::Exact(pattern),
-            GlobPatternType::Star | GlobPatternType::EscapedExact | GlobPatternType::NonStar => {
+            GlobPatternType::Exact => SectionNameMatcher::Exact(Cow::Borrowed(pattern)),
+            GlobPatternType::EscapedExact => {
+                SectionNameMatcher::Exact(Cow::Owned(unescape_pattern(pattern)))
+            }
+            GlobPatternType::Star | GlobPatternType::NonStar => {
                 let wildcard_idx = pattern
                     .iter()
                     .position(|&b| b == b'*' || b == b'?' || b == b'\\' || b == b'[' || b == b']')
                     .unwrap();
 
-                if wildcard_idx == pattern.len() - 1 && pattern[wildcard_idx] == b'*' {
-                    SectionNameMatcher::Prefix(&pattern[..wildcard_idx])
-                } else {
-                    let compiled_pattern =
-                        compile_glob_pattern(pattern).map_err(|e| crate::error!("{}", e))?;
-                    SectionNameMatcher::Glob(&pattern[..wildcard_idx], compiled_pattern)
-                }
+                let compiled_pattern =
+                    compile_glob_pattern(pattern).map_err(|e| crate::error!("{}", e))?;
+
+                SectionNameMatcher::Glob(&pattern[..wildcard_idx], compiled_pattern)
             }
         };
 
@@ -319,7 +322,7 @@ impl<'data> SectionRule<'data> {
     #[inline(always)]
     fn matches(&self, section_name: &[u8], file_name: Option<&[u8]>) -> bool {
         let section_matches = match &self.name_matcher {
-            SectionNameMatcher::Exact(name) => section_name == *name,
+            SectionNameMatcher::Exact(name) => section_name == name.as_ref(),
             SectionNameMatcher::Prefix(prefix) => section_name.starts_with(prefix),
             SectionNameMatcher::Glob(_, pattern) => {
                 if let Ok(name_str) = std::str::from_utf8(section_name) {
@@ -388,7 +391,7 @@ impl<'data> SectionRule<'data> {
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
         SectionRule {
-            name_matcher: SectionNameMatcher::Exact(name),
+            name_matcher: SectionNameMatcher::Exact(Cow::Borrowed(name)),
             input_file_pattern: None,
             outcome,
         }
@@ -593,4 +596,14 @@ fn test_glob_star_anywhere() {
     assert!(rule.matches(b".text.bar.foo", None));
     assert!(rule.matches(b".text.baz.foo", None));
     assert!(!rule.matches(b".text.bar.baz", None));
+}
+
+#[test]
+fn test_glob_section_character_class() {
+    let rule = SectionRule::new(b"foo[_-]bar", None, SectionRuleOutcome::Discard).unwrap();
+    assert!(rule.matches(b"foo_bar", None));
+    assert!(rule.matches(b"foo-bar", None));
+    assert!(!rule.matches(b"foobar", None));
+    assert!(!rule.matches(b"foo_barbaz", None));
+    assert!(!rule.matches(b"fooxbar", None));
 }
