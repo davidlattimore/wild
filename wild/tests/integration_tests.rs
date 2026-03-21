@@ -3634,6 +3634,7 @@ fn integration_test(
         "tls-local-exec.c",
         "tls-local-dynamic.c",
         "undefined_symbols.c",
+        "undefined-with-gc-refs.c",
         "shlib-undefined.c",
         "whole_archive.c",
         "entry_arg.c",

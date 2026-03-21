@@ -997,6 +997,23 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             }
         }
     }
+
+    pub(crate) fn is_undefined(&self, symbol_id: SymbolId) -> bool {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match &self.groups[file_id.group()] {
+            Group::Objects(objects) => {
+                let file = &objects[file_id.file()];
+                let local_index = file.symbol_id_range.id_to_input(symbol_id);
+                file.parsed
+                    .object
+                    .symbol(local_index)
+                    .is_ok_and(|sym| sym.is_undefined())
+            }
+            // For symbols originating from linker scripts, prelude etc, we currently assume they're
+            // all definitions.
+            _ => false,
+        }
+    }
 }
 
 pub(crate) fn linker_plugin_disabled_error() -> Error {

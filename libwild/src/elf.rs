@@ -4634,38 +4634,16 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             }
 
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
-            // If the canonical symbol belongs to a shared object, use the file ID of symbols that
-            // made the reference.
-            let undefined_check_file_id = symbol_db.file_id_for_symbol(if flags.is_dynamic() {
-                local_symbol_id
-            } else {
-                symbol_id
-            });
-            if layout::should_emit_undefined_error::<A::Platform>(
-                object.object.symbol(local_sym_index)?,
-                object.file_id,
-                undefined_check_file_id,
-                flags,
-                args,
-                symbol_db.output_kind,
-            ) {
-                let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                let source_info =
-                    A::get_source_info(object.object, &object.relocations, section, rel_offset)
-                        .context("Failed to get source info")?;
 
-                if args.should_error_on_unresolved_symbols() {
-                    resources.report_error(error!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                } else {
-                    crate::error::warning(&format!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                }
-            }
+            layout::check_for_undefined::<A>(
+                object,
+                section,
+                rel_offset,
+                local_sym_index,
+                flags,
+                symbol_id,
+                resources,
+            )?;
         }
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
