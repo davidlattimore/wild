@@ -7,6 +7,10 @@
 use crate::bail;
 use crate::error;
 use crate::error::Result;
+use crate::glob_match::GlobPatternType;
+use crate::glob_match::analyze_glob_pattern;
+use crate::glob_match::compile_glob_pattern;
+use crate::glob_match::unescape_pattern;
 use crate::hash::PassThroughHasher;
 use crate::hash::PreHashed;
 use crate::input_data::ScriptData;
@@ -709,17 +713,14 @@ pub(crate) fn parse_matcher<'data>(
             let glob_type = analyze_glob_pattern(token);
 
             let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
-                let pattern = str::from_utf8(token).map_err(|_| {
-                    ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
-                })?;
-                // Right now, there is a pending PR that will support the '^' as the negation
-                // character in the glob crate: https://github.com/rust-lang/glob/issues/116
-                //
-                // Let's optimistically assume the '^' cannot be part of the symbol's name (escaped
-                // in a pattern).
-                let pattern = pattern.replace("[^", "[!");
-                Pattern::new(pattern.as_str()).map_err(|_| {
-                    ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
+                compile_glob_pattern(token).map_err(|e| {
+                    ContextError::from_external_error(
+                        input,
+                        match e {
+                            "Invalid UTF-8 string" => VersionScriptError::InvalidUtf8String,
+                            _ => VersionScriptError::InvalidGlobPattern,
+                        },
+                    )
                 })
             };
 
@@ -741,68 +742,6 @@ fn try_take(input: &mut &BStr, mut exact: &[u8]) -> bool {
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
     take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
-}
-
-enum GlobPatternType {
-    Exact,
-    EscapedExact,
-    Star,
-    NonStar,
-}
-
-fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
-    // Fast path for when none of the characters are present.
-    if memchr::memchr3(b'*', b'?', b'\\', pattern).is_none()
-        && memchr::memchr2(b'[', b']', pattern).is_none()
-    {
-        return GlobPatternType::Exact;
-    }
-
-    let mut pattern_type = GlobPatternType::Exact;
-    let mut it = pattern.iter();
-
-    while let Some(&c) = it.next() {
-        match c {
-            b'\\' => {
-                // Found an escape sequence, mark as EscapedExact if no globs found yet
-                if matches!(pattern_type, GlobPatternType::Exact) {
-                    pattern_type = GlobPatternType::EscapedExact;
-                }
-                it.next();
-            }
-            b'*' => {
-                return GlobPatternType::Star;
-            }
-            b'[' | b']' | b'?' => {
-                pattern_type = GlobPatternType::NonStar;
-            }
-            _ => {}
-        }
-    }
-
-    pattern_type
-}
-
-/// Unescapes a pattern by removing backslashes that escape special characters.
-/// For exact patterns, we need to normalize escaped characters to their literal form.
-fn unescape_pattern(pattern: &[u8]) -> Vec<u8> {
-    let mut result = Vec::with_capacity(pattern.len());
-    let mut it = pattern.iter();
-
-    while let Some(&c) = it.next() {
-        if c == b'\\' {
-            if let Some(&next_c) = it.next() {
-                result.push(next_c);
-            } else {
-                // If backslash is at the end, include it as-is
-                result.push(c);
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
 }
 
 #[derive(Debug)]
