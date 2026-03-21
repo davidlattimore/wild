@@ -2249,6 +2249,7 @@ dependencies = [
  "dhat",
  "foldhash 0.2.0",
  "itertools",
+ "libloading",
  "libwild",
  "linker-diff",
  "mimalloc",
