@@ -3223,9 +3223,9 @@ fn should_emit_undefined_error<P: Platform>(
         return false;
     };
 
-    // TODO: Investigate whether this behaviour is correct or if we should actually be calling
-    // `should_allow_shlib_undefined` here instead or as well as `should_allow_object_undefined`.
-    if (symbol_db.output_kind.is_shared_object() && symbol_db.args.should_allow_object_undefined())
+    if symbol_db
+        .args
+        .should_allow_object_undefined(symbol_db.output_kind)
         || local_symbol.is_weak()
     {
         return false;

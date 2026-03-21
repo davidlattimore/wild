@@ -1095,7 +1095,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn should_export_dynamic(&self, lib_name: &[u8]) -> bool;
 
     /// Returns whether to allow undefined symbols in regular object files.
-    fn should_allow_object_undefined(&self) -> bool {
+    fn should_allow_object_undefined(&self, _output_kind: OutputKind) -> bool {
         false
     }
 
