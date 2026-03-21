@@ -2569,9 +2569,8 @@ impl LinkCommand {
                 .context("Linker args must be valid utf-8")?;
 
             let linker = libwild::Linker::new();
-            let parsed_args =
+            let mut parsed_args =
                 libwild::Args::parse(|| std::iter::once("wild").chain(args.iter().copied()))?;
-            let libwild::args::Args::Elf(mut parsed_args) = parsed_args;
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);
@@ -3606,6 +3605,8 @@ fn integration_test(
         "gnu-unique.c",
         "undef-transitive.c",
         "symbol-versions.c",
+        "common-shared.c",
+        "absolute-symbol.s",
         "simple-version-script.c",
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
@@ -3633,6 +3634,7 @@ fn integration_test(
         "tls-local-exec.c",
         "tls-local-dynamic.c",
         "undefined_symbols.c",
+        "undefined-with-gc-refs.c",
         "shlib-undefined.c",
         "whole_archive.c",
         "entry_arg.c",

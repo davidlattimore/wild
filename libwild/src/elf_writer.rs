@@ -384,7 +384,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
     header.e_shoff.set(
         e,
-        u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
+        u64::from(elf::FILE_HEADER_SIZE) + crate::elf::program_headers_size(header_info),
     );
     header
         .e_flags
@@ -3871,6 +3871,42 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
                     format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
                 })?;
         }
+    } else if sym.is_common(LittleEndian) {
+        let symbol_id = sym_def.symbol_id;
+        let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+            format!(
+                "Tried to write dynamic symbol definition without a resolution: {}",
+                layout.symbol_debug(symbol_id)
+            )
+        })?;
+
+        let mut sym_value = resolution.value();
+
+        // As common symbols are denoted by setting shndx=SHN_COMMON which is a special section,
+        // we need to put them manually into BSS/TBSS sections depending on whether they are thread
+        // local or not.
+        let section_id = if sym.st_type() == STT_TLS {
+            sym_value -= layout.tls_start_address();
+            output_section_id::TBSS
+        } else {
+            output_section_id::BSS
+        };
+        let section_id = layout.output_sections.primary_output_section(section_id);
+
+        dynamic_symbol_writer
+            .copy_symbol(sym, name, section_id, sym_value, ValueFlags::empty())
+            .with_context(|| {
+                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
+            })?;
+    } else if sym.is_absolute(LittleEndian) {
+        dynamic_symbol_writer
+            .copy_absolute_symbol(sym, name, ValueFlags::empty())
+            .with_context(|| {
+                format!(
+                    "Failed to absolute {}",
+                    layout.symbol_debug(sym_def.symbol_id)
+                )
+            })?;
     } else {
         dynamic_symbol_writer
             .copy_symbol_shndx(sym, name, 0, 0, ValueFlags::empty())
@@ -4730,7 +4766,7 @@ fn write_copy_relocations<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout,
 ) -> Result {
-    for &symbol_id in &object.copy_relocation_symbols {
+    for &symbol_id in &object.format_specific_layout.copy_relocation_symbols {
         write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
             || {
                 format!(

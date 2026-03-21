@@ -4,6 +4,7 @@ use crate::alignment::Alignment;
 use crate::args::DefsymValue;
 use crate::bail;
 use crate::grouping::Group;
+use crate::input_data::FileLoader;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -12,19 +13,27 @@ use crate::layout::DynamicSymbolDefinition;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
+use crate::layout::PreludeLayoutState;
+use crate::layout_rules;
+use crate::layout_rules::LayoutRulesBuilder;
+use crate::layout_rules::SectionRule;
+use crate::linker_plugins::LinkerPlugin;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::InternalSymDefInfo;
 use crate::part_id::PartId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
+use crate::resolution::Resolver;
 use crate::resolution::UnloadedSection;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
+use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -190,7 +199,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: Send + Sync + 'data;
-    type VerneedTable<'data>: VerneedTable<'data>;
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
     type DynamicLayoutExt<'data>: std::fmt::Debug + Send + Sync + 'data;
     type LayoutResourcesExt<'data>: std::fmt::Debug + Send + Sync + 'data;
@@ -206,8 +214,56 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VersionNames<'data>;
 
-    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags;
+    /// For platforms that don't support symbol versioning, this can just be the unit type.
+    type VerneedTable<'data>: VerneedTable<'data>;
 
+    /// Invoke the linker for requested architecture.
+    fn link_for_arch<'data>(
+        linker: &'data crate::Linker,
+        args: &'data Self::Args,
+    ) -> Result<crate::LinkerOutput<'data>>;
+
+    fn write_output_file<'data, A: Arch<Platform = Self>>(
+        output: &crate::file_writer::Output,
+        layout: &Layout<'data, Self>,
+    ) -> Result;
+
+    /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
+    /// that one should be used.
+    fn maybe_init_linker_plugin<'data>(
+        _args: &'data Self::Args,
+        _linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
+        _herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        Ok(None)
+    }
+
+    /// Called once all symbols have been read, but only if a linker plugin is active.
+    fn plugin_all_symbols_read<'data>(
+        _plugin: &mut LinkerPlugin<'data>,
+        _symbol_db: &mut SymbolDb<'data, Self>,
+        _resolver: &mut Resolver<'data, Self>,
+        _file_loader: &mut FileLoader<'data>,
+        _per_symbol_flags: &mut PerSymbolFlags,
+        _output_sections: &mut OutputSections<'data, Self>,
+        _layout_rules_builder: &mut LayoutRulesBuilder<'data>,
+    ) -> Result {
+        // Platforms that implement maybe_init_linker_plugin must implement this method too.
+        unimplemented!();
+    }
+
+    #[allow(dead_code)]
+    fn resolve_lto_symbols<'data, 'scope>(
+        _obj: &crate::linker_plugins::LtoInput<'data>,
+        _resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
+        _definitions_out: &mut [SymbolId],
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
+    /// Returns attributes of the supplied section. This is type+flags and doesn't include other
+    /// information like name, size etc.
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes;
 
     /// Validate that the supplied sizes are internally consistent.
@@ -233,11 +289,23 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
 
+    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
+    /// of `state`.
+    fn activate_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut CommonGroupState<'data, Self>,
+    );
+
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         resources: &layout::GraphResources<'data, 'scope, Self>,
     );
+
+    fn finalise_sizes_dynamic<'data>(
+        object: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+    ) -> Result;
 
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
@@ -248,6 +316,20 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         object: &layout::ObjectLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
+
+    fn finalise_layout_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut layout::ResolutionWriter<Self>,
+    ) -> Result<Self::DynamicLayoutExt<'data>>;
+
+    /// Returns the next dynamic symbol index, bumping `memory_offsets` to point to the subsequent
+    /// one.
+    fn take_dynsym_index(
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Result<u32>;
 
     fn compute_object_addresses<'data>(
         object: &layout::ObjectLayoutState<'data, Self>,
@@ -284,23 +366,27 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> Result<layout::DynamicSymbolDefinition<'data, Self>>;
 
     fn validate_section<'data>(
-        section_info: &crate::output_section_id::SectionOutputInfo<Self>,
-        section_flags: Self::SectionFlags,
-        section_layout: &OutputRecordLayout,
-        merge_target: OutputSectionId,
-        output_sections: &OutputSections<'data, Self>,
-        section_id: OutputSectionId,
-    ) -> Result;
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self>,
+        _section_flags: Self::SectionFlags,
+        _section_layout: &OutputRecordLayout,
+        _merge_target: OutputSectionId,
+        _output_sections: &OutputSections<'data, Self>,
+        _section_id: OutputSectionId,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Called when we detect an internal error with allocation in order to try and help determine
-    /// what we did wrong.
+    /// what we did wrong. Can optionally return a more helpful error.
     fn verify_resolution_allocation(
-        output_sections: &OutputSections<Self>,
-        output_order: &OutputOrder,
-        output_kind: OutputKind,
-        mem_sizes: &OutputSectionPartMap<u64>,
-        resolution: &layout::Resolution<Self>,
-    ) -> Result;
+        _output_sections: &OutputSections<Self>,
+        _output_order: &OutputOrder,
+        _output_kind: OutputKind,
+        _mem_sizes: &OutputSectionPartMap<u64>,
+        _resolution: &layout::Resolution<Self>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Updates the list of segments to keep.
     fn update_segment_keep_list(
@@ -410,11 +496,34 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         is_undefined: bool,
     ) -> bool;
 
+    /// Given the name of an init/fini section, returns the sort priority, if any.
+    fn init_section_priority(_name: &[u8]) -> Option<u16> {
+        None
+    }
+
+    /// Verifies that it's OK to load a section with the given name. Mostly just used to detect
+    /// linker plugin inputs, since we shouldn't be loading those.
+    fn verify_allowed_input_section_name(_name: &[u8]) -> Result {
+        Ok(())
+    }
+
+    /// Allocate space for headers based on segment and section counts.
+    fn allocate_header_sizes(
+        prelude: &mut PreludeLayoutState<Self>,
+        sizes: &mut OutputSectionPartMap<u64>,
+        header_info: &layout::HeaderInfo,
+        output_sections: &OutputSections<Self>,
+    );
+
+    /// Gives the platform an opportunity to error out if an input stack section is requesting an
+    /// executable stack, but that's not permitted due to flags.
     fn validate_stack_section(
-        section: &Self::SectionHeader,
-        object: &impl std::fmt::Display,
-        args: &Self::Args,
-    ) -> Result;
+        _section: &Self::SectionHeader,
+        _object: &impl std::fmt::Display,
+        _args: &Self::Args,
+    ) -> Result {
+        Ok(())
+    }
 
     fn finalise_sizes_for_symbol<'data>(
         common: &mut CommonGroupState<'data, Self>,
@@ -436,10 +545,20 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         per_symbol_flags: &AtomicPerSymbolFlags,
     );
 
-    fn finalise_prelude_layout(
+    fn allocate_internal_symbol(
+        symbol_id: SymbolId,
+        def_info: &InternalSymDefInfo,
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<Self>,
+    ) -> Result;
+
+    fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>);
+
+    fn finalise_prelude_layout<'data>(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Self::PreludeLayoutExt;
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+    ) -> Result<Self::PreludeLayoutExt>;
 
     fn create_resolution(
         flags: ValueFlags,
@@ -449,11 +568,46 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> layout::Resolution<Self>;
 
     fn validate_resolution(
-        name: &[u8],
-        resolution: &crate::layout::Resolution<Self>,
-        got: &Self::SectionHeader,
-        got_data: &[u8],
-    ) -> Result;
+        _name: &[u8],
+        _resolution: &crate::layout::Resolution<Self>,
+        _got: &Self::SectionHeader,
+        _got_data: &[u8],
+    ) -> Result {
+        Ok(())
+    }
+
+    fn raw_symbol_name<'data>(
+        name_bytes: &'data [u8],
+        verneed_table: &Self::VerneedTable<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> Self::RawSymbolName<'data>;
+
+    fn parse_raw_symbol_name<'data>(name_bytes: &'data [u8]) -> Self::RawSymbolName<'data> {
+        <Self::RawSymbolName<'data> as RawSymbolName>::parse(name_bytes)
+    }
+
+    fn default_layout_rules() -> &'static [SectionRule<'static>];
+
+    /// Only called if a linker script that provides custom sections and layout rules is present.
+    /// Gives the platform a chance to add extra built-in rules that need to be present even when a
+    /// linker script is providing most of the rules.
+    fn linker_script_rules_pre_build(_rule_builder: &mut layout_rules::LayoutRulesBuilder) {}
+
+    fn copy_relocate_symbol<'scope, 'data>(
+        _state: &mut layout::DynamicLayoutState<Self>,
+        _symbol_id: SymbolId,
+        _resources: &layout::GraphResources<'data, 'scope, Self>,
+    ) -> Result {
+        bail!("Platform does not support copy relocations");
+    }
+
+    fn finalise_copy_relocations<'data>(
+        _group_states: &mut [layout::GroupState<'data, Self>],
+        _symbol_db: &SymbolDb<'data, Self>,
+        _symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        Ok(())
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -540,13 +694,6 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
 
-    /// The dynamic object will be linked against. This is a chance to perform extra initialisation
-    /// of `state`.
-    fn activate_dynamic(
-        &self,
-        state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-    );
-
     fn dynamic_symbol_used(
         &self,
         symbol_index: object::SymbolIndex,
@@ -566,13 +713,6 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         counts: &mut <Self::Platform as Platform>::NonAddressableCounts,
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
-
-    fn finalise_layout_dynamic(
-        &self,
-        state: <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> <Self::Platform as Platform>::DynamicLayoutExt<'data>;
 
     fn section_name(
         &self,
@@ -768,7 +908,7 @@ pub(crate) trait RelocationSequence<'data> {
     fn num_relocations(&self) -> usize;
 }
 
-pub(crate) trait RawSymbolName<'data>: Send + Sync + 'data {
+pub(crate) trait RawSymbolName<'data>: Send + Sync + std::fmt::Display + 'data {
     fn parse(bytes: &'data [u8]) -> Self;
 
     fn name(&self) -> &'data [u8];
@@ -1004,4 +1144,16 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn loadable_segment_alignment(&self) -> Alignment;
 
     fn should_merge_sections(&self) -> bool;
+
+    fn dependency_file(&self) -> Option<&Path> {
+        None
+    }
+
+    fn should_write_trace_file(&self) -> bool {
+        false
+    }
+
+    fn relocation_model(&self) -> crate::args::RelocationModel;
+
+    fn should_output_executable(&self) -> bool;
 }

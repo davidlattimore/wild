@@ -27,9 +27,11 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
 use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
+use crate::resolution::ResolutionResources;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::Resolver;
+use crate::resolution::SymbolAttributes;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -42,6 +44,7 @@ use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use libloading::Library;
+use rayon::Scope;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::ffi::CStr;
@@ -346,8 +349,8 @@ impl LoadedPlugin {
 
         let output_kind = if args.should_output_executable {
             match args.relocation_model {
-                crate::args::elf::RelocationModel::NonRelocatable => OutputFileType::Exec,
-                crate::args::elf::RelocationModel::Relocatable => OutputFileType::Pie,
+                crate::args::RelocationModel::NonRelocatable => OutputFileType::Exec,
+                crate::args::RelocationModel::Relocatable => OutputFileType::Pie,
             }
         } else {
             OutputFileType::Dyn
@@ -512,7 +515,7 @@ impl<'data> LtoInput<'data> {
         symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::symbol_db::Visibility {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        crate::symbol_db::Visibility::from_elf_st_visibility(self.symbols[local_index].visibility)
+        crate::elf::convert_elf_visibility(self.symbols[local_index].visibility)
     }
 
     pub(crate) fn symbols_iter(&self) -> impl Iterator<Item = (SymbolId, &PluginSymbol<'data>)> {
@@ -1234,4 +1237,46 @@ impl<'data> Store<'data> {
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
         }
     }
+}
+
+pub(crate) fn resolve_lto_symbols<'data, 'scope>(
+    obj: &crate::linker_plugins::LtoInput<'data>,
+    resources: &'scope ResolutionResources<'data, 'scope, Elf>,
+    definitions_out: &mut [SymbolId],
+    scope: &Scope<'scope>,
+) -> Result {
+    obj.symbols
+        .iter()
+        .enumerate()
+        .zip(definitions_out)
+        .try_for_each(
+            |((local_symbol_index, local_symbol), definition)| -> Result {
+                if !local_symbol.is_definition() {
+                    let mut name_info = Elf::parse_raw_symbol_name(local_symbol.name.bytes());
+                    if let Some(version) = local_symbol.version {
+                        name_info.version_name = Some(version);
+                    }
+
+                    let symbol_attributes = SymbolAttributes {
+                        name_info,
+                        is_local: false,
+                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT,
+                        is_weak: local_symbol.kind
+                            == Some(crate::linker_plugins::SymbolKind::WeakUndef),
+                    };
+
+                    crate::resolution::resolve_symbol(
+                        obj.symbol_id_range.offset_to_id(local_symbol_index),
+                        &symbol_attributes,
+                        definition,
+                        resources,
+                        false,
+                        obj.file_id,
+                        scope,
+                    )?;
+                }
+
+                Ok(())
+            },
+        )
 }

@@ -23,7 +23,6 @@ use crate::platform::Platform;
 use crate::platform::SectionHeader;
 use glob::Pattern;
 use hashbrown::HashTable;
-use linker_utils::elf::secnames;
 use std::borrow::Cow;
 use std::mem::replace;
 
@@ -118,7 +117,7 @@ impl SectionOutputInfo {
         }
     }
 
-    const fn keep(section_id: OutputSectionId) -> Self {
+    pub(crate) const fn keep(section_id: OutputSectionId) -> Self {
         Self {
             section_id,
             must_keep: true,
@@ -260,19 +259,11 @@ impl<'data> LayoutRulesBuilder<'data> {
         })
     }
 
-    pub(crate) fn build(mut self) -> LayoutRules<'data> {
+    pub(crate) fn build<P: Platform>(mut self) -> LayoutRules<'data> {
         let section_rules = if self.rules.is_empty() {
-            SectionRules::from_rules(BUILT_IN_RULES)
+            SectionRules::from_rules(P::default_layout_rules())
         } else {
-            // Even when we have a linker script, we still need to map .comment to .comment. It's a
-            // special section because both input objects and the linker write to it. At least for
-            // linkers that put their version in the .comment section. GNU ld doesn't, but LLD does
-            // and still does so even when a linker script supposedly suppresses built-in rules.
-            self.rules.push(SectionRule::exact_section_keep(
-                secnames::COMMENT_SECTION_NAME,
-                output_section_id::COMMENT,
-            ));
-
+            P::linker_script_rules_pre_build(&mut self);
             SectionRules::from_rules(&self.rules)
         };
 
@@ -355,14 +346,17 @@ impl<'data> SectionRule<'data> {
         pattern.matches(name_str)
     }
 
-    const fn exact_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
+    pub(crate) const fn exact_section(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+    ) -> SectionRule<'data> {
         Self::exact(
             name,
             SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id)),
         )
     }
 
-    const fn exact_section_keep(
+    pub(crate) const fn exact_section_keep(
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
@@ -372,14 +366,17 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    const fn prefix_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
+    pub(crate) const fn prefix_section(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+    ) -> SectionRule<'data> {
         Self::prefix(
             name,
             SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id)),
         )
     }
 
-    const fn prefix_section_sort(
+    pub(crate) const fn prefix_section_sort(
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
@@ -389,7 +386,10 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
+    pub(crate) const fn exact(
+        name: &'data [u8],
+        outcome: SectionRuleOutcome,
+    ) -> SectionRule<'data> {
         SectionRule {
             name_matcher: SectionNameMatcher::Exact(Cow::Borrowed(name)),
             input_file_pattern: None,
@@ -397,7 +397,10 @@ impl<'data> SectionRule<'data> {
         }
     }
 
-    const fn prefix(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
+    pub(crate) const fn prefix(
+        name: &'data [u8],
+        outcome: SectionRuleOutcome,
+    ) -> SectionRule<'data> {
         SectionRule {
             name_matcher: SectionNameMatcher::Prefix(name),
             input_file_pattern: None,
@@ -405,69 +408,6 @@ impl<'data> SectionRule<'data> {
         }
     }
 }
-
-const BUILT_IN_RULES: &[SectionRule<'static>] = &[
-    SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
-    SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
-    SectionRule::exact_section_keep(
-        secnames::PREINIT_ARRAY_SECTION_NAME,
-        output_section_id::PREINIT_ARRAY,
-    ),
-    SectionRule::exact_section_keep(secnames::COMMENT_SECTION_NAME, output_section_id::COMMENT),
-    SectionRule::exact_section_keep(
-        secnames::NOTE_ABI_TAG_SECTION_NAME,
-        output_section_id::NOTE_ABI_TAG,
-    ),
-    SectionRule::exact_section(
-        secnames::NOTE_GNU_BUILD_ID_SECTION_NAME,
-        output_section_id::NOTE_GNU_BUILD_ID,
-    ),
-    SectionRule::prefix_section(secnames::RODATA_SECTION_NAME, output_section_id::RODATA),
-    SectionRule::prefix_section(secnames::TEXT_SECTION_NAME, output_section_id::TEXT),
-    SectionRule::prefix_section(
-        secnames::DATA_REL_RO_SECTION_NAME,
-        output_section_id::DATA_REL_RO,
-    ),
-    SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
-    SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
-    SectionRule::prefix_section_sort(
-        secnames::INIT_ARRAY_SECTION_NAME,
-        output_section_id::INIT_ARRAY,
-    ),
-    SectionRule::prefix_section_sort(secnames::CTORS_SECTION_NAME, output_section_id::INIT_ARRAY),
-    SectionRule::prefix_section_sort(
-        secnames::FINI_ARRAY_SECTION_NAME,
-        output_section_id::FINI_ARRAY,
-    ),
-    SectionRule::prefix_section_sort(secnames::DTORS_SECTION_NAME, output_section_id::FINI_ARRAY),
-    SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
-    SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
-    SectionRule::prefix_section(
-        secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
-        output_section_id::GCC_EXCEPT_TABLE,
-    ),
-    SectionRule::prefix(b".rela", SectionRuleOutcome::Discard),
-    SectionRule::prefix(b".crel", SectionRuleOutcome::Discard),
-    SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::NoteGnuStack),
-    SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
-    SectionRule::exact(
-        secnames::SFRAME_SECTION_NAME,
-        SectionRuleOutcome::Section(SectionOutputInfo::keep(output_section_id::SFRAME)),
-    ),
-    SectionRule::exact(
-        secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
-        SectionRuleOutcome::NoteGnuProperty,
-    ),
-    SectionRule::exact(
-        secnames::RISCV_ATTRIBUTES_SECTION_NAME,
-        SectionRuleOutcome::RiscVAttribute,
-    ),
-    SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
-];
 
 /// Multiplier for the rule-hashtable's capacity, relative to the number of entries. We want a
 /// relatively sparse hashtable, since we may have a small number of entries with the same prefix
@@ -554,7 +494,7 @@ fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOut
 
 #[test]
 fn test_section_mapping() {
-    let rules = SectionRules::from_rules(BUILT_IN_RULES);
+    let rules = SectionRules::from_rules(crate::elf::Elf::default_layout_rules());
     let header = crate::elf::SectionHeader {
         sh_name: Default::default(),
         sh_type: Default::default(),

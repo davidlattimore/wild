@@ -71,7 +71,6 @@ pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
 
-use crate::args::elf::ElfArgs;
 use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
@@ -80,6 +79,7 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_kind::OutputKind;
 use crate::platform::Arch;
 use crate::platform::Args as _;
+use crate::platform::Platform;
 use crate::value_flags::PerSymbolFlags;
 use crate::version_script::VersionScript;
 use colosseum::sync::Arena;
@@ -101,7 +101,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(mut args: ElfArgs) -> error::Result {
+pub fn run(mut args: Args) -> error::Result {
     // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
     // initialise the timing module before the worker threads are started, otherwise the threads
     // won't contribute to counters such as --time=cycles,instructions etc.
@@ -117,8 +117,8 @@ pub fn run(mut args: ElfArgs) -> error::Result {
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
-pub fn setup_tracing(args: &ElfArgs) -> Result<(), AlreadyInitialised> {
-    if let Some(opts) = args.time_phase_options.as_ref() {
+pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
+    if let Some(opts) = args.common().time_phase_options.as_ref() {
         timing::init_tracing(opts)
     } else if args.common().print_allocations.is_some() {
         debug_trace::init()
@@ -158,10 +158,11 @@ pub struct Linker {
 }
 
 pub struct LinkerOutput<'layout_inputs> {
+    #[allow(dyn_drop)]
     /// This is just here so that we defer its destruction. This allows us to (a) measure how long
     /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
     /// the background.
-    layout: Option<layout::Layout<'layout_inputs, Elf>>,
+    layout: Option<Box<dyn Drop + 'layout_inputs>>,
 }
 
 impl Linker {
@@ -182,54 +183,49 @@ impl Linker {
     /// return, the output file should be usable.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
-        args: &'layout_inputs ElfArgs,
+        args: &'layout_inputs Args,
         // We don't actually use this, but take it as an argument to ensure that the caller has
         // created it. We may decide to actually use it in future, if we stop using rayon's global
         // thread pool.
         _thread_pool: &crate::args::ThreadPool,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        match args.version_mode {
-            args::elf::VersionMode::ExitAfterPrint => {
+        match args.common().version_mode {
+            args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{}", linker_identity())?;
                 return Ok(LinkerOutput { layout: None });
             }
-            args::elf::VersionMode::Verbose => {
+            args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
                 writeln!(stdout, "{}", linker_identity())?;
                 // Continue linking
             }
-            args::elf::VersionMode::None => {
+            args::VersionMode::None => {
                 // Don't print version
             }
         }
 
-        match args.arch {
-            arch::Architecture::X86_64 => self.link_for_arch::<elf_x86_64::ElfX86_64>(args),
-            arch::Architecture::AArch64 => self.link_for_arch::<elf_aarch64::ElfAArch64>(args),
-            arch::Architecture::RISCV64 => self.link_for_arch::<elf_riscv64::ElfRiscV64>(args),
-            arch::Architecture::LoongArch64 => {
-                self.link_for_arch::<elf_loongarch64::ElfLoongArch64>(args)
-            }
+        match args {
+            Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
         }
     }
 
-    fn link_for_arch<'data, A: Arch<Platform = Elf>>(
+    fn link_for_arch<'data, P: Platform, A: Arch<Platform = P>>(
         &'data self,
-        args: &'data ElfArgs,
+        args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
         let mut file_loader = input_data::FileLoader::new(&self.inputs_arena);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.load_inputs_and_link::<A>(&mut file_loader, args);
+        let result = self.load_inputs_and_link::<P, A>(&mut file_loader, args);
 
         file_loader.verify_inputs_unchanged()?;
 
         // Write the dependency file and inputs trace after successful linking.
         if result.is_ok() {
-            if let Some(dep_file_path) = &args.dependency_file {
-                write_dependency_file(dep_file_path, &args.output, &file_loader.loaded_files)
+            if let Some(dep_file_path) = &args.dependency_file() {
+                write_dependency_file(dep_file_path, args.output(), &file_loader.loaded_files)
                     .with_context(|| {
                         format!(
                             "Failed to write dependency file `{}`",
@@ -237,7 +233,7 @@ impl Linker {
                         )
                     })?;
             }
-            if args.trace {
+            if args.should_write_trace_file() {
                 let mut buf = BufWriter::new(std::io::stdout());
                 for input in &file_loader.loaded_files {
                     writeln!(buf, "{}", input.filename.display())?;
@@ -248,17 +244,16 @@ impl Linker {
         result
     }
 
-    fn load_inputs_and_link<'data, A: Arch<Platform = Elf>>(
+    fn load_inputs_and_link<'data, P: Platform, A: Arch<Platform = P>>(
         &'data self,
         file_loader: &mut FileLoader<'data>,
-        args: &'data ElfArgs,
+        args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut plugin =
-            linker_plugins::LinkerPlugin::from_args(args, &self.linker_plugin_arena, &self.herd)?;
+        let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
 
-        let loaded = file_loader.load_inputs(&args.common.inputs, args, &mut plugin);
+        let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
 
-        args.common.save_dir.finish(file_loader, args)?;
+        args.common().save_dir.finish(file_loader, args)?;
 
         let loaded = loaded?;
 
@@ -301,7 +296,8 @@ impl Linker {
         if let Some(plugin) = plugin.as_mut()
             && plugin.is_initialised()
         {
-            plugin.all_symbols_read(
+            P::plugin_all_symbols_read(
+                plugin,
                 &mut symbol_db,
                 &mut resolver,
                 file_loader,
@@ -317,7 +313,7 @@ impl Linker {
             symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
         }
 
-        let layout_rules = layout_rules_builder.build();
+        let layout_rules = layout_rules_builder.build::<P>();
 
         let resolved = resolver.resolve_sections_and_canonicalise_undefined(
             &mut symbol_db,
@@ -326,7 +322,7 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<Elf, A>(
+        let layout = layout::compute::<P, A>(
             symbol_db,
             per_symbol_flags,
             resolved,
@@ -334,7 +330,7 @@ impl Linker {
             &mut output,
         )?;
 
-        output.write(&layout, elf_writer::write::<A>)?;
+        P::write_output_file::<A>(&output, &layout)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
@@ -342,7 +338,7 @@ impl Linker {
         self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
         Ok(LinkerOutput {
-            layout: Some(layout),
+            layout: Some(Box::new(layout)),
         })
     }
 }
@@ -415,10 +411,10 @@ pub fn init_timing() -> Result {
     timing::setup()
 }
 
-pub fn should_fork(args: &ElfArgs) -> bool {
+pub fn should_fork(args: &Args) -> bool {
     args.common().should_fork()
 }
 
-pub fn activate_thread_pool(args: &mut ElfArgs) -> Result<crate::args::ThreadPool> {
+pub fn activate_thread_pool(args: &mut Args) -> Result<crate::args::ThreadPool> {
     args.common_mut().activate_thread_pool()
 }

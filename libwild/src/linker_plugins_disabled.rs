@@ -11,7 +11,9 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id::OutputSections;
 use crate::resolution::Resolver;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use crate::value_flags::PerSymbolFlags;
+use rayon::Scope;
 use std::marker::PhantomData;
 
 pub(crate) struct LoadedPlugin {}
@@ -59,4 +61,17 @@ impl<'data> LinkerPlugin<'data> {
     ) -> Result {
         Ok(())
     }
+}
+
+pub(crate) struct LtoInput<'data> {
+    _p: PhantomData<&'data ()>,
+}
+
+pub(crate) fn resolve_lto_symbols<'data, 'scope>(
+    _obj: &LtoInput<'data>,
+    _resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Elf>,
+    _definitions_out: &mut [SymbolId],
+    _scope: &Scope<'scope>,
+) -> Result {
+    Ok(())
 }

@@ -2,6 +2,7 @@ use crate::error::Result;
 use std::fs::File;
 use std::path::PathBuf;
 
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn make_executable(_file: &File) -> Result {
     #[cfg(unix)]
     {

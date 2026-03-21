@@ -2,9 +2,9 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::BSymbolicKind;
+use crate::args::RelocationModel;
 use crate::args::elf::BuildIdOption;
 use crate::args::elf::ElfArgs;
-use crate::args::elf::RelocationModel;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -13,6 +13,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_kind::FileKind;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;
@@ -27,6 +28,8 @@ use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
 use crate::layout::SymbolCopyInfo;
 use crate::layout_rules::SectionKind;
+use crate::layout_rules::SectionRule;
+use crate::layout_rules::SectionRuleOutcome;
 use crate::output_kind::OutputKind;
 use crate::output_section_id;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
@@ -54,6 +57,7 @@ use crate::platform::RelocationSequence;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::Symbol as _;
+use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
 use crate::string_merging::MergedStringStartAddresses;
@@ -66,6 +70,7 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
 use foldhash::HashSet;
 use hashbrown::HashMap;
@@ -93,6 +98,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::secnames;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
@@ -307,6 +313,69 @@ impl platform::Platform for Elf {
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
 
+    fn link_for_arch<'data>(
+        linker: &'data crate::Linker,
+        args: &'data Self::Args,
+    ) -> Result<crate::LinkerOutput<'data>> {
+        match args.arch {
+            crate::arch::Architecture::X86_64 => {
+                linker.link_for_arch::<Elf, crate::elf_x86_64::ElfX86_64>(args)
+            }
+            crate::arch::Architecture::AArch64 => {
+                linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
+            }
+            crate::arch::Architecture::RISCV64 => {
+                linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
+            }
+            crate::arch::Architecture::LoongArch64 => {
+                linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
+            }
+        }
+    }
+
+    fn write_output_file<'data, A: Arch<Platform = Self>>(
+        output: &crate::file_writer::Output,
+        layout: &layout::Layout<'data, Self>,
+    ) -> Result {
+        output.write(layout, elf_writer::write::<A>)
+    }
+
+    fn maybe_init_linker_plugin<'data>(
+        args: &'data Self::Args,
+        linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,
+        herd: &'data bumpalo_herd::Herd,
+    ) -> Result<Option<crate::linker_plugins::LinkerPlugin<'data>>> {
+        crate::linker_plugins::LinkerPlugin::from_args(args, linker_plugin_arena, herd)
+    }
+
+    fn plugin_all_symbols_read<'data>(
+        plugin: &mut crate::linker_plugins::LinkerPlugin<'data>,
+        symbol_db: &mut SymbolDb<'data, Self>,
+        resolver: &mut crate::resolution::Resolver<'data, Self>,
+        file_loader: &mut crate::input_data::FileLoader<'data>,
+        per_symbol_flags: &mut crate::value_flags::PerSymbolFlags,
+        output_sections: &mut OutputSections<'data, Self>,
+        layout_rules_builder: &mut crate::layout_rules::LayoutRulesBuilder<'data>,
+    ) -> Result {
+        plugin.all_symbols_read(
+            symbol_db,
+            resolver,
+            file_loader,
+            per_symbol_flags,
+            output_sections,
+            layout_rules_builder,
+        )
+    }
+
+    fn resolve_lto_symbols<'data, 'scope>(
+        obj: &crate::linker_plugins::LtoInput<'data>,
+        resources: &'scope crate::resolution::ResolutionResources<'data, 'scope, Self>,
+        definitions_out: &mut [SymbolId],
+        scope: &Scope<'scope>,
+    ) -> Result {
+        crate::linker_plugins::resolve_lto_symbols(obj, resources, definitions_out, scope)
+    }
+
     fn apply_force_keep_sections(keep_sections: &mut OutputSectionMap<bool>, args: &ElfArgs) {
         // Some of these sections aren't really empty, but we just haven't allocated space for them
         // yet. e.g. we don't allocate space for section headers until we know which sections we're
@@ -336,10 +405,6 @@ impl platform::Platform for Elf {
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
         &SECTION_DEFINITIONS
-    }
-
-    fn section_flags(header: &Self::SectionHeader) -> Self::SectionFlags {
-        SectionFlags::from_header(header)
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
@@ -391,6 +456,21 @@ impl platform::Platform for Elf {
             .sum::<usize>(), "resolved relocations");
     }
 
+    fn activate_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut CommonGroupState<'data, Self>,
+    ) {
+        common.allocate(
+            part_id::DYNAMIC,
+            size_of::<crate::elf::DynamicEntry>() as u64,
+        );
+
+        common.allocate(part_id::DYNSTR, state.lib_name.len() as u64 + 1);
+
+        state.format_specific_state.symbol_versions_needed =
+            vec![false; state.object.verdefnum as usize];
+    }
+
     fn pre_finalise_sizes_prelude<'scope, 'data>(
         prelude: &mut layout::PreludeLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
@@ -416,6 +496,13 @@ impl platform::Platform for Elf {
         }
     }
 
+    fn finalise_sizes_dynamic<'data>(
+        object: &mut layout::DynamicLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+    ) -> Result {
+        allocate_for_copy_relocations(object, common)
+    }
+
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Elf>,
         common: &mut layout::CommonGroupState<'data, Elf>,
@@ -433,6 +520,99 @@ impl platform::Platform for Elf {
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) {
         memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
+    }
+
+    fn finalise_layout_dynamic<'data>(
+        state: &mut layout::DynamicLayoutState<'data, Self>,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Self>,
+        resolutions_out: &mut layout::ResolutionWriter<Self>,
+    ) -> Result<Self::DynamicLayoutExt<'data>> {
+        let mut is_last_verneed = false;
+
+        if let Some(v) = state.format_specific_state.verneed_info.as_ref()
+            && v.version_count > 0
+        {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_R,
+                size_of::<crate::elf::Verneed>() as u64
+                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
+            );
+
+            let version_r_layout = resources
+                .section_layouts
+                .get(output_section_id::GNU_VERSION_R);
+
+            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
+                == version_r_layout.mem_offset + version_r_layout.mem_size;
+        }
+
+        let version_mapping = compute_version_mapping(
+            &state.format_specific_state.symbol_versions_needed,
+            state.format_specific_state.non_addressable_indexes,
+        );
+
+        let copy_relocation_symbols = state
+            .format_specific_state
+            .copy_relocations
+            .values()
+            .map(|info| info.symbol_id)
+            // We'll write the copy relocations in this order, so we need to sort it to ensure
+            // deterministic output.
+            .sorted()
+            .collect_vec();
+
+        let copy_relocation_addresses =
+            assign_copy_relocation_addresses(state, &copy_relocation_symbols, memory_offsets)?;
+
+        for (local_symbol, &flags) in state.object.symbols_iter().zip(
+            resources
+                .per_symbol_flags
+                .raw_range(state.symbol_id_range()),
+        ) {
+            let flags = flags.get();
+
+            if !flags.has_resolution() {
+                resolutions_out.write(None)?;
+                continue;
+            }
+
+            let address;
+            let dynamic_symbol_index;
+
+            if flags.needs_copy_relocation() {
+                let input_address = local_symbol.value();
+
+                address = *copy_relocation_addresses
+                    .get(&input_address)
+                    .context("Internal error: Missing copy relocation address")?;
+
+                // Since this is a definition, the dynamic symbol index will be determined by the
+                // epilogue and set by `update_dynamic_symbol_resolutions`.
+                dynamic_symbol_index = None;
+            } else {
+                address = 0;
+                let symbol_index =
+                    Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+
+                dynamic_symbol_index = Some(
+                    NonZeroU32::new(symbol_index)
+                        .context("Tried to create dynamic symbol index 0")?,
+                );
+            }
+
+            let resolution =
+                Self::create_resolution(flags, address, dynamic_symbol_index, memory_offsets);
+
+            resolutions_out.write(Some(resolution))?;
+        }
+
+        Ok(DynamicLayoutExt {
+            version_mapping,
+            verneed_info: core::mem::take(&mut state.format_specific_state.verneed_info),
+            is_last_verneed,
+            copy_relocation_symbols,
+        })
     }
 
     fn compute_object_addresses<'data>(
@@ -1294,10 +1474,51 @@ impl platform::Platform for Elf {
         common.allocate(part_id::STRTAB, strings_size as u64);
     }
 
-    fn finalise_prelude_layout(
+    fn allocate_internal_symbol(
+        symbol_id: SymbolId,
+        def_info: &InternalSymDefInfo,
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb<Self>,
+    ) -> Result {
+        // PROVIDE_HIDDEN symbols are local, others are global
+        let symtab_part = if def_info.is_hidden {
+            part_id::SYMTAB_LOCAL
+        } else {
+            part_id::SYMTAB_GLOBAL
+        };
+        sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
+        let symbol_name = symbol_db.symbol_name(symbol_id)?;
+        let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name();
+        sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
+
+        Ok(())
+    }
+
+    fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
+        // The first entry in the symbol table must be null. Similarly, the first string in the
+        // strings table must be empty.
+        if !symbol_db.args.should_strip_all() {
+            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
+            common.allocate(part_id::STRTAB, 1);
+        }
+
+        if symbol_db.output_kind.needs_dynsym() {
+            // Allocate space for the null symbol.
+            common.allocate(part_id::DYNSTR, 1);
+            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
+        }
+    }
+
+    fn finalise_prelude_layout<'data>(
         prelude: &layout::PreludeLayoutState<Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Self::PreludeLayoutExt {
+        resources: &layout::FinaliseLayoutResources<'_, 'data, Elf>,
+    ) -> Result<Self::PreludeLayoutExt> {
+        // Take the null symbol's index.
+        if resources.symbol_db.output_kind.needs_dynsym() {
+            Elf::take_dynsym_index(memory_offsets, resources.section_layouts)?;
+        }
+
         let tlsld_got_entry = prelude.format_specific.needs_tlsld_got_entry.then(|| {
             let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
                 .expect("GOT address must never be zero");
@@ -1305,7 +1526,7 @@ impl platform::Platform for Elf {
             address
         });
 
-        PreludeLayoutExt { tlsld_got_entry }
+        Ok(PreludeLayoutExt { tlsld_got_entry })
     }
 
     #[inline(always)]
@@ -1324,6 +1545,7 @@ impl platform::Platform for Elf {
             },
             flags,
         };
+
         if flags.needs_plt() {
             let plt_address = allocate_plt(memory_offsets);
             resolution.format_specific.plt_address = Some(plt_address);
@@ -1358,6 +1580,7 @@ impl platform::Platform for Elf {
         } else if flags.needs_got() {
             resolution.format_specific.got_address = Some(allocate_got(1, memory_offsets));
         }
+
         resolution
     }
 
@@ -1395,6 +1618,125 @@ impl platform::Platform for Elf {
             }
         }
         Ok(())
+    }
+
+    fn raw_symbol_name<'data>(
+        name_bytes: &'data [u8],
+        verneed_table: &Self::VerneedTable<'data>,
+        symbol_index: object::SymbolIndex,
+    ) -> Self::RawSymbolName<'data> {
+        if let Some(version_name) = verneed_table.version_name(symbol_index) {
+            RawSymbolName {
+                name: name_bytes,
+                version_name: Some(version_name),
+                is_default: false,
+            }
+        } else {
+            RawSymbolName::parse(name_bytes)
+        }
+    }
+
+    fn default_layout_rules() -> &'static [SectionRule<'static>] {
+        DEFAULT_SECTION_RULES
+    }
+
+    fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {
+        // Even when we have a linker script, we still need to map .comment to .comment. It's a
+        // special section because both input objects and the linker write to it. At least for
+        // linkers that put their version in the .comment section. GNU ld doesn't, but LLD does and
+        // still does so even when a linker script supposedly suppresses built-in rules.
+        rule_builder.add_section_rule(SectionRule::exact_section_keep(
+            secnames::COMMENT_SECTION_NAME,
+            output_section_id::COMMENT,
+        ));
+    }
+
+    fn init_section_priority(name: &[u8]) -> Option<u16> {
+        init_fini_priority(name)
+    }
+
+    fn verify_allowed_input_section_name(name: &[u8]) -> Result {
+        if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
+            if cfg!(feature = "plugins") {
+                bail!("Found GCC LTO input that we didn't supply to linker plugin");
+            }
+            return Err(crate::symbol_db::linker_plugin_disabled_error());
+        }
+
+        Ok(())
+    }
+
+    fn allocate_header_sizes(
+        prelude: &mut layout::PreludeLayoutState<Self>,
+        sizes: &mut OutputSectionPartMap<u64>,
+        header_info: &layout::HeaderInfo,
+        output_sections: &OutputSections<Self>,
+    ) {
+        sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
+        sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
+        sizes.increment(part_id::SECTION_HEADERS, section_headers_size(header_info));
+        prelude.format_specific.shstrtab_size = output_sections
+            .ids_with_info()
+            .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
+            .map(|(_id, info)| {
+                if let SectionKind::Primary(name) = info.kind {
+                    name.len() as u64 + 1
+                } else {
+                    0
+                }
+            })
+            .sum::<u64>();
+        sizes.increment(part_id::SHSTRTAB, prelude.format_specific.shstrtab_size);
+    }
+
+    fn copy_relocate_symbol<'scope, 'data>(
+        state: &mut layout::DynamicLayoutState<Elf>,
+        symbol_id: SymbolId,
+        resources: &layout::GraphResources<'data, 'scope, Elf>,
+    ) -> Result {
+        let symbol = state
+            .object
+            .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
+
+        // Note, we're a shared object, so this is the address relative to the load address of the
+        // shared object, not an offset within a section like with regular input objects. That means
+        // that we don't need to take the section into account.
+        let address = symbol.value();
+
+        let info = state
+            .format_specific_state
+            .copy_relocations
+            .entry(address)
+            .or_insert_with(|| CopyRelocationInfo {
+                symbol_id,
+                is_weak: symbol.is_weak(),
+            });
+
+        info.add_symbol(symbol_id, symbol.is_weak(), resources);
+
+        Ok(())
+    }
+
+    fn finalise_copy_relocations<'data>(
+        group_states: &mut [layout::GroupState<'data, Self>],
+        symbol_db: &SymbolDb<'data, Self>,
+        symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        finalise_copy_relocations(group_states, symbol_db, symbol_flags)
+    }
+
+    fn take_dynsym_index(
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Result<u32> {
+        let index = u32::try_from(
+            (memory_offsets.get(part_id::DYNSYM)
+                - section_layouts.get(output_section_id::DYNSYM).mem_offset)
+                / crate::elf::SYMTAB_ENTRY_SIZE,
+        )
+        .context("Too many dynamic symbols")?;
+        memory_offsets.increment(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
+        Ok(index)
     }
 }
 
@@ -1833,10 +2175,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn activate_dynamic(&self, state: &mut DynamicLayoutStateExt<'data>) {
-        state.symbol_versions_needed = vec![false; self.verdefnum as usize];
-    }
-
     fn finalise_sizes_dynamic(
         &self,
         lib_name: &[u8],
@@ -1914,39 +2252,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn finalise_layout_dynamic(
-        &self,
-        state: DynamicLayoutStateExt<'data>,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    ) -> DynamicLayoutExt<'data> {
-        let mut is_last_verneed = false;
-
-        if let Some(v) = state.verneed_info.as_ref()
-            && v.version_count > 0
-        {
-            memory_offsets.increment(
-                part_id::GNU_VERSION_R,
-                size_of::<crate::elf::Verneed>() as u64
-                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
-            );
-
-            let version_r_layout = section_layouts.get(output_section_id::GNU_VERSION_R);
-
-            is_last_verneed = *memory_offsets.get(part_id::GNU_VERSION_R)
-                == version_r_layout.mem_offset + version_r_layout.mem_size;
-        }
-
-        let version_mapping =
-            compute_version_mapping(&state.symbol_versions_needed, state.non_addressable_indexes);
-
-        DynamicLayoutExt {
-            version_mapping,
-            verneed_info: state.verneed_info,
-            is_last_verneed,
-        }
-    }
-
     fn apply_non_addressable_indexes_dynamic(
         &self,
         indexes: &mut NonAddressableIndexes,
@@ -1958,8 +2263,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             && info.version_count > 0
         {
             counts.verneed_count += 1;
-            indexes.gnu_version_r_index = indexes
-                .gnu_version_r_index
+            indexes.next_gnu_version_r_index = indexes
+                .next_gnu_version_r_index
                 .checked_add(info.version_count)
                 .context("Symbol versions overflowed 2**16")?;
         }
@@ -2188,7 +2493,7 @@ fn compute_version_mapping(
     non_addressable_indexes: NonAddressableIndexes,
 ) -> Vec<u16> {
     let mut out = vec![object::elf::VER_NDX_GLOBAL; symbol_versions_needed.len()];
-    let mut next_output_version = non_addressable_indexes.gnu_version_r_index;
+    let mut next_output_version = non_addressable_indexes.next_gnu_version_r_index;
     for (input_version, needed) in symbol_versions_needed.iter().enumerate() {
         if *needed {
             out[input_version] = next_output_version;
@@ -2290,7 +2595,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn visibility(&self) -> Visibility {
-        Visibility::from_elf_st_visibility(self.st_visibility())
+        convert_elf_visibility(self.st_visibility())
     }
 
     fn is_absolute(&self) -> bool {
@@ -2346,6 +2651,14 @@ impl platform::Symbol for SymtabEntry {
 
     fn is_gnu_unique(&self) -> bool {
         self.st_bind() == object::elf::STB_GNU_UNIQUE
+    }
+}
+
+pub(crate) fn convert_elf_visibility(st_visibility: u8) -> Visibility {
+    match st_visibility {
+        object::elf::STV_PROTECTED => Visibility::Protected,
+        object::elf::STV_HIDDEN => Visibility::Hidden,
+        _ => Visibility::Default,
     }
 }
 
@@ -3235,6 +3548,22 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     }
 }
 
+impl std::fmt::Display for RawSymbolName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(self.name))?;
+        if let Some(version) = self.version_name {
+            if self.is_default {
+                write!(f, "@@")?;
+            } else {
+                write!(f, "@")?;
+            }
+            write!(f, "{}", String::from_utf8_lossy(version))?;
+        }
+
+        Ok(())
+    }
+}
+
 pub(crate) struct VerneedTable<'data> {
     versym: &'data [Versym],
     version_names_by_index: Vec<Option<&'data [u8]>>,
@@ -3305,6 +3634,9 @@ pub(crate) struct DynamicLayoutStateExt<'data> {
     verneed_info: Option<VerneedInfo<'data>>,
 
     non_addressable_indexes: NonAddressableIndexes,
+
+    /// Maps from addresses within the shared object to copy relocations at that address.
+    copy_relocations: HashMap<u64, CopyRelocationInfo>,
 }
 
 #[derive(Debug)]
@@ -3316,11 +3648,14 @@ pub(crate) struct DynamicLayoutExt<'data> {
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
+
+    pub(crate) copy_relocation_symbols: Vec<SymbolId>,
 }
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NonAddressableIndexes {
-    gnu_version_r_index: u16,
+    /// The version index that will be used for the next `.gnu.version_r` entry that we define.
+    next_gnu_version_r_index: u16,
 }
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
@@ -3328,10 +3663,20 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
         Self {
             // Allocate version indexes starting from after the local and global indexes and any
             // versions defined by a version script.
-            gnu_version_r_index: object::elf::VER_NDX_GLOBAL
+            next_gnu_version_r_index: object::elf::VER_NDX_GLOBAL
                 + 1.max(symbol_db.version_script.version_count()),
         }
     }
+}
+
+struct CopyRelocationInfo {
+    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is
+    /// just the first symbol at a particular address for which we requested a copy relocation,
+    /// then later we may update it to point to a different symbol if that first symbol was
+    /// weak.
+    symbol_id: SymbolId,
+
+    is_weak: bool,
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -4177,7 +4522,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = <A::Platform as Platform>::section_flags(section);
+        let section_flags = SectionFlags::from_header(section);
 
         let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,
@@ -4289,38 +4634,16 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             }
 
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
-            // If the canonical symbol belongs to a shared object, use the file ID of symbols that
-            // made the reference.
-            let undefined_check_file_id = symbol_db.file_id_for_symbol(if flags.is_dynamic() {
-                local_symbol_id
-            } else {
-                symbol_id
-            });
-            if layout::should_emit_undefined_error::<A::Platform>(
-                object.object.symbol(local_sym_index)?,
-                object.file_id,
-                undefined_check_file_id,
-                flags,
-                args,
-                symbol_db.output_kind,
-            ) {
-                let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                let source_info =
-                    A::get_source_info(object.object, &object.relocations, section, rel_offset)
-                        .context("Failed to get source info")?;
 
-                if args.should_error_on_unresolved_symbols() {
-                    resources.report_error(error!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                } else {
-                    crate::error::warning(&format!(
-                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                        source_info, object.input,
-                    ));
-                }
-            }
+            layout::check_for_undefined::<A>(
+                object,
+                section,
+                rel_offset,
+                local_sym_index,
+                flags,
+                symbol_id,
+                resources,
+            )?;
         }
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
@@ -4340,6 +4663,7 @@ fn does_relocation_require_static_tls(rel_kind: RelocationKind) -> bool {
 #[derive(Default, Debug)]
 pub(crate) struct PreludeLayoutStateExt {
     needs_tlsld_got_entry: bool,
+    shstrtab_size: u64,
 }
 
 #[derive(Default, Debug)]
@@ -4459,5 +4783,285 @@ impl Resolution<Elf> {
             return Ok(r);
         }
         Ok(self.raw_value.wrapping_add(addend as u64))
+    }
+}
+
+const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
+    SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
+    SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
+    SectionRule::exact_section_keep(
+        secnames::PREINIT_ARRAY_SECTION_NAME,
+        output_section_id::PREINIT_ARRAY,
+    ),
+    SectionRule::exact_section_keep(secnames::COMMENT_SECTION_NAME, output_section_id::COMMENT),
+    SectionRule::exact_section_keep(
+        secnames::NOTE_ABI_TAG_SECTION_NAME,
+        output_section_id::NOTE_ABI_TAG,
+    ),
+    SectionRule::exact_section(
+        secnames::NOTE_GNU_BUILD_ID_SECTION_NAME,
+        output_section_id::NOTE_GNU_BUILD_ID,
+    ),
+    SectionRule::prefix_section(secnames::RODATA_SECTION_NAME, output_section_id::RODATA),
+    SectionRule::prefix_section(secnames::TEXT_SECTION_NAME, output_section_id::TEXT),
+    SectionRule::prefix_section(
+        secnames::DATA_REL_RO_SECTION_NAME,
+        output_section_id::DATA_REL_RO,
+    ),
+    SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
+    SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
+    SectionRule::prefix_section_sort(
+        secnames::INIT_ARRAY_SECTION_NAME,
+        output_section_id::INIT_ARRAY,
+    ),
+    SectionRule::prefix_section_sort(secnames::CTORS_SECTION_NAME, output_section_id::INIT_ARRAY),
+    SectionRule::prefix_section_sort(
+        secnames::FINI_ARRAY_SECTION_NAME,
+        output_section_id::FINI_ARRAY,
+    ),
+    SectionRule::prefix_section_sort(secnames::DTORS_SECTION_NAME, output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
+    SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
+    SectionRule::prefix_section(
+        secnames::GCC_EXCEPT_TABLE_SECTION_NAME,
+        output_section_id::GCC_EXCEPT_TABLE,
+    ),
+    SectionRule::prefix(secnames::RELA_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::prefix(secnames::CREL_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::NoteGnuStack),
+    SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
+    SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
+    SectionRule::exact(
+        secnames::SFRAME_SECTION_NAME,
+        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+            output_section_id::SFRAME,
+        )),
+    ),
+    SectionRule::exact(
+        secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
+        SectionRuleOutcome::NoteGnuProperty,
+    ),
+    SectionRule::exact(
+        secnames::RISCV_ATTRIBUTES_SECTION_NAME,
+        SectionRuleOutcome::RiscVAttribute,
+    ),
+    SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
+];
+
+fn init_fini_priority(name: &[u8]) -> Option<u16> {
+    if name == secnames::INIT_ARRAY_SECTION_NAME || name == secnames::FINI_ARRAY_SECTION_NAME {
+        return Some(u16::MAX);
+    }
+
+    if let Some(rest) = name.strip_prefix(b".init_array.") {
+        return parse_priority_suffix(rest);
+    }
+
+    if let Some(rest) = name.strip_prefix(b".fini_array.") {
+        return parse_priority_suffix(rest);
+    }
+
+    // .ctors and .dtors without suffix have the same priority as .init_array/.fini_array
+    if name == secnames::CTORS_SECTION_NAME || name == secnames::DTORS_SECTION_NAME {
+        return Some(u16::MAX);
+    }
+
+    // .ctors uses descending order (65535 = lowest priority, 0 = highest)
+    // while .init_array uses ascending order (0 = highest priority, 65535 = lowest)
+    if let Some(rest) = name.strip_prefix(b".ctors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
+    if let Some(rest) = name.strip_prefix(b".dtors.") {
+        return parse_priority_suffix(rest).map(|p| u16::MAX.saturating_sub(p));
+    }
+
+    None
+}
+
+fn parse_priority_suffix(suffix: &[u8]) -> Option<u16> {
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+
+    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
+    Some(u16::try_from(value).unwrap_or(u16::MAX))
+}
+
+pub(crate) fn program_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(elf::PROGRAM_HEADER_SIZE) * header_info.active_segment_ids.len() as u64
+}
+
+fn section_headers_size(header_info: &layout::HeaderInfo) -> u64 {
+    u64::from(elf::SECTION_HEADER_SIZE) * u64::from(header_info.num_output_sections_with_content)
+}
+
+/// Where we've decided that we need copy relocations, look for symbols with the same address as the
+/// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
+/// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
+/// For that reason, this needs to be done before we merge dynamic symbol definitions.
+fn finalise_copy_relocations<'data>(
+    group_states: &mut [layout::GroupState<'data, Elf>],
+    symbol_db: &SymbolDb<'data, Elf>,
+    symbol_flags: &AtomicPerSymbolFlags,
+) -> Result {
+    timing_phase!("Finalise copy relocations");
+
+    group_states.par_iter_mut().try_for_each(|group| {
+        verbose_timing_phase!("Finalise copy relocations for group");
+        for file in &mut group.files {
+            if let layout::FileLayoutState::Dynamic(dynamic) = file {
+                // Skip iterating over our symbol table if we don't have any copy relocations.
+                if dynamic.format_specific_state.copy_relocations.is_empty() {
+                    continue;
+                }
+
+                select_copy_relocation_alternatives(
+                    dynamic,
+                    symbol_flags,
+                    &mut group.common,
+                    symbol_db,
+                )?;
+            }
+        }
+
+        Ok(())
+    })
+}
+
+/// Looks for any non-weak symbols at the same addresses as any of our copy relocations. If
+/// found, we'll generate the copy relocation for the strong symbol instead of weak symbol at
+/// the same address.
+fn select_copy_relocation_alternatives<'data>(
+    state: &mut layout::DynamicLayoutState<'data, Elf>,
+    per_symbol_flags: &AtomicPerSymbolFlags,
+    common: &mut CommonGroupState<'data, Elf>,
+    symbol_db: &SymbolDb<'data, Elf>,
+) -> Result {
+    for (i, symbol) in state.object.enumerate_symbols() {
+        let address = symbol.value();
+        let Some(info) = state
+            .format_specific_state
+            .copy_relocations
+            .get_mut(&address)
+        else {
+            continue;
+        };
+
+        let symbol_id = state.symbol_id_range.input_to_id(i);
+
+        if !symbol_db.is_canonical(symbol_id) {
+            continue;
+        }
+
+        layout::export_dynamic(common, symbol_id, symbol_db)?;
+
+        per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::COPY_RELOCATION);
+
+        if symbol.is_weak() || !info.is_weak || info.symbol_id == symbol_id {
+            continue;
+        }
+
+        info.symbol_id = symbol_id;
+        info.is_weak = false;
+    }
+
+    Ok(())
+}
+
+fn allocate_for_copy_relocations<'data>(
+    state: &layout::DynamicLayoutState<'data, Elf>,
+    common: &mut CommonGroupState<'data, Elf>,
+) -> Result {
+    for value in state.format_specific_state.copy_relocations.values() {
+        let symbol_id = value.symbol_id;
+
+        let symbol = state
+            .object
+            .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
+
+        let section_index = symbol.section_index();
+
+        let section = state.object.section(section_index)?;
+
+        let alignment = Alignment::new(state.object.section_alignment(section)?)?;
+
+        // Allocate space in BSS for the copy of the symbol.
+        let size = symbol.size();
+        common.allocate(
+            output_section_id::BSS.part_id_with_alignment(alignment),
+            alignment.align_up(size),
+        );
+
+        // Allocate space required for the copy relocation itself.
+        common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+    }
+
+    Ok(())
+}
+
+fn assign_copy_relocation_addresses<'data>(
+    state: &layout::DynamicLayoutState<'data, Elf>,
+    copy_relocation_symbols: &[SymbolId],
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<HashMap<u64, u64>> {
+    copy_relocation_symbols
+        .iter()
+        .map(|symbol_id| {
+            let symbol = state
+                .object
+                .symbol(state.symbol_id_range.id_to_input(*symbol_id))?;
+
+            let input_address = symbol.value();
+
+            let output_address =
+                assign_copy_relocation_address(state.object, symbol, memory_offsets)?;
+
+            Ok((input_address, output_address))
+        })
+        .try_collect()
+}
+
+/// Assigns the address in BSS for the copy relocation of a symbol.
+fn assign_copy_relocation_address<'data>(
+    file: &File<'data>,
+    local_symbol: &SymtabEntry,
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<u64> {
+    let section_index = local_symbol.section_index();
+    let section = file.section(section_index)?;
+    let alignment = Alignment::new(file.section_alignment(section)?)?;
+    let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
+    let a = *bss;
+    *bss += alignment.align_up(local_symbol.size());
+    Ok(a)
+}
+
+impl CopyRelocationInfo {
+    fn add_symbol<'data, P: Platform>(
+        &mut self,
+        symbol_id: SymbolId,
+        is_weak: bool,
+        resources: &layout::GraphResources<'data, '_, P>,
+    ) {
+        if self.symbol_id == symbol_id || is_weak {
+            return;
+        }
+
+        if !self.is_weak {
+            warning(&format!(
+                "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
+                resources.symbol_debug(self.symbol_id),
+                resources.symbol_debug(symbol_id)
+            ));
+        }
+
+        self.symbol_id = symbol_id;
+        self.is_weak = false;
     }
 }

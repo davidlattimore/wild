@@ -15,7 +15,9 @@ use crate::args::CopyRelocationsDisabledReason;
 use crate::args::DefsymValue;
 use crate::args::FileWriteMode;
 use crate::args::Modifiers;
+use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
+use crate::args::VersionMode;
 use crate::args::warn_unsupported;
 use crate::bail;
 use crate::ensure;
@@ -43,19 +45,8 @@ use std::num::NonZeroU64;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VersionMode {
-    /// Don't print version
-    None,
-    /// Print version and continue linking (-v)
-    Verbose,
-    /// Print version and exit immediately (--version)
-    ExitAfterPrint,
-}
 
 #[derive(Debug)]
 pub struct ElfArgs {
@@ -106,15 +97,10 @@ pub struct ElfArgs {
     /// specified substrings.
     pub(crate) gc_stats_ignore: Vec<String>,
 
-    /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
-    /// counters, if any.
-    pub(crate) time_phase_options: Option<Vec<CounterKind>>,
-
     pub(crate) verbose_gc_stats: bool,
 
     pub(crate) dependency_file: Option<PathBuf>,
     pub(crate) execstack: bool,
-    pub(crate) version_mode: VersionMode,
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
@@ -141,19 +127,6 @@ pub(crate) enum Strip {
     Debug,
     All,
     Retain(HashSet<Vec<u8>>),
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum CounterKind {
-    Cycles,
-    Instructions,
-    CacheMisses,
-    BranchMisses,
-    PageFaults,
-    PageFaultsMinor,
-    PageFaultsMajor,
-    L1dRead,
-    L1dMiss,
 }
 
 #[derive(Debug)]
@@ -201,12 +174,6 @@ impl HashStyle {
     pub(crate) const fn includes_sysv(self) -> bool {
         matches!(self, HashStyle::Sysv | HashStyle::Both)
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelocationModel {
-    NonRelocatable,
-    Relocatable,
 }
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
@@ -271,7 +238,6 @@ impl Default for ElfArgs {
             output: Arc::from(Path::new("a.out")),
             should_output_executable: true,
             dynamic_linker: None,
-            time_phase_options: None,
             strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other
             // than being different, there doesn't seem to be any downside to doing
@@ -301,7 +267,6 @@ impl Default for ElfArgs {
             exclude_libs: ExcludeLibs::None,
             no_undefined: false,
             allow_shlib_undefined: false,
-            version_mode: VersionMode::None,
             sysroot: None,
             dependency_file: None,
             undefined: Vec::new(),
@@ -854,7 +819,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("version")
         .help("Show version information and exit")
         .execute(|args, _modifier_stack| {
-            args.version_mode = VersionMode::ExitAfterPrint;
+            args.common.version_mode = VersionMode::ExitAfterPrint;
             Ok(())
         });
 
@@ -863,7 +828,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .short("v")
         .help("Print version and continue linking")
         .execute(|args, _modifier_stack| {
-            args.version_mode = VersionMode::Verbose;
+            args.common.version_mode = VersionMode::Verbose;
             Ok(())
         });
 
@@ -890,10 +855,10 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("time")
         .help("Show timing information")
         .execute(|args, _modifier_stack, value| {
-            match value {
-                Some(v) => args.time_phase_options = Some(parse_time_phase_options(v)?),
-                None => args.time_phase_options = Some(Vec::new()),
-            }
+            args.common.time_phase_options = match value {
+                Some(v) => Some(super::parse_time_phase_options(v)?),
+                None => Some(Vec::new()),
+            };
             Ok(())
         });
 
@@ -1756,29 +1721,6 @@ fn add_default_flags(parser: &mut ArgumentParser<ElfArgs>) {
     }
 }
 
-fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
-    input.split(',').map(|s| s.parse()).collect()
-}
-
-impl FromStr for CounterKind {
-    type Err = crate::error::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        Ok(match s {
-            "cycles" => CounterKind::Cycles,
-            "instructions" => CounterKind::Instructions,
-            "cache-misses" => CounterKind::CacheMisses,
-            "branch-misses" => CounterKind::BranchMisses,
-            "page-faults" => CounterKind::PageFaults,
-            "page-faults-minor" => CounterKind::PageFaultsMinor,
-            "page-faults-major" => CounterKind::PageFaultsMajor,
-            "l1d-read" => CounterKind::L1dRead,
-            "l1d-miss" => CounterKind::L1dMiss,
-            other => bail!("Unsupported performance counter `{other}`"),
-        })
-    }
-}
-
 impl platform::Args for ElfArgs {
     fn gc_stats_output_file(&self) -> Option<&Path> {
         self.write_gc_stats.as_deref()
@@ -1932,6 +1874,22 @@ impl platform::Args for ElfArgs {
             Architecture::RISCV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
         }
+    }
+
+    fn dependency_file(&self) -> Option<&Path> {
+        self.dependency_file.as_deref()
+    }
+
+    fn should_write_trace_file(&self) -> bool {
+        self.trace
+    }
+
+    fn relocation_model(&self) -> crate::args::RelocationModel {
+        self.relocation_model
+    }
+
+    fn should_output_executable(&self) -> bool {
+        self.should_output_executable
     }
 }
 
@@ -2109,7 +2067,7 @@ mod tests {
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.common.num_threads, Some(NonZeroUsize::new(1).unwrap()));
-        assert_eq!(args.version_mode, VersionMode::Verbose);
+        assert_eq!(args.common.version_mode, VersionMode::Verbose);
         assert_eq!(
             args.sysroot,
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))

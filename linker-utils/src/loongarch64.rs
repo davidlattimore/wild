@@ -257,7 +257,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
             None,
-            AllowedRange::no_check(),
+            // with check 32-bit signed overflow
+            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(31)),
             1,
             0,
         ),
@@ -265,8 +266,9 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(2, 22, LoongArch64Instruction::Shift5),
             None,
-            AllowedRange::no_check(),
-            1,
+            // with check 22-bit signed overflow and a multiple of 4
+            AllowedRange::new(-(2i64.pow(21)), 2i64.pow(21)),
+            4,
             0,
         ),
         object::elf::R_LARCH_64_PCREL => (
@@ -325,32 +327,36 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(2, 18, LoongArch64Instruction::Shift10),
             None,
-            AllowedRange::no_check(),
-            1,
+            // with check 18-bit signed overflow and a multiple of 4
+            AllowedRange::new(-(2i64.pow(17)), 2i64.pow(17)),
+            4,
             0,
         ),
         object::elf::R_LARCH_B21 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(2, 23, LoongArch64Instruction::Branch21or26),
             None,
-            AllowedRange::no_check(),
-            1,
+            // with check 23-bit signed overflow and a multiple of 4
+            AllowedRange::new(-(2i64.pow(22)), 2i64.pow(22)),
+            4,
             0,
         ),
         object::elf::R_LARCH_B26 => (
             RelocationKind::PltRelative,
             RelocationSize::bit_mask_loongarch64(2, 28, LoongArch64Instruction::Branch21or26),
             None,
-            AllowedRange::no_check(),
-            1,
+            // with check 28-bit signed overflow and a multiple of 4
+            AllowedRange::new(-(2i64.pow(27)), 2i64.pow(27)),
+            4,
             0,
         ),
         object::elf::R_LARCH_CALL36 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_loongarch64(2, 38, LoongArch64Instruction::Call36),
             None,
-            AllowedRange::no_check(),
-            1,
+            // with check 38-bit signed overflow and a multiple of 4
+            AllowedRange::new(-(2i64.pow(37)), 2i64.pow(37)),
+            4,
             0,
         ),
         object::elf::R_LARCH_CALL30 => (
