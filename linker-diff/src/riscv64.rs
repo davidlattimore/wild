@@ -5,6 +5,7 @@ use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
 use crate::asm_diff::BasicValueKind;
 use crate::utils::decode_insn_with_objdump;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::riscv64_rel_type_to_string;
@@ -117,7 +118,7 @@ impl Arch for RiscV64 {
     }
 
     fn is_complete_chain(chain: impl Iterator<Item = Self::RType>) -> bool {
-        let chain = chain.collect::<Vec<_>>();
+        let chain = chain.collect_vec();
         for candidate in CHAINS {
             if candidate.starts_with(&chain) && *candidate != chain {
                 return false;

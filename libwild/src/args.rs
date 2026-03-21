@@ -21,6 +21,7 @@ use crate::save_dir::SaveDir;
 use elf::IGNORED_FLAGS;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
@@ -91,7 +92,7 @@ impl Args {
         let _executable_name = input
             .next()
             .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
-        let all_args = input.collect::<Vec<_>>();
+        let all_args = input.collect_vec();
 
         let elf_args = elf::parse(|| all_args.iter())?;
         Ok(Args::Elf(elf_args))
@@ -628,7 +629,7 @@ impl<T: platform::Args> ArgumentParser<T> {
         let mut help = String::new();
         help.push_str("USAGE:\n    wild [OPTIONS] [FILES...]\n\nOPTIONS:\n");
 
-        let mut prefix_options: Vec<_> = self.prefix_options.iter().collect();
+        let mut prefix_options = self.prefix_options.iter().collect_vec();
         prefix_options.sort_by_key(|(prefix, _)| *prefix);
 
         // TODO: This is ad-hoc
@@ -673,7 +674,7 @@ impl<T: platform::Args> ArgumentParser<T> {
                 ));
 
                 // Add sub-options if they exist
-                let mut sub_options: Vec<_> = handler.sub_options.iter().collect();
+                let mut sub_options = handler.sub_options.iter().collect_vec();
                 sub_options.sort_by_key(|(name, _)| *name);
 
                 for (sub_name, sub) in sub_options {
@@ -702,7 +703,7 @@ impl<T: platform::Args> ArgumentParser<T> {
             }
         }
 
-        let mut sorted_help_groups: Vec<_> = help_to_options.into_iter().collect();
+        let mut sorted_help_groups = help_to_options.into_iter().collect_vec();
         sorted_help_groups.sort_by_key(|(_, option_names)| {
             option_names.iter().min().unwrap_or(&String::new()).clone()
         });

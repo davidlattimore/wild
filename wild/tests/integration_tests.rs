@@ -1374,7 +1374,7 @@ impl ProgramInputs {
         // Overwrite the file with random data with a different length
         let random_data = (0..original_content.len() + 1024)
             .map(|i| (i % 256) as u8)
-            .collect::<Vec<u8>>();
+            .collect_vec();
         std::fs::write(&link_output_1.binary, &random_data).with_context(|| {
             format!(
                 "Failed to overwrite file with random data: {}",
@@ -3045,7 +3045,7 @@ fn verify_symbol_assertions(
         }
     }
 
-    let missing: Vec<&str> = missing.into_keys().collect();
+    let missing = missing.into_keys().collect_vec();
     if !missing.is_empty() {
         bail!("Missing expected symbol(s): {}", missing.join(", "));
     };
