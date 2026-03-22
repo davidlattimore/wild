@@ -145,7 +145,7 @@ pub(crate) struct OutputOrderDisplay<'a, 'data, P: Platform> {
     program_segments: &'a ProgramSegments<P::ProgramSegmentDef>,
 }
 
-struct OutputOrderBuilder<'scope, 'data, P: Platform> {
+pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
     events: Vec<OrderEvent>,
 
     program_segments: ProgramSegments<P::ProgramSegmentDef>,
@@ -158,7 +158,7 @@ struct OutputOrderBuilder<'scope, 'data, P: Platform> {
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
-    fn new(
+    pub(crate) fn new(
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     ) -> Self {
@@ -171,7 +171,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         }
     }
 
-    fn add_section(&mut self, section_id: OutputSectionId) {
+    pub(crate) fn add_section(&mut self, section_id: OutputSectionId) {
         // When RELRO segment ends, also end the RW LOAD segment so that subsequent non-RELRO
         // sections go into a new LOAD segment.
         if self.should_end_current_rw_segment(section_id) {
@@ -317,13 +317,13 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         (stop, start)
     }
 
-    fn add_sections(&mut self, sections: &[OutputSectionId]) {
+    pub(crate) fn add_sections(&mut self, sections: &[OutputSectionId]) {
         for section in sections {
             self.add_section(*section);
         }
     }
 
-    fn build(mut self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+    pub(crate) fn build(mut self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         for segment_id in self.active_segment_kinds.into_iter().flatten() {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
@@ -344,14 +344,14 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
 }
 
 #[derive(Default)]
-struct CustomSectionIds {
-    ro: Vec<OutputSectionId>,
-    exec: Vec<OutputSectionId>,
-    data: Vec<OutputSectionId>,
-    bss: Vec<OutputSectionId>,
-    nonalloc: Vec<OutputSectionId>,
-    tdata: Vec<OutputSectionId>,
-    tbss: Vec<OutputSectionId>,
+pub(crate) struct CustomSectionIds {
+    pub(crate) ro: Vec<OutputSectionId>,
+    pub(crate) exec: Vec<OutputSectionId>,
+    pub(crate) data: Vec<OutputSectionId>,
+    pub(crate) bss: Vec<OutputSectionId>,
+    pub(crate) nonalloc: Vec<OutputSectionId>,
+    pub(crate) tdata: Vec<OutputSectionId>,
+    pub(crate) tbss: Vec<OutputSectionId>,
 }
 
 impl<'data, P: Platform> OutputSections<'data, P> {
@@ -535,70 +535,6 @@ pub(crate) enum SecondaryOrder {
     InitFini { priority: u16 },
 }
 
-impl CustomSectionIds {
-    fn build_output_order_and_program_segments<'data, P: Platform>(
-        &self,
-        output_sections: &OutputSections<'data, P>,
-        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
-    ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
-        let mut builder = OutputOrderBuilder::<P>::new(output_sections, secondary);
-
-        builder.add_section(FILE_HEADER);
-        builder.add_section(PROGRAM_HEADERS);
-        builder.add_section(SECTION_HEADERS);
-        builder.add_section(NOTE_GNU_PROPERTY);
-        builder.add_section(NOTE_GNU_BUILD_ID);
-        builder.add_section(INTERP);
-        builder.add_section(NOTE_ABI_TAG);
-        builder.add_section(HASH);
-        builder.add_section(GNU_HASH);
-        builder.add_section(DYNSYM);
-        builder.add_section(DYNSTR);
-        builder.add_section(GNU_VERSION);
-        builder.add_section(GNU_VERSION_D);
-        builder.add_section(GNU_VERSION_R);
-        builder.add_section(RELA_DYN_RELATIVE);
-        builder.add_section(RELA_PLT);
-        builder.add_section(RODATA);
-        builder.add_section(EH_FRAME_HDR);
-        builder.add_section(EH_FRAME);
-        builder.add_section(SFRAME);
-        builder.add_section(GCC_EXCEPT_TABLE);
-        builder.add_sections(&self.ro);
-
-        builder.add_section(PLT_GOT);
-        builder.add_section(TEXT);
-        builder.add_section(INIT);
-        builder.add_section(FINI);
-        builder.add_sections(&self.exec);
-
-        builder.add_section(TDATA);
-        builder.add_sections(&self.tdata);
-        builder.add_section(TBSS);
-        builder.add_sections(&self.tbss);
-        builder.add_section(INIT_ARRAY);
-        builder.add_section(FINI_ARRAY);
-        builder.add_section(PREINIT_ARRAY);
-        builder.add_section(DATA_REL_RO);
-        builder.add_section(DYNAMIC);
-        builder.add_section(GOT);
-        builder.add_section(RELRO_PADDING);
-        builder.add_section(DATA);
-        builder.add_sections(&self.data);
-        builder.add_section(BSS);
-        builder.add_sections(&self.bss);
-
-        builder.add_sections(&self.nonalloc);
-        builder.add_section(COMMENT);
-        builder.add_section(RISCV_ATTRIBUTES);
-        builder.add_section(SHSTRTAB);
-        builder.add_section(SYMTAB_LOCAL);
-        builder.add_section(STRTAB);
-
-        builder.build()
-    }
-}
-
 impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn secondary_order(&self, id: OutputSectionId) -> Option<SecondaryOrder> {
         self.section_infos.get(id).secondary_order
@@ -732,7 +668,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
 
-        custom.build_output_order_and_program_segments::<P>(self, &secondary)
+        P::build_output_order_and_program_segments(&custom, self, &secondary)
     }
 
     #[must_use]
