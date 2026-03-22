@@ -3,33 +3,79 @@
 #![allow(unused)]
 
 use crate::args::macho::MachOArgs;
+use crate::ensure;
 use crate::platform;
+use object::Endianness;
+use object::macho;
+use object::macho::Section64;
+use object::read::macho::MachHeader;
+use object::read::macho::Section;
+use object::read::macho::Segment;
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct MachO;
+
+const LE: Endianness = Endianness::Little;
+
+type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
+type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) data: &'data [u8],
+    #[debug(skip)]
+    pub(crate) sections: SectionTable<'data>,
+    #[debug(skip)]
+    pub(crate) symbols: SymbolTable<'data>,
+    pub(crate) flags: u32,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = MachO;
 
     fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> crate::error::Result<Self> {
-        todo!()
+        let header = macho::MachHeader64::<object::Endianness>::parse(input, 0)?;
+        let mut commands = header.load_commands(LE, input, 0)?;
+
+        let mut symbols = None;
+        let mut sections = None;
+
+        while let Some(command) = commands.next()? {
+            if let Some(symtab_command) = command.symtab()? {
+                ensure!(symbols.is_none(), "At most one symtab command expected");
+                symbols = Some(symtab_command.symbols::<macho::MachHeader64<_>, _>(LE, input)?);
+            } else if let Some((segment_command, segment_data)) = command.segment_64()? {
+                ensure!(sections.is_none(), "At most one segment command expected");
+                let section_list = segment_command.sections(LE, segment_data)?;
+                sections = Some(section_list);
+                for section in section_list {
+                    for r in section.relocations(LE, input)? {
+                        dbg!(r.info(LE));
+                    }
+                }
+            }
+        }
+
+        Ok(File {
+            data: input,
+            symbols: symbols.ok_or("Missing symbol table")?,
+            sections: sections.ok_or("Missing segment command")?,
+            flags: header.flags(LE),
+        })
     }
 
     fn parse(
         input: &crate::input_data::InputBytes<'data>,
         args: &<Self::Platform as platform::Platform>::Args,
     ) -> crate::error::Result<Self> {
-        todo!()
+        // TODO
+        Self::parse_bytes(input.data, false)
     }
 
     fn is_dynamic(&self) -> bool {
-        todo!()
+        // TODO
+        false
     }
 
     fn num_symbols(&self) -> usize {
