@@ -2099,10 +2099,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn symbols(&self) -> &'data [SymtabEntry] {
-        self.symbols.symbols()
-    }
-
     fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
         self.symbols.iter()
     }

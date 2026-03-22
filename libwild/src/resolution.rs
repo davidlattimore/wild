@@ -1206,8 +1206,10 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
 ) -> Result {
     let verneed_table = obj.parsed.object.verneed_table()?;
 
-    obj.parsed.object.symbols()[start_symbol_offset..]
-        .iter()
+    obj.parsed
+        .object
+        .symbols_iter()
+        .skip(start_symbol_offset)
         .enumerate()
         .zip(definitions_out)
         .try_for_each(

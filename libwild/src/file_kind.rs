@@ -2,15 +2,22 @@
 
 use crate::bail;
 use crate::elf;
+use crate::ensure;
 use crate::error::Result;
+use object::Endian;
+use object::Endianness;
 use object::LittleEndian;
+use object::macho;
 use object::read::elf::FileHeader;
 use object::read::elf::SectionHeader;
+use object::read::macho::MachHeader;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
+    MachOObject,
     Archive,
     ThinArchive,
     Text,
@@ -30,12 +37,14 @@ impl FileKind {
                 bail!("Invalid ELF file");
             }
             let header: &elf::FileHeader = object::from_bytes(&bytes[..HEADER_LEN]).unwrap().0;
-            if header.e_ident.class != object::elf::ELFCLASS64 {
-                bail!("Only 64 bit ELF is currently supported");
-            }
-            if header.e_ident.data != object::elf::ELFDATA2LSB {
-                bail!("Only little endian is currently supported");
-            }
+            ensure!(
+                header.e_ident.class == object::elf::ELFCLASS64,
+                "Only 64 bit ELF is currently supported"
+            );
+            ensure!(
+                header.e_ident.data == object::elf::ELFDATA2LSB,
+                "Only little endian is currently supported"
+            );
 
             match header.e_type.get(LittleEndian) {
                 object::elf::ET_REL => {
@@ -48,6 +57,21 @@ impl FileKind {
                 object::elf::ET_DYN => Ok(FileKind::ElfDynamic),
                 t => bail!("Unsupported ELF kind {t}"),
             }
+        } else if bytes.starts_with(macho::MH_MAGIC_64.as_bytes()) {
+            let header = macho::MachHeader64::<object::Endianness>::parse(bytes, 0)?;
+            ensure!(
+                header.endian()?.is_little_endian(),
+                "Only little endian is currently supported"
+            );
+            ensure!(
+                header.cputype(Endianness::Little) == macho::CPU_TYPE_ARM64,
+                "Only ARM64 is currently supported"
+            );
+            ensure!(
+                header.filetype(Endianness::Little) == macho::MH_OBJECT,
+                "Expected object file"
+            );
+            Ok(FileKind::MachOObject)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
@@ -94,6 +118,7 @@ impl std::fmt::Display for FileKind {
         let s = match self {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
+            FileKind::MachOObject => "MachO object",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

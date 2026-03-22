@@ -235,7 +235,7 @@ const DEFAULT_SHORT_FLAGS: &[&str] = &[
 
 impl Default for ElfArgs {
     fn default() -> Self {
-        ElfArgs {
+        Self {
             common: CommonArgs::default(),
 
             arch: default_target_arch(),

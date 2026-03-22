@@ -30,6 +30,8 @@ pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
+pub(crate) mod macho;
+pub(crate) mod macho_aarch64;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -76,6 +78,7 @@ use crate::error::Context;
 use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::macho::MachO;
 use crate::output_kind::OutputKind;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -207,6 +210,7 @@ impl Linker {
 
         match args {
             Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
+            Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
         }
     }
 

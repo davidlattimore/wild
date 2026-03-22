@@ -31,6 +31,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod elf;
+pub mod macho;
 
 use crate::platform;
 use crate::timing_phase;
@@ -94,19 +95,29 @@ impl Args {
             .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
         let all_args = input.collect_vec();
 
-        let elf_args = elf::parse(|| all_args.iter())?;
-        Ok(Args::Elf(elf_args))
+        #[cfg(target_os = "macos")]
+        {
+            let macho_args = macho::parse(|| all_args.iter())?;
+            Ok(Args::MachO(macho_args))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let elf_args = elf::parse(|| all_args.iter())?;
+            Ok(Args::Elf(elf_args))
+        }
     }
 
     pub(crate) fn common(&self) -> &CommonArgs {
         match self {
             Args::Elf(elf_args) => &elf_args.common,
+            Args::MachO(macho_args) => &macho_args.common,
         }
     }
 
     pub(crate) fn common_mut(&mut self) -> &mut CommonArgs {
         match self {
             Args::Elf(elf_args) => &mut elf_args.common,
+            Args::MachO(macho_args) => &mut macho_args.common,
         }
     }
 }
@@ -297,14 +308,18 @@ pub struct ThreadPool {
     _jobserver_tokens: Vec<Acquired>,
 }
 
+// TODO: remove
+#[allow(clippy::large_enum_variant)]
 pub enum Args {
     Elf(elf::ElfArgs),
+    MachO(macho::MachOArgs),
 }
 
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Args::Elf(e) => e.fmt(f),
+            Args::Elf(args) => args.fmt(f),
+            Args::MachO(args) => args.fmt(f),
         }
     }
 }
