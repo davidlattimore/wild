@@ -213,6 +213,8 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -2041,16 +2043,9 @@ fn build_obj(
 
     command.args(compiler_args);
 
-    // Files that are shared between several tests end up being compiled with various different
-    // flags and the config name isn't sufficient to disambiguate them. So we hash the command then
-    // include the hash in the output filename.
-    let mut hasher = std::hash::DefaultHasher::new();
-    command_as_str(&command).hash(&mut hasher);
-    let command_hash = hasher.finish();
+    let output_path = add_to_path(&config.build_dir.join(Path::new(&file.filename)), suffix);
 
-    let output_path = config
-        .build_dir
-        .join(Path::new(&file.filename).with_extension(format!("{command_hash:x}{suffix}")));
+    verify_path_unique_for_args(&output_path, &command)?;
 
     match compiler_kind {
         CompilerKind::C => {
@@ -2110,6 +2105,36 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+/// Verifies that if we've created or considered creating `output_path` previously in this process,
+/// that it was with the same command-line.
+fn verify_path_unique_for_args(output_path: &Path, command: &Command) -> Result {
+    static PATH_TO_COMMAND: LazyLock<Mutex<HashMap<PathBuf, String>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let cmd_string = command_as_str(command);
+
+    let mut lock = PATH_TO_COMMAND.lock().unwrap();
+
+    match lock.entry(output_path.to_owned()) {
+        std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+            let existing = occupied_entry.get();
+            if existing != &cmd_string {
+                bail!(
+                    "Tried to create {} multiple times with different command lines:\n{}\n{}",
+                    output_path.display(),
+                    existing,
+                    cmd_string
+                );
+            }
+        }
+        std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+            vacant_entry.insert(cmd_string);
+        }
+    }
+
+    Ok(())
 }
 
 /// Adds arguments required for cross-compiling/linking.
