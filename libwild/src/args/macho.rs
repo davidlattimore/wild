@@ -7,15 +7,33 @@ use crate::args::CommonArgs;
 use crate::args::FILES_PER_GROUP_ENV;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
+use crate::args::RelocationModel;
 use crate::ensure;
 use crate::error::Result;
 use crate::platform;
 use crate::save_dir::SaveDir;
 use jobserver::Client;
+use std::path::Path;
+use std::sync::Arc;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MachOArgs {
     pub(crate) common: super::CommonArgs,
+
+    pub(crate) output: Arc<Path>,
+    pub(crate) relocation_model: RelocationModel,
+}
+
+impl Default for MachOArgs {
+    fn default() -> Self {
+        Self {
+            common: CommonArgs::default(),
+
+            // TODO: move to CommonArgs
+            relocation_model: RelocationModel::NonRelocatable,
+            output: Arc::from(Path::new("a.out")),
+        }
+    }
 }
 
 impl platform::Args for MachOArgs {
@@ -36,7 +54,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn output(&self) -> &std::sync::Arc<std::path::Path> {
-        todo!()
+        &self.output
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
@@ -64,11 +82,12 @@ impl platform::Args for MachOArgs {
     }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
-        todo!()
+        self.relocation_model
     }
 
     fn should_output_executable(&self) -> bool {
-        todo!()
+        // TODO
+        true
     }
 }
 
@@ -125,5 +144,17 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
 }
 
 fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
-    ArgumentParser::<MachOArgs>::new()
+    let mut parser = ArgumentParser::<MachOArgs>::new();
+
+    parser
+        .declare_with_param()
+        .long("output")
+        .short("o")
+        .help("Set the output filename")
+        .execute(|args, _modifier_stack, value| {
+            args.output = Arc::from(Path::new(value));
+            Ok(())
+        });
+
+    parser
 }
