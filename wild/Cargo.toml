@@ -6,10 +6,15 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 edition.workspace = true
+autotests = false
 
 [[bin]]
 name = "wild"
 path = "src/main.rs"
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
 
 [dependencies]
 libwild = { path = "../libwild", version = "0.8.0" }
