@@ -24,7 +24,6 @@ use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -39,7 +38,6 @@ use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef as _;
 use crate::platform::RelaxSymbolInfo;
-use crate::platform::RelocationList;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -2033,20 +2031,21 @@ impl<'data, P: Platform> GroupState<'data, P> {
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
 
+        let entry_size = size_of::<P::SymtabEntry>() as u64;
         let symtab_local_start_index =
             ((*memory_offsets.get(part_id::SYMTAB_LOCAL)).saturating_sub(
                 resources
                     .section_layouts
                     .get(output_section_id::SYMTAB_LOCAL)
                     .mem_offset,
-            ) / elf::SYMTAB_ENTRY_SIZE) as u32;
+            ) / entry_size) as u32;
         let symtab_global_start_index =
             ((*memory_offsets.get(part_id::SYMTAB_GLOBAL)).saturating_sub(
                 resources
                     .section_layouts
                     .get(output_section_id::SYMTAB_GLOBAL)
                     .mem_offset,
-            ) / elf::SYMTAB_ENTRY_SIZE) as u32;
+            ) / entry_size) as u32;
 
         let strtab_start_offset = self
             .common
@@ -2808,7 +2807,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     }
                 }
             }
-            let entry_size = size_of::<elf::SymtabEntry>() as u64;
+            let entry_size = size_of::<P::SymtabEntry>() as u64;
             extra_sizes.increment(part_id::SYMTAB_LOCAL, num_section_syms * entry_size);
             extra_sizes.increment(part_id::STRTAB, section_names_size);
         }
@@ -3693,42 +3692,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
         }
 
-        if resources.symbol_db.args.should_output_partial_object() {
-            self.allocate_rela_section_sizes(common, output_sections);
-        }
-
         P::finalise_object_sizes(self, common);
-    }
-
-    fn allocate_rela_section_sizes(
-        &self,
-        common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
-    ) {
-        for (sec_idx, section) in self.object.enumerate_sections() {
-            let Ok(relocations): std::result::Result<
-                <P as Platform>::RelocationList<'data>,
-                Error,
-            > = self.object.relocations(sec_idx, &self.relocations) else {
-                continue;
-            };
-            let num_rela = relocations.num_relocations() as u64;
-            if num_rela == 0 {
-                continue;
-            }
-            let section_name = self.object.section_name(section).unwrap_or_default();
-            let mut rela_name = Vec::with_capacity(section_name.len() + 5);
-            rela_name.extend_from_slice(b".rela");
-            rela_name.extend_from_slice(section_name);
-
-            let Some(section_id) = output_sections.custom_name_to_id(SectionName(&rela_name))
-            else {
-                continue;
-            };
-            let part_id = section_id.part_id_with_alignment(crate::alignment::RELA_ENTRY);
-            common.mem_sizes.resize(output_sections.num_parts());
-            common.allocate(part_id, num_rela * crate::elf::RELA_ENTRY_SIZE);
-        }
     }
 
     fn allocate_symtab_space(
@@ -3759,31 +3723,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .get(output_section_id::SFRAME)
             .mem_offset;
         let mut sframe_ranges = Vec::new();
-
-        if resources.symbol_db.args.should_output_partial_object() {
-            for (sec_idx, section) in self.object.enumerate_sections() {
-                let Ok(relocations) = self.object.relocations(sec_idx, &self.relocations) else {
-                    continue;
-                };
-                let num_rela = relocations.num_relocations() as u64;
-                if num_rela == 0 {
-                    continue;
-                }
-                let section_name = self.object.section_name(section).unwrap_or_default();
-                let mut rela_name = Vec::with_capacity(section_name.len() + 5);
-                rela_name.extend_from_slice(b".rela");
-                rela_name.extend_from_slice(section_name);
-
-                if let Some(section_id) = resources
-                    .output_sections
-                    .custom_name_to_id(SectionName(&rela_name))
-                {
-                    let part_id = section_id.part_id_with_alignment(crate::alignment::RELA_ENTRY);
-                    let rela_offset = memory_offsets.get_mut(part_id);
-                    *rela_offset += num_rela * crate::elf::RELA_ENTRY_SIZE;
-                }
-            }
-        }
 
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
         for slot in &mut self.sections {

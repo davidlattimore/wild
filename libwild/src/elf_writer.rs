@@ -75,8 +75,11 @@ use crate::platform::Platform;
 use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
+use crate::platform::RelocationList;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
+use crate::platform::SectionType as _;
 use crate::resolution::SectionSlot;
 use crate::sframe;
 use crate::sharding::ShardKey;
@@ -1570,36 +1573,37 @@ fn write_rela_sections<'data>(
         }
     }
 
-    for (sec_idx, section) in object.object.enumerate_sections() {
-        let relocations = object.relocations(sec_idx).with_context(|| {
-            format!(
-                "Failed to get relocations for section {:?} in {}",
-                sec_idx, object.input
-            )
-        })?;
-
-        let num_rela = match &relocations {
-            elf::RelocationList::Rela(relas) => relas.len(),
-            elf::RelocationList::Crel(crel) => crel.clone().count(),
-        };
-        if num_rela == 0 {
+    for (sec_idx, header) in object.object.enumerate_sections() {
+        let section_name = object.object.section_name(header).unwrap_or_default();
+        if !section_name.starts_with(b".rela") && !section_name.starts_with(b".crel") {
             continue;
         }
 
-        let section_name = object.object.section_name(section).unwrap_or_default();
-        let mut rela_name = Vec::with_capacity(section_name.len() + 5);
-        rela_name.extend_from_slice(b".rela");
-        rela_name.extend_from_slice(section_name);
-
         let Some(section_id) = layout
             .output_sections
-            .custom_name_to_id(output_section_id::SectionName(&rela_name))
+            .custom_name_to_id(output_section_id::SectionName(section_name))
         else {
             continue;
         };
         let part_id = section_id.part_id_with_alignment(crate::alignment::RELA_ENTRY);
 
-        let section_address = object.section_resolutions[sec_idx.0].address().unwrap_or(0);
+        let target_sec_idx = object::SectionIndex(header.sh_info.get(e) as usize);
+        let section_address = object.section_resolutions[target_sec_idx.0]
+            .address()
+            .unwrap_or(0);
+
+        let relocations = object.relocations(target_sec_idx).with_context(|| {
+            format!(
+                "Failed to get relocations from rela section {:?} in {}",
+                output_section_id::SectionName(section_name),
+                object.input
+            )
+        })?;
+
+        let num_rela = relocations.num_relocations();
+        if num_rela == 0 {
+            continue;
+        }
 
         let num_bytes = num_rela * crate::elf::RELA_ENTRY_SIZE as usize;
         let part_buf = buffers.get_mut(part_id);
@@ -1655,6 +1659,17 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
+    if layout.args().should_output_partial_object() {
+        let section_type = layout
+            .output_sections
+            .output_info(section.output_section_id())
+            .section_attributes
+            .ty();
+        if section_type.is_rela() || section_type.is_rel() {
+            return Ok(());
+        }
+    }
+
     let out = write_section_raw(object, layout, section, buffers)?;
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in

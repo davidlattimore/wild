@@ -486,10 +486,6 @@ impl<'data> SectionRules<'data> {
             _ => {}
         }
 
-        if section_name.starts_with(b".rela") || section_name.starts_with(b".crel") {
-            return SectionRuleOutcome::Discard;
-        }
-
         SectionRuleOutcome::Custom
     }
 }
