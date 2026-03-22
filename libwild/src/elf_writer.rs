@@ -107,6 +107,7 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
+use linker_utils::elf::secnames::NOTE_GNU_BUILD_ID_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::stt;
@@ -199,7 +200,7 @@ fn write_gnu_build_id_note(
     let e = LittleEndian;
     let (note_header, mut rest) =
         from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
-            .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
+            .map_err(|_| insufficient_allocation(NOTE_GNU_BUILD_ID_SECTION_NAME_STR))?;
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(e, build_id.len() as u32);
     note_header.n_type.set(e, NT_GNU_BUILD_ID);

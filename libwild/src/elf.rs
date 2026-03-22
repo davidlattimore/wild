@@ -4824,7 +4824,10 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix(secnames::RELA_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::prefix(secnames::CREL_SECTION_NAME, SectionRuleOutcome::Discard),
-    SectionRule::exact(b".note.GNU-stack", SectionRuleOutcome::NoteGnuStack),
+    SectionRule::exact(
+        secnames::NOTE_GNU_STACK_SECTION_NAME,
+        SectionRuleOutcome::NoteGnuStack,
+    ),
     SectionRule::exact(secnames::STRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SYMTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
