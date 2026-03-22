@@ -31,6 +31,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub mod elf;
+pub mod macho;
 
 use crate::platform;
 use crate::timing_phase;
