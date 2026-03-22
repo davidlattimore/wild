@@ -97,8 +97,8 @@ impl Args {
 
         #[cfg(target_os = "macos")]
         {
-            let macho_args = elf::parse(|| all_args.iter())?;
-            Ok(Args(macho_args))
+            let macho_args = macho::parse(|| all_args.iter())?;
+            Ok(Args::MachO(macho_args))
         }
         #[cfg(not(target_os = "macos"))]
         {

@@ -40,11 +40,11 @@ impl platform::Args for MachOArgs {
     }
 
     fn common(&self) -> &crate::args::CommonArgs {
-        todo!()
+        &self.common
     }
 
     fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
-        todo!()
+        &mut self.common
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {
