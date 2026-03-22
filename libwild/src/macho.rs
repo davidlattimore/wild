@@ -1,5 +1,6 @@
 // TODO
 #![allow(unused_variables)]
+#![allow(unused)]
 
 use crate::args::macho::MachOArgs;
 use crate::platform;
@@ -599,7 +600,7 @@ impl platform::Platform for MachO {
         linker: &'data crate::Linker,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
-        todo!()
+        linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
     }
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>>(
