@@ -24,7 +24,7 @@
 //#Config:executable:default
 //#CompArgs:-g
 //#ExpectError:undefined_strong
-//#ExpectError:undefined_symbols.c
+//#ExpectError:undefined-symbols.c
 
 int undefined_strong();
 __attribute__((weak)) int undefined_weak();

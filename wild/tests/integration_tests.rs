@@ -247,7 +247,7 @@ fn determine_build_dir(test_name: &str) -> PathBuf {
 
 #[derive(Debug)]
 struct ProgramInputs {
-    source_file: &'static str,
+    source_file: PathBuf,
 }
 
 #[derive(Debug)]
@@ -510,10 +510,15 @@ fn is_musl_used() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
+    /// The directory containing the test sources.
+    test_src_dir: PathBuf,
+
     /// The base build directory for the test (without config name).
     base_build_dir: PathBuf,
+
     /// The build directory for this config (base_build_dir + config name).
     build_dir: PathBuf,
+
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
@@ -846,6 +851,26 @@ impl Config {
     fn can_use_wild_in_process(&self) -> bool {
         self.expect_stderr.is_empty() && self.expect_stdout.is_empty()
     }
+
+    fn source_path(&self, filename: &str) -> PathBuf {
+        let path = self.test_src_dir.join(filename);
+        if path.exists() {
+            return path;
+        }
+
+        let common_path = self.common_dir().join(filename);
+        if common_path.exists() {
+            return common_path;
+        }
+
+        // Return the path in our test source directory. It doesn't exist, but it's what we want in
+        // the error message that will eventuate.
+        path
+    }
+
+    fn common_dir(&self) -> PathBuf {
+        self.test_src_dir.parent().unwrap().join("common")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -867,16 +892,16 @@ enum Compiler {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FilenameArgumentPair {
     /// The source file to be compiled.
-    filename: String,
+    path: PathBuf,
 
     /// The arguments with which to compile the source file.
     args: ArgumentSet,
 }
 
 impl FilenameArgumentPair {
-    fn new(filename: &str, args: ArgumentSet) -> Self {
+    fn new(path: &Path, args: ArgumentSet) -> Self {
         Self {
-            filename: filename.to_string(),
+            path: path.to_owned(),
             args,
         }
     }
@@ -991,8 +1016,9 @@ impl ArgumentSet {
 }
 
 impl Config {
-    fn new(test_config: &TestConfig, build_dir: PathBuf) -> Self {
+    fn new(test_src_dir: PathBuf, test_config: &TestConfig, build_dir: PathBuf) -> Self {
         Self {
+            test_src_dir,
             base_build_dir: build_dir.clone(),
             build_dir,
             name: "default".to_owned(),
@@ -1146,7 +1172,7 @@ fn process_directive(
             }
             if let Some((_, rest)) = arg.split_once("./") {
                 let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
-                let src_path = src_path(filename);
+                let src_path = config.test_src_dir.join(filename);
                 config.tracked_files.push(src_path.clone());
                 let with_replaced_path =
                     arg.replace(&format!("./{filename}"), &src_path.display().to_string());
@@ -1280,7 +1306,7 @@ fn process_directive(
                 .map(|arg| {
                     let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
                     Ok(FilenameArgumentPair::new(
-                        filename,
+                        &config.source_path(filename),
                         ArgumentSet::parse(comp_args)?,
                     ))
                 })
@@ -1353,7 +1379,7 @@ fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
 }
 
 impl ProgramInputs {
-    fn new(source_file: &'static str) -> Result<Self> {
+    fn new(source_file: PathBuf) -> Result<Self> {
         Ok(Self { source_file })
     }
 
@@ -1366,7 +1392,7 @@ impl ProgramInputs {
         let primary = build_linker_input(
             &Dep {
                 files: vec![FilenameArgumentPair::new(
-                    self.source_file,
+                    &self.source_file,
                     ArgumentSet::empty(),
                 )],
                 input_type: InputType::Object,
@@ -1413,7 +1439,7 @@ impl ProgramInputs {
     }
 
     fn name(&self) -> &str {
-        self.source_file
+        self.source_file.file_name().unwrap().to_str().unwrap()
     }
 
     fn run_update_in_place_test(
@@ -1501,7 +1527,7 @@ impl ProgramInputs {
                 from {updated} after update-in-place linking. Original size: {original_len}, \
                 Final size: {final_len}. Diffs:\n{diffs:#?}\n\
                 Rerun with:\n{cmd}",
-                file = self.source_file,
+                file = self.name(),
                 original = original.display(),
                 updated = updated.display(),
                 original_len = original_content.len(),
@@ -1813,9 +1839,9 @@ fn build_linker_input(
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
     if let [single_file] = dep.files.as_slice()
-        && single_file.filename.ends_with(".a")
+        && single_file.path.extension().is_some_and(|e| e == "a")
     {
-        return Ok(LinkerInput::new(src_path(&single_file.filename)));
+        return Ok(LinkerInput::new(single_file.path.clone()));
     }
 
     let config = config.config_for_deps();
@@ -1837,11 +1863,14 @@ fn build_linker_input(
         .files
         .first()
         .context("At least one file is required")?
-        .filename
-        .as_str();
+        .path
+        .file_name()
+        .unwrap();
+
     let archive_basename = Path::new(first_source_filename)
         .file_stem()
         .context("Invalid source filename")?;
+
     let archive_path = config.build_dir.join(archive_basename).with_extension("a");
 
     let mut linker_input = match dep.input_type {
@@ -1932,7 +1961,7 @@ fn build_obj(
     input_type: InputType,
     cross_arch: Option<Architecture>,
 ) -> Result<BuiltObject> {
-    let src_path = src_path(&file.filename);
+    let src_path = file.path.clone();
 
     if input_type == InputType::LinkerScript {
         return Ok(BuiltObject {
@@ -1979,7 +2008,11 @@ fn build_obj(
 
     compiler_args.extend_from_slice(&file.args.args);
 
-    let output_path = add_to_path(&config.build_dir.join(Path::new(&file.filename)), suffix);
+    let output_path = add_to_path(
+        &config.build_dir.join(file.path.file_name().unwrap()),
+        suffix,
+    );
+
     let deps_path = add_to_path(&output_path, ".deps");
 
     match compiler_kind {
@@ -2005,6 +2038,9 @@ fn build_obj(
             add_cross_args(&mut command, &compiler_args, cross_arch);
 
             command.arg("-c");
+
+            command.arg("-iquote");
+            command.arg(config.common_dir());
 
             command.arg("-MF");
             command.arg(&deps_path);
@@ -3692,154 +3728,34 @@ fn run_with_config(
 
 #[rstest]
 fn integration_test(
-    #[values(
-        "trivial.c",
-        "trivial-main.c",
-        "trivial-dynamic.c",
-        "link_args.c",
-        "global_definitions.c",
-        "data.c",
-        "data-pointers.c",
-        "weak-vars.c",
-        "weak-vars-archive.c",
-        "weak-fns.c",
-        "weak-fns-archive.c",
-        "init_test.c",
-        "ifunc.c",
-        "init-order.c",
-        "internal-syms.c",
-        "tls.c",
-        "tlsdesc.c",
-        "tls-variant.c",
-        "weak-entry.c",
-        "no_start.c",
-        "old_init.c",
-        "custom_section.c",
-        "stack_alignment.s",
-        "got_ref_to_local.c",
-        "local_symbol_refs.s",
-        "archive_activation.c",
-        "relocation-in-non-alloc-section.s",
-        "exclude-libs-all.c",
-        "exclude-libs-single.c",
-        "exclude-libs-selective.c",
-        "exclude-section.s",
-        "common_section.c",
-        "string_merging.c",
-        "non_string_merging.c",
-        "string-merge-missing-null.c",
-        "comments.c",
-        "custom-note.s",
-        "executable_start.c",
-        "backtrace.c",
-        "eh_frame.c",
-        "symbol-priority.c",
-        "symbol-binding.c",
-        "hidden-ref.c",
-        "hidden-undef.c",
-        "trivial_asm.s",
-        "non-alloc.s",
-        "gnu-unique.c",
-        "undef-transitive.c",
-        "symbol-versions.c",
-        "common-shared.c",
-        "absolute-symbol.s",
-        "simple-version-script.c",
-        "mixed-verdef-verneed.c",
-        "copy-relocations.c",
-        "relocation-overflow.c",
-        "force-undefined.c",
-        "wrap.c",
-        "shlib-archive-activation.c",
-        "linker-script.c",
-        "linker-script-executable.c",
-        "linker-script-provide.c",
-        "linker-defined-provide.c",
-        "linker-defined-syms-shared.c",
-        "libc-ifunc.c",
-        "libc-integration.c",
-        "rust-integration.rs",
-        "rust-integration-dynamic.rs",
-        "tls-custom.c",
-        "cpp-integration.cc",
-        "rust-tls.rs",
-        "basic-comdat.s",
-        "input_does_not_exist.c",
-        "ifunc2.c",
-        "ctors.c",
-        "visibility-merging.c",
-        "tls-local-exec.c",
-        "tls-local-dynamic.c",
-        "undefined_symbols.c",
-        "undefined-with-gc-refs.c",
-        "undefined-weak-and-strong.c",
-        "shlib-undefined.c",
-        "whole_archive.c",
-        "entry_arg.c",
-        "dynamic-bss-only.c",
-        "shared-priority.c",
-        "shared.c",
-        "duplicate_strong_symbols.c",
-        "linker-plugin-lto.c",
-        "lto-no-plugin.c",
-        "lto-integration.c",
-        "preinit-array.c",
-        "exception.cc",
-        "z-defs.c",
-        "export-dynamic.c",
-        "unresolved-symbols-object.c",
-        "unresolved-symbols-shared.c",
-        "symbol-version-symver.c",
-        "symbol-version-symver-error.c",
-        "symver-shared.c",
-        "output-kind.c",
-        "entry-in-shared.c",
-        "alignment.c",
-        "hash-style.c",
-        "defsym.c",
-        "linker-script-defsym-notfound.c",
-        "tls-common.c",
-        "section-start.c",
-        "max-page-size.c",
-        "call-via-defsym.c",
-        "wrap-real-only.c",
-        "ifunc-alias.c",
-        "ifunc-address-equality.c",
-        "ifunc-export.c",
-        "stack-size.c",
-        "undefined-weak-sym.c",
-        "auxiliary.c",
-        "new-dtags.c",
-        "riscv-attr-conflict.s",
-        "riscv-call-relaxation.s",
-        "riscv-cross-object-call-relaxation.s",
-        "riscv-hi20-relaxation.s",
-        "riscv-hi20-lui-deletion.s",
-        "segment-end-syms.c",
-        "linker-script-filename-match.c",
-        "tls-apx-relocs.s",
-        "as-needed-weak.c",
-        "linker-script-unclosed-comment.c",
-        "linker-script-assert-pass.c",
-        "linker-script-assert-fail.c",
-        "linker-script-glob.c",
-        "execstack.s"
-    )]
-    program_name: &'static str,
+    #[base_dir = "tests/sources"]
+    #[files("elf/*")]
+    #[dirs]
+    #[exclude("common")]
+    test: PathBuf,
     #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
+    run_integration_test(&test)
+}
+
+fn run_integration_test(test_src_dir: &Path) -> Result {
+    let program_name = test_src_dir.file_name().unwrap().to_str().unwrap();
+    let primary_source_file = identify_primary_source(test_src_dir, program_name)?;
     let build_dir = determine_build_dir(program_name);
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("Failed to create directory `{}`", build_dir.display()))?;
 
-    let program_inputs = ProgramInputs::new(program_name)?;
+    let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
 
     let linkers = available_linkers()?;
 
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &Config::new(&test_config, build_dir))?;
+    let configs = parse_configs(
+        &primary_source_file,
+        &Config::new(test_src_dir.to_owned(), &test_config, build_dir),
+    )?;
 
     let host_arch = get_host_architecture();
 
@@ -3885,6 +3801,24 @@ fn integration_test(
     }
 
     Ok(())
+}
+
+/// Determine the name of the primary source file for a test source directory.
+fn identify_primary_source(test_src_dir: &Path, test_name: &str) -> Result<PathBuf> {
+    let extensions = &["rs", "c", "cc", "s"];
+
+    for ext in extensions {
+        let path = test_src_dir.join(format!("{test_name}.{ext}"));
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    bail!(
+        "{} must contain {test_name}.{{{}}}",
+        test_src_dir.display(),
+        extensions.join(",")
+    );
 }
 
 /// Verifies that the platform that we're running on meets the requirements for the supplied test
