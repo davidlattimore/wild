@@ -624,8 +624,6 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn num_symbols(&self) -> usize;
 
-    fn symbols(&self) -> &'data [<Self::Platform as Platform>::SymtabEntry];
-
     fn enumerate_symbols(
         &self,
     ) -> impl Iterator<
@@ -634,19 +632,14 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
             &'data <Self::Platform as Platform>::SymtabEntry,
         ),
     > {
-        self.symbols()
-            .iter()
+        self.symbols_iter()
             .enumerate()
             .map(|(i, sym)| (object::SymbolIndex(i), sym))
     }
 
-    // TODO: Remove implementations of this as this default should be fine. Perhaps first check if
-    // all platforms can get a slice of symbols.
     fn symbols_iter(
         &self,
-    ) -> impl Iterator<Item = &'data <Self::Platform as Platform>::SymtabEntry> {
-        self.symbols().iter()
-    }
+    ) -> impl Iterator<Item = &'data <Self::Platform as Platform>::SymtabEntry>;
 
     fn symbol(
         &self,

@@ -5,6 +5,7 @@
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::platform;
+use object::Endian;
 use object::Endianness;
 use object::macho;
 use object::macho::Section64;
@@ -19,6 +20,7 @@ const LE: Endianness = Endianness::Little;
 
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
 type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
+type SymtabEntry = object::macho::Nlist64<Endianness>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -79,11 +81,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_symbols(&self) -> usize {
-        todo!()
+        self.symbols.len()
     }
 
-    fn symbols(&self) -> &'data [<Self::Platform as platform::Platform>::SymtabEntry] {
-        todo!()
+    fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
+        self.symbols.iter()
     }
 
     fn symbol(
@@ -365,9 +367,6 @@ impl platform::SectionFlags for SectionFlags {
         todo!()
     }
 }
-
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SymtabEntry {}
 
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<platform::CommonSymbol> {
@@ -810,12 +809,12 @@ impl platform::Platform for MachO {
         output_kind: crate::output_kind::OutputKind,
         args: &Self::Args,
     ) {
-        todo!()
     }
 
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>> {
-        todo!()
+        // TODO
+        Vec::new()
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
