@@ -1962,7 +1962,11 @@ fn build_obj(
         } else {
             config.compiler_args.args.clone()
         };
+
     compiler_args.extend_from_slice(&file.args.args);
+
+    let output_path = add_to_path(&config.build_dir.join(Path::new(&file.filename)), suffix);
+    let deps_path = add_to_path(&output_path, ".deps");
 
     match compiler_kind {
         CompilerKind::C => {
@@ -1987,6 +1991,10 @@ fn build_obj(
             add_cross_args(&mut command, &compiler_args, cross_arch);
 
             command.arg("-c");
+
+            command.arg("-MF");
+            command.arg(&deps_path);
+            command.arg("-MD");
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
@@ -2039,11 +2047,13 @@ fn build_obj(
         }
     }
 
+    // If we haven't run previously or we're compiling rust code, there won't be a deps file. In
+    // that case, our deps is just the source file.
+    let deps = parse_deps_file(&deps_path).unwrap_or_else(|_| vec![src_path.to_owned()]);
+
     command.arg(&src_path);
 
     command.args(compiler_args);
-
-    let output_path = add_to_path(&config.build_dir.join(Path::new(&file.filename)), suffix);
 
     verify_path_unique_for_args(&output_path, &command)?;
 
@@ -2067,7 +2077,7 @@ fn build_obj(
         output_path.clone()
     };
 
-    if is_newer(&output_file, std::iter::once(&src_path)) {
+    if is_newer(&output_file, deps.iter()) {
         return Ok(BuiltObject {
             path: output_path,
             inputs,
@@ -2304,7 +2314,7 @@ fn is_newer<A: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Ite
     })
 }
 
-fn parse_ld_dependency_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
+fn parse_deps_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
     let f = std::fs::File::open(depfile)?;
     let mut r = BufReader::new(f);
 
@@ -2747,7 +2757,7 @@ impl LinkCommand {
             hash_file(dep);
         }
 
-        if let Ok(deps) = parse_ld_dependency_file(&self.depfile_path()) {
+        if let Ok(deps) = parse_deps_file(&self.depfile_path()) {
             for dep in deps {
                 hash_file(&dep);
             }
