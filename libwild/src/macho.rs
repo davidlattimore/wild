@@ -10,6 +10,7 @@ use object::Endianness;
 use object::macho;
 use object::macho::Section64;
 use object::read::macho::MachHeader;
+use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 
@@ -85,6 +86,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
+        for s in self.symbols.iter() {
+            let name = s.name(LE, self.symbols.strings()).unwrap();
+            dbg!(String::from_utf8_lossy(name));
+        }
+
         self.symbols.iter()
     }
 
