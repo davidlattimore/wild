@@ -32,7 +32,10 @@ use crate::layout_rules::SectionRule;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::output_kind::OutputKind;
 use crate::output_section_id;
+use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
+use crate::output_section_id::OutputOrder;
+use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -1737,6 +1740,68 @@ impl platform::Platform for Elf {
         .context("Too many dynamic symbols")?;
         memory_offsets.increment(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
         Ok(index)
+    }
+
+    fn build_output_order_and_program_segments<'data>(
+        custom: &CustomSectionIds,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+    ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>) {
+        let mut builder = OutputOrderBuilder::<Self>::new(output_sections, secondary);
+
+        builder.add_section(output_section_id::FILE_HEADER);
+        builder.add_section(output_section_id::PROGRAM_HEADERS);
+        builder.add_section(output_section_id::SECTION_HEADERS);
+        builder.add_section(output_section_id::NOTE_GNU_PROPERTY);
+        builder.add_section(output_section_id::NOTE_GNU_BUILD_ID);
+        builder.add_section(output_section_id::INTERP);
+        builder.add_section(output_section_id::NOTE_ABI_TAG);
+        builder.add_section(output_section_id::HASH);
+        builder.add_section(output_section_id::GNU_HASH);
+        builder.add_section(output_section_id::DYNSYM);
+        builder.add_section(output_section_id::DYNSTR);
+        builder.add_section(output_section_id::GNU_VERSION);
+        builder.add_section(output_section_id::GNU_VERSION_D);
+        builder.add_section(output_section_id::GNU_VERSION_R);
+        builder.add_section(output_section_id::RELA_DYN_RELATIVE);
+        builder.add_section(output_section_id::RELA_PLT);
+        builder.add_section(output_section_id::RODATA);
+        builder.add_section(output_section_id::EH_FRAME_HDR);
+        builder.add_section(output_section_id::EH_FRAME);
+        builder.add_section(output_section_id::SFRAME);
+        builder.add_section(output_section_id::GCC_EXCEPT_TABLE);
+        builder.add_sections(&custom.ro);
+
+        builder.add_section(output_section_id::PLT_GOT);
+        builder.add_section(output_section_id::TEXT);
+        builder.add_section(output_section_id::INIT);
+        builder.add_section(output_section_id::FINI);
+        builder.add_sections(&custom.exec);
+
+        builder.add_section(output_section_id::TDATA);
+        builder.add_sections(&custom.tdata);
+        builder.add_section(output_section_id::TBSS);
+        builder.add_sections(&custom.tbss);
+        builder.add_section(output_section_id::INIT_ARRAY);
+        builder.add_section(output_section_id::FINI_ARRAY);
+        builder.add_section(output_section_id::PREINIT_ARRAY);
+        builder.add_section(output_section_id::DATA_REL_RO);
+        builder.add_section(output_section_id::DYNAMIC);
+        builder.add_section(output_section_id::GOT);
+        builder.add_section(output_section_id::RELRO_PADDING);
+        builder.add_section(output_section_id::DATA);
+        builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::BSS);
+        builder.add_sections(&custom.bss);
+
+        builder.add_sections(&custom.nonalloc);
+        builder.add_section(output_section_id::COMMENT);
+        builder.add_section(output_section_id::RISCV_ATTRIBUTES);
+        builder.add_section(output_section_id::SHSTRTAB);
+        builder.add_section(output_section_id::SYMTAB_LOCAL);
+        builder.add_section(output_section_id::STRTAB);
+
+        builder.build()
     }
 }
 

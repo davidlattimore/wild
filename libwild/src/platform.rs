@@ -18,6 +18,7 @@ use crate::layout_rules;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionRule;
 use crate::linker_plugins::LinkerPlugin;
+use crate::output_section_id::CustomSectionIds;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -608,6 +609,12 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> Result {
         Ok(())
     }
+
+    fn build_output_order_and_program_segments<'data>(
+        custom: &CustomSectionIds,
+        output_sections: &OutputSections<'data, Self>,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+    ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>);
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
