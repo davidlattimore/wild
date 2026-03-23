@@ -32,6 +32,7 @@ use std::path::PathBuf;
 
 pub mod elf;
 pub mod macho;
+pub mod pe;
 
 use crate::error::Warning;
 use crate::platform;
@@ -117,6 +118,7 @@ impl Args {
         match PlatformKind::host() {
             PlatformKind::Elf => Ok(Args::Elf(elf::ElfArgs::new()?)),
             PlatformKind::MachO => Ok(Args::MachO(macho::MachOArgs::new()?)),
+            PlatformKind::Pe => Ok(Args::Pe(pe::PeArgs::new()?)),
         }
     }
 
@@ -137,6 +139,7 @@ impl Args {
         match self {
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
+            Args::Pe(args) => args.parse(input),
         }
     }
 
@@ -156,15 +159,17 @@ impl Args {
 
     pub(crate) fn common(&self) -> &CommonArgs {
         match self {
-            Args::Elf(elf_args) => &elf_args.common,
-            Args::MachO(macho_args) => &macho_args.common,
+            Args::Elf(args) => &args.common,
+            Args::MachO(args) => &args.common,
+            Args::Pe(args) => &args.common,
         }
     }
 
     pub(crate) fn common_mut(&mut self) -> &mut CommonArgs {
         match self {
-            Args::Elf(elf_args) => &mut elf_args.common,
-            Args::MachO(macho_args) => &mut macho_args.common,
+            Args::Elf(args) => &mut args.common,
+            Args::MachO(args) => &mut args.common,
+            Args::Pe(args) => &mut args.common,
         }
     }
 }
@@ -172,12 +177,15 @@ impl Args {
 enum PlatformKind {
     Elf,
     MachO,
+    Pe,
 }
 
 impl PlatformKind {
     fn host() -> Self {
         if cfg!(target_os = "macos") {
             PlatformKind::MachO
+        } else if cfg!(target_os = "windows") {
+            PlatformKind::Pe
         } else {
             PlatformKind::Elf
         }
@@ -426,6 +434,7 @@ pub struct ThreadPool {
 pub enum Args {
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
+    Pe(pe::PeArgs),
 }
 
 impl std::fmt::Debug for Args {
@@ -433,6 +442,7 @@ impl std::fmt::Debug for Args {
         match self {
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
+            Args::Pe(args) => args.fmt(f),
         }
     }
 }
@@ -550,10 +560,46 @@ pub(crate) enum UnresolvedSymbols {
     IgnoreAll,
 }
 
+#[derive(Clone, Copy)]
+enum OptionStyle {
+    /// `--flag=value`, `-flag`, case-sensitive
+    Unix,
+    /// `/FLAG:value`, case-insensitive
+    Windows,
+}
+
+impl OptionStyle {
+    fn strip_option(self, arg: &str) -> Option<&str> {
+        match self {
+            Self::Unix => arg.strip_prefix("--").or(arg.strip_prefix('-')),
+            Self::Windows => arg.strip_prefix('/').or(arg.strip_prefix('-')),
+        }
+    }
+
+    fn has_option_prefix(self, arg: &str) -> bool {
+        match self {
+            Self::Unix => arg.starts_with('-'),
+            Self::Windows => arg.starts_with('/') || arg.starts_with('-'),
+        }
+    }
+
+    fn find_separator(self, stripped: &str) -> Option<usize> {
+        match self {
+            Self::Unix => stripped.find('='),
+            Self::Windows => stripped.find(':'),
+        }
+    }
+
+    fn is_case_insensitive(self) -> bool {
+        matches!(self, Self::Windows)
+    }
+}
+
 struct ArgumentParser<T> {
     options: HashMap<&'static str, OptionHandler<T>>, // Long option lookup
     short_options: HashMap<&'static str, OptionHandler<T>>, // Short option lookup
     prefix_options: HashMap<&'static str, PrefixOptionHandler<T>>, // For options like -L, -l, etc.
+    style: OptionStyle,
 }
 
 impl<T: platform::Args> Default for ArgumentParser<T> {
@@ -569,6 +615,17 @@ impl<T: platform::Args> ArgumentParser<T> {
             options: HashMap::new(),
             short_options: HashMap::new(),
             prefix_options: HashMap::new(),
+            style: OptionStyle::Unix,
+        }
+    }
+
+    #[must_use]
+    fn new_windows() -> Self {
+        Self {
+            options: HashMap::new(),
+            short_options: HashMap::new(),
+            prefix_options: HashMap::new(),
+            style: OptionStyle::Windows,
         }
     }
 
@@ -608,6 +665,22 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
     }
 
+    fn get_option_handler(&self, option_name: &str) -> Option<&OptionHandler<T>> {
+        if self.style.is_case_insensitive() {
+            if let Some(handler) = self.options.get(option_name) {
+                return Some(handler);
+            }
+            for (key, handler) in &self.options {
+                if key.eq_ignore_ascii_case(option_name) {
+                    return Some(handler);
+                }
+            }
+            None
+        } else {
+            self.options.get(option_name)
+        }
+    }
+
     fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
         &self,
         args: &mut T,
@@ -628,13 +701,12 @@ impl<T: platform::Args> ArgumentParser<T> {
             return Ok(());
         }
 
-        if let Some(stripped) = strip_option(arg) {
-            // Check for option with '=' syntax
-            if let Some(eq_pos) = stripped.find('=') {
+        if let Some(stripped) = self.style.strip_option(arg) {
+            if let Some(eq_pos) = self.style.find_separator(stripped) {
                 let option_name = &stripped[..eq_pos];
                 let value = &stripped[eq_pos + 1..];
 
-                if let Some(handler) = self.options.get(option_name) {
+                if let Some(handler) = self.get_option_handler(option_name) {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
@@ -644,14 +716,14 @@ impl<T: platform::Args> ArgumentParser<T> {
                 }
             } else {
                 if stripped == "build-id"
-                    && let Some(handler) = self.options.get(stripped)
+                    && let Some(handler) = self.get_option_handler(stripped)
                     && let OptionHandlerFn::WithParam(f) = &handler.handler
                 {
                     f(args, modifier_stack, "fast")?;
                     return Ok(());
                 }
 
-                if let Some(handler) = self.options.get(stripped) {
+                if let Some(handler) = self.get_option_handler(stripped) {
                     match &handler.handler {
                         OptionHandlerFn::NoParam(f) => f(args, modifier_stack)?,
                         OptionHandlerFn::WithParam(f) => {
@@ -709,7 +781,6 @@ impl<T: platform::Args> ArgumentParser<T> {
                             SubOptionHandler::WithValue(f) => f(args, modifier_stack, param_value)?,
                         }
                     } else {
-                        // Fall back to the main handler
                         (handler.handler)(args, modifier_stack, &value)?;
                     }
                 } else {
@@ -730,8 +801,8 @@ impl<T: platform::Args> ArgumentParser<T> {
             }
         }
 
-        if arg.starts_with('-') {
-            if let Some(stripped) = strip_option(arg)
+        if self.style.has_option_prefix(arg) {
+            if let Some(stripped) = self.style.strip_option(arg)
                 && IGNORED_FLAGS.contains(&stripped)
             {
                 args.warn_unsupported(arg)?;
@@ -1090,10 +1161,6 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
                 .insert(option, option_handler.clone());
         }
     }
-}
-
-fn strip_option(arg: &str) -> Option<&str> {
-    arg.strip_prefix("--").or(arg.strip_prefix('-'))
 }
 
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
