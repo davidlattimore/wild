@@ -277,7 +277,13 @@ impl SaveDirState {
                 self.copy_file(&absolute_target, parsed_args)?;
             }
 
-            create_symlink(&target, &dest_path)?;
+            if let Err(error) = create_symlink(&target, &dest_path) {
+                // If we can't create a symlink, then fall back to copying. If that fails, then
+                // return the error from when we tried to create the symlink.
+                if std::fs::copy(&target, &dest_path).is_err() {
+                    return Err(error);
+                }
+            }
         } else {
             if let Ok(data) = FileData::new(source_path, false) {
                 match FileKind::identify_bytes(&data) {
@@ -390,6 +396,11 @@ fn create_symlink(target: &Path, dest_path: &Path) -> Result {
             )
         })?;
         Ok(())
+    }
+    #[cfg(target_os = "wasi")]
+    {
+        let _ = (target, dest_path);
+        bail!("creating symlinks on wasi not supported on stable rust");
     }
 }
 
