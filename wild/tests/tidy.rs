@@ -1,4 +1,4 @@
-use libwild::bail;
+use libtest_mimic::Failed;
 use libwild::error::Context as _;
 use std::env;
 use std::fs::read_dir;
@@ -6,12 +6,11 @@ use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 
-type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
-
-#[test]
-fn check_sources_format() {
+pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed> {
     if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
-        return;
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "disabled via env var",
+        ));
     }
 
     let extensions = ["c", "cc", "h"];
@@ -60,15 +59,16 @@ fn check_sources_format() {
             .expect("Failed to spawn `clang-format --version`");
         let clang_version = String::from_utf8_lossy(&clang_out.stdout);
         let version_no_endline = clang_version.trim_end_matches('\n');
-        panic!(
+        return Err(Failed::from(format!(
             "clang-format ({version_no_endline}) check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
             extensions_str = extensions.join(",")
-        )
+        )));
     }
+
+    Ok(libtest_mimic::Completion::Completed)
 }
 
-#[test]
-fn check_text_files() -> Result {
+pub(super) fn check_text_files() -> Result<(), Failed> {
     const EXCLUDE_DIR: &[&str] = &[
         "target",
         "build",
@@ -77,7 +77,7 @@ fn check_text_files() -> Result {
         "fakes",
     ];
 
-    fn verify_path(path: &Path, problems: &mut Vec<String>) -> Result {
+    fn verify_path(path: &Path, problems: &mut Vec<String>) -> libwild::error::Result {
         if EXCLUDE_DIR.iter().any(|e| path.ends_with(e)) {
             return Ok(());
         }
@@ -133,10 +133,10 @@ fn check_text_files() -> Result {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
 
     let mut problems = Vec::new();
-    verify_path(root, &mut problems)?;
+    verify_path(root, &mut problems).map_err(|e| Failed::from(e.to_string()))?;
 
     if !problems.is_empty() {
-        bail!("{}", problems.join("\n"))
+        return Err(Failed::from(problems.join("\n")));
     }
 
     Ok(())

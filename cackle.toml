@@ -149,12 +149,6 @@ allow_unsafe = true
 [pkg.clap_derive]
 allow_proc_macro = true
 
-[pkg.rstest_macros]
-allow_proc_macro = true
-allow_apis = [
-    "fs",
-]
-
 [pkg.serde_derive]
 allow_proc_macro = true
 

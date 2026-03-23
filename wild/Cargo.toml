@@ -15,6 +15,7 @@ path = "src/main.rs"
 [[test]]
 name = "integration_tests"
 path = "tests/integration_tests.rs"
+harness = false
 
 [dependencies]
 libwild = { path = "../libwild", version = "0.8.0" }
@@ -32,10 +33,10 @@ itertools = { workspace = true }
 foldhash = { workspace = true }
 linker-diff = { path = "../linker-diff" }
 libloading = { workspace = true }
+libtest-mimic =  { workspace = true }
 object = { workspace = true }
 os_info = { workspace = true }
 regex = { workspace = true }
-rstest = { workspace = true }
 serde = { workspace = true }
 serde-keyvalue = { workspace =  true }
 strum = { workspace = true }
