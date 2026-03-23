@@ -2694,6 +2694,9 @@ impl LinkCommand {
             let linker = libwild::Linker::new();
             let get_args = || std::iter::once("wild").chain(args.iter().copied());
             let mut parsed_args = libwild::Args::new(get_args)?;
+            // Tests that are checking for warnings use a subprocess to capture output. For now, we
+            // suppress warnings for tests that use libwild.
+            parsed_args.on_warning(Box::new(|_| {}));
             parsed_args.parse(get_args)?;
 
             // This call is expected to error for all but the first call.

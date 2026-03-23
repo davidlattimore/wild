@@ -305,7 +305,12 @@ fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result 
         .flatten()
         .collect();
 
-    sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)
+    sframe::sort_sframe_section(
+        sframe_buffer,
+        sframe_start_address,
+        &sframe_ranges,
+        layout.symbol_db.args,
+    )
 }
 
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {

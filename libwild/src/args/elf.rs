@@ -16,7 +16,6 @@ use crate::args::Modifiers;
 use crate::args::RelocationModel;
 use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
-use crate::args::warn_unsupported;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -631,8 +630,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
-        .execute(|_args, _modifier_stack, value| {
-            warn_unsupported(&("-z ".to_owned() + value))?;
+        .execute(|args, _modifier_stack, value| {
+            args.warn_unsupported(&("-z ".to_owned() + value))?;
             Ok(())
         });
 
@@ -760,9 +759,9 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare_with_param()
         .long("pack-dyn-relocs")
         .help("Specify dynamic relocation packing format")
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|args, _modifier_stack, value| {
             if value != "none" {
-                warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
+                args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
             }
             Ok(())
         });
@@ -1453,10 +1452,10 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare_with_param()
         .long("icf")
         .help("Enable identical code folding (merge duplicate functions)")
-        .execute(|_args, _modifier_stack, value| {
+        .execute(|args, _modifier_stack, value| {
             match value {
                 "none" => {}
-                other => warn_unsupported(&format!("--icf={other}"))?,
+                other => args.warn_unsupported(&format!("--icf={other}"))?,
             }
             Ok(())
         });
@@ -1465,8 +1464,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .declare_with_param()
         .long("sort-section")
         .help("Specify section sorting criteria")
-        .execute(|_args, _modifier_stack, value| {
-            warn_unsupported(&format!("--sort-section={value}"))?;
+        .execute(|args, _modifier_stack, value| {
+            args.warn_unsupported(&format!("--sort-section={value}"))?;
             Ok(())
         });
 
