@@ -68,9 +68,9 @@
 //! RunEnabled:{bool} Defaults to true. Set to false to disable execution of the resulting binary.
 //!
 //! RunDynSym:{string} If set and RunEnabled:true, then, instead of executing the binary normally,
-//! the binary is loaded as a shared library and the function specified by the string is called.
-//! The function must return an integer to indicate status (status != 42 is an error).
-//! Such run is obviously skipped if the shared library is cross compiled.
+//! the binary is loaded as a shared library and the function specified by the string is called. The
+//! function must return an integer to indicate status (status != 42 is an error). Such run is
+//! currently skipped if the shared library is cross compiled.
 //!
 //! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
 //! that isn't supported by GNU ld.
@@ -84,7 +84,10 @@
 //! times - all must match.
 //!
 //! ExpectMessage:{message regex} Verifies that the linker prints the message matching the specified
-//! regex. May be specified multiple times - all must match.
+//! regex to stdout. May be specified multiple times - all must match.
+//!
+//! ExpectWarning:{message regex} Verifies that the linker emits a warning matching the specified
+//! regex. Warning must be written to stderr. May be specified multiple times - all must match.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
@@ -304,10 +307,12 @@ impl Linker {
         )?;
 
         if !command.can_skip() {
-            // If we're expecting errors, those errors should only occur when we link the final
-            // binary, not when we link any dependent shared objects.
+            // Clear properties that should only apply to the final link, not to intermediate
+            // artefacts like shared objects.
             let mut config = config.clone();
-            config.expect_messages = Vec::new();
+            config.expect_stderr = Vec::new();
+            config.expect_stdout = Vec::new();
+            config.should_error = false;
 
             command.run(&config)?;
             command.write_input_hashes()?;
@@ -530,7 +535,8 @@ struct Config {
     should_run: bool,
     run_dyn_sym: Option<String>,
     should_error: bool,
-    expect_messages: Vec<ErrorMatcher>,
+    expect_stderr: Vec<ErrorMatcher>,
+    expect_stdout: Vec<ErrorMatcher>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -608,7 +614,7 @@ struct DirectConfig {
 
 #[derive(Debug, Clone)]
 struct ErrorMatcher {
-    regex: regex::bytes::Regex,
+    regex: regex::Regex,
 }
 
 fn get_glibc_version() -> Option<Vec<u32>> {
@@ -836,6 +842,10 @@ impl Config {
         out.deps = Vec::new();
         out
     }
+
+    fn can_use_wild_in_process(&self) -> bool {
+        self.expect_stderr.is_empty() && self.expect_stdout.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1006,7 +1016,8 @@ impl Config {
             should_run: true,
             run_dyn_sym: None,
             should_error: false,
-            expect_messages: Default::default(),
+            expect_stderr: Default::default(),
+            expect_stdout: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -1227,14 +1238,17 @@ fn process_directive(
         }
         "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
         "ExpectError" => {
-            config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+            config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
             config.should_error = true;
             // If there are errors, then there's nothing to run and nothing to diff.
             config.should_run = false;
             config.should_diff = false;
         }
         "ExpectMessage" => {
-            config.expect_messages.push(ErrorMatcher::new(arg.trim())?);
+            config.expect_stdout.push(ErrorMatcher::new(arg.trim())?);
+        }
+        "ExpectWarning" => {
+            config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
         }
         "SecEquiv" => config.section_equiv.push(
             arg.trim()
@@ -2616,45 +2630,14 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if !config.expect_messages.is_empty() {
-            let output = self
-                .command
-                .output()
-                .with_context(|| format!("Failed to run command: {:?}", self.command))?;
-
-            if config.should_error && output.status.success() {
-                bail!(
-                    "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
-                );
-            }
-
-            for expected_error in &config.expect_messages {
-                let output_stream = if config.should_error {
-                    &output.stderr
-                } else {
-                    &output.stdout
-                };
-                if !expected_error.matches(output_stream) {
-                    eprintln!(
-                        "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr),
-                    );
-                    bail!(
-                        "Linker expected to report error `{expected_error}` on stderr, but didn't. \
-                         Command:\n{self}"
-                    );
-                }
-            }
-
-            return Ok(());
-        }
-
         // If we're linking with wild and we're going to be invoking the linker directly, then just
         // use libwild as a library. This is marginally faster, since we avoid the process startup
         // costs. It also allows us to exercise wild as a library. We still exercise wild from the
         // command-line via the shell-script-based tests.
-        if self.linker.is_wild() && self.invocation_mode == LinkerInvocationMode::Direct {
+        if self.linker.is_wild()
+            && self.invocation_mode == LinkerInvocationMode::Direct
+            && config.can_use_wild_in_process()
+        {
             let args = self
                 .command
                 .get_args()
@@ -2682,11 +2665,18 @@ impl LinkCommand {
             .output()
             .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-        let mut messages = String::from_utf8_lossy(&output.stdout).into_owned();
-        messages.push_str(&String::from_utf8_lossy(&output.stderr));
+        let stdout =
+            std::str::from_utf8(&output.stdout).context("stdout contained invalid UTF-8")?;
+        let stderr =
+            std::str::from_utf8(&output.stderr).context("stderr contained invalid UTF-8")?;
 
-        if !output.status.success() {
-            bail!("Linker failed:\n{messages}\nRelink with:\n{self}");
+        self.check_messages(&config.expect_stderr, "stderr", stderr, stdout, stderr)?;
+        self.check_messages(&config.expect_stdout, "stdout", stdout, stdout, stderr)?;
+
+        if config.should_error && output.status.success() {
+            bail!("Linker returned exit status of 0, when an error was expected. Command:\n{self}",);
+        } else if !config.should_error && !output.status.success() {
+            bail!("Linker failed:\n{stdout}{stderr}\nRelink with:\n{self}");
         }
 
         if let Some(save_dir) = self.opt_save_dir.as_ref() {
@@ -2695,8 +2685,30 @@ impl LinkCommand {
                 // Note, we print self.command here not self. Printing self will print the command
                 // to run using the run-with script, which doesn't exist.
                 bail!(
-                    "run-with script didn't get written. Command:\n{:?}\nOutput:\n{messages}",
+                    "run-with script didn't get written. Command:\n{:?}\nOutput:\n\
+                    {stdout}{stderr}",
                     self.command
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_messages(
+        &self,
+        expectations: &[ErrorMatcher],
+        output_name: &'static str,
+        output: &str,
+        stdout: &str,
+        stderr: &str,
+    ) -> Result {
+        for expected_error in expectations {
+            if !expected_error.matches(output) {
+                eprintln!("-- stdout --\n{stdout}\n-- stderr --\n{stderr}\n-- end --");
+                bail!(
+                    "Linker expected to report `{expected_error}` on {output_name}, but didn't. \
+                         Command:\n{self}"
                 );
             }
         }
@@ -3379,7 +3391,7 @@ fn diff_executables(config: &Config, programs: &[Program]) -> Result {
 
 /// Diff the supplied files. The last file should be the one that we produced.
 fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
-    if !config.should_diff {
+    if !config.should_diff || files.len() < 2 {
         return Ok(());
     }
 
@@ -3501,11 +3513,11 @@ impl LinkerInvocationMode {
 
 impl ErrorMatcher {
     fn new(pattern: &str) -> Result<Self> {
-        let regex = regex::bytes::Regex::new(pattern)?;
+        let regex = regex::Regex::new(pattern)?;
         Ok(Self { regex })
     }
 
-    fn matches(&self, stderr: &[u8]) -> bool {
+    fn matches(&self, stderr: &str) -> bool {
         self.regex.is_match(stderr)
     }
 }
@@ -3603,7 +3615,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if !config.expect_messages.is_empty() {
+    if config.should_error {
         return Ok(());
     }
 

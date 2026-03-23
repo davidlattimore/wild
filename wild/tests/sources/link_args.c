@@ -64,6 +64,11 @@
 //#ExpectMessage:this_function_is_not_used
 //#ExpectMessage:#[0-9]+ in File #256 \(1/0\) .* \(LOADED\)
 
+//#Config:unsupported-z-flag
+//#Object:runtime.c
+//#LinkArgs:-z foobar
+//#ExpectWarning:warning.*foobar
+
 #include "runtime.h"
 
 void _start(void) {

@@ -90,7 +90,7 @@ macro_rules! debug_assert_bail {
 
 /// Prints a warning.
 pub(crate) fn warning(message: &str) {
-    println!("wild: {} {message}", "warning:".yellow());
+    eprintln!("wild: {} {message}", "warning:".yellow());
 }
 
 impl Display for AlreadyInitialised {
