@@ -26,7 +26,7 @@ use crate::part_id::PartId;
 use crate::platform::Args;
 use crate::platform::Platform;
 use crate::platform::ProgramSegmentDef;
-use crate::platform::SectionAttributes;
+use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::SectionSlot;
