@@ -181,6 +181,7 @@ mod tidy;
 
 use itertools::Itertools;
 use libloading::Library;
+use libtest_mimic::Trial;
 use libwild::bail;
 use libwild::ensure;
 use libwild::error;
@@ -191,8 +192,6 @@ use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
 use os_info::Type;
-use rstest::fixture;
-use rstest::rstest;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -226,6 +225,104 @@ use strum::Display;
 use strum::EnumString;
 use wait_timeout::ChildExt;
 
+fn main() -> Result<std::process::ExitCode> {
+    let args = libtest_mimic::Arguments::from_args();
+    let filter = Filter::new(&args);
+    let mut tests = Vec::new();
+    collect_non_dynamic(&mut tests, &filter);
+    collect_tests(&mut tests, &filter)?;
+    external_tests::collect_tests(&mut tests, &filter)?;
+    Ok(libtest_mimic::run(&args, tests).exit_code())
+}
+
+fn collect_non_dynamic(tests: &mut Vec<Trial>, filter: &Filter) {
+    if filter.excludes("check") {
+        return;
+    }
+
+    // These tests could be #[test] style tests if we were using the standard test harness, but
+    // there's only a small number of them, so we just register them explicitly to avoid having to
+    // have a separate integration test binary.
+    tests.push(Trial::ignorable_test(
+        "check_sources_format",
+        crate::tidy::check_sources_format,
+    ));
+    tests.push(Trial::test(
+        "check_text_files",
+        crate::tidy::check_text_files,
+    ));
+}
+
+fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
+    let test_config = read_test_config()?;
+
+    let platform = PlatformKind::Elf;
+
+    let platform_name = platform.to_str();
+
+    if filter.excludes(platform_name) {
+        return Ok(());
+    }
+
+    let root = src_path(platform_name);
+    let dir = std::fs::read_dir(&root)
+        .with_context(|| format!("Failed to read directory {}", root.display()))?;
+
+    for entry in dir {
+        let entry = entry?;
+        let path = entry.path();
+        if path.ends_with("common") {
+            continue;
+        }
+
+        let base_name = path
+            .file_name()
+            .context("Missing filename")?
+            .to_str()
+            .context("Non-UTF-8 path")?
+            .to_owned();
+
+        for &arch in ALL_ARCHITECTURES {
+            let name_prefix = format!("{platform_name}/{arch}/{base_name}");
+            if filter.excludes(&name_prefix) {
+                continue;
+            }
+
+            let primary_source_file = identify_primary_source(&path, &base_name)?;
+
+            let configs = parse_configs(
+                &primary_source_file,
+                &Config::new(
+                    base_name.clone(),
+                    platform,
+                    arch,
+                    path.clone(),
+                    &test_config,
+                ),
+            )?;
+
+            let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+
+            for config in configs {
+                if config.should_skip(arch) {
+                    continue;
+                }
+
+                let full_name = format!("{name_prefix}/{}", config.config_name);
+                let test_config = test_config.clone();
+                let program_inputs = program_inputs.clone();
+
+                tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
+                    run_integration_test(arch, &program_inputs, config, &test_config)
+                        .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+                }));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Set this variable to a non-empty value to check that the current platform meets the requirements
 /// for running all tests.
 const FULL_PLATFORM_REQUIRED_VAR: &str = "WILD_VERIFY_PLATFORM_REQUIREMENTS";
@@ -239,13 +336,11 @@ fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn determine_build_dir(test_name: &str) -> PathBuf {
-    std::env::var("WILD_TEST_BUILD_DIR")
-        .map_or(base_dir().join("tests/build"), PathBuf::from)
-        .join(test_name)
+fn build_dir() -> PathBuf {
+    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ProgramInputs {
     source_file: PathBuf,
 }
@@ -513,13 +608,10 @@ struct Config {
     /// The directory containing the test sources.
     test_src_dir: PathBuf,
 
-    /// The base build directory for the test (without config name).
-    base_build_dir: PathBuf,
-
-    /// The build directory for this config (base_build_dir + config name).
-    build_dir: PathBuf,
-
-    name: String,
+    platform: PlatformKind,
+    arch: Architecture,
+    test_name: String,
+    config_name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
     linker_driver: LinkerDriver,
@@ -610,6 +702,11 @@ enum Mode {
     #[default]
     Static,
     Unspecified,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlatformKind {
+    Elf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -871,6 +968,14 @@ impl Config {
     fn common_dir(&self) -> PathBuf {
         self.test_src_dir.parent().unwrap().join("common")
     }
+
+    fn build_dir(&self) -> PathBuf {
+        build_dir()
+            .join(self.platform.to_str())
+            .join(self.arch.to_string())
+            .join(&self.test_name)
+            .join(&self.config_name)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1016,12 +1121,19 @@ impl ArgumentSet {
 }
 
 impl Config {
-    fn new(test_src_dir: PathBuf, test_config: &TestConfig, build_dir: PathBuf) -> Self {
+    fn new(
+        test_name: String,
+        platform: PlatformKind,
+        arch: Architecture,
+        test_src_dir: PathBuf,
+        test_config: &TestConfig,
+    ) -> Self {
         Self {
             test_src_dir,
-            base_build_dir: build_dir.clone(),
-            build_dir,
-            name: "default".to_owned(),
+            test_name,
+            platform,
+            arch,
+            config_name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
@@ -1132,7 +1244,7 @@ fn process_directive(
         "Config" | "AbstractConfig" => {
             if config != default_config {
                 let index = configs.len();
-                config_name_to_index.insert(config.name.clone(), index);
+                config_name_to_index.insert(config.config_name.clone(), index);
                 configs.push(config.clone());
             }
 
@@ -1155,7 +1267,7 @@ fn process_directive(
             if config_name_to_index.contains_key(name) {
                 bail!("Duplicate config `{name}`");
             }
-            name.clone_into(&mut config.name);
+            name.clone_into(&mut config.config_name);
         }
         "Variant" => {
             if config.variant_num.is_some() {
@@ -1778,7 +1890,7 @@ impl Display for Program<'_> {
 
 impl Display for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.name, f)
+        Display::fmt(&self.config_name, f)
     }
 }
 
@@ -1871,7 +1983,10 @@ fn build_linker_input(
         .file_stem()
         .context("Invalid source filename")?;
 
-    let archive_path = config.build_dir.join(archive_basename).with_extension("a");
+    let archive_path = config
+        .build_dir()
+        .join(archive_basename)
+        .with_extension("a");
 
     let mut linker_input = match dep.input_type {
         InputType::Archive | InputType::ThinArchive => {
@@ -1999,6 +2114,11 @@ fn build_obj(
 
     let mut command = Command::new(&compiler);
 
+    // We may be building multiple things with the same name in parallel from different test
+    // processes, so we change to the build directory for the current test, so that if the compiler
+    // writes temporary files to the working directory, they won't collide.
+    command.current_dir(config.build_dir());
+
     let mut compiler_args =
         if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
             config.compiler_so_args.args.clone()
@@ -2009,7 +2129,7 @@ fn build_obj(
     compiler_args.extend_from_slice(&file.args.args);
 
     let output_path = add_to_path(
-        &config.build_dir.join(file.path.file_name().unwrap()),
+        &config.build_dir().join(file.path.file_name().unwrap()),
         suffix,
     );
 
@@ -2283,12 +2403,6 @@ fn get_target(compiler_args: &[String]) -> Result<&String> {
     bail!("No --target flag found");
 }
 
-fn cross_name(cross_arch: Option<Architecture>) -> String {
-    cross_arch
-        .map(|a| a.to_string())
-        .unwrap_or("host".to_string())
-}
-
 /// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
 /// DT_SONAME. If DT_SONAME is set, then binaries that are linked against those shared objects will
 /// use the value from DT_SONAME to populate DT_NEEDED entries in the executable. If the filename of
@@ -2442,7 +2556,7 @@ impl Linker {
     }
 
     fn output_path(&self, basename: &str, config: &Config) -> PathBuf {
-        config.build_dir.join(format!("{basename}.{self}"))
+        config.build_dir().join(format!("{basename}.{self}"))
     }
 }
 
@@ -3536,10 +3650,9 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     .collect()
 }
 
-static INIT: Once = Once::new();
-
-#[fixture]
 fn setup_symlink() {
+    static INIT: Once = Once::new();
+
     INIT.call_once(|| {
         setup_wild_ld_symlink().unwrap();
     });
@@ -3648,7 +3761,7 @@ fn run_with_config(
                     format!(
                         "Test failed: `{program_inputs}` \
                         with linker `{linker}` config `{}`",
-                        config.name
+                        config.config_name
                     )
                 });
             let is_cache_hit = result
@@ -3730,81 +3843,53 @@ fn run_with_config(
     Ok(())
 }
 
-#[rstest]
-fn integration_test(
-    #[base_dir = "tests/sources"]
-    #[files("elf/*")]
-    #[dirs]
-    #[exclude("common")]
-    test: PathBuf,
-    #[allow(unused_variables)] setup_symlink: (),
-) -> Result {
-    run_integration_test(&test)
-}
-
-fn run_integration_test(test_src_dir: &Path) -> Result {
-    let program_name = test_src_dir.file_name().unwrap().to_str().unwrap();
-    let primary_source_file = identify_primary_source(test_src_dir, program_name)?;
-    let build_dir = determine_build_dir(program_name);
-    std::fs::create_dir_all(&build_dir)
-        .with_context(|| format!("Failed to create directory `{}`", build_dir.display()))?;
-
-    let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+fn run_integration_test(
+    arch: Architecture,
+    program_inputs: &ProgramInputs,
+    mut config: Config,
+    test_config: &TestConfig,
+) -> Result<libtest_mimic::Completion> {
+    setup_symlink();
 
     let linkers = available_linkers()?;
 
-    let test_config = read_test_config()?;
-
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(
-        &primary_source_file,
-        &Config::new(test_src_dir.to_owned(), &test_config, build_dir),
-    )?;
 
     let host_arch = get_host_architecture();
 
-    for &arch in ALL_ARCHITECTURES {
-        if arch != host_arch && !test_config.qemu_arch.contains(&arch) {
-            continue;
-        }
-
-        let cross_arch = (arch != get_host_architecture()).then_some(arch);
-
-        let config_it = configs.iter().filter(|config| !config.should_skip(arch));
-
-        for config in config_it {
-            let mut config = config.clone();
-            config.rustc_channel = test_config.rustc_channel;
-
-            if !test_config.allow_rust_musl_target && config.requires_rust_musl {
-                continue;
-            }
-
-            if let Err(error) =
-                verify_platform_requirements(&config, cross_arch, Path::new(filename))
-            {
-                if full_test_platform_required() {
-                    return Err(error);
-                }
-                continue;
-            }
-
-            let arch_name = cross_name(cross_arch);
-            config.build_dir = config
-                .base_build_dir
-                .join(format!("{}-{arch_name}", config.name));
-            std::fs::create_dir_all(&config.build_dir).with_context(|| {
-                format!(
-                    "Failed to create directory `{}`",
-                    config.build_dir.display()
-                )
-            })?;
-
-            run_with_config(&program_inputs, &config, cross_arch, &linkers)?
-        }
+    if arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "Architecture disabled",
+        ));
     }
 
-    Ok(())
+    let cross_arch = (arch != get_host_architecture()).then_some(arch);
+
+    config.rustc_channel = test_config.rustc_channel;
+
+    if !test_config.allow_rust_musl_target && config.requires_rust_musl {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "Test doesn't support musl-libc",
+        ));
+    }
+
+    if let Err(error) = verify_platform_requirements(&config, cross_arch, Path::new(filename)) {
+        if full_test_platform_required() {
+            return Err(error);
+        }
+        return Ok(libtest_mimic::Completion::ignored_with(error.to_string()));
+    }
+
+    std::fs::create_dir_all(config.build_dir()).with_context(|| {
+        format!(
+            "Failed to create directory `{}`",
+            config.build_dir().display()
+        )
+    })?;
+
+    run_with_config(program_inputs, &config, cross_arch, &linkers)?;
+
+    Ok(libtest_mimic::Completion::Completed)
 }
 
 /// Determine the name of the primary source file for a test source directory.
@@ -3997,4 +4082,38 @@ fn read_test_config() -> Result<TestConfig> {
     }
 
     Ok(config)
+}
+
+impl PlatformKind {
+    fn to_str(self) -> &'static str {
+        match self {
+            PlatformKind::Elf => "elf",
+        }
+    }
+}
+
+struct Filter {
+    filter: Option<String>,
+}
+
+impl Filter {
+    fn new(args: &libtest_mimic::Arguments) -> Self {
+        Self {
+            filter: args.filter.clone(),
+        }
+    }
+
+    /// Returns whether we should exclude test patterns that start with `prefix`. This is mostly of
+    /// benefit to nextest, since it runs a separate process for each test, so we need to make sure
+    /// that we can minimise the work required to find the available tests. If we don't do
+    /// filtering, then `cargo nextest run` can take around 8 seconds instead of 0.8 seconds because
+    /// we end up spending more time repeatedly finding all the tests than we do actually running
+    /// the tests.
+    fn excludes(&self, prefix: &str) -> bool {
+        let Some(filter) = self.filter.as_ref() else {
+            return false;
+        };
+
+        !filter.starts_with(prefix) && !prefix.starts_with(filter)
+    }
 }

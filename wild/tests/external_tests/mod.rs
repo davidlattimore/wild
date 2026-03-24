@@ -1,11 +1,24 @@
 #[cfg(feature = "mold_tests")]
 mod mold_tests;
 
+use crate::Filter;
 use crate::Result;
+use libtest_mimic::Trial;
 use std::env;
 use std::path::Path;
 use std::process::Command;
 use std::process::Output;
+
+pub(super) fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
+    #[cfg(feature = "mold_tests")]
+    {
+        mold_tests::collect_tests(tests, filter)?;
+    }
+
+    let _ = (tests, filter);
+
+    Ok(())
+}
 
 #[allow(unused)]
 fn should_not_ignore_tests(external_test: &str) -> bool {

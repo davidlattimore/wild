@@ -4,7 +4,9 @@ use crate::external_tests::run_external_test;
 use crate::external_tests::should_not_ignore_tests;
 use crate::get_host_architecture;
 use crate::get_wild_test_cross;
-use rstest::rstest;
+use libtest_mimic::Failed;
+use libtest_mimic::Trial;
+use libwild::error::Context;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
@@ -26,6 +28,8 @@ struct SkippedGroup {
 }
 
 static SKIP_TESTS_NAME: OnceLock<Option<Vec<String>>> = OnceLock::new();
+
+const PREFIX: &str = "external_test_suites/mold";
 
 /// Run a mold test with mold-specific environment setup.
 fn run_mold_test(mold_test: &Path) -> Result<Output> {
@@ -52,14 +56,42 @@ fn run_mold_test(mold_test: &Path) -> Result<Output> {
     run_external_test(mold_test, &env_vars)
 }
 
-#[rstest]
-fn check_mold_tests_regression(
-    #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
-) -> Result {
-    if should_skip_mold_test(&mold_test) || should_skip_by_local_config(&mold_test) {
+pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> Result {
+    if filter.excludes(PREFIX) {
         return Ok(());
     }
 
+    let test_dir_path = crate::base_dir().join("../external_test_suites/mold/test");
+    let dir = std::fs::read_dir(&test_dir_path)
+        .with_context(|| format!("Failed to read directory {}", test_dir_path.display()))?;
+    for ent in dir {
+        let ent = ent?;
+        let path = ent.path();
+
+        if path.extension().is_some_and(|ext| ext == "sh") {
+            let name = format!(
+                "{PREFIX}/test/{}",
+                String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes())
+            );
+            if !should_skip_mold_test(&path) && !should_skip_by_local_config(&path) {
+                tests.push(Trial::test(name, move || {
+                    check_mold_tests_regression(path).map_err(|e| Failed::from(e.to_string()))
+                }));
+            } else if should_skip_mold_test_by_toml(&path)
+                && !should_skip_mold_test_by_arch(&path)
+                && !should_skip_by_local_config(&path)
+            {
+                tests.push(Trial::test(format!("{name}/expect_failure"), move || {
+                    verify_skipped_mold_tests_still_fail(path)
+                        .map_err(|e| Failed::from(e.to_string()))
+                }));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_mold_tests_regression(mold_test: PathBuf) -> Result {
     let output = run_mold_test(&mold_test)?;
     if !output.status.success() {
         let error_message = format!(
@@ -74,17 +106,7 @@ fn check_mold_tests_regression(
     Ok(())
 }
 
-#[rstest]
-fn verify_skipped_mold_tests_still_fail(
-    #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
-) -> Result {
-    if !should_skip_mold_test_by_toml(&mold_test)
-        || should_skip_mold_test_by_arch(&mold_test)
-        || should_skip_by_local_config(&mold_test)
-    {
-        return Ok(());
-    }
-
+fn verify_skipped_mold_tests_still_fail(mold_test: PathBuf) -> Result {
     let output = run_mold_test(&mold_test)?;
     if output.status.success() {
         return Err(format!(
