@@ -176,7 +176,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         // TODO: https://github.com/gimli-rs/object/pull/865
         // R_AARCH64_PLT32
         314 => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::ByteSize(4),
             None,
             // Can represent signed or unsigned value.
