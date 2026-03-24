@@ -24,6 +24,15 @@ pub struct MachOArgs {
     pub(crate) relocation_model: RelocationModel,
 }
 
+impl MachOArgs {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self {
+            common: CommonArgs::from_env()?,
+            ..Default::default()
+        })
+    }
+}
+
 impl Default for MachOArgs {
     fn default() -> Self {
         Self {
@@ -37,6 +46,14 @@ impl Default for MachOArgs {
 }
 
 impl platform::Args for MachOArgs {
+    fn parse<S, I>(&mut self, input: I) -> Result
+    where
+        S: AsRef<str>,
+        I: Iterator<Item = S>,
+    {
+        parse(self, input)
+    }
+
     fn should_strip_debug(&self) -> bool {
         todo!()
     }
@@ -92,55 +109,20 @@ impl platform::Args for MachOArgs {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
-    input: F,
-) -> Result<MachOArgs> {
-    use crate::input_data::MAX_FILES_PER_GROUP;
-
-    // SAFETY: Should be called early before other descriptors are opened and
-    // so we open it before the arguments are parsed (can open a file).
-    let jobserver_client = unsafe { Client::from_env() };
-
-    let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
-        .ok()
-        .map(|s| s.parse())
-        .transpose()?;
-
-    if let Some(x) = files_per_group {
-        ensure!(
-            x <= MAX_FILES_PER_GROUP,
-            "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
-        );
-    }
-
-    let mut args = MachOArgs {
-        common: CommonArgs {
-            files_per_group,
-            jobserver_client,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    args.common.save_dir = SaveDir::new(&input)?;
-
-    let mut input = input();
-
+pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
+    args: &mut MachOArgs,
+    mut input: I,
+) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
-
-    if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
-        args.common.write_layout = true;
-        args.common.write_trace = true;
-    }
 
     let arg_parser = setup_argument_parser();
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
-    Ok(args)
+    Ok(())
 }
 
 fn setup_argument_parser() -> ArgumentParser<MachOArgs> {

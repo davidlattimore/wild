@@ -1020,6 +1020,11 @@ pub(crate) trait ProgramSegmentDef: Copy + Send + Sync + Display + 'static {
 pub(crate) trait BuiltInSectionDetails: Send + Sync + 'static {}
 
 pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
+    fn parse<S, I>(&mut self, input: I) -> Result
+    where
+        S: AsRef<str>,
+        I: Iterator<Item = S>;
+
     fn gc_stats_output_file(&self) -> Option<&Path> {
         None
     }

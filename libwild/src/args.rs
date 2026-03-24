@@ -34,6 +34,7 @@ pub mod elf;
 pub mod macho;
 
 use crate::platform;
+use crate::platform::Args as _;
 use crate::timing_phase;
 use std::sync::atomic::AtomicI64;
 
@@ -85,25 +86,47 @@ pub struct CommonArgs {
 }
 
 impl Args {
-    /// Parse CLI arguments. Detects target format from `--target=<triple>`, `-m`,
-    /// or host default, then routes to the format-specific parser.
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Self> {
+    /// Construct a new instance, but doesn't yet parse the arguments. The supplied arguments are
+    /// only used to help decide what kind of argument parsing we'll be doing - i.e. what platform
+    /// we're linking for. We split into two phases so that the caller can adjust defaults before
+    /// the actual parsing occurs.
+    pub fn new<F, S, I>(input: F) -> Result<Self>
+    where
+        F: Fn() -> I,
+        S: AsRef<str>,
+        I: Iterator<Item = S>,
+    {
         let mut input = input();
-        // TODO: will be used when supporting multiple formats
+
+        // TODO: Select platform based on executable name and/or the first argument.
         let _executable_name = input
             .next()
             .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
-        let all_args = input.collect_vec();
 
-        #[cfg(target_os = "macos")]
-        {
-            let macho_args = macho::parse(|| all_args.iter())?;
-            Ok(Args::MachO(macho_args))
+        match PlatformKind::host() {
+            PlatformKind::Elf => Ok(Args::Elf(elf::ElfArgs::new()?)),
+            PlatformKind::MachO => Ok(Args::MachO(macho::MachOArgs::new()?)),
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let elf_args = elf::parse(|| all_args.iter())?;
-            Ok(Args::Elf(elf_args))
+    }
+
+    /// Parse CLI arguments. Detects target format from `--target=<triple>`, `-m`,
+    /// or host default, then routes to the format-specific parser.
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
+        &mut self,
+        input: F,
+    ) -> Result {
+        timing_phase!("Parse args");
+
+        self.common_mut().save_dir = SaveDir::new(input())?;
+
+        let mut input = input();
+
+        // Skip the program name.
+        input.next();
+
+        match self {
+            Args::Elf(args) => args.parse(input),
+            Args::MachO(args) => args.parse(input),
         }
     }
 
@@ -118,6 +141,21 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
+        }
+    }
+}
+
+enum PlatformKind {
+    Elf,
+    MachO,
+}
+
+impl PlatformKind {
+    fn host() -> Self {
+        if cfg!(target_os = "macos") {
+            PlatformKind::MachO
+        } else {
+            PlatformKind::Elf
         }
     }
 }
@@ -273,6 +311,39 @@ impl CommonArgs {
             .copied()
             .flatten()
             .unwrap_or(default)
+    }
+
+    fn from_env() -> Result<Self> {
+        use crate::input_data::MAX_FILES_PER_GROUP;
+
+        // SAFETY: Should be called early before other descriptors are opened and
+        // so we open it before the arguments are parsed (can open a file).
+        let jobserver_client = unsafe { Client::from_env() };
+
+        let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
+            .ok()
+            .map(|s| s.parse())
+            .transpose()?;
+
+        if let Some(x) = files_per_group {
+            ensure!(
+                x <= MAX_FILES_PER_GROUP,
+                "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
+            );
+        }
+
+        let mut common = Self {
+            files_per_group,
+            jobserver_client,
+            ..Default::default()
+        };
+
+        if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+            common.write_layout = true;
+            common.write_trace = true;
+        }
+
+        Ok(common)
     }
 }
 
