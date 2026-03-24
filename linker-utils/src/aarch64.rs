@@ -173,9 +173,16 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::new(-(2i64.pow(15)), 2i64.pow(16)),
             1,
         ),
-
-        // TODO: missing in upstream header file (as well as in Object crate):
-        // object::elf::R_AARCH64_PLT32
+        // TODO: https://github.com/gimli-rs/object/pull/865
+        // R_AARCH64_PLT32
+        314 => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(4),
+            None,
+            // Can represent signed or unsigned value.
+            AllowedRange::from_bit_size(32, Sign::Signed),
+            1,
+        ),
 
         // 5.7.6   Static AArch64 relocations
         // Group relocations to create a 16-, 32-, 48-, or 64-bit unsigned data value or address
@@ -470,8 +477,15 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::from_bit_size(32, Sign::Signed),
             1,
         ),
-        // TODO: missing in upstream header file (as well as in Object crate)
-        // object::elf::R_AARCH64_GOTPCREL32
+        // TODO: https://github.com/gimli-rs/object/pull/865
+        // R_AARCH64_GOTPCREL32
+        315 => (
+            RelocationKind::GotRelative,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::from_bit_size(32, Sign::Signed),
+            1,
+        ),
         object::elf::R_AARCH64_GOT_LD_PREL19 => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask_aarch64(2, 21, AArch64Instruction::LdSt),
