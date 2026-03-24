@@ -18,7 +18,8 @@ fn run() -> libwild::error::Result {
 
     libwild::init_timing()?;
 
-    let args = libwild::Args::parse(std::env::args)?;
+    let mut args = libwild::Args::new(std::env::args)?;
+    args.parse(std::env::args)?;
 
     if libwild::should_fork(&args) {
         // Safety: We haven't spawned any threads yet.

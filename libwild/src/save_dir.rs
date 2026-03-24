@@ -35,16 +35,17 @@ struct SaveDirState {
 }
 
 impl SaveDir {
-    pub(crate) fn new<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
-        args: &F,
-    ) -> Result<Self> {
+    pub(crate) fn new<S: AsRef<str>, I: Iterator<Item = S>>(mut args: I) -> Result<Self> {
         let Some(dir) = save_dir_from_env()? else {
             return Ok(Self(None));
         };
 
+        // Skip program name.
+        args.next();
+
         Ok(Self(Some(SaveDirState::new(
             dir,
-            args().map(|s| s.as_ref().to_owned()).collect(),
+            args.map(|s| s.as_ref().to_owned()).collect(),
         ))))
     }
 

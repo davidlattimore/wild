@@ -3,10 +3,8 @@
 
 use super::ArgumentParser;
 use super::BSymbolicKind;
-use super::FILES_PER_GROUP_ENV;
 use super::Input;
 use super::InputSpec;
-use super::REFERENCE_LINKER_ENV;
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::args::CommonArgs;
@@ -20,7 +18,6 @@ use crate::args::UnresolvedSymbols;
 use crate::args::VersionMode;
 use crate::args::warn_unsupported;
 use crate::bail;
-use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::linker_script::maybe_forced_sysroot;
@@ -28,13 +25,10 @@ use crate::output_kind::OutputKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
 use crate::platform::Args as _;
-use crate::save_dir::SaveDir;
-use crate::timing_phase;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use indexmap::IndexSet;
 use itertools::Itertools;
-use jobserver::Client;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
@@ -329,9 +323,11 @@ const fn default_target_arch() -> Architecture {
 }
 
 impl ElfArgs {
-    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Self> {
-        timing_phase!("Parse args");
-        parse(input)
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self {
+            common: CommonArgs::from_env()?,
+            ..Default::default()
+        })
     }
 }
 
@@ -352,52 +348,17 @@ fn parse_defsym_expression(s: &str) -> DefsymValue {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
-    input: F,
-) -> Result<ElfArgs> {
-    use crate::input_data::MAX_FILES_PER_GROUP;
-
-    // SAFETY: Should be called early before other descriptors are opened and
-    // so we open it before the arguments are parsed (can open a file).
-    let jobserver_client = unsafe { Client::from_env() };
-
-    let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
-        .ok()
-        .map(|s| s.parse())
-        .transpose()?;
-
-    if let Some(x) = files_per_group {
-        ensure!(
-            x <= MAX_FILES_PER_GROUP,
-            "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
-        );
-    }
-
-    let mut args = ElfArgs {
-        common: CommonArgs {
-            files_per_group,
-            jobserver_client,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
-
-    args.common.save_dir = SaveDir::new(&input)?;
-
-    let mut input = input();
-
+pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
+    args: &mut ElfArgs,
+    mut input: I,
+) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
-
-    if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
-        args.common.write_layout = true;
-        args.common.write_trace = true;
-    }
 
     let arg_parser = setup_argument_parser();
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
+        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
     // Copy relocations are only permitted when building executables.
@@ -419,7 +380,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         bail!("-f may not be used without -shared");
     }
 
-    Ok(args)
+    Ok(())
 }
 
 fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
@@ -1731,6 +1692,14 @@ fn add_default_flags(parser: &mut ArgumentParser<ElfArgs>) {
 }
 
 impl platform::Args for ElfArgs {
+    fn parse<S, I>(&mut self, input: I) -> Result
+    where
+        S: AsRef<str>,
+        I: Iterator<Item = S>,
+    {
+        parse(self, input)
+    }
+
     fn gc_stats_output_file(&self) -> Option<&Path> {
         self.write_gc_stats.as_deref()
     }
@@ -1909,6 +1878,7 @@ mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
     use super::VersionMode;
     use crate::args::InputSpec;
+    use crate::platform::Args as _;
     use itertools::Itertools;
     use std::fs::File;
     use std::io::BufWriter;
@@ -2099,7 +2069,8 @@ mod tests {
 
     #[test]
     fn test_parse_inline_only_options() {
-        let args = super::parse(|| INPUT1.iter()).unwrap();
+        let mut args = ElfArgs::new().unwrap();
+        args.parse(INPUT1.iter()).unwrap();
         input1_assertions(&args);
     }
 
@@ -2111,7 +2082,8 @@ mod tests {
 
         // pass the name of the file where options are as the only inline option "@filename"
         let inline_options = [format!("@{}", file.path().to_str().unwrap())];
-        let args = super::parse(|| inline_options.iter()).unwrap();
+        let mut args = ElfArgs::new().unwrap();
+        args.parse(inline_options.iter()).unwrap();
         input1_assertions(&args);
     }
 
@@ -2129,7 +2101,8 @@ mod tests {
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
-        let args = super::parse(|| inline_options.iter()).unwrap();
+        let mut args = ElfArgs::new().unwrap();
+        args.parse(inline_options.iter()).unwrap();
         inline_and_file_options_assertions(&args);
     }
 
@@ -2150,7 +2123,8 @@ mod tests {
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
-        let args = super::parse(|| inline_options.iter()).unwrap();
+        let mut args = ElfArgs::new().unwrap();
+        args.parse(inline_options.iter()).unwrap();
         inline_and_file_options_assertions(&args);
     }
 
@@ -2167,7 +2141,8 @@ mod tests {
         let inline_options = [format!("@{}", file1.path().to_str().unwrap())];
 
         // confirm that this works and the resulting set of options is correct
-        let args = super::parse(|| inline_options.iter())
+        let mut args = ElfArgs::new().unwrap();
+        args.parse(inline_options.iter())
             .expect("Recursive @file options should parse correctly but be ignored");
         input1_assertions(&args);
     }
