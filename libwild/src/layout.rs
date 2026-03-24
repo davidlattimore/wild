@@ -3999,8 +3999,8 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (sym.is_local() && name.starts_with(b".L"))
-            || is_mapping_symbol_name(name)
+            || (!symbol_db.args.should_output_partial_object()
+                && ((sym.is_local() && name.starts_with(b".L")) || is_mapping_symbol_name(name)))
         {
             return None;
         }

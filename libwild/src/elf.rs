@@ -1496,7 +1496,6 @@ impl platform::Platform for Elf {
                 && symbol_db.is_canonical(symbol_id)
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()
-                && !name.starts_with(b".L")
             {
                 let name = RawSymbolName::parse(name).name();
                 num_globals += 1;
