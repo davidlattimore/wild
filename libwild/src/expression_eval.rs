@@ -1,3 +1,4 @@
+use crate::args::WarningCallback;
 /// Evaluation of linker script ASSERT commands after layout is complete.
 ///
 /// NOTE: ASSERT expression evaluation currently supports a subset of GNU ld expression
@@ -6,6 +7,7 @@
 use crate::bail;
 use crate::error::Context;
 use crate::error::Result;
+use crate::error::Warning;
 use crate::grouping::Group;
 use crate::layout::OutputRecordLayout;
 use crate::linker_script::Expression;
@@ -27,6 +29,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     groups: &[Group<'data, P>],
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
+    warning_callback: &WarningCallback,
 ) -> Result {
     for group in groups {
         let Group::LinkerScripts(scripts) = group else {
@@ -36,11 +39,13 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
             let parsed = &script.parsed;
             for assertion in &parsed.assertions {
                 let line = line_number(parsed.file_bytes, assertion.remainder);
-                let result =
-                    evaluate_expression(&assertion.expression, section_layouts, output_sections)
-                        .with_context(|| {
-                            format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line)
-                        })?;
+                let result = evaluate_expression(
+                    &assertion.expression,
+                    section_layouts,
+                    output_sections,
+                    warning_callback,
+                )
+                .with_context(|| format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line))?;
 
                 if result == 0 {
                     let msg = String::from_utf8_lossy(assertion.message);
@@ -56,10 +61,11 @@ fn evaluate_expression<'data, P: Platform>(
     expr: &Expression<'data>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
+    warning_callback: &WarningCallback,
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
-            evaluate_expression($e, section_layouts, output_sections)
+            evaluate_expression($e, section_layouts, output_sections, warning_callback)
         };
     }
 
@@ -73,10 +79,10 @@ fn evaluate_expression<'data, P: Platform>(
             // Symbol resolution in ASSERT is not yet implemented. Rather than failing the
             // link (which would be our fault, not the user's), emit a warning and skip the
             // assertion by returning 1 (true).
-            crate::error::warning(&format!(
+            warning_callback(Warning::new(format!(
                 "ASSERT: symbol references not yet supported ('{}'), skipping assertion",
                 String::from_utf8_lossy(name)
-            ));
+            )));
             Ok(1)
         }
 
@@ -173,7 +179,7 @@ mod tests {
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
         let (layouts, sections) = dummy_context();
-        evaluate_expression::<Elf>(expr, &layouts, &sections)
+        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {})
     }
 
     #[test]
@@ -501,7 +507,7 @@ mod tests {
             message: b"should pass",
             remainder: b"",
         }]);
-        assert!(evaluate_assertions::<Elf>(&[group], &layouts, &sections).is_ok());
+        assert!(evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).is_ok(),);
     }
 
     #[test]
@@ -512,7 +518,7 @@ mod tests {
             message: b"intentional failure",
             remainder: b"",
         }]);
-        let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections).unwrap_err();
+        let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("intentional failure"));
     }
 }

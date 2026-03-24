@@ -306,6 +306,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &symbol_db.groups,
         &section_layouts,
         &output_sections,
+        &resources.symbol_db.args.common().warning_callback,
     )?;
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
@@ -1284,14 +1285,14 @@ impl<'data, P: Platform> Layout<'data, P> {
             // but it's what GNU ld does.
             let text_layout = self.section_layouts.get(output_section_id::TEXT);
             if text_layout.mem_size == 0 {
-                crate::error::warning(
+                self.symbol_db.warning(
                     "cannot find entry symbol `_start` and .text is empty, not setting entry point",
                 );
 
                 return Ok(0);
             }
 
-            crate::error::warning(&format!(
+            self.symbol_db.warning(format!(
                 "cannot find entry symbol `_start`, defaulting to 0x{}",
                 text_layout.mem_offset
             ));
@@ -3196,7 +3197,7 @@ pub(crate) fn check_for_undefined<A: Arch>(
             source_info, object.input,
         ));
     } else {
-        crate::error::warning(&format!(
+        resources.symbol_db.warning(format!(
             "Undefined symbol {symbol_name}, referenced by {}\n    {}",
             source_info, object.input,
         ));
@@ -4643,7 +4644,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
                             if args.should_error_on_unresolved_symbols() {
                                 bail!("undefined reference to `{symbol_name}` from {self}");
                             }
-                            crate::error::warning(&format!(
+                            resources.symbol_db.warning(format!(
                                 "undefined reference to `{symbol_name}` from {self}"
                             ));
                         }

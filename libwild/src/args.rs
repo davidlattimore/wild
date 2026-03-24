@@ -33,6 +33,7 @@ use std::path::PathBuf;
 pub mod elf;
 pub mod macho;
 
+use crate::error::Warning;
 use crate::platform;
 use crate::platform::Args as _;
 use crate::timing_phase;
@@ -52,7 +53,7 @@ pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 /// inconsistency.
 pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 
-#[derive(Debug)]
+#[derive(derive_more::Debug)]
 pub struct CommonArgs {
     pub(crate) unrecognized_options: Vec<String>,
 
@@ -83,7 +84,14 @@ pub struct CommonArgs {
     /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
     /// counters, if any.
     pub(crate) time_phase_options: Option<Vec<CounterKind>>,
+
+    /// Warnings that we encountered either during argument parsing, or during subsequent linker
+    /// execution based on those arguments.
+    #[debug(skip)]
+    pub(crate) warning_callback: Box<WarningCallback>,
 }
+
+pub type WarningCallback = dyn Fn(Warning) + Send + Sync + 'static;
 
 impl Args {
     /// Construct a new instance, but doesn't yet parse the arguments. The supplied arguments are
@@ -128,6 +136,15 @@ impl Args {
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
         }
+    }
+
+    /// Calls the callback whenever a warning is emitted. The default, if this method is never
+    /// called is to print the warning to stderr. Calling this method suppresses the default
+    /// behaviour. Warnings may be emitted while parsing arguments or later, while using the
+    /// arguments to link. As such, this method should be called after calling `new` and before
+    /// calling `parse`.
+    pub fn on_warning(&mut self, warning_callback: Box<WarningCallback>) {
+        self.common_mut().warning_callback = Box::new(warning_callback);
     }
 
     pub(crate) fn common(&self) -> &CommonArgs {
@@ -218,8 +235,15 @@ impl Default for CommonArgs {
             numeric_experiments: Vec::new(),
             sym_info: None,
             time_phase_options: None,
+            warning_callback: Box::new(default_warning_callback),
         }
     }
+}
+
+fn default_warning_callback(warning: Warning) {
+    eprintln!("{warning}");
+    // Suppress clippy warning. We need to confirm to an API that takes warning by value.
+    drop(warning);
 }
 
 impl CommonArgs {
@@ -696,7 +720,7 @@ impl<T: platform::Args> ArgumentParser<T> {
             if let Some(stripped) = strip_option(arg)
                 && IGNORED_FLAGS.contains(&stripped)
             {
-                warn_unsupported(arg)?;
+                args.warn_unsupported(arg)?;
                 return Ok(());
             }
 
@@ -1056,19 +1080,6 @@ impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
 
 fn strip_option(arg: &str) -> Option<&str> {
     arg.strip_prefix("--").or(arg.strip_prefix('-'))
-}
-
-fn warn_unsupported(opt: &str) -> Result {
-    match std::env::var(WILD_UNSUPPORTED_ENV)
-        .unwrap_or_default()
-        .as_str()
-    {
-        "warn" | "" => crate::error::warning(&format!("{opt} is not yet supported")),
-        "ignore" => {}
-        "error" => bail!("{opt} is not yet supported"),
-        other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
-    }
-    Ok(())
 }
 
 pub(crate) fn read_args_from_file(path: &Path) -> Result<Vec<String>> {

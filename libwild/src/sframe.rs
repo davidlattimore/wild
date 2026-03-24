@@ -1,6 +1,7 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::platform;
 use crate::timing_phase;
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -130,6 +131,7 @@ pub(crate) fn sort_sframe_section(
     section: &mut [u8],
     section_base_address: u64,
     section_ranges: &[std::ops::Range<usize>],
+    args: &impl platform::Args,
 ) -> Result {
     if section.is_empty() {
         return Ok(());
@@ -158,7 +160,7 @@ pub(crate) fn sort_sframe_section(
         let header = match Header::parse(&section[offset..offset + HEADER_SIZE]) {
             Ok(h) => h,
             Err(e @ SframeError::UnsupportedVersion(_)) => {
-                crate::error::warning(&format!("{e}, disabling SFrame sorting"));
+                args.warning(format!("{e}, disabling SFrame sorting"));
                 return Ok(());
             }
             Err(e) => bail!("Failed to parse SFrame header at offset {}: {}", offset, e),

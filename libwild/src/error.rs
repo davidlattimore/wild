@@ -88,9 +88,25 @@ macro_rules! debug_assert_bail {
     };
 }
 
-/// Prints a warning.
-pub(crate) fn warning(message: &str) {
-    eprintln!("wild: {} {message}", "warning:".yellow());
+pub struct Warning {
+    message: String,
+}
+impl Warning {
+    #[must_use]
+    pub fn new(message: String) -> Self {
+        Self { message }
+    }
+
+    #[must_use]
+    pub fn warning(&self) -> &str {
+        &self.message
+    }
+}
+
+impl Display for Warning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "wild: {} {}", "warning:".yellow(), self.message)
+    }
 }
 
 impl Display for AlreadyInitialised {

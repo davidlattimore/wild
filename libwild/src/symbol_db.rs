@@ -1014,6 +1014,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             _ => false,
         }
     }
+
+    pub(crate) fn warning(&self, message: impl Into<String>) {
+        self.args.warning(message);
+    }
 }
 
 pub(crate) fn linker_plugin_disabled_error() -> Error {
