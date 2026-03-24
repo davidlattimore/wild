@@ -257,8 +257,9 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
     let test_config = read_test_config()?;
 
     let platform = PlatformKind::Elf;
-
     let platform_name = platform.to_str();
+
+    let host_arch = get_host_architecture();
 
     if filter.excludes(platform_name) {
         return Ok(());
@@ -267,6 +268,8 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
     let root = src_path(platform_name);
     let dir = std::fs::read_dir(&root)
         .with_context(|| format!("Failed to read directory {}", root.display()))?;
+
+    let is_nextest = std::env::var("NEXTEST").is_ok();
 
     for entry in dir {
         let entry = entry?;
@@ -311,6 +314,15 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                 let full_name = format!("{name_prefix}/{}", config.config_name);
                 let test_config = test_config.clone();
                 let program_inputs = program_inputs.clone();
+
+                // Nextest spawns a process for every test, so emitting a large number of tests that
+                // we'll ignore at runtime is a bit wasteful. There are various different criteria
+                // for ignoring tests, but the biggest one is that the architecture isn't enabled.
+                // So we just filter for that and only when running under nextest. For the normal
+                // test runner, it doesn't matter much.
+                if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+                    continue;
+                }
 
                 tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
                     run_integration_test(arch, &program_inputs, config, &test_config)
