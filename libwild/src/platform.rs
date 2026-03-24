@@ -545,6 +545,8 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
         pack_relative_relocs: bool,
+        relr_part_sizes: &mut OutputSectionMap<u64>,
+        output_section_id: Option<OutputSectionId>,
     );
 
     fn allocate_object_symtab_space<'data>(

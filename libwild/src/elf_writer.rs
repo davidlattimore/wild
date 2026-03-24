@@ -20,6 +20,7 @@ use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::NonAddressableCounts;
 use crate::elf::ProgramHeader;
+use crate::elf::RELR_ENTRY_SIZE;
 use crate::elf::RawSymbolName;
 use crate::elf::Rela;
 use crate::elf::RiscVAttribute;
@@ -251,6 +252,7 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
                 group.strtab_start_offset,
                 &mut buffers,
                 group.format_specific.eh_frame_start_address,
+                &group.relr_start_offsets,
             );
 
             for file in &group.files {
@@ -285,17 +287,6 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     }
 
     fill_padding(section_buffers);
-
-    // Sort RELR entries by virtual address.
-    if layout.symbol_db.args.pack_relative_relocs {
-        let relr = layout.section_part_layouts.get(part_id::RELR_DYN);
-        if relr.file_size > 0 {
-            let relr_bytes =
-                &mut sized_output.out[relr.file_offset..relr.file_offset + relr.file_size];
-            let relr_entries: &mut [elf::Relr] = slice_from_all_bytes_mut(relr_bytes);
-            relr_entries.sort_unstable_by_key(|r| r.0.get(LittleEndian));
-        }
-    }
 
     Ok(())
 }
@@ -581,6 +572,22 @@ impl<'out> VersionWriter<'out> {
     }
 }
 
+struct RelrWriter<'out> {
+    out: &'out mut [u8],
+    offsets: OutputSectionMap<u64>,
+}
+
+impl RelrWriter<'_> {
+    fn add_entry(&mut self, output_section_id: OutputSectionId, value: u64) {
+        // dbg!(&self.offsets);
+        let offset = self.offsets.get_mut(output_section_id);
+        let out = &mut self.out[*offset as usize..*offset as usize + RELR_ENTRY_SIZE as usize];
+        // dbg!(std::ptr::addr_of!(ptr), value, &offset);
+        out.copy_from_slice(&value.to_le_bytes());
+        *offset += RELR_ENTRY_SIZE;
+    }
+}
+
 struct TableWriter<'layout, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
@@ -589,7 +596,7 @@ struct TableWriter<'layout, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
-    relr_dyn: Option<&'out mut [crate::elf::Relr]>,
+    relr_writer: Option<RelrWriter<'out>>,
     dynsym_writer: SymbolTableWriter<'layout, 'out>,
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
@@ -610,6 +617,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         eh_frame_start_address: u64,
+        relr_start_offsets: &OutputSectionMap<u64>,
     ) -> TableWriter<'layout, 'out> {
         let dynsym_writer =
             SymbolTableWriter::new_dynamic(dynstr_start_offset, buffers, &layout.output_sections);
@@ -624,6 +632,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             debug_symbol_writer,
             eh_frame_start_address,
             layout.symbol_db.args.pack_relative_relocs,
+            relr_start_offsets,
         )
     }
 
@@ -635,6 +644,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
         pack_relative_relocs: bool,
+        relr_start_offsets: &OutputSectionMap<u64>,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -646,6 +656,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             versym.is_empty().not().then_some(versym),
         );
 
+        let relr_writer = pack_relative_relocs.then(|| RelrWriter {
+            out: buffers.take(part_id::RELR_DYN),
+            offsets: relr_start_offsets.clone(),
+        });
+
         TableWriter {
             output_kind,
             got: <[u64]>::mut_from_bytes(buffers.take(part_id::GOT)).unwrap(),
@@ -654,8 +669,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
-            relr_dyn: pack_relative_relocs
-                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
+            relr_writer,
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -728,7 +742,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         } else {
             *got_entry = res.raw_value;
             if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value)?;
+                self.write_address_relocation::<A>(
+                    output_section_id::GOT,
+                    got_address,
+                    res.raw_value,
+                )?;
             }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
@@ -744,7 +762,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             let got_entry = self.take_next_got_entry()?;
             *got_entry = res.plt_address()?;
             if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry)?;
+                self.write_address_relocation::<A>(
+                    output_section_id::GOT,
+                    ifunc_got_address,
+                    *got_entry,
+                )?;
             }
         }
 
@@ -914,15 +936,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
             ));
         }
-        if let Some(relr_dyn) = &self.relr_dyn
-            && !relr_dyn.is_empty()
-        {
-            return Err(excessive_allocation(
-                ".relr.dyn",
-                relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
-                *mem_sizes.get(part_id::RELR_DYN),
-            ));
-        }
+        // TODO: Update it with regard to RelrWriter
+        // if let Some(relr_dyn) = &self.relr_dyn
+        //     && !relr_dyn.is_empty()
+        // {
+        //     return Err(excessive_allocation(
+        //         ".relr.dyn",
+        //         relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
+        //         *mem_sizes.get(part_id::RELR_DYN),
+        //     ));
+        // }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
         self.version_writer.check_exhausted(mem_sizes)?;
@@ -1026,6 +1049,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     #[inline(always)]
     fn write_address_relocation<A: Arch<Platform = Elf>>(
         &mut self,
+        output_section_id: OutputSectionId,
         place: u64,
         relative_address: u64,
     ) -> Result<u64> {
@@ -1034,11 +1058,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        if let Some(relr) = &mut self.relr_dyn {
-            let relr = relr
-                .split_off_first_mut()
-                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
-            relr.0.set(e, place);
+        if let Some(relr_writer) = &mut self.relr_writer {
+            relr_writer.add_entry(output_section_id, place);
             Ok(relative_address)
         } else {
             let rela = self
@@ -2044,6 +2065,7 @@ fn apply_relocations<
                 is_writable: object_section.is_writable(),
                 section_flags,
             },
+            section.part_id.output_section_id(),
             layout,
             out,
             table_writer,
@@ -2280,6 +2302,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                         is_writable: false,
                         section_flags,
                     },
+                    output_section_id::EH_FRAME,
                     layout,
                     entry_out,
                     table_writer,
@@ -2555,6 +2578,7 @@ fn apply_relocation<
     mut offset_in_section: u64,
     rel: &R,
     section_info: SectionInfo<linker_utils::elf::SectionFlags>,
+    output_section_id: OutputSectionId,
     layout: &ElfLayout<'data>,
     out: &mut [u8],
     table_writer: &mut TableWriter,
@@ -2627,6 +2651,7 @@ fn apply_relocation<
             resolution,
             place,
             addend,
+            output_section_id,
             section_info,
             symbol_index,
             object_layout,
@@ -3113,6 +3138,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
     resolution: Resolution<Elf>,
     place: u64,
     addend: i64,
+    output_section_id: OutputSectionId,
     section_info: SectionInfo<<A::Platform as Platform>::SectionFlags>,
     symbol_index: object::SymbolIndex,
     object_layout: &ObjectLayout<'data, Elf>,
@@ -3156,7 +3182,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-        table_writer.write_address_relocation::<A>(place, address)
+        table_writer.write_address_relocation::<A>(output_section_id, place, address)
     } else {
         resolution.value_with_addend(
             addend,
@@ -5310,6 +5336,7 @@ pub(crate) fn verify_resolution_allocation(
 
     let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);
     let debug_symbol_writer = SymbolTableWriter::new(0, &mut buffers, output_sections);
+    let relr_start_offsets = output_sections.new_section_map();
     let mut table_writer = TableWriter::new(
         output_kind,
         0..100,
@@ -5318,6 +5345,7 @@ pub(crate) fn verify_resolution_allocation(
         debug_symbol_writer,
         0,
         pack_relative_relocs,
+        &relr_start_offsets,
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)
