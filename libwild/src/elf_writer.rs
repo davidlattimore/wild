@@ -4549,32 +4549,36 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(object::elf::DT_RELAENT, has_rela_dyn, |_inputs| {
         elf::RELA_ENTRY_SIZE
     }),
-    // TODO: Missing in object crate
+    // Note, rela-count is just the count of the relative relocations and doesn't include any
+    // glob-dat relocations. This is as opposed to rela-size, which includes both.
+    DynamicEntryWriter::optional(
+        object::elf::DT_RELACOUNT,
+        |inputs| inputs.has_data_in_section(output_section_id::RELA_DYN_RELATIVE),
+        |inputs| {
+            inputs
+                .section_part_layouts
+                .get(part_id::RELA_DYN_RELATIVE)
+                .mem_size
+                / size_of::<elf::Rela>() as u64
+        },
+    ),
+    // TODO: Pending object crate release
     DynamicEntryWriter::optional(
         36,
-        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
         // TODO: Yeah, non-sequential numbers are dumb, but what can we do.
         35,
-        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
         37,
-        |inputs| inputs.section_part_layouts.get(part_id::RELR_DYN).mem_size > 0,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |_| elf::RELR_ENTRY_SIZE,
     ),
-    // Note, rela-count is just the count of the relative relocations and doesn't include any
-    // glob-dat relocations. This is as opposed to rela-size, which includes both.
-    DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |inputs| {
-        inputs
-            .section_part_layouts
-            .get(part_id::RELA_DYN_RELATIVE)
-            .mem_size
-            / size_of::<elf::Rela>() as u64
-    }),
     DynamicEntryWriter::optional(
         object::elf::DT_HASH,
         |inputs| inputs.has_data_in_section(output_section_id::HASH),
