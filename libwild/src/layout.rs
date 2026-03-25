@@ -250,7 +250,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let starting_mem_offsets_by_group =
         compute_start_offsets_by_group(&group_states, mem_offsets.clone());
 
-    let relr_offsets_by_group = compute_relr_offsets_by_group(&group_states);
+    let relr_offsets_by_group = compute_relr_offsets_by_group(&group_states, &output_order);
 
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
@@ -1494,6 +1494,7 @@ fn merge_secondary_parts<P: Platform>(
 
 fn compute_relr_offsets_by_group<P: Platform>(
     group_states: &[GroupState<P>],
+    output_order: &OutputOrder,
 ) -> Vec<OutputSectionMap<u64>> {
     let mut group_offsets =
         vec![
@@ -1501,27 +1502,15 @@ fn compute_relr_offsets_by_group<P: Platform>(
             group_states.len()
         ];
 
-    // How many bytes in .rerl.dyn each SectionId contribute
-    let section_rel_sizes = group_states
-        .iter()
-        .map(|state| state.common.relr_part_sizes.clone())
-        .reduce(|mut acc, sects| {
-            acc.for_each_mut(|id, acc| {
-                *acc += sects.get(id);
-            });
-            acc
-        })
-        .unwrap();
+    let mut current_section_offset: u64 = 0;
+    for event in output_order {
+        let OrderEvent::Section(sec_id) = event else {
+            continue;
+        };
 
-    // TODO: looks like sections are written in order reverse to section_rel_sizes, so sum the
-    // offsets and then subtract offsets
-    let mut current_section_offset: u64 = section_rel_sizes.iter().map(|(_, offset)| offset).sum();
-
-    for (sec_id, sec_off) in section_rel_sizes.iter() {
-        current_section_offset -= sec_off;
-        for (group_id, _group_state) in group_states.iter().enumerate() {
-            // current_section_offset -= *_group_state.common.relr_part_sizes.get(sec_id);
+        for (group_id, group_state) in group_states.iter().enumerate() {
             *group_offsets[group_id].get_mut(sec_id) = current_section_offset;
+            current_section_offset += *group_state.common.relr_part_sizes.get(sec_id);
         }
     }
 
