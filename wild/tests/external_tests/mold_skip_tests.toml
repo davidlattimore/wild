@@ -13,7 +13,6 @@ tests = [
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
-  "exception-multiple-ehframe.sh",     # `-r`
   "execute-only.sh",
   "fatal-warnings.sh",                 # `-warn-common` and `-fatal-warnings`
   "filter.sh",
@@ -24,20 +23,13 @@ tests = [
   "init-in-dso.sh",
   "init.sh",
   "library.sh",
-  "linker-script-relocatable.sh",      # `--relocatable`
-  "many-input-sections2.sh",           # `--relocatable`
   "nmagic.sh",
   "oformat-binary.sh",
   "omagic.sh",
   "package-metadata.sh",
-  "relocatable-archive.sh",
-  "relocatable-c++.sh",
   "relocatable-debug-info.sh",
   "relocatable-exception.sh",
-  "relocatable-many-sections.sh",      # `-r`
   "relocatable-merge-sections.sh",
-  "relocatable-mergeable-sections.sh",
-  "relocatable.sh",
   "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "require-defined.sh",
   "response-file-quoting.sh",
@@ -46,7 +38,7 @@ tests = [
   "run.sh",
   "section-align.sh",                  # `--section-alignment`
   "sort-debug-info-compressed.sh",     # `-Map`
-  "sort-debug-info-merged.sh",         # `-r`
+  "sort-debug-info-merged.sh",         # `-Map`
   "sort-debug-info.sh",                # `-Map`
   "spare-program-headers.sh",
   "static-archive.sh",                 # error: Undefined symbol main, passes with GNU ld
@@ -101,7 +93,6 @@ tests = [
   "arch-x86_64-gotpcrelx.sh",
   "arch-x86_64-init-array-readonly.sh",
   "arch-x86_64-mergeable-strings-nonalloc.sh",
-  "arch-x86_64-note-property2.sh",             # `--relocatable` is not supported yet.
   "arch-x86_64-relax.sh",
   "arch-x86_64-reloc.sh",
   "arch-x86_64-section-name.sh",
@@ -196,6 +187,9 @@ tests = [
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
+  "exception-multiple-ehframe.sh",  # Support handling multiple .eh_frame sections.
+  "many-input-sections2.sh",        # Support > 65536 sections and symbol shndx overflow with SHT_SYMTAB_SHNDX.
+  "relocatable-many-sections.sh",   # Support > 65536 sections and symbol shndx overflow with SHT_SYMTAB_SHNDX.
 ]
 
 [skipped_groups.uncommon]

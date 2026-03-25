@@ -56,8 +56,10 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
+use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
@@ -238,6 +240,15 @@ impl Relocation for Crel {
 pub(crate) enum RelocationList<'data> {
     Rela(&'data [Rela]),
     Crel(CrelIterator<'data>),
+}
+
+impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
+    fn num_relocations(&self) -> usize {
+        match self {
+            RelocationList::Rela(rela) => rela.len(),
+            RelocationList::Crel(crel) => crel.len(),
+        }
+    }
 }
 
 impl<'data> RelocationSequence<'data> for &'data [Rela] {
@@ -649,6 +660,9 @@ impl platform::Platform for Elf {
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
+        if resources.symbol_db.args.should_output_partial_object() {
+            return Ok(());
+        }
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
                 load_section_relocations::<A, Rela>(
@@ -685,6 +699,9 @@ impl platform::Platform for Elf {
         section: layout::Section,
         scope: &Scope<'scope>,
     ) -> Result {
+        if resources.symbol_db.args.should_output_partial_object {
+            return Ok(());
+        }
         match state.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
                 load_debug_relocations::<A, Rela>(
@@ -1474,6 +1491,15 @@ impl platform::Platform for Elf {
                 }
                 let name = RawSymbolName::parse(info.name).name();
                 strings_size += name.len() + 1;
+            } else if symbol_db.args.should_output_partial_object
+                && sym.is_undefined()
+                && symbol_db.is_canonical(symbol_id)
+                && let Ok(name) = state.object.symbol_name(sym)
+                && !name.is_empty()
+            {
+                let name = RawSymbolName::parse(name).name();
+                num_globals += 1;
+                strings_size += name.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -1749,10 +1775,11 @@ impl platform::Platform for Elf {
 
     fn build_output_order_and_program_segments<'data>(
         custom: &CustomSectionIds,
+        output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>) {
-        let mut builder = OutputOrderBuilder::<Self>::new(output_sections, secondary);
+        let mut builder = OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary);
 
         builder.add_section(output_section_id::FILE_HEADER);
         builder.add_section(output_section_id::PROGRAM_HEADERS);
@@ -1807,6 +1834,72 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::STRTAB);
 
         builder.build()
+    }
+
+    fn will_emit_section_symbol_for_partial_objects(
+        output_sections: &OutputSections<Self>,
+        section_id: OutputSectionId,
+    ) -> bool {
+        if !output_sections.will_emit_section(section_id) {
+            return false;
+        }
+
+        if matches!(
+            section_id,
+            output_section_id::FILE_HEADER
+                | output_section_id::PROGRAM_HEADERS
+                | output_section_id::SECTION_HEADERS
+        ) {
+            return false;
+        }
+
+        let section_attr = output_sections.output_info(section_id).section_attributes;
+        let segment_type = section_id
+            .opt_built_in_details::<Elf>()
+            .and_then(|d| d.target_segment_type)
+            .unwrap_or(linker_utils::elf::pt::LOAD);
+        if section_attr.is_null() {
+            false
+        } else {
+            let type_id = section_attr.ty();
+            !type_id.is_rela()
+                && !type_id.is_rel()
+                && !type_id.is_symtab()
+                && !type_id.is_strtab()
+                && segment_type == linker_utils::elf::pt::LOAD
+        }
+    }
+
+    fn lookup_for_partial_link(
+        section_name: &[u8],
+        section: &Self::SectionHeader,
+    ) -> SectionRuleOutcome {
+        if section.should_exclude() {
+            return SectionRuleOutcome::Discard;
+        }
+
+        if section_name.is_empty() {
+            return crate::layout_rules::unnamed_section_output(section);
+        }
+
+        match section_name {
+            secnames::STRTAB_SECTION_NAME
+            | secnames::SYMTAB_SECTION_NAME
+            | secnames::SHSTRTAB_SECTION_NAME
+            | secnames::GROUP_SECTION_NAME => {
+                return SectionRuleOutcome::Discard;
+            }
+            secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
+            secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
+            secnames::NOTE_ABI_TAG_SECTION_NAME => {
+                return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                    output_section_id::NOTE_ABI_TAG,
+                ));
+            }
+            _ => {}
+        }
+
+        SectionRuleOutcome::Custom
     }
 }
 
@@ -2619,7 +2712,23 @@ impl platform::SectionHeader for SectionHeader {
     }
 }
 
-impl platform::SectionType for SectionType {}
+impl platform::SectionType for SectionType {
+    fn is_rela(&self) -> bool {
+        *self == sht::RELA
+    }
+
+    fn is_rel(&self) -> bool {
+        *self == sht::REL
+    }
+
+    fn is_symtab(&self) -> bool {
+        *self == sht::SYMTAB
+    }
+
+    fn is_strtab(&self) -> bool {
+        *self == sht::STRTAB
+    }
+}
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
@@ -3539,6 +3648,10 @@ impl platform::SectionAttributes for SectionAttributes {
 
     fn flags(&self) -> <Self::Platform as Platform>::SectionFlags {
         self.flags
+    }
+
+    fn ty(&self) -> <Self::Platform as Platform>::SectionType {
+        self.ty
     }
 
     fn set_to_default_type(&mut self) {

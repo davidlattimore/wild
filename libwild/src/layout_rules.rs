@@ -463,7 +463,7 @@ fn section_name_prefix_hash(name: &[u8]) -> Option<u64> {
 }
 
 /// Determines, where if anywhere, we should place an input section with no name.
-fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
+pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> SectionRuleOutcome {
     if !section_header.is_alloc() {
         SectionRuleOutcome::Discard
     } else if section_header.is_prog_bits() {

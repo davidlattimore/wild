@@ -187,7 +187,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order();
+    let (output_order, program_segments) = output_sections.output_order(symbol_db.output_kind);
 
     tracing::trace!(
         "Output order:\n{}",
@@ -552,7 +552,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) properties_and_attributes: P::LayoutExt,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SegmentLayouts {
     /// The layout of each of our segments. Segments containing no active output sections will have
     /// been filtered, so don't try to index this by our internal segment IDs.
@@ -1112,6 +1112,9 @@ pub(crate) struct GroupLayout<'data, P: Platform> {
     /// The offset in .strtab at which we'll start writing.
     pub(crate) strtab_start_offset: u32,
 
+    pub(crate) symtab_local_start_index: u32,
+    pub(crate) symtab_global_start_index: u32,
+
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
 
@@ -1275,6 +1278,9 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
+        if self.symbol_db.args.should_output_partial_object() {
+            return Ok(0);
+        }
         let Some(symbol_id) = self.prelude().entry_symbol_id else {
             if self.symbol_db.output_kind == OutputKind::SharedObject {
                 // Shared objects don't have an implicit entry point.
@@ -1533,6 +1539,10 @@ fn compute_segment_layout<P: Platform>(
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(program_segments.len());
     let mut active_segments = vec![None; program_segments.len()];
+
+    if args.should_output_partial_object() {
+        return Ok(SegmentLayouts::default());
+    }
 
     for event in output_order {
         match event {
@@ -2021,6 +2031,20 @@ impl<'data, P: Platform> GroupState<'data, P> {
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
 
+        let entry_size = size_of::<P::SymtabEntry>() as u64;
+        let symtab_local_start_index = ((memory_offsets.get(part_id::SYMTAB_LOCAL)
+            - resources
+                .section_layouts
+                .get(output_section_id::SYMTAB_LOCAL)
+                .mem_offset)
+            / entry_size) as u32;
+        let symtab_global_start_index = ((memory_offsets.get(part_id::SYMTAB_GLOBAL)
+            - resources
+                .section_layouts
+                .get(output_section_id::SYMTAB_GLOBAL)
+                .mem_offset)
+            / entry_size) as u32;
+
         let strtab_start_offset = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
@@ -2035,6 +2059,8 @@ impl<'data, P: Platform> GroupState<'data, P> {
             files,
             strtab_start_offset,
             dynstr_start_offset,
+            symtab_local_start_index,
+            symtab_global_start_index,
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
             format_specific,
@@ -2768,6 +2794,22 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             &mut extra_sizes,
         )?;
 
+        if resources.symbol_db.args.should_output_partial_object() {
+            let mut num_section_syms = 0;
+            let mut section_names_size = 0;
+            for (id, _) in output_sections.ids_with_info() {
+                if output_sections.will_emit_section_symbol_for_partial_objects(id) {
+                    num_section_syms += 1;
+                    if let Some(name) = output_sections.name(id) {
+                        section_names_size += name.len() as u64 + 1;
+                    }
+                }
+            }
+            let entry_size = size_of::<P::SymtabEntry>() as u64;
+            extra_sizes.increment(part_id::SYMTAB_LOCAL, num_section_syms * entry_size);
+            extra_sizes.increment(part_id::STRTAB, section_names_size);
+        }
+
         // We need to allocate both our own size record and the group totals, since they've already
         // been computed.
         common.mem_sizes.merge(&extra_sizes);
@@ -2806,9 +2848,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
                 // Keep the symbol if we're going to write the section, even though the symbol isn't
                 // referenced. It can be useful to have symbols like _GLOBAL_OFFSET_TABLE_ when
-                // using a debugger.
-                should_emit |= def_info.section_id().is_some_and(|output_section_id| {
-                    output_sections.will_emit_section(output_section_id)
+                // using a debugger. In partial-link mode, skip symbols that point to internal
+                // metadata sections (file header, program headers, section headers, symtab, strtab)
+                // since those are not meaningful in a relocatable object.
+                should_emit |= def_info.section_id().is_some_and(|sec_id| {
+                    if symbol_db.args.should_output_partial_object() {
+                        output_sections.will_emit_section_symbol_for_partial_objects(sec_id)
+                    } else {
+                        output_sections.will_emit_section(sec_id)
+                    }
                 });
 
                 if should_emit {
@@ -2938,8 +2986,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
-        // Always keep the program headers segment even though we don't emit any sections in it.
-        keep_segments[0] = true;
+        if !resources.symbol_db.args.should_output_partial_object() {
+            // Always keep the program headers segment even though we don't emit any sections in it.
+            keep_segments[0] = true;
+        }
 
         P::update_segment_keep_list(
             program_segments,
@@ -2947,10 +2997,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             resources.symbol_db.args,
         );
 
-        let active_segment_ids = (0..program_segments.len())
-            .map(ProgramSegmentId::new)
-            .filter(|id| keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id))
-            .collect();
+        let active_segment_ids = if resources.symbol_db.args.should_output_partial_object() {
+            vec![]
+        } else {
+            (0..program_segments.len())
+                .map(ProgramSegmentId::new)
+                .filter(|id| keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id))
+                .collect()
+        };
 
         let header_info = HeaderInfo {
             num_output_sections_with_content: num_sections
@@ -3945,8 +3999,8 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (sym.is_local() && name.starts_with(b".L"))
-            || is_mapping_symbol_name(name)
+            || (!symbol_db.args.should_output_partial_object()
+                && ((sym.is_local() && name.starts_with(b".L")) || is_mapping_symbol_name(name)))
         {
             return None;
         }
@@ -4443,6 +4497,8 @@ fn layout_section_parts<P: Platform>(
     let mut mem_offset = output_sections.base_address;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
+    let mut reloc_alloc_mem_offsets: OutputSectionMap<u64> =
+        OutputSectionMap::with_size(output_sections.num_sections());
 
     let mut pending_location = None;
 
@@ -4503,24 +4559,48 @@ fn layout_section_parts<P: Platform>(
                         file_offset = alignment.align_up_usize(file_offset);
 
                         if section_flags.is_alloc() {
-                            mem_offset = alignment.align_up(mem_offset);
+                            if args.should_output_partial_object() {
+                                let file_size = if output_sections.has_data_in_file(merge_target) {
+                                    mem_size as usize
+                                } else {
+                                    0
+                                };
 
-                            let file_size = if output_sections.has_data_in_file(merge_target) {
-                                mem_size as usize
+                                let section_id = part_id.output_section_id();
+                                let part_mem_offset =
+                                    alignment.align_up(*reloc_alloc_mem_offsets.get(section_id));
+                                *reloc_alloc_mem_offsets.get_mut(section_id) =
+                                    part_mem_offset + mem_size;
+
+                                *part_layout = OutputRecordLayout {
+                                    file_size,
+                                    mem_size,
+                                    alignment,
+                                    file_offset,
+                                    mem_offset: part_mem_offset,
+                                };
+
+                                file_offset += file_size;
                             } else {
-                                0
-                            };
+                                mem_offset = alignment.align_up(mem_offset);
 
-                            *part_layout = OutputRecordLayout {
-                                file_size,
-                                mem_size,
-                                alignment,
-                                file_offset,
-                                mem_offset,
-                            };
+                                let file_size = if output_sections.has_data_in_file(merge_target) {
+                                    mem_size as usize
+                                } else {
+                                    0
+                                };
 
-                            file_offset += file_size;
-                            mem_offset += mem_size;
+                                *part_layout = OutputRecordLayout {
+                                    file_size,
+                                    mem_size,
+                                    alignment,
+                                    file_offset,
+                                    mem_offset,
+                                };
+
+                                file_offset += file_size;
+                                mem_offset += mem_size;
+                            }
                         } else {
                             let section_id = part_id.output_section_id();
                             let mem_offset =
@@ -4820,7 +4900,10 @@ fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
-    let (output_order, program_segments) = output_sections.output_order();
+    let (output_order, program_segments) =
+        output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
+            crate::args::RelocationModel::NonRelocatable,
+        ));
     let args = crate::args::elf::ElfArgs::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
@@ -4934,7 +5017,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     output_kind: OutputKind,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
-    let (output_order, _program_segments) = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();

@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 #![allow(unused)]
 
+use crate::OutputKind;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::platform;
@@ -363,7 +364,23 @@ impl platform::SectionHeader for SectionHeader {
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct SectionType {}
 
-impl platform::SectionType for SectionType {}
+impl platform::SectionType for SectionType {
+    fn is_rela(&self) -> bool {
+        todo!()
+    }
+
+    fn is_rel(&self) -> bool {
+        todo!()
+    }
+
+    fn is_symtab(&self) -> bool {
+        todo!()
+    }
+
+    fn is_strtab(&self) -> bool {
+        todo!()
+    }
+}
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct SectionFlags {}
@@ -490,6 +507,10 @@ impl platform::SectionAttributes for SectionAttributes {
         todo!()
     }
 
+    fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
+        todo!()
+    }
+
     fn set_to_default_type(&mut self) {
         todo!()
     }
@@ -566,6 +587,17 @@ pub(crate) struct DynamicTagValues<'data> {
     phantom: &'data [u8],
 }
 
+#[derive(Debug)]
+pub(crate) struct RelocationList<'data> {
+    phantom: &'data [u8],
+}
+
+impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
+    fn num_relocations(&self) -> usize {
+        todo!()
+    }
+}
+
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
     fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
         todo!()
@@ -636,7 +668,7 @@ impl platform::Platform for MachO {
     type LayoutExt = ();
     type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
-    type RelocationList<'data> = ();
+    type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
     type DynamicLayoutExt<'data> = ();
     type LayoutResourcesExt<'data> = ();
@@ -1015,6 +1047,7 @@ impl platform::Platform for MachO {
 
     fn build_output_order_and_program_segments<'data>(
         custom: &crate::output_section_id::CustomSectionIds,
+        output_kind: OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<
             Vec<crate::output_section_id::OutputSectionId>,

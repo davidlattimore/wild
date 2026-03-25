@@ -17,6 +17,7 @@ use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::layout_rules::SectionKind;
 use crate::linker_script;
+use crate::output_kind::OutputKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -155,10 +156,12 @@ pub(crate) struct OutputOrderBuilder<'scope, 'data, P: Platform> {
 
     output_sections: &'scope OutputSections<'data, P>,
     secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
+    output_kind: OutputKind,
 }
 
 impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
     pub(crate) fn new(
+        output_kind: OutputKind,
         output_sections: &'scope OutputSections<'data, P>,
         secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
     ) -> Self {
@@ -168,6 +171,7 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             output_sections,
             active_segment_kinds: vec![None; P::program_segment_defs().len()],
             secondary,
+            output_kind,
         }
     }
 
@@ -269,6 +273,10 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
         let mut stop = Vec::new();
         let mut start = Vec::new();
 
+        if self.output_kind.is_partial_object() {
+            return (start, stop);
+        }
+
         // Secondary sections don't begin or end segments.
         if self.output_sections.merge_target(section_id).is_some() {
             return (stop, start);
@@ -328,10 +336,12 @@ impl<'scope, 'data, P: Platform> OutputOrderBuilder<'scope, 'data, P> {
             self.events.push(OrderEvent::SegmentEnd(segment_id));
         }
 
-        for def in P::unconditional_segment_defs() {
-            let segment_id = self.program_segments.add_segment(*def);
-            self.events.push(OrderEvent::SegmentStart(segment_id));
-            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        if !self.output_kind.is_partial_object() {
+            for def in P::unconditional_segment_defs() {
+                let segment_id = self.program_segments.add_segment(*def);
+                self.events.push(OrderEvent::SegmentStart(segment_id));
+                self.events.push(OrderEvent::SegmentEnd(segment_id));
+            }
         }
 
         (
@@ -631,7 +641,10 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         sid
     }
 
-    pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
+    pub(crate) fn output_order(
+        &self,
+        output_kind: OutputKind,
+    ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         timing_phase!("Compute output order");
 
         let mut custom = CustomSectionIds::default();
@@ -668,7 +681,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
 
-        P::build_output_order_and_program_segments(&custom, self, &secondary)
+        P::build_output_order_and_program_segments(&custom, output_kind, self, &secondary)
     }
 
     #[must_use]
@@ -737,7 +750,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         format!("{section_id}{merge} ({})", self.display_name(merge_target))
     }
 
-    pub(crate) fn custom_name_to_id(&self, name: SectionName) -> Option<OutputSectionId> {
+    pub(crate) fn custom_name_to_id<'a>(&self, name: SectionName<'a>) -> Option<OutputSectionId> {
         self.custom_by_name.get(&name).copied()
     }
 
@@ -753,6 +766,15 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
         found
+    }
+
+    /// Returns whether the specified section should have a symbol emitted for it. This function is
+    /// mainly used during partial linking.
+    pub(crate) fn will_emit_section_symbol_for_partial_objects(
+        &self,
+        section_id: OutputSectionId,
+    ) -> bool {
+        P::will_emit_section_symbol_for_partial_objects(self, section_id)
     }
 
     #[cfg(test)]
@@ -798,6 +820,10 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
+    pub(crate) fn len(&self) -> usize {
+        self.events.len()
+    }
+
     pub(crate) fn display<'a, 'data, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,

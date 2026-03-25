@@ -1099,7 +1099,13 @@ fn resolve_section<'data, P: Platform>(
             .map(|n| n.as_encoded_bytes())
     };
 
-    match rules.lookup(section_name, file_name, input_section) {
+    let rule_outcome = if args.should_output_partial_object() {
+        P::lookup_for_partial_link(section_name, input_section)
+    } else {
+        rules.lookup(section_name, file_name, input_section)
+    };
+
+    match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {
             let part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)

@@ -141,6 +141,9 @@
 //! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
 //! object and adds it to the link.
 //!
+//! Relocatable:{source-filename}[:extra-compilation-args] Builds the specified filename as a
+//! relocatable object and adds it to the link.
+//!
 //! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
 //! and adds it to the link.
 //!
@@ -188,6 +191,7 @@ use libwild::error;
 use libwild::error::Context as _;
 use object::LittleEndian;
 use object::Object as _;
+use object::ObjectKind;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
@@ -389,12 +393,13 @@ impl Linker {
         }
     }
 
-    fn link_shared(
+    fn link_intermediate(
         &self,
         objects: &[BuiltObject],
         so_path: &Path,
         config: &Config,
         cross_arch: Option<Architecture>,
+        is_shared: bool,
     ) -> Result<LinkerInput> {
         let mut linker_args = config.linker_args.clone();
 
@@ -402,7 +407,11 @@ impl Linker {
             .args
             .extend(config.linker_so_args.args.iter().cloned());
 
-        linker_args.args.push("-shared".to_owned());
+        linker_args.args.push(if is_shared {
+            "-shared".to_owned()
+        } else {
+            "-r".to_owned()
+        });
 
         let mut command = LinkCommand::new(
             self,
@@ -1092,6 +1101,7 @@ impl ExpectedSymtabEntry {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, EnumString)]
 enum InputType {
     Object,
+    Relocatable,
     Archive,
     ThinArchive,
     BsdArchive,
@@ -1407,8 +1417,8 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-        input_type @ ("Object" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
-        | "LinkerScript") => {
+        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive"
+        | "Shared" | "LinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
 
             let mut arg = arg;
@@ -2023,9 +2033,15 @@ fn build_linker_input(
 
             LinkerInput::new(first_obj_path.clone())
         }
-        InputType::SharedObject => {
-            let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
+        InputType::SharedObject | InputType::Relocatable => {
+            let (obj_ext, is_shared) = if dep.input_type == InputType::SharedObject {
+                (format!("{linker}.so"), true)
+            } else {
+                (format!("{linker}.o"), false)
+            };
+            let obj_path = first_obj_path.with_extension(obj_ext);
+            let out =
+                linker.link_intermediate(&objects, &obj_path, &config, cross_arch, is_shared)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
@@ -2743,7 +2759,10 @@ impl LinkCommand {
                         Mode::Unspecified => {}
                     }
 
-                    command.arg("--gc-sections").args(&linker_args.args);
+                    if !linker_args.args.iter().any(|a| a == "-r") {
+                        command.arg("--gc-sections");
+                    }
+                    command.args(&linker_args.args);
                 }
             }
 
@@ -3032,6 +3051,9 @@ impl Assertions {
     }
 
     fn verify_comment_section(&self, obj: &ElfFile64, linker_used: &Linker) -> Result {
+        if obj.kind() == ObjectKind::Relocatable {
+            return Ok(());
+        }
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {
@@ -3485,6 +3507,7 @@ impl Display for InputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InputType::Object => write!(f, "object"),
+            InputType::Relocatable => write!(f, "relocatable"),
             InputType::Archive => write!(f, "archive"),
             InputType::ThinArchive => write!(f, "thin archive"),
             InputType::BsdArchive => write!(f, "bsd archive"),
