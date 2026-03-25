@@ -619,7 +619,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>);
 
-    fn will_emit_section_symbol(
+    fn will_emit_section_symbol_for_partial_objects(
         _output_sections: &OutputSections<Self>,
         _section_id: OutputSectionId,
     ) -> bool {
@@ -1210,5 +1210,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    fn should_output_partial_object(&self) -> bool;
+    fn should_output_partial_object(&self) -> bool {
+        false
+    }
 }

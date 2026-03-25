@@ -1836,7 +1836,7 @@ impl platform::Platform for Elf {
         builder.build()
     }
 
-    fn will_emit_section_symbol(
+    fn will_emit_section_symbol_for_partial_objects(
         output_sections: &OutputSections<Self>,
         section_id: OutputSectionId,
     ) -> bool {

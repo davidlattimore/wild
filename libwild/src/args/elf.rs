@@ -363,7 +363,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     // Copy relocations are only permitted when building executables.
-    if !args.should_output_executable && !args.should_output_partial_object {
+    if !args.should_output_executable {
         args.copy_relocations =
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
@@ -1740,12 +1740,14 @@ impl platform::Args for ElfArgs {
         &self.output
     }
 
+    // TODO: Some linkers like ld and mold cleanup debug symbols when linking with -r. For now, we
+    // ignore --strip-all and --strip-debug in partial link mode.
     fn should_strip_debug(&self) -> bool {
-        matches!(self.strip, Strip::All | Strip::Debug)
+        !self.should_output_partial_object() && matches!(self.strip, Strip::All | Strip::Debug)
     }
 
     fn should_strip_all(&self) -> bool {
-        matches!(self.strip, Strip::All)
+        !self.should_output_partial_object() && matches!(self.strip, Strip::All)
     }
 
     fn should_strip_symbol_named(&self, name: &[u8]) -> bool {

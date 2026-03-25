@@ -230,8 +230,8 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
-    let global_sym_index_map = if layout.args().should_output_partial_object() {
-        build_global_sym_index_map(layout)
+    let sym_index_map = if layout.args().should_output_partial_object() {
+        build_sym_index_map(layout)
     } else {
         Vec::new()
     };
@@ -243,15 +243,10 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
         .try_for_each(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
-            let group_total_locals =
-                (*group.mem_sizes.get(part_id::SYMTAB_LOCAL) / elf::SYMTAB_ENTRY_SIZE) as u32;
-
             let mut table_writer = TableWriter::from_layout(
                 layout,
                 group.dynstr_start_offset,
                 group.strtab_start_offset,
-                group.symtab_local_start_index,
-                group_total_locals,
                 &mut buffers,
                 group.format_specific.eh_frame_start_address,
             );
@@ -263,7 +258,7 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
                     &mut table_writer,
                     layout,
                     &sized_output.trace,
-                    &global_sym_index_map,
+                    &sym_index_map,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -454,17 +449,12 @@ fn write_file<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
     trace: &TraceOutput,
-    global_sym_index_map: &[Option<u32>],
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     match file {
-        FileLayout::Object(s) => write_object::<A>(
-            s,
-            buffers,
-            table_writer,
-            layout,
-            trace,
-            global_sym_index_map,
-        )?,
+        FileLayout::Object(s) => {
+            write_object::<A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
+        }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
@@ -597,9 +587,6 @@ struct TableWriter<'layout, 'out> {
 
     dynamic: DynamicEntriesWriter<'out>,
     version_writer: VersionWriter<'out>,
-
-    symtab_local_start_index: u32,
-    group_total_locals: u32,
 }
 
 impl<'layout, 'out> TableWriter<'layout, 'out> {
@@ -607,8 +594,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         layout: &'layout ElfLayout,
         dynstr_start_offset: u32,
         strtab_start_offset: u32,
-        symtab_local_start_index: u32,
-        group_total_locals: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         eh_frame_start_address: u64,
     ) -> TableWriter<'layout, 'out> {
@@ -624,8 +609,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
-            symtab_local_start_index,
-            group_total_locals,
         )
     }
 
@@ -636,8 +619,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         dynsym_writer: SymbolTableWriter<'layout, 'out>,
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
-        symtab_local_start_index: u32,
-        group_total_locals: u32,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -664,8 +645,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             eh_frame_hdr,
             dynamic,
             version_writer,
-            symtab_local_start_index,
-            group_total_locals,
         }
     }
 
@@ -1348,7 +1327,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
     trace: &TraceOutput,
-    global_sym_index_map: &[Option<u32>],
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
@@ -1404,34 +1383,19 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         }
     }
 
-    if !layout.args().should_strip_all() {
-        if layout.args().should_output_partial_object() {
-            let locals_remaining_before =
-                table_writer.debug_symbol_writer.local_entries.len() as u32;
+    if layout.args().should_output_partial_object() {
+        write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
 
-            write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
-
-            let obj_local_start = table_writer.symtab_local_start_index
-                + (table_writer.group_total_locals - locals_remaining_before);
-
-            let section_sym_indices = build_section_sym_indices(layout);
-
-            write_rela_sections(
-                object,
-                buffers,
-                layout,
-                global_sym_index_map,
-                &section_sym_indices,
-                obj_local_start,
-            )?;
-        } else {
-            write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
-        }
+        write_rela_sections(object, buffers, layout, sym_index_map)?;
+    } else if !layout.args().should_strip_all() {
+        write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
     Ok(())
 }
 
-fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
+fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
+    let section_sym_indices = build_section_sym_indices(layout);
+
     let num_all_locals = (layout
         .section_part_layouts
         .get(part_id::SYMTAB_LOCAL)
@@ -1441,9 +1405,10 @@ fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
     let total_syms = layout.symbol_db.num_symbols();
     let mut map: Vec<Option<u32>> = vec![None; total_syms];
 
+    // TODO: Use a ShardedWriter to parallelize this loop
     for group in &layout.group_layouts {
-        let group_global_base = num_all_locals + group.symtab_global_start_index;
-        let mut group_global_offset: u32 = 0;
+        let mut group_global_base = num_all_locals + group.symtab_global_start_index;
+        let mut group_local_base = group.symtab_local_start_index;
 
         for file in &group.files {
             let FileLayout::Object(object) = file else {
@@ -1456,6 +1421,24 @@ fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                 .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
             {
                 let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+
+                if sym.st_type() == object::elf::STT_SECTION
+                    && let Ok(Some(input_section_index)) =
+                        object.object.symbol_section(sym, sym_index)
+                    && let Some(output_section_id) = match object.sections[input_section_index.0] {
+                        SectionSlot::Loaded(sec) => Some(sec.output_section_id()),
+                        SectionSlot::MergeStrings(sec) => Some(sec.part_id.output_section_id()),
+                        SectionSlot::FrameData(..) => Some(crate::output_section_id::EH_FRAME),
+                        _ => None,
+                    }
+                {
+                    let primary_id = layout
+                        .output_sections
+                        .primary_output_section(output_section_id);
+                    let sym_idx = section_sym_indices.get(primary_id);
+                    map[symbol_id.as_usize()] = Some(*sym_idx);
+                };
+
                 if SymbolCopyInfo::new(
                     object.object,
                     sym_index,
@@ -1466,12 +1449,15 @@ fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                     &object.sections,
                 )
                 .is_some()
-                    && !flags.get().is_symtab_local(sym)
                 {
-                    let canonical = layout.symbol_db.definition(symbol_id);
-                    let abs_idx = group_global_base + group_global_offset;
-                    map[canonical.as_usize()] = Some(abs_idx);
-                    group_global_offset += 1;
+                    if flags.get().is_symtab_local(sym) {
+                        map[symbol_id.as_usize()] = Some(group_local_base);
+                        group_local_base += 1;
+                    } else {
+                        let canonical = layout.symbol_db.definition(symbol_id);
+                        map[canonical.as_usize()] = Some(group_global_base);
+                        group_global_base += 1;
+                    }
                 }
             }
 
@@ -1487,9 +1473,8 @@ fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                 if let Ok(name) = object.object.symbol_name(sym)
                     && !name.is_empty()
                 {
-                    let abs_idx = group_global_base + group_global_offset;
-                    map[symbol_id.as_usize()] = Some(abs_idx);
-                    group_global_offset += 1;
+                    map[symbol_id.as_usize()] = Some(group_global_base);
+                    group_global_base += 1;
                 }
             }
         }
@@ -1498,8 +1483,8 @@ fn build_global_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
     map
 }
 
-fn build_section_sym_indices(layout: &ElfLayout<'_>) -> HashMap<OutputSectionId, u32> {
-    let mut map = HashMap::new();
+fn build_section_sym_indices(layout: &ElfLayout<'_>) -> OutputSectionMap<u32> {
+    let mut map = OutputSectionMap::with_size(layout.output_order.len());
     let mut next_sym_idx: u32 = 1;
     for event in &layout.output_order {
         let OrderEvent::Section(section_id) = event else {
@@ -1509,11 +1494,13 @@ fn build_section_sym_indices(layout: &ElfLayout<'_>) -> HashMap<OutputSectionId,
             .output_sections
             .output_index_of_section(section_id)
             .is_none()
-            || !layout.output_sections.will_emit_section_symbol(section_id)
+            || !layout
+                .output_sections
+                .will_emit_section_symbol_for_partial_objects(section_id)
         {
             continue;
         }
-        map.insert(section_id, next_sym_idx);
+        *map.get_mut(section_id) = next_sym_idx;
         next_sym_idx += 1;
     }
     map
@@ -1523,55 +1510,9 @@ fn write_rela_sections<'data>(
     object: &ObjectLayout<'data, Elf>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &ElfLayout<'data>,
-    global_sym_index_map: &[Option<u32>],
-    section_sym_indices: &HashMap<OutputSectionId, u32>,
-    obj_local_start: u32,
+    sym_index_map: &[Option<u32>],
 ) -> Result {
     let e = LittleEndian;
-
-    let num_syms = object.object.symbols.len();
-    let mut local_sym_map: Vec<Option<u32>> = vec![None; num_syms];
-    let mut local_idx = obj_local_start;
-
-    for ((sym_index, sym), flags) in object
-        .object
-        .enumerate_symbols()
-        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
-    {
-        if sym.st_type() == object::elf::STT_SECTION
-            && let Ok(Some(input_section_index)) = object.object.symbol_section(sym, sym_index)
-        {
-            let output_section_id = match &object.sections[input_section_index.0] {
-                SectionSlot::Loaded(sec) => Some(sec.output_section_id()),
-                SectionSlot::MergeStrings(sec) => Some(sec.part_id.output_section_id()),
-                SectionSlot::FrameData(..) => Some(output_section_id::EH_FRAME),
-                _ => None,
-            };
-            if let Some(sec_id) = output_section_id {
-                let primary_id = layout.output_sections.primary_output_section(sec_id);
-                if let Some(&sym_idx) = section_sym_indices.get(&primary_id) {
-                    local_sym_map[sym_index.0] = Some(sym_idx);
-                }
-            }
-        }
-
-        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
-        if SymbolCopyInfo::new(
-            object.object,
-            sym_index,
-            sym,
-            symbol_id,
-            &layout.symbol_db,
-            flags.get(),
-            &object.sections,
-        )
-        .is_some()
-            && flags.get().is_symtab_local(sym)
-        {
-            local_sym_map[sym_index.0] = Some(local_idx);
-            local_idx += 1;
-        }
-    }
 
     for (sec_idx, header) in object.object.enumerate_sections() {
         let section_name = object.object.section_name(header).unwrap_or_default();
@@ -1619,12 +1560,12 @@ fn write_rela_sections<'data>(
             };
             let sym_idx = sym
                 .and_then(|s| {
-                    if let Some(idx) = local_sym_map.get(s.0).copied().flatten() {
+                    let symbol_id = object.symbol_id_range.input_to_id(s);
+                    if let Some(idx) = sym_index_map.get(symbol_id.as_usize()).copied().flatten() {
                         return Some(idx);
                     }
-                    let symbol_id = object.symbol_id_range.input_to_id(s);
                     let canonical_id = layout.symbol_db.definition(symbol_id);
-                    global_sym_index_map
+                    sym_index_map
                         .get(canonical_id.as_usize())
                         .copied()
                         .flatten()
@@ -3372,7 +3313,10 @@ fn write_section_symbols(symbol_writer: &mut SymbolTableWriter, layout: &ElfLayo
         let Some(shndx) = layout.output_sections.output_index_of_section(section_id) else {
             continue;
         };
-        if !layout.output_sections.will_emit_section_symbol(section_id) {
+        if !layout
+            .output_sections
+            .will_emit_section_symbol_for_partial_objects(section_id)
+        {
             continue;
         }
         let name = layout
@@ -5305,8 +5249,6 @@ pub(crate) fn verify_resolution_allocation(
         &mut buffers,
         dynsym_writer,
         debug_symbol_writer,
-        0,
-        0,
         0,
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;

@@ -191,6 +191,7 @@ use libwild::error;
 use libwild::error::Context as _;
 use object::LittleEndian;
 use object::Object as _;
+use object::ObjectKind;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
@@ -392,12 +393,13 @@ impl Linker {
         }
     }
 
-    fn link_shared(
+    fn link_intermediate(
         &self,
         objects: &[BuiltObject],
         so_path: &Path,
         config: &Config,
         cross_arch: Option<Architecture>,
+        is_shared: bool,
     ) -> Result<LinkerInput> {
         let mut linker_args = config.linker_args.clone();
 
@@ -405,7 +407,11 @@ impl Linker {
             .args
             .extend(config.linker_so_args.args.iter().cloned());
 
-        linker_args.args.push("-shared".to_owned());
+        linker_args.args.push(if is_shared {
+            "-shared".to_owned()
+        } else {
+            "-r".to_owned()
+        });
 
         let mut command = LinkCommand::new(
             self,
@@ -419,44 +425,6 @@ impl Linker {
         if !command.can_skip() {
             // Clear properties that should only apply to the final link, not to intermediate
             // artefacts like shared objects.
-            let mut config = config.clone();
-            config.expect_stderr = Vec::new();
-            config.expect_stdout = Vec::new();
-            config.should_error = false;
-
-            command.run(&config)?;
-            command.write_input_hashes()?;
-        }
-
-        Ok(LinkerInput::with_command(so_path.to_owned(), command))
-    }
-
-    fn link_partial(
-        &self,
-        objects: &[BuiltObject],
-        so_path: &Path,
-        config: &Config,
-        cross_arch: Option<Architecture>,
-    ) -> Result<LinkerInput> {
-        let linker_args = ArgumentSet {
-            args: vec!["-r".to_owned()],
-        };
-
-        let mut config = config.clone();
-        config.linker_driver = LinkerDriver::Direct(DirectConfig {
-            mode: Mode::Unspecified,
-        });
-
-        let mut command = LinkCommand::new(
-            self,
-            &objects.iter().flat_map(|o| o.inputs()).collect_vec(),
-            so_path,
-            &linker_args,
-            &config,
-            cross_arch,
-        )?;
-
-        if !command.can_skip() {
             let mut config = config.clone();
             config.expect_stderr = Vec::new();
             config.expect_stdout = Vec::new();
@@ -2065,18 +2033,20 @@ fn build_linker_input(
 
             LinkerInput::new(first_obj_path.clone())
         }
-        InputType::SharedObject => {
-            let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
+        InputType::SharedObject | InputType::Relocatable => {
+            let (obj_ext, is_shared) = if dep.input_type == InputType::SharedObject {
+                (format!("{linker}.so"), true)
+            } else {
+                (format!("{linker}.o"), false)
+            };
+            let obj_path = first_obj_path.with_extension(obj_ext);
+            let out =
+                linker.link_intermediate(&objects, &obj_path, &config, cross_arch, is_shared)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
                 .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
             out
-        }
-        InputType::Relocatable => {
-            let so_path = first_obj_path.with_extension(format!("{linker}.o"));
-            linker.link_partial(&objects, &so_path, &config, cross_arch)?
         }
         InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
     };
@@ -3081,6 +3051,9 @@ impl Assertions {
     }
 
     fn verify_comment_section(&self, obj: &ElfFile64, linker_used: &Linker) -> Result {
+        if obj.kind() == ObjectKind::Relocatable {
+            return Ok(());
+        }
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {

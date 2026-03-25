@@ -2798,7 +2798,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             let mut num_section_syms = 0;
             let mut section_names_size = 0;
             for (id, _) in output_sections.ids_with_info() {
-                if output_sections.will_emit_section_symbol(id) {
+                if output_sections.will_emit_section_symbol_for_partial_objects(id) {
                     num_section_syms += 1;
                     if let Some(name) = output_sections.name(id) {
                         section_names_size += name.len() as u64 + 1;
@@ -2853,7 +2853,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 // since those are not meaningful in a relocatable object.
                 should_emit |= def_info.section_id().is_some_and(|sec_id| {
                     if symbol_db.args.should_output_partial_object() {
-                        output_sections.will_emit_section_symbol(sec_id)
+                        output_sections.will_emit_section_symbol_for_partial_objects(sec_id)
                     } else {
                         output_sections.will_emit_section(sec_id)
                     }

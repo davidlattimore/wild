@@ -768,8 +768,13 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         found
     }
 
-    pub(crate) fn will_emit_section_symbol(&self, section_id: OutputSectionId) -> bool {
-        P::will_emit_section_symbol(self, section_id)
+    /// Returns whether the specified section should have a symbol emitted for it. This function is
+    /// mainly used during partial linking.
+    pub(crate) fn will_emit_section_symbol_for_partial_objects(
+        &self,
+        section_id: OutputSectionId,
+    ) -> bool {
+        P::will_emit_section_symbol_for_partial_objects(self, section_id)
     }
 
     #[cfg(test)]
@@ -815,6 +820,10 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
+    pub(crate) fn len(&self) -> usize {
+        self.events.len()
+    }
+
     pub(crate) fn display<'a, 'data, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,
