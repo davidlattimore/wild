@@ -3156,7 +3156,7 @@ impl Assertions {
         let mut found_tags: HashSet<String> = HashSet::new();
 
         for chunk in data.chunks_exact(entry_size) {
-            let tag = u64::from_le_bytes(chunk[0..8].try_into().unwrap()) as u32;
+            let tag = i64::from_le_bytes(chunk[0..8].try_into().unwrap());
             if let Some(name) = dynamic_tag_name(tag) {
                 found_tags.insert(name.to_string());
             }
@@ -3185,7 +3185,7 @@ impl Assertions {
     }
 }
 
-fn dynamic_tag_name(tag: u32) -> Option<&'static str> {
+fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
     use object::elf::*;
     Some(match tag {
         DT_NULL => "DT_NULL",

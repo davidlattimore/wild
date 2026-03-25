@@ -62,7 +62,7 @@ libtest-mimic = "0.8.2"
 memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { git = "https://github.com/gimli-rs/object", rev = "ae958b9f2c8a3a56fe19bb4b380144a32eebb770", default-features = false, features = [
+object = { git = "https://github.com/gimli-rs/object", rev = "8b62d2f81b6312a74eef10a5890cba33b3239a87", default-features = false, features = [
     "elf",
     "macho",
     "read_core",

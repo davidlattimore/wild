@@ -297,6 +297,8 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_AARCH64_ADR_GOT_PAGE,
         R_AARCH64_LD64_GOT_LO12_NC,
         R_AARCH64_LD64_GOTPAGE_LO15,
+        R_AARCH64_PLT32,
+        R_AARCH64_GOTPCREL32,
         R_AARCH64_TLSGD_ADR_PREL21,
         R_AARCH64_TLSGD_ADR_PAGE21,
         R_AARCH64_TLSGD_ADD_LO12_NC,

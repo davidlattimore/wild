@@ -515,7 +515,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
 
     for entry in entries {
         let value = entry.d_val(e);
-        let (tag_name, converter) = match entry.d_tag(e) as u32 {
+        let (tag_name, converter) = match entry.d_tag(e) {
             // Ignore DT_NULL. All linkers should emit at least one, but many emit more than one.
             DT_NULL => {
                 got_null = true;

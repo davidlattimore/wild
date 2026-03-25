@@ -4194,7 +4194,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(
         object::elf::DT_PLTREL,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
-        |_| object::elf::DT_RELA.into(),
+        |_| object::elf::DT_RELA as u64,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTRELSZ,
@@ -4278,7 +4278,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
 ];
 
 struct DynamicEntryWriter {
-    tag: u32,
+    tag: i64,
     is_present_cb: fn(&DynamicEntryInputs) -> bool,
     cb: fn(&DynamicEntryInputs) -> u64,
 }
@@ -4348,7 +4348,7 @@ impl DynamicEntryInputs<'_> {
 }
 
 impl DynamicEntryWriter {
-    const fn new(tag: u32, cb: fn(&DynamicEntryInputs) -> u64) -> DynamicEntryWriter {
+    const fn new(tag: i64, cb: fn(&DynamicEntryInputs) -> u64) -> DynamicEntryWriter {
         DynamicEntryWriter {
             tag,
             is_present_cb: |_| true,
@@ -4357,7 +4357,7 @@ impl DynamicEntryWriter {
     }
 
     const fn optional(
-        tag: u32,
+        tag: i64,
         is_present_cb: fn(&DynamicEntryInputs) -> bool,
         cb: fn(&DynamicEntryInputs) -> u64,
     ) -> DynamicEntryWriter {
@@ -4392,13 +4392,13 @@ impl<'out> DynamicEntriesWriter<'out> {
         }
     }
 
-    fn write(&mut self, tag: u32, value: u64) -> Result {
+    fn write(&mut self, tag: i64, value: u64) -> Result {
         let entry = self
             .out
             .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".dynamic"))?;
         let e = LittleEndian;
-        entry.d_tag.set(e, u64::from(tag));
+        entry.d_tag.set(e, tag);
         entry.d_val.set(e, value);
         Ok(())
     }
