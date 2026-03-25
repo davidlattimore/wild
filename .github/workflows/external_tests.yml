@@ -36,5 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
-      - name: Run mold external tests
-        run: WILD_TEST_CROSS=all cargo test --features mold_tests -- external_test_suites/mold
+      - name: Check regressions
+        run: WILD_TEST_CROSS=all cargo test --features mold_tests external_test_suites/mold -- --skip expect_failure
+      - name: Check tests that should fail still fail
+        run: WILD_TEST_CROSS=all cargo test --features mold_tests expect_failure

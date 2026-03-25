@@ -4106,12 +4106,14 @@ impl PlatformKind {
 
 struct Filter {
     filter: Option<String>,
+    exact: bool,
 }
 
 impl Filter {
     fn new(args: &libtest_mimic::Arguments) -> Self {
         Self {
             filter: args.filter.clone(),
+            exact: args.exact,
         }
     }
 
@@ -4126,6 +4128,10 @@ impl Filter {
             return false;
         };
 
-        !filter.starts_with(prefix) && !prefix.starts_with(filter)
+        if self.exact {
+            !filter.starts_with(prefix) && !prefix.starts_with(filter)
+        } else {
+            false
+        }
     }
 }
