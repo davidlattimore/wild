@@ -95,6 +95,7 @@ use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use hashbrown::HashMap;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -131,6 +132,7 @@ use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
@@ -241,10 +243,59 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     };
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
+
+    let mut relr_buffer = writable_buckets.take(part_id::RELR_DYN);
+
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
+
+    let mut relr_part_ranges = layout
+        .group_layouts
+        .iter()
+        .enumerate()
+        .flat_map(|(group_id, group)| {
+            group
+                .relr_start_offsets
+                .parts
+                .iter()
+                .enumerate()
+                .filter(|&(_, &end_offset)| end_offset > 0)
+                .map(move |(part_id, &end_offset)| {
+                    (group_id, PartId::from_usize(part_id), end_offset as usize)
+                })
+        })
+        .collect_vec();
+    relr_part_ranges.sort_by_key(|&(_, _, end_offset)| end_offset);
+
+    let mut current_pos = 0;
+    let chunks: Vec<_> = relr_part_ranges
+        .into_iter()
+        .map(|(group_id, part_id, end_offset)| {
+            println!(
+                "group_id: {group_id}, part_id: {part_id}, end_offset: {end_offset}, relocations \
+            within chunk: {}",
+                (end_offset - current_pos) / 8
+            );
+            let chunk = relr_buffer
+                .split_off_mut(..end_offset - current_pos)
+                .unwrap();
+            current_pos = end_offset;
+            (group_id, part_id, chunk)
+        })
+        .collect_vec();
+
+    let mut relr_buffers: Vec<OutputSectionPartMap<&mut [u8]>> = layout
+        .group_layouts
+        .iter()
+        .map(|group| OutputSectionPartMap::with_size(group.relr_start_offsets.num_parts()))
+        .collect();
+    for (group_id, part_id, chunk) in chunks {
+        *relr_buffers[group_id].get_mut(part_id) = chunk;
+    }
+
     groups_and_buffers
         .into_par_iter()
-        .try_for_each(|(group, mut buffers)| -> Result {
+        .zip(relr_buffers.into_par_iter())
+        .try_for_each(|((group, mut buffers), mut relr_buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
             let mut table_writer = TableWriter::from_layout(
@@ -253,7 +304,7 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
                 group.strtab_start_offset,
                 &mut buffers,
                 group.format_specific.eh_frame_start_address,
-                &group.relr_start_offsets,
+                &mut relr_buffers,
             );
 
             for file in &group.files {
@@ -574,14 +625,14 @@ impl<'out> VersionWriter<'out> {
 }
 
 struct RelrWriter<'out> {
-    out: &'out mut [u8],
-    offsets: OutputSectionPartMap<u64>,
+    out: &'out mut OutputSectionPartMap<&'out mut [u8]>,
+    // offsets: OutputSectionPartMap<u64>,
 }
 
 impl RelrWriter<'_> {
     fn add_entry(&mut self, part_id: PartId, value: u64) {
         // dbg!(&self.offsets);
-        let offset = self.offsets.get_mut(part_id);
+        // let offset = self.offsets.get_mut(part_id);
         // dbg!(
         //     std::ptr::addr_of!(self.out),
         //     self.out.len(),
@@ -589,17 +640,24 @@ impl RelrWriter<'_> {
         //     &offset,
         //     part_id
         // );
-        println!(
-            "slice addr: {:?} section: {} part: {} value: {:x}",
-            std::ptr::addr_of!(self.out),
-            part_id.output_section_id(),
-            part_id,
-            value
-        );
-        let out = &mut self.out[*offset as usize..*offset as usize + RELR_ENTRY_SIZE as usize];
+        // println!(
+        //     "slice addr: {:?} section: {} part: {} value: {:x}",
+        //     std::ptr::addr_of!(self.out),
+        //     part_id.output_section_id(),
+        //     part_id,
+        //     value
+        // );
+        // let out = &mut self.out[*offset as usize..*offset as usize + RELR_ENTRY_SIZE as usize];
         // dbg!(std::ptr::addr_of!(out), value, &offset);
+        // dbg!(self.out.len());
+        let out = self
+            .out
+            .get_mut(part_id)
+            .split_off_mut(..RELR_ENTRY_SIZE as usize)
+            .unwrap();
+        // let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
         out.copy_from_slice(&value.to_le_bytes());
-        *offset += RELR_ENTRY_SIZE;
+        // *offset += RELR_ENTRY_SIZE;
     }
 }
 
@@ -632,7 +690,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         eh_frame_start_address: u64,
-        relr_start_offsets: &OutputSectionPartMap<u64>,
+        relr_buffers: &'out mut OutputSectionPartMap<&'out mut [u8]>,
     ) -> TableWriter<'layout, 'out> {
         let dynsym_writer =
             SymbolTableWriter::new_dynamic(dynstr_start_offset, buffers, &layout.output_sections);
@@ -647,7 +705,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             debug_symbol_writer,
             eh_frame_start_address,
             layout.symbol_db.args.pack_relative_relocs,
-            relr_start_offsets,
+            relr_buffers,
         )
     }
 
@@ -659,7 +717,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
         pack_relative_relocs: bool,
-        relr_start_offsets: &OutputSectionPartMap<u64>,
+        relr_buffers: &'out mut OutputSectionPartMap<&'out mut [u8]>,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -671,10 +729,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             versym.is_empty().not().then_some(versym),
         );
 
-        let relr_writer = pack_relative_relocs.then(|| RelrWriter {
-            out: buffers.take(part_id::RELR_DYN),
-            offsets: relr_start_offsets.clone(),
-        });
+        let relr_writer = pack_relative_relocs.then_some(RelrWriter { out: relr_buffers });
 
         TableWriter {
             output_kind,
@@ -5343,7 +5398,7 @@ pub(crate) fn verify_resolution_allocation(
 
     let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);
     let debug_symbol_writer = SymbolTableWriter::new(0, &mut buffers, output_sections);
-    let relr_start_offsets = output_sections.new_part_map();
+    let mut relr_buffers = output_sections.new_part_map();
     let mut table_writer = TableWriter::new(
         output_kind,
         0..100,
@@ -5352,7 +5407,7 @@ pub(crate) fn verify_resolution_allocation(
         debug_symbol_writer,
         0,
         pack_relative_relocs,
-        &relr_start_offsets,
+        &mut relr_buffers,
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)

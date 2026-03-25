@@ -1511,8 +1511,12 @@ fn compute_relr_offsets_by_group<P: Platform>(
         for i in 0..sec_id.num_parts() {
             for (group_id, group_state) in group_states.iter().enumerate() {
                 let part_id = sec_id.base_part_id().offset(i);
-                *group_offsets[group_id].get_mut(part_id) = current_section_offset;
-                current_section_offset += *group_state.common.relr_part_sizes.get(part_id);
+                let part_size = *group_state.common.relr_part_sizes.get(part_id);
+                if part_size > 0 {
+                    // TODO: increment
+                    current_section_offset += part_size;
+                    *group_offsets[group_id].get_mut(part_id) = current_section_offset;
+                }
             }
         }
     }
@@ -2459,7 +2463,10 @@ fn compute_file_sizes<P: Platform>(
     output_sections: &OutputSections<'_, P>,
 ) -> OutputSectionPartMap<usize> {
     mem_sizes.map(|part_id, size| {
-        if output_sections.has_data_in_file(part_id.output_section_id()) {
+        // HACK: avoid splitting .relr.dyn per groups via the normal path
+        if part_id == part_id::RELR_DYN {
+            0
+        } else if output_sections.has_data_in_file(part_id.output_section_id()) {
             *size as usize
         } else {
             0
