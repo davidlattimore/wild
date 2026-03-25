@@ -79,6 +79,7 @@ use crate::platform::RelocationList;
 use crate::platform::RelocationSequence;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
+use crate::platform::SectionHeader as _;
 use crate::platform::SectionType as _;
 use crate::resolution::SectionSlot;
 use crate::sframe;
@@ -2001,7 +2002,7 @@ fn apply_relocations<
             &rel,
             SectionInfo {
                 section_address,
-                is_writable: section.is_writable,
+                is_writable: object_section.is_writable(),
                 section_flags,
             },
             layout,
