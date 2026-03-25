@@ -991,8 +991,8 @@ impl platform::Platform for MachO {
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         output_kind: crate::output_kind::OutputKind,
         pack_relative_relocs: bool,
-        relr_part_sizes: &mut crate::output_section_map::OutputSectionMap<u64>,
-        output_section_id: Option<crate::output_section_id::OutputSectionId>,
+        relr_part_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        part_id: Option<crate::part_id::PartId>,
     ) {
         todo!()
     }

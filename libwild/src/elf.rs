@@ -44,6 +44,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -1415,8 +1416,8 @@ impl platform::Platform for Elf {
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
         pack_relative_relocs: bool,
-        relr_part_sizes: &mut OutputSectionMap<u64>,
-        output_section_id: Option<OutputSectionId>,
+        relr_part_sizes: &mut OutputSectionPartMap<u64>,
+        part_id: Option<PartId>,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
@@ -1432,8 +1433,7 @@ impl platform::Platform for Elf {
             } else if flags.is_address() && output_kind.is_relocatable() {
                 if pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                    *relr_part_sizes
-                        .get_mut(output_section_id.unwrap_or(output_section_id::GOT)) +=
+                    *relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)) +=
                         elf::RELR_ENTRY_SIZE;
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -1446,8 +1446,7 @@ impl platform::Platform for Elf {
             if output_kind.is_relocatable() {
                 if pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                    *relr_part_sizes
-                        .get_mut(output_section_id.unwrap_or(output_section_id::GOT)) +=
+                    *relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)) +=
                         elf::RELR_ENTRY_SIZE;
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -2527,7 +2526,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     common,
                     rel,
                     eh_frame_section,
-                    output_section_id::EH_FRAME,
+                    part_id::EH_FRAME,
                     resources,
                     queue,
                     false,
@@ -2632,7 +2631,7 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
                     common,
                     &rel,
                     eh_frame_section,
-                    output_section_id::EH_FRAME,
+                    part_id::EH_FRAME,
                     resources,
                     queue,
                     false,
@@ -4678,7 +4677,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             common,
             &rel,
             state.object.section(section.index)?,
-            section.part_id.output_section_id(),
+            section.part_id,
             resources,
             queue,
             false,
@@ -4710,7 +4709,7 @@ fn load_debug_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>
             common,
             &rel,
             state.object.section(section.index)?,
-            section.part_id.output_section_id(),
+            section.part_id,
             resources,
             queue,
             true,
@@ -4737,7 +4736,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     common: &mut CommonGroupState<'data, Elf>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
-    output_section_id: OutputSectionId,
+    part_id: PartId,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
@@ -4832,7 +4831,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         {
             if section_is_writable {
                 if resources.symbol_db.args.pack_relative_relocs {
-                    common.allocate_relr(output_section_id, elf::RELR_ENTRY_SIZE);
+                    common.allocate_relr(part_id, elf::RELR_ENTRY_SIZE);
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }
