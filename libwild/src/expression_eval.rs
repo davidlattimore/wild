@@ -124,6 +124,9 @@ fn evaluate_expression<'data, P: Platform>(
 
         Expression::Min(l, r) => Ok(eval!(l)?.min(eval!(r)?)),
         Expression::Max(l, r) => Ok(eval!(l)?.max(eval!(r)?)),
+        Expression::BitwiseAnd(l, r) => Ok(eval!(l)? & eval!(r)?),
+        Expression::BitwiseOr(l, r) => Ok(eval!(l)? | eval!(r)?),
+        Expression::BitwiseXor(l, r) => Ok(eval!(l)? ^ eval!(r)?),
     }
 }
 

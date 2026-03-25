@@ -179,6 +179,10 @@ pub(crate) enum Expression<'a> {
     /// MIN and MAX functions (take two expressions)
     Min(Box<Expression<'a>>, Box<Expression<'a>>),
     Max(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Bitwise AND, OR and XOR
+    BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
+    BitwiseOr(Box<Expression<'a>>, Box<Expression<'a>>),
+    BitwiseXor(Box<Expression<'a>>, Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -357,7 +361,7 @@ fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
 
 /// Parse comparison expression: expression < expression, expression == expression, etc.
 fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    let mut left = parse_additive.parse_next(input)?;
+    let mut left = parse_bitwise_or.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
@@ -372,7 +376,7 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
-        let right = parse_additive.parse_next(input)?;
+        let right = parse_bitwise_or.parse_next(input)?;
         left = match op {
             CompOp::LessThan => Expression::LessThan(Box::new(left), Box::new(right)),
             CompOp::GreaterThan => Expression::GreaterThan(Box::new(left), Box::new(right)),
@@ -381,6 +385,51 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
             CompOp::Equal => Expression::Equal(Box::new(left), Box::new(right)),
             CompOp::NotEqual => Expression::NotEqual(Box::new(left), Box::new(right)),
         };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_bitwise_xor.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(_) = opt(('|', winnow::combinator::not('|'))).parse_next(input)? {
+        multispace0.parse_next(input)?;
+        let right = parse_bitwise_xor.parse_next(input)?;
+        left = Expression::BitwiseOr(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+fn parse_bitwise_xor<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_bitwise_and.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(_) = opt('^').parse_next(input)? {
+        multispace0.parse_next(input)?;
+        let right = parse_bitwise_and.parse_next(input)?;
+        left = Expression::BitwiseXor(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_additive.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(_) = opt(('&', winnow::combinator::not('&'))).parse_next(input)? {
+        multispace0.parse_next(input)?;
+        let right = parse_additive.parse_next(input)?;
+        left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -1340,6 +1389,50 @@ mod tests {
                     assert!(matches!(**left, Expression::Min(_, _)));
                 }
                 assert_eq!(assert_cmd.message, "Section too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_bitwise_and_precedence() {
+        // & should bind tighter than ==, so `0xFF & 0x0F == 0x0F` parses as `(0xFF & 0x0F) == 0x0F`
+        let script = parse_script(r#"ASSERT(0xFF & 0x0F == 0x0F, "mask test");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::BitwiseAnd(
+                            Box::new(Expression::Number(0xFF)),
+                            Box::new(Expression::Number(0x0F)),
+                        )),
+                        Box::new(Expression::Number(0x0F)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_bitwise_or_and_xor() {
+        // Test that | and ^ parse correctly: `1 | 2 ^ 3` should be `1 | (2 ^ 3)` since ^ binds tighter
+        let script = parse_script(r#"ASSERT(1 | 2 ^ 3 == 1, "bitwise test");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                // The == binds loosest, so the top level is Equal
+                assert!(matches!(assert_cmd.expression, Expression::Equal(_, _)));
+                if let Expression::Equal(left, _) = &assert_cmd.expression {
+                    // Left side should be BitwiseOr(1, BitwiseXor(2, 3))
+                    assert!(matches!(**left, Expression::BitwiseOr(_, _)));
+                    if let Expression::BitwiseOr(or_left, or_right) = &**left {
+                        assert_eq!(**or_left, Expression::Number(1));
+                        assert!(matches!(**or_right, Expression::BitwiseXor(_, _)));
+                    }
+                }
             }
             _ => panic!("Expected Assert command"),
         }
