@@ -1099,7 +1099,6 @@ pub(crate) struct Section {
     /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
     pub(crate) flags: ValueFlags,
-    pub(crate) is_writable: bool,
 }
 
 #[derive(Debug)]
@@ -2523,7 +2522,6 @@ impl Section {
             part_id,
             size,
             flags: ValueFlags::empty(),
-            is_writable: header.is_writable(),
         };
         Ok(section)
     }
