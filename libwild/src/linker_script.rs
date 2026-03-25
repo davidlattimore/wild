@@ -183,6 +183,9 @@ pub(crate) enum Expression<'a> {
     BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
     BitwiseOr(Box<Expression<'a>>, Box<Expression<'a>>),
     BitwiseXor(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Shift Operators
+    LeftShift(Box<Expression<'a>>, Box<Expression<'a>>),
+    RightShift(Box<Expression<'a>>, Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -391,6 +394,27 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     Ok(left)
 }
 
+/// Parse Shift operators: <<, >>
+fn parse_shift<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_additive.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(op) =
+        opt(alt(("<<".map(|_| ShiftOp::Left), ">>".map(|_| ShiftOp::Right)))).parse_next(input)?
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_additive.parse_next(input)?;
+        left = match op {
+            ShiftOp::Left => Expression::LeftShift(Box::new(left), Box::new(right)),
+            ShiftOp::Right => Expression::RightShift(Box::new(left), Box::new(right)),
+        };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
 fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     let mut left = parse_bitwise_xor.parse_next(input)?;
 
@@ -422,13 +446,13 @@ fn parse_bitwise_xor<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
 }
 
 fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    let mut left = parse_additive.parse_next(input)?;
+    let mut left = parse_shift.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
     while let Some(_) = opt(('&', winnow::combinator::not('&'))).parse_next(input)? {
         multispace0.parse_next(input)?;
-        let right = parse_additive.parse_next(input)?;
+        let right = parse_shift.parse_next(input)?;
         left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
@@ -591,6 +615,12 @@ enum CompOp {
     GreaterEqual,
     Equal,
     NotEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ShiftOp {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -127,6 +127,8 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::BitwiseAnd(l, r) => Ok(eval!(l)? & eval!(r)?),
         Expression::BitwiseOr(l, r) => Ok(eval!(l)? | eval!(r)?),
         Expression::BitwiseXor(l, r) => Ok(eval!(l)? ^ eval!(r)?),
+        Expression::LeftShift(l, r) => Ok(eval!(l)?.wrapping_shl(eval!(r)? as u32)),
+        Expression::RightShift(l, r) => Ok(eval!(l)?.wrapping_shr(eval!(r)? as u32)),
     }
 }
 
