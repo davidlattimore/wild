@@ -3249,7 +3249,7 @@ impl<'data> AddressIndex<'data> {
             })
             .unwrap_or_default()
             .iter()
-            .for_each(|entry| match entry.d_tag.get(e) as u32 {
+            .for_each(|entry| match entry.d_tag.get(e) {
                 object::elf::DT_JMPREL => {
                     self.jmprel_address = Some(entry.d_val.get(e));
                 }

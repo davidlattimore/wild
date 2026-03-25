@@ -2962,7 +2962,7 @@ impl<'data> DynamicTagValues<'data> {
         let e = LittleEndian;
         for entry in dynamic_tags {
             let value = entry.d_val(e);
-            match entry.d_tag(e) as u32 {
+            match entry.d_tag(e) {
                 object::elf::DT_VERDEFNUM => {
                     values.verdefnum = value;
                 }
@@ -3940,7 +3940,7 @@ fn has_complete_deps<'data>(
     let e = LittleEndian;
     for entry in dynamic_tags {
         let value = entry.d_val(e);
-        match entry.d_tag(e) as u32 {
+        match entry.d_tag(e) {
             object::elf::DT_NEEDED => {
                 let Ok(name) = file.symbols.strings().get(value as u32) else {
                     return false;
