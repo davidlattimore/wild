@@ -582,14 +582,22 @@ impl RelrWriter<'_> {
     fn add_entry(&mut self, part_id: PartId, value: u64) {
         // dbg!(&self.offsets);
         let offset = self.offsets.get_mut(part_id);
-        dbg!(
+        // dbg!(
+        //     std::ptr::addr_of!(self.out),
+        //     self.out.len(),
+        //     value,
+        //     &offset,
+        //     part_id
+        // );
+        println!(
+            "slice addr: {:?} section: {} part: {} value: {:x}",
             std::ptr::addr_of!(self.out),
-            self.out.len(),
-            value,
-            &offset,
-            part_id
+            part_id.output_section_id(),
+            part_id,
+            value
         );
         let out = &mut self.out[*offset as usize..*offset as usize + RELR_ENTRY_SIZE as usize];
+        // dbg!(std::ptr::addr_of!(out), value, &offset);
         out.copy_from_slice(&value.to_le_bytes());
         *offset += RELR_ENTRY_SIZE;
     }
