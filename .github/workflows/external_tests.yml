@@ -6,13 +6,13 @@ on:
       - main
   pull_request:
     branches:
-      - '**'
+      - "**"
 
 permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: '-D warnings'
+  RUSTFLAGS: "-D warnings"
 
 jobs:
   external-tests:
@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: 'ubuntu:25.04'
+      image: "ubuntu:25.04"
     steps:
       - run: |
           apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap git zstd qemu-user gdb dwarfdump perl wget xz-utils \
@@ -36,7 +36,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
-      - name: Check regressions
-        run: WILD_TEST_CROSS=all cargo test --features mold_tests external_tests::mold_tests::check_mold_tests_regression
-      - name: Check tests that should fail still fail
-        run: WILD_TEST_CROSS=all cargo test --features mold_tests external_tests::mold_tests::verify_skipped_mold_tests_still_fail
+      - name: Run mold external tests
+        run: WILD_TEST_CROSS=all cargo test --features mold_tests -- external_test_suites/mold
