@@ -186,6 +186,9 @@ pub(crate) enum Expression<'a> {
     /// Shift Operators
     LeftShift(Box<Expression<'a>>, Box<Expression<'a>>),
     RightShift(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Logical Operators
+    LogicalAnd(Box<Expression<'a>>, Box<Expression<'a>>),
+    LogicalOr(Box<Expression<'a>>, Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -359,7 +362,37 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
 
 /// Parse an expression - entry point for expression parsing
 fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    parse_comparison.parse_next(input)
+    parse_logical_or.parse_next(input)
+}
+
+fn parse_logical_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_logical_and.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(_) = opt("||").parse_next(input)? {
+        multispace0.parse_next(input)?;
+        let right = parse_logical_and.parse_next(input)?;
+        left = Expression::LogicalOr(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+fn parse_logical_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_comparison.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(_) = opt("&&").parse_next(input)? {
+        multispace0.parse_next(input)?;
+        let right = parse_comparison.parse_next(input)?;
+        left = Expression::LogicalAnd(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
 }
 
 /// Parse comparison expression: expression < expression, expression == expression, etc.
