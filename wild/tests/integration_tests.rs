@@ -3618,9 +3618,8 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
         )
     })?;
     if report.has_problems() {
-        eprintln!("{report}");
         bail!(
-            "Validation failed.\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
+            "Validation failed.\n{report}\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
              {}\nTo disable diff checking, set run_all_diffs=false in test config (see CONTRIBUTING.md)",
             diff_config.to_arg_string()
         );
