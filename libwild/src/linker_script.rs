@@ -375,7 +375,7 @@ fn parse_logical_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
 
     multispace0.parse_next(input)?;
 
-    while let Some(_) = opt("||").parse_next(input)? {
+    while opt("||").parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_logical_and.parse_next(input)?;
         left = Expression::LogicalOr(Box::new(left), Box::new(right));
@@ -391,7 +391,7 @@ fn parse_logical_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
 
     multispace0.parse_next(input)?;
 
-    while let Some(_) = opt("&&").parse_next(input)? {
+    while opt("&&").parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_comparison.parse_next(input)?;
         left = Expression::LogicalAnd(Box::new(left), Box::new(right));
@@ -439,8 +439,11 @@ fn parse_shift<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
 
     multispace0.parse_next(input)?;
 
-    while let Some(op) =
-        opt(alt(("<<".map(|_| ShiftOp::Left), ">>".map(|_| ShiftOp::Right)))).parse_next(input)?
+    while let Some(op) = opt(alt((
+        "<<".map(|_| ShiftOp::Left),
+        ">>".map(|_| ShiftOp::Right),
+    )))
+    .parse_next(input)?
     {
         multispace0.parse_next(input)?;
         let right = parse_additive.parse_next(input)?;
@@ -460,7 +463,7 @@ fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
 
     multispace0.parse_next(input)?;
 
-    while let Some(_) = opt(('|', winnow::combinator::not('|'))).parse_next(input)? {
+    while opt(('|', winnow::combinator::not('|'))).parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_xor.parse_next(input)?;
         left = Expression::BitwiseOr(Box::new(left), Box::new(right));
@@ -476,7 +479,7 @@ fn parse_bitwise_xor<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
 
     multispace0.parse_next(input)?;
 
-    while let Some(_) = opt('^').parse_next(input)? {
+    while opt('^').parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_and.parse_next(input)?;
         left = Expression::BitwiseXor(Box::new(left), Box::new(right));
@@ -492,7 +495,7 @@ fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
 
     multispace0.parse_next(input)?;
 
-    while let Some(_) = opt(('&', winnow::combinator::not('&'))).parse_next(input)? {
+    while opt(('&', winnow::combinator::not('&'))).parse_next(input)?.is_some() {
         multispace0.parse_next(input)?;
         let right = parse_shift.parse_next(input)?;
         left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
@@ -551,7 +554,10 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
 fn parse_unary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     multispace0.parse_next(input)?;
 
-    if opt(('!', winnow::combinator::not('='))).parse_next(input)?.is_some() {
+    if opt(('!', winnow::combinator::not('=')))
+        .parse_next(input)?
+        .is_some()
+    {
         let operand = parse_unary.parse_next(input)?;
         return Ok(Expression::LogicalNot(Box::new(operand)));
     }
@@ -1508,7 +1514,8 @@ mod tests {
             _ => panic!("Expected Assert command"),
         }
 
-        // Test that | and ^ parse correctly: `1 | 2 ^ 3` should be `1 | (2 ^ 3)` since ^ binds tighter
+        // Test that | and ^ parse correctly: `1 | 2 ^ 3` should be `1 | (2 ^ 3)` since ^ binds
+        // tighter
         let script = parse_script(r#"ASSERT(1 | 2 ^ 3 == 1, "bitwise test");"#).unwrap();
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
@@ -1621,8 +1628,7 @@ mod tests {
     fn test_unary_precedence() {
         // ~0xFF & 0xFF should parse as (BitwiseNot(0xFF)) & 0xFF
         // because unary binds tighter than binary
-        let script =
-            parse_script(r#"ASSERT(~0xFF & 0xFF == 0, "unary precedence");"#).unwrap();
+        let script = parse_script(r#"ASSERT(~0xFF & 0xFF == 0, "unary precedence");"#).unwrap();
         match &script.commands[0] {
             Command::Assert(assert_cmd) => {
                 if let Expression::Equal(left, _) = &assert_cmd.expression {
