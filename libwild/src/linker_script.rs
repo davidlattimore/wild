@@ -463,7 +463,10 @@ fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
 
     multispace0.parse_next(input)?;
 
-    while opt(('|', winnow::combinator::not('|'))).parse_next(input)?.is_some() {
+    while opt(('|', winnow::combinator::not('|')))
+        .parse_next(input)?
+        .is_some()
+    {
         multispace0.parse_next(input)?;
         let right = parse_bitwise_xor.parse_next(input)?;
         left = Expression::BitwiseOr(Box::new(left), Box::new(right));
@@ -495,7 +498,10 @@ fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>>
 
     multispace0.parse_next(input)?;
 
-    while opt(('&', winnow::combinator::not('&'))).parse_next(input)?.is_some() {
+    while opt(('&', winnow::combinator::not('&')))
+        .parse_next(input)?
+        .is_some()
+    {
         multispace0.parse_next(input)?;
         let right = parse_shift.parse_next(input)?;
         left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
