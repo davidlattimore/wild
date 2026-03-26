@@ -1513,9 +1513,8 @@ fn compute_relr_offsets_by_group<P: Platform>(
                 let part_id = sec_id.base_part_id().offset(i);
                 let part_size = *group_state.common.relr_part_sizes.get(part_id);
                 if part_size > 0 {
-                    // TODO: increment
                     current_section_offset += part_size;
-                    *group_offsets[group_id].get_mut(part_id) = current_section_offset;
+                    group_offsets[group_id].increment(part_id, current_section_offset);
                 }
             }
         }
