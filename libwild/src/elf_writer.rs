@@ -270,11 +270,6 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     let chunks: Vec<_> = relr_part_ranges
         .into_iter()
         .map(|(group_id, part_id, end_offset)| {
-            println!(
-                "group_id: {group_id}, part_id: {part_id}, end_offset: {end_offset}, relocations \
-            within chunk: {}",
-                (end_offset - current_pos) / 8
-            );
             let chunk = relr_buffer
                 .split_off_mut(..end_offset - current_pos)
                 .unwrap();
@@ -626,38 +621,16 @@ impl<'out> VersionWriter<'out> {
 
 struct RelrWriter<'out> {
     out: &'out mut OutputSectionPartMap<&'out mut [u8]>,
-    // offsets: OutputSectionPartMap<u64>,
 }
 
 impl RelrWriter<'_> {
     fn add_entry(&mut self, part_id: PartId, value: u64) {
-        // dbg!(&self.offsets);
-        // let offset = self.offsets.get_mut(part_id);
-        // dbg!(
-        //     std::ptr::addr_of!(self.out),
-        //     self.out.len(),
-        //     value,
-        //     &offset,
-        //     part_id
-        // );
-        // println!(
-        //     "slice addr: {:?} section: {} part: {} value: {:x}",
-        //     std::ptr::addr_of!(self.out),
-        //     part_id.output_section_id(),
-        //     part_id,
-        //     value
-        // );
-        // let out = &mut self.out[*offset as usize..*offset as usize + RELR_ENTRY_SIZE as usize];
-        // dbg!(std::ptr::addr_of!(out), value, &offset);
-        // dbg!(self.out.len());
         let out = self
             .out
             .get_mut(part_id)
             .split_off_mut(..RELR_ENTRY_SIZE as usize)
             .unwrap();
-        // let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
         out.copy_from_slice(&value.to_le_bytes());
-        // *offset += RELR_ENTRY_SIZE;
     }
 }
 
