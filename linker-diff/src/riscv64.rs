@@ -28,11 +28,37 @@ impl Arch for RiscV64 {
     const MAX_RELAX_MODIFY_AFTER: u64 = 4;
 
     fn possible_relaxations_do(
-        _r_type: Self::RType,
+        r_type: Self::RType,
         _section_kind: object::SectionKind,
-        _cb: impl FnMut(crate::arch::Relaxation<Self>),
+        mut cb: impl FnMut(crate::arch::Relaxation<Self>),
     ) {
-        // TODO: Implement relaxation for RISC-V
+        let mut relax = |relaxation_kind, new_r_type| {
+            cb(Relaxation {
+                relaxation_kind,
+                new_r_type: RType(new_r_type),
+                alt_r_type: None,
+            });
+        };
+
+        match r_type.0 {
+            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
+                relax(RelaxationKind::CallToJal, object::elf::R_RISCV_JAL);
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_RISCV_NONE);
+            }
+            object::elf::R_RISCV_HI20 => {
+                relax(RelaxationKind::Hi20Delete, object::elf::R_RISCV_NONE);
+                relax(RelaxationKind::Hi20ToCLui, object::elf::R_RISCV_HI20);
+            }
+            object::elf::R_RISCV_LO12_I => {
+                relax(RelaxationKind::Lo12Rs1ToZero, object::elf::R_RISCV_LO12_I);
+            }
+            object::elf::R_RISCV_LO12_S => {
+                relax(RelaxationKind::Lo12Rs1ToZero, object::elf::R_RISCV_LO12_S);
+            }
+            _ => {}
+        }
+
+        relax(RelaxationKind::NoOp, r_type.0);
     }
 
     fn relaxation_byte_range(_relaxation: Relaxation<Self>) -> RelaxationByteRange {
