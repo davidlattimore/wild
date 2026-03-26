@@ -142,14 +142,14 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// Currently supports:
 /// - Arithmetic: +, -, *, /
 /// - Comparison: <, >, <=, >=, ==, !=
+/// - Bitwise: &, |, ^, ~, <<, >>
+/// - Logical: &&, ||
+/// - Unary: -, !, ~
 /// - Functions: SIZEOF, ADDR, ALIGN, MIN, MAX
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
 /// Not yet supported (can be added when needed):
-/// - Unary operators (-, !)
-/// - Bitwise operators (&, |, ^, ~, <<, >>)
-/// - Logical operators (&&, ||)
 /// - Ternary operator (? :)
 /// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -179,6 +179,20 @@ pub(crate) enum Expression<'a> {
     /// MIN and MAX functions (take two expressions)
     Min(Box<Expression<'a>>, Box<Expression<'a>>),
     Max(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Bitwise AND, OR and XOR
+    BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
+    BitwiseOr(Box<Expression<'a>>, Box<Expression<'a>>),
+    BitwiseXor(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Shift Operators
+    LeftShift(Box<Expression<'a>>, Box<Expression<'a>>),
+    RightShift(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Logical Operators
+    LogicalAnd(Box<Expression<'a>>, Box<Expression<'a>>),
+    LogicalOr(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Unary Operators
+    LogicalNot(Box<Expression<'a>>),
+    BitwiseNot(Box<Expression<'a>>),
+    Negate(Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -352,12 +366,44 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
 
 /// Parse an expression - entry point for expression parsing
 fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    parse_comparison.parse_next(input)
+    parse_logical_or.parse_next(input)
+}
+
+/// Parse logical OR: expression || expression
+fn parse_logical_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_logical_and.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while opt("||").parse_next(input)?.is_some() {
+        multispace0.parse_next(input)?;
+        let right = parse_logical_and.parse_next(input)?;
+        left = Expression::LogicalOr(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse logical AND: expression && expression
+fn parse_logical_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_comparison.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while opt("&&").parse_next(input)?.is_some() {
+        multispace0.parse_next(input)?;
+        let right = parse_comparison.parse_next(input)?;
+        left = Expression::LogicalAnd(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
 }
 
 /// Parse comparison expression: expression < expression, expression == expression, etc.
 fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    let mut left = parse_additive.parse_next(input)?;
+    let mut left = parse_bitwise_or.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
@@ -372,7 +418,7 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
-        let right = parse_additive.parse_next(input)?;
+        let right = parse_bitwise_or.parse_next(input)?;
         left = match op {
             CompOp::LessThan => Expression::LessThan(Box::new(left), Box::new(right)),
             CompOp::GreaterThan => Expression::GreaterThan(Box::new(left), Box::new(right)),
@@ -381,6 +427,84 @@ fn parse_comparison<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> 
             CompOp::Equal => Expression::Equal(Box::new(left), Box::new(right)),
             CompOp::NotEqual => Expression::NotEqual(Box::new(left), Box::new(right)),
         };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse Shift operators: <<, >>
+fn parse_shift<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_additive.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while let Some(op) = opt(alt((
+        "<<".map(|_| ShiftOp::Left),
+        ">>".map(|_| ShiftOp::Right),
+    )))
+    .parse_next(input)?
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_additive.parse_next(input)?;
+        left = match op {
+            ShiftOp::Left => Expression::LeftShift(Box::new(left), Box::new(right)),
+            ShiftOp::Right => Expression::RightShift(Box::new(left), Box::new(right)),
+        };
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse bitwise OR: expression | expression
+fn parse_bitwise_or<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_bitwise_xor.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while opt(('|', winnow::combinator::not('|')))
+        .parse_next(input)?
+        .is_some()
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_bitwise_xor.parse_next(input)?;
+        left = Expression::BitwiseOr(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse bitwise XOR: expression ^ expression
+fn parse_bitwise_xor<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_bitwise_and.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while opt('^').parse_next(input)?.is_some() {
+        multispace0.parse_next(input)?;
+        let right = parse_bitwise_and.parse_next(input)?;
+        left = Expression::BitwiseXor(Box::new(left), Box::new(right));
+        multispace0.parse_next(input)?;
+    }
+
+    Ok(left)
+}
+
+/// Parse bitwise AND: expression & expression
+fn parse_bitwise_and<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let mut left = parse_shift.parse_next(input)?;
+
+    multispace0.parse_next(input)?;
+
+    while opt(('&', winnow::combinator::not('&')))
+        .parse_next(input)?
+        .is_some()
+    {
+        multispace0.parse_next(input)?;
+        let right = parse_shift.parse_next(input)?;
+        left = Expression::BitwiseAnd(Box::new(left), Box::new(right));
         multispace0.parse_next(input)?;
     }
 
@@ -410,7 +534,7 @@ fn parse_additive<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
 
 /// Parse multiplicative operators: *, /
 fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    let mut left = parse_primary.parse_next(input)?;
+    let mut left = parse_unary.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
@@ -421,7 +545,7 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
-        let right = parse_primary.parse_next(input)?;
+        let right = parse_unary.parse_next(input)?;
         left = match op {
             MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
             MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
@@ -430,6 +554,31 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     }
 
     Ok(left)
+}
+
+/// Parse unary prefix operators: !, ~, -
+fn parse_unary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    multispace0.parse_next(input)?;
+
+    if opt(('!', winnow::combinator::not('=')))
+        .parse_next(input)?
+        .is_some()
+    {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::LogicalNot(Box::new(operand)));
+    }
+
+    if opt('~').parse_next(input)?.is_some() {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::BitwiseNot(Box::new(operand)));
+    }
+
+    if opt('-').parse_next(input)?.is_some() {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::Negate(Box::new(operand)));
+    }
+
+    parse_primary.parse_next(input)
 }
 
 /// Parse primary expressions: numbers, symbols, functions, parentheses
@@ -542,6 +691,12 @@ enum CompOp {
     GreaterEqual,
     Equal,
     NotEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ShiftOp {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1340,6 +1495,159 @@ mod tests {
                     assert!(matches!(**left, Expression::Min(_, _)));
                 }
                 assert_eq!(assert_cmd.message, "Section too large".as_bytes());
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_bitwise_operators() {
+        // & should bind tighter than ==, so `0xFF & 0x0F == 0x0F` parses as `(0xFF & 0x0F) == 0x0F`
+        let script = parse_script(r#"ASSERT(0xFF & 0x0F == 0x0F, "mask test");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::BitwiseAnd(
+                            Box::new(Expression::Number(0xFF)),
+                            Box::new(Expression::Number(0x0F)),
+                        )),
+                        Box::new(Expression::Number(0x0F)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+
+        // Test that | and ^ parse correctly: `1 | 2 ^ 3` should be `1 | (2 ^ 3)` since ^ binds
+        // tighter
+        let script = parse_script(r#"ASSERT(1 | 2 ^ 3 == 1, "bitwise test");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                // The == binds loosest, so the top level is Equal
+                assert!(matches!(assert_cmd.expression, Expression::Equal(_, _)));
+                if let Expression::Equal(left, _) = &assert_cmd.expression {
+                    // Left side should be BitwiseOr(1, BitwiseXor(2, 3))
+                    assert!(matches!(**left, Expression::BitwiseOr(_, _)));
+                    if let Expression::BitwiseOr(or_left, or_right) = &**left {
+                        assert_eq!(**or_left, Expression::Number(1));
+                        assert!(matches!(**or_right, Expression::BitwiseXor(_, _)));
+                    }
+                }
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_shift_operators() {
+        // 1 << 3 should parse as LeftShift(1, 3)
+        let script = parse_script(r#"ASSERT(1 << 3 == 8, "shift test");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::LeftShift(
+                            Box::new(Expression::Number(1)),
+                            Box::new(Expression::Number(3)),
+                        )),
+                        Box::new(Expression::Number(8)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_logical_operators() {
+        // 1 && 0 || 1 should parse as LogicalOr(LogicalAnd(1, 0), 1)
+        // because && binds tighter than ||
+        let script = parse_script(r#"ASSERT(1 && 0 || 1, "logical test");"#).unwrap();
+
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LogicalOr(
+                        Box::new(Expression::LogicalAnd(
+                            Box::new(Expression::Number(1)),
+                            Box::new(Expression::Number(0)),
+                        )),
+                        Box::new(Expression::Number(1)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_unary_operators() {
+        // !0 should parse as LogicalNot(0)
+        let script = parse_script(r#"ASSERT(!0, "not zero");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::LogicalNot(Box::new(Expression::Number(0)))
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+
+        // ~0xFF should parse as BitwiseNot(0xFF)
+        let script = parse_script(r#"ASSERT(~0xFF == 0, "bitwise not");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::BitwiseNot(Box::new(Expression::Number(0xFF)))),
+                        Box::new(Expression::Number(0)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+
+        // -1 should parse as Negate(1)
+        let script = parse_script(r#"ASSERT(-1 == 0, "negate");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Negate(Box::new(Expression::Number(1)))),
+                        Box::new(Expression::Number(0)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_unary_precedence() {
+        // ~0xFF & 0xFF should parse as (BitwiseNot(0xFF)) & 0xFF
+        // because unary binds tighter than binary
+        let script = parse_script(r#"ASSERT(~0xFF & 0xFF == 0, "unary precedence");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                if let Expression::Equal(left, _) = &assert_cmd.expression {
+                    assert_eq!(
+                        **left,
+                        Expression::BitwiseAnd(
+                            Box::new(Expression::BitwiseNot(Box::new(Expression::Number(0xFF)))),
+                            Box::new(Expression::Number(0xFF)),
+                        )
+                    );
+                } else {
+                    panic!("Expected Equal at top level");
+                }
             }
             _ => panic!("Expected Assert command"),
         }
