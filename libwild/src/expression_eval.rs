@@ -131,6 +131,9 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::RightShift(l, r) => Ok(eval!(l)?.wrapping_shr(eval!(r)? as u32)),
         Expression::LogicalAnd(l, r) => Ok(u64::from(eval!(l)? != 0 && eval!(r)? != 0)),
         Expression::LogicalOr(l, r) => Ok(u64::from(eval!(l)? != 0 || eval!(r)? != 0)),
+        Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
+        Expression::BitwiseNot(e) => Ok(!eval!(e)?),
+        Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
     }
 }
 

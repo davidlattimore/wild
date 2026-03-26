@@ -189,6 +189,10 @@ pub(crate) enum Expression<'a> {
     /// Logical Operators
     LogicalAnd(Box<Expression<'a>>, Box<Expression<'a>>),
     LogicalOr(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// Unary Operators
+    LogicalNot(Box<Expression<'a>>),
+    BitwiseNot(Box<Expression<'a>>),
+    Negate(Box<Expression<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -516,7 +520,7 @@ fn parse_additive<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
 
 /// Parse multiplicative operators: *, /
 fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    let mut left = parse_primary.parse_next(input)?;
+    let mut left = parse_unary.parse_next(input)?;
 
     multispace0.parse_next(input)?;
 
@@ -527,7 +531,7 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     .parse_next(input)?
     {
         multispace0.parse_next(input)?;
-        let right = parse_primary.parse_next(input)?;
+        let right = parse_unary.parse_next(input)?;
         left = match op {
             MulOp::Multiply => Expression::Multiply(Box::new(left), Box::new(right)),
             MulOp::Divide => Expression::Divide(Box::new(left), Box::new(right)),
@@ -536,6 +540,27 @@ fn parse_multiplicative<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'
     }
 
     Ok(left)
+}
+
+fn parse_unary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    multispace0.parse_next(input)?;
+
+    if opt(('!', winnow::combinator::not('='))).parse_next(input)?.is_some() {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::LogicalNot(Box::new(operand)));
+    }
+
+    if opt('~').parse_next(input)?.is_some() {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::BitwiseNot(Box::new(operand)));
+    }
+
+    if opt('-').parse_next(input)?.is_some() {
+        let operand = parse_unary.parse_next(input)?;
+        return Ok(Expression::Negate(Box::new(operand)));
+    }
+
+    parse_primary.parse_next(input)
 }
 
 /// Parse primary expressions: numbers, symbols, functions, parentheses
