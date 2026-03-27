@@ -506,7 +506,10 @@ mod tests {
     #[test]
     fn test_alignof_evaluation() {
         // Test that evaluating ALIGNOF for a non-existent section returns 0
-        assert_eq!(eval_const(&Expression::Alignof(b".nonexistent")).unwrap(), 0);
+        assert_eq!(
+            eval_const(&Expression::Alignof(b".nonexistent")).unwrap(),
+            0
+        );
     }
 
     fn make_group(assertions: Vec<AssertCommand<'static>>) -> Group<'static, Elf> {
