@@ -8,6 +8,7 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
+use crate::elf::RELR_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -990,7 +991,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
 #[derive(Debug)]
 pub(crate) struct CommonGroupState<'data, P: Platform> {
     mem_sizes: OutputSectionPartMap<u64>,
-    pub(crate) relr_part_sizes: OutputSectionPartMap<u64>,
+    pub(crate) relr_part_sizes: OutputSectionPartMap<(u64, Vec<(FileId, SectionIndex, u64)>)>,
 
     section_attributes: OutputSectionMap<Option<P::SectionAttributes>>,
 
@@ -1018,9 +1019,18 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         P::validate_sizes(&self.mem_sizes)
     }
 
-    pub(crate) fn allocate_relr(&mut self, part_id: PartId, size: u64) {
+    pub(crate) fn allocate_relr(
+        &mut self,
+        part_id: PartId,
+        size: u64,
+        file_id: FileId,
+        section_index: SectionIndex,
+        offset_in_section: u64,
+    ) {
         self.mem_sizes.increment(part_id::RELR_DYN, size);
-        *self.relr_part_sizes.get_mut(part_id) += size;
+        let part = self.relr_part_sizes.get_mut(part_id);
+        part.0 += size;
+        part.1.push((file_id, section_index, offset_in_section));
     }
 
     fn finalise_layout(
@@ -1502,6 +1512,79 @@ fn compute_relr_offsets_by_group<P: Platform>(
             group_states.len()
         ];
 
+    // Offsets split by groups don't seem very useful here
+    // for group_state in group_states {
+    //     let num_parts = group_state.common.relr_part_sizes.num_parts();
+    //     for i in 0..num_parts {
+    //         let state_dbg = &group_state
+    //             .common
+    //             .relr_part_sizes
+    //             .get(PartId::from_usize(i))
+    //             .1;
+    //         if !state_dbg.is_empty() {
+    //             println!(
+    //                 "Part {i} relative reloc in input's offsets: {:?}",
+    //                 state_dbg
+    //                     .iter()
+    //                     .filter(|(_, _, offset)| *offset > 0)
+    //                     .collect_vec()
+    //             );
+    //         }
+    //     }
+    // }
+
+    let mut merged: std::collections::BTreeMap<_, std::collections::BTreeSet<_>> =
+        std::collections::BTreeMap::new();
+    for group_state in group_states {
+        let num_parts = group_state.common.relr_part_sizes.num_parts();
+        for i in 0..num_parts {
+            let state_dbg = &group_state
+                .common
+                .relr_part_sizes
+                .get(PartId::from_usize(i))
+                .1;
+            for entry in state_dbg {
+                merged
+                    .entry((entry.0, entry.1.0))
+                    .or_default()
+                    .insert(entry.2);
+            }
+        }
+    }
+
+    let filtered = merged
+        .iter()
+        .filter(|(_, v)| v.len() > 1)
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (k, v) in &filtered {
+        println!("key {k:?}, offsets {v:?}");
+    }
+
+    // TODO: how to tell if they are adjacent? separated by at most than 4 bytes?
+    let saved_relocations = filtered
+        .values()
+        .map(|offsets| {
+            let mut last_val = *offsets.first().unwrap();
+            let mut adjacent_offsets = 0u64;
+            // TODO: this will miscount cases like `0, 4, 8, 20, 24` but we only need ballpark
+            // numbers
+            for offset in *offsets {
+                if *offset - last_val <= 4 {
+                    adjacent_offsets += 1;
+                }
+                last_val = *offset;
+            }
+            // count of at most 64 entries long chunks
+            let relr_entries = adjacent_offsets / 64 + 1;
+            // we need 2 relr entries for each packed reloc (base address and bitmap)
+            adjacent_offsets.saturating_sub(relr_entries * 2)
+        })
+        .sum::<u64>();
+    println!(
+        "bytes on disk saved by this approach {}",
+        saved_relocations * RELR_ENTRY_SIZE
+    );
+
     let mut current_section_offset: u64 = 0;
     for event in output_order {
         let OrderEvent::Section(sec_id) = event else {
@@ -1511,7 +1594,7 @@ fn compute_relr_offsets_by_group<P: Platform>(
         for i in 0..sec_id.num_parts() {
             for (group_id, group_state) in group_states.iter().enumerate() {
                 let part_id = sec_id.base_part_id().offset(i);
-                let part_size = *group_state.common.relr_part_sizes.get(part_id);
+                let part_size = group_state.common.relr_part_sizes.get(part_id).0;
                 if part_size > 0 {
                     current_section_offset += part_size;
                     group_offsets[group_id].increment(part_id, current_section_offset);

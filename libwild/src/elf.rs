@@ -15,6 +15,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::grouping::Group;
+use crate::input_data::FileId;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
 use crate::layout;
@@ -114,6 +115,7 @@ use linker_utils::utils::read_string;
 use linker_utils::utils::read_u32;
 use linker_utils::utils::read_uleb128;
 use object::LittleEndian;
+use object::SectionIndex;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
 use object::read::elf::CrelIterator;
@@ -1416,7 +1418,7 @@ impl platform::Platform for Elf {
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
         pack_relative_relocs: bool,
-        relr_part_sizes: &mut OutputSectionPartMap<u64>,
+        relr_part_sizes: &mut OutputSectionPartMap<(u64, Vec<(FileId, SectionIndex, u64)>)>,
         part_id: Option<PartId>,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
@@ -1433,7 +1435,7 @@ impl platform::Platform for Elf {
             } else if flags.is_address() && output_kind.is_relocatable() {
                 if pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                    *relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)) +=
+                    relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)).0 +=
                         elf::RELR_ENTRY_SIZE;
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -1446,7 +1448,7 @@ impl platform::Platform for Elf {
             if output_kind.is_relocatable() {
                 if pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                    *relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)) +=
+                    relr_part_sizes.get_mut(part_id.unwrap_or(part_id::GOT)).0 +=
                         elf::RELR_ENTRY_SIZE;
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -4831,7 +4833,24 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         {
             if section_is_writable {
                 if resources.symbol_db.args.pack_relative_relocs {
-                    common.allocate_relr(part_id, elf::RELR_ENTRY_SIZE);
+                    let elf_symbol = object.object.symbol(local_sym_index)?;
+                    let section_index = if let Some(section_index) =
+                        object.object.symbol_section(elf_symbol, local_sym_index)?
+                    {
+                        section_index
+                    } else {
+                        // WTF? hitting this on Clang binary: `key (file-1282, 1234567890), offsets
+                        // {0, 32}`
+                        SectionIndex(1234567890)
+                    };
+                    let offset_in_section = (elf_symbol.value() as i64 + rel.addend()) as u64;
+                    common.allocate_relr(
+                        part_id,
+                        elf::RELR_ENTRY_SIZE,
+                        object.file_id,
+                        section_index,
+                        offset_in_section,
+                    );
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }
