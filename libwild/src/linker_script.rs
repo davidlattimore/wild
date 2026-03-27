@@ -145,13 +145,13 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
-/// - Functions: SIZEOF, ADDR, ALIGN, MIN, MAX
+/// - Functions: SIZEOF, ALIGNOF, ADDR, ALIGN, MIN, MAX
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
 /// Not yet supported (can be added when needed):
 /// - Ternary operator (? :)
-/// - Additional functions (LOADADDR, ALIGNOF, LENGTH, ORIGIN)
+/// - Additional functions (LOADADDR, LENGTH, ORIGIN)
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
@@ -174,6 +174,7 @@ pub(crate) enum Expression<'a> {
     NotEqual(Box<Expression<'a>>, Box<Expression<'a>>),
     /// Function calls
     Sizeof(&'a [u8]),
+    Alignof(&'a [u8]),
     Addr(&'a [u8]),
     Align(Box<Expression<'a>>),
     /// MIN and MAX functions (take two expressions)
@@ -625,6 +626,10 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             b"SIZEOF" => {
                 let arg = parse_function_arg.parse_next(input)?;
                 Ok(Expression::Sizeof(arg))
+            }
+            b"ALIGNOF" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Alignof(arg))
             }
             b"ADDR" => {
                 let arg = parse_function_arg.parse_next(input)?;
@@ -1648,6 +1653,23 @@ mod tests {
                 } else {
                     panic!("Expected Equal at top level");
                 }
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_alignof_parsing() {
+        let script = parse_script(r#"ASSERT(ALIGNOF(.text) == 8, "align test");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Alignof(".text".as_bytes())),
+                        Box::new(Expression::Number(8)),
+                    )
+                );
             }
             _ => panic!("Expected Assert command"),
         }
