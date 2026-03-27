@@ -106,6 +106,7 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::NotEqual(l, r) => Ok(u64::from(eval!(l)? != eval!(r)?)),
 
         Expression::Sizeof(name) => Ok(section_size(name, section_layouts, output_sections)),
+        Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
         Expression::Addr(name) => section_address(name, section_layouts, output_sections),
 
         Expression::Align(expr) => {
@@ -148,6 +149,19 @@ fn section_size<'data, P: Platform>(
         return 0;
     };
     section_layouts.get(id).mem_size
+}
+
+fn section_align<'data, P: Platform>(
+    name: &[u8],
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    output_sections: &OutputSections<'data, P>,
+) -> u64 {
+    // GNU ld returns 0 for ALIGNOF of a section that doesn't exist in the output.
+    // We match that behavior to avoid breaking scripts that guard with SIZEOF.
+    let Some(id) = output_sections.section_id_by_name(SectionName(name)) else {
+        return 0;
+    };
+    section_layouts.get(id).alignment.value()
 }
 
 fn section_address<'data, P: Platform>(
@@ -487,6 +501,12 @@ mod tests {
     fn test_symbol_skips_with_ok() {
         // Symbol references are not yet supported; should return Ok(1) (skip, not fail)
         assert_eq!(eval_const(&Expression::Symbol(b"__bss_start")).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_alignof_evaluation() {
+        // Test that evaluating ALIGNOF for a non-existent section returns 0
+        assert_eq!(eval_const(&Expression::Alignof(b".nonexistent")).unwrap(), 0);
     }
 
     fn make_group(assertions: Vec<AssertCommand<'static>>) -> Group<'static, Elf> {
