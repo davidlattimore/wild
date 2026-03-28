@@ -15,7 +15,7 @@ repository = "https://github.com/wild-linker/wild"
 license = "MIT OR Apache-2.0"
 version = "0.8.0"
 readme = "README.md"
-rust-version = "1.93"
+rust-version = "1.94"
 edition = "2024"
 
 # Note, the versions listed here are minimum supported versions and should only be increased when
