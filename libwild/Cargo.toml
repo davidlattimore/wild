@@ -56,6 +56,9 @@ zstd = { workspace = true }
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event = { workspace = true }
 
+[build-dependencies]
+cc = "1.1.12"
+
 [dev-dependencies]
 ar = { workspace = true }
 tempfile = { workspace = true }
