@@ -361,7 +361,12 @@ impl LoadedPlugin {
         // Linker plugins handle entries of this vector serially, which means the message callback
         // should be registered first. Otherwise, they won't be able to indicate the problem with
         // entries preceding the callback and, for example, silently skip invalid arguments.
-        transfer_vector.push(LdPluginTv::fn_ptr2(Tag::Message, message));
+        // The message callback is variadic (printf-style), so we register the C trampoline
+        // directly as a raw pointer value rather than going through fn_ptr2.
+        transfer_vector.push(LdPluginTv {
+            tag: Tag::Message as u32,
+            value: wild_plugin_message_callback as *const () as usize,
+        });
 
         for arg in &args.plugin_args {
             transfer_vector.push(LdPluginTv::c_str(Tag::Option, arg));
@@ -992,26 +997,28 @@ extern "C" fn add_input_library(lib_name: *const libc::c_char) -> Status {
     Status::Ok
 }
 
-/// This function is called when the plugin wants to emit a message. It's supposed to accept varargs
-/// similar to printf. Unfortunately that's not exactly easy for us to do, so we just report the
-/// format string.
-extern "C" fn message(level: libc::c_int, format: *const libc::c_char) -> Status {
-    catch_panics(|| {
-        let Some(level) = MessageLevel::from_raw(level) else {
-            return Status::Err;
-        };
+unsafe extern "C" {
+    /// C trampoline that accepts the plugin's printf-style varargs, formats them via vsnprintf,
+    /// then calls `wild_handle_plugin_message` with the resulting string. Defined in
+    /// `plugin_message_shim.c`.
+    fn wild_plugin_message_callback(level: libc::c_int, fmt: *const libc::c_char, ...);
+}
 
-        let format = unsafe { CStr::from_ptr(format) };
+/// Called by the C shim `wild_plugin_message_callback` with the already-formatted message string.
+/// The `no_mangle` is required so the C shim can link against it by name.
+#[unsafe(no_mangle)]
+extern "C" fn wild_handle_plugin_message(level: libc::c_int, message: *const libc::c_char) {
+    let Some(level) = MessageLevel::from_raw(level) else {
+        return;
+    };
 
-        if level == MessageLevel::Error || level == MessageLevel::Fatal {
-            println!("Linker plugin {level}: {}", format.to_string_lossy());
-            ERROR_MESSAGE.replace(Some(format.to_string_lossy().to_string()));
-        } else {
-            println!("Linker plugin {level}: {}", format.to_string_lossy());
-        }
+    let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
 
-        Status::Ok
-    })
+    println!("Linker plugin {level}: {text}");
+
+    if level == MessageLevel::Error || level == MessageLevel::Fatal {
+        ERROR_MESSAGE.replace(Some(text.into_owned()));
+    }
 }
 
 /// Runs `body`, catching any panics. In the case of a panic, the return status is changed to an
