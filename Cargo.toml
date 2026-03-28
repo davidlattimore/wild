@@ -46,11 +46,11 @@ git-version = "0.3.9"
 glob = "0.3.2"
 hashbrown = "0.16.0"
 hex = "0.4.0"
-iced-x86 = { version = "1.17.0", default-features = false, features = [
-    "std",
-    "decoder",
-    "gas",
-] }
+iced-x86 = {
+    version = "1.17.0",
+    default-features = false,
+    features = ["std", "decoder", "gas"],
+}
 indexmap = "2.11.4"
 indicatif = "0.18.3"
 itertools = "0.14.0"
@@ -62,14 +62,19 @@ libtest-mimic = "0.8.2"
 memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { git = "https://github.com/gimli-rs/object", rev = "8b62d2f81b6312a74eef10a5890cba33b3239a87", default-features = false, features = [
-    "elf",
-    "macho",
-    "read_core",
-    "std",
-    "unaligned",
-    "archive",
-] }
+object = {
+    git = "https://github.com/gimli-rs/object",
+    rev = "8b62d2f81b6312a74eef10a5890cba33b3239a87",
+    default-features = false,
+    features = [
+        "elf",
+        "macho",
+        "read_core",
+        "std",
+        "unaligned",
+        "archive",
+    ],
+}
 os_info = "3.0.0"
 paste = "1.0.15"
 # 0.4.9 contains breaking changes.
@@ -91,11 +96,11 @@ tempfile = "3.0.2"
 thread_local = "1.1.9"
 toml = "1.0.3"
 tracing = "0.1.35"
-tracing-subscriber = { version = "0.3.16", default-features = false, features = [
-    "env-filter",
-    "fmt",
-    "registry",
-] }
+tracing-subscriber = {
+    version = "0.3.16",
+    default-features = false,
+    features = ["env-filter", "fmt", "registry"],
+}
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
