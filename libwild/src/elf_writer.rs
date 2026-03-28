@@ -2540,20 +2540,11 @@ fn apply_relocation<
         RelocationKind::None => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
-            let address = section_address + rel.offset();
-            ensure!(
-                addend.is_power_of_two(),
-                "A power of 2 expected for Alignment relocation: {}",
-                addend
-            );
-            // Must be aligned to N-bytes, where N is the smallest power of two
-            // that is greater than the value of the addend field.
-            let expected_alignment = addend.next_power_of_two();
-            ensure!(
-                addend.is_multiple_of(expected_alignment),
-                "Unsatisfied alignment ({expected_alignment} bytes) at address: {}",
-                HexU64::new(address)
-            );
+            let removed_bytes =
+                relax_deltas.map_or(0u64, |d| u64::from(d.delta_bytes_at(rel.offset())));
+            let padding_bytes = addend.saturating_sub(removed_bytes) as usize;
+            A::fill_nop_padding(out, offset_in_section as usize, padding_bytes);
+
             return Ok(RelocationModifier::Normal);
         }
         _ => {}

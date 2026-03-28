@@ -155,6 +155,21 @@ impl crate::platform::Arch for ElfRiscV64 {
         ]
     }
 
+    fn fill_nop_padding(buf: &mut [u8], offset: usize, len: usize) {
+        // Fill with 4-byte NOP.
+        let mut i = 0;
+        while i + 4 <= len {
+            buf[offset + i..offset + i + 4].copy_from_slice(&0x0000_0013u32.to_le_bytes());
+            i += 4;
+        }
+        // Fill a remaining 2-byte slot with c.nop. This is safe because a 2-byte
+        // remainder only arises when the assembler used c.nop in the original sled,
+        // which implies the C extension is enabled.
+        if i + 2 <= len {
+            buf[offset + i..offset + i + 2].copy_from_slice(&0x0001u16.to_le_bytes());
+        }
+    }
+
     fn is_symbol_variant_pcs(
         object: &<Self::Platform as Platform>::File<'_>,
         symbol_index: object::SymbolIndex,
@@ -384,9 +399,47 @@ fn collect_relaxation_deltas<R: Relocation>(
     let mut min_unrelaxed_margin: Option<u64> = None;
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
     let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
+    let mut new_cumulative_delta: u64 = 0;
 
     for rel in relocations {
         match rel.raw_type() {
+            object::elf::R_RISCV_ALIGN => {
+                let addend = rel.addend() as u64;
+                let input_offset = rel.offset();
+                if addend == 0 || existing_deltas.is_some_and(|d| d.has_delta_at(input_offset)) {
+                    prev_call = None;
+                    prev_hi20 = None;
+                    continue;
+                }
+
+                let existing_cum = existing_deltas.map_or(0, |d| {
+                    // Cumulative bytes deleted strictly before this input offset.
+                    let idx = d
+                        .deltas()
+                        .partition_point(|e| e.input_offset < input_offset);
+                    if idx == 0 {
+                        0
+                    } else {
+                        d.deltas()[idx - 1].cumulative_deleted
+                    }
+                });
+                let output_offset = input_offset - existing_cum - new_cumulative_delta;
+                let p = section_output_address + output_offset;
+
+                // The alignment the assembler requested.
+                let alignment = addend.next_power_of_two();
+                let desired = p.next_multiple_of(alignment);
+                let actual = p + addend; // address if we kept all NOPs
+
+                if actual > desired {
+                    let bytes_to_remove = (actual - desired) as u32;
+                    raw_deltas.push((input_offset, bytes_to_remove));
+                    new_cumulative_delta += u64::from(bytes_to_remove);
+                }
+
+                prev_call = None;
+                prev_hi20 = None;
+            }
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => {
                 prev_call = rel.symbol().map(|sym_idx| (rel.offset(), sym_idx));
                 prev_hi20 = None;
@@ -410,6 +463,7 @@ fn collect_relaxation_deltas<R: Relocation>(
                         if distance_fits_jal(distance) {
                             // Delete the jalr instruction (4 bytes at call_offset + 4).
                             raw_deltas.push((call_offset + 4, 4));
+                            new_cumulative_delta += 4;
                         } else {
                             // Record how far this candidate is from the JAL range boundary so the
                             // caller can decide whether a rescan is worthwhile given the total
@@ -437,9 +491,11 @@ fn collect_relaxation_deltas<R: Relocation>(
                         let value = (output_address as i64 + addend) as u64;
                         if RelaxationKind::hi20_is_zero(value) {
                             raw_deltas.push((hi20_offset, 4));
+                            new_cumulative_delta += 4;
                         } else if RelaxationKind::rd_valid_for_clui(rd) {
                             if RelaxationKind::hi20_fits_clui(value) {
                                 raw_deltas.push((hi20_offset + 2, 2));
+                                new_cumulative_delta += 2;
                             } else {
                                 let hi20 = value.wrapping_add(0x800) >> 12;
                                 let hi20_signed = hi20 as i64;
