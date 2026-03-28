@@ -1554,7 +1554,7 @@ fn compute_relr_offsets_by_group<P: Platform>(
 
     let filtered = merged
         .iter()
-        .filter(|(_, v)| v.len() > 1)
+        .filter(|(_, v)| !v.is_empty())
         .collect::<std::collections::BTreeMap<_, _>>();
     for (k, v) in &filtered {
         println!("key {k:?}, offsets {v:?}");
