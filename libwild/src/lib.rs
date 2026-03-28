@@ -287,7 +287,8 @@ impl Linker {
 
         let mut resolver = resolution::Resolver::default();
 
-        resolver.resolve_symbols_and_select_archive_entries(&mut symbol_db)?;
+        resolver
+            .resolve_symbols_and_select_archive_entries(&mut symbol_db, &mut per_symbol_flags)?;
 
         // Now that we know which archive entries are being loaded, we can resolve alternative
         // symbol definitions.

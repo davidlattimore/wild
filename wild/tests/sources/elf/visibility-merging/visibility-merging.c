@@ -3,10 +3,6 @@
 //#LinkArgs:-shared -z now
 //#Object:visibility-merging-1.c
 //#DiffIgnore:section.got
-// TODO: Prevent dynsym export of symbols like these.
-//#DiffIgnore:dynsym.data1.*
-//#DiffIgnore:dynsym.data4.*
-//#DiffIgnore:dynsym.data5.*
 //#ExpectDynSym:data2
 //#ExpectDynSym:data3
 //#ExpectDynSym:get_data1
