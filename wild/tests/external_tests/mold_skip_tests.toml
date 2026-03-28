@@ -119,7 +119,6 @@ tests = [
 [skipped_groups.arch_riscv64]
 reason = "RISC-V specific tests"
 tests = [
-  "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
   "arch-riscv64-reloc-overflow.sh",
 ]
