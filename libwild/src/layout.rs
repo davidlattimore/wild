@@ -8,7 +8,6 @@ use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
-use crate::elf::RELR_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -1559,31 +1558,6 @@ fn compute_relr_offsets_by_group<P: Platform>(
     for (k, v) in &filtered {
         println!("key {k:?}, offsets {v:?}");
     }
-
-    // TODO: how to tell if they are adjacent? separated by at most than 4 bytes?
-    let saved_relocations = filtered
-        .values()
-        .map(|offsets| {
-            let mut last_val = *offsets.first().unwrap();
-            let mut adjacent_offsets = 0u64;
-            // TODO: this will miscount cases like `0, 4, 8, 20, 24` but we only need ballpark
-            // numbers
-            for offset in *offsets {
-                if *offset - last_val <= 4 {
-                    adjacent_offsets += 1;
-                }
-                last_val = *offset;
-            }
-            // count of at most 64 entries long chunks
-            let relr_entries = adjacent_offsets / 64 + 1;
-            // we need 2 relr entries for each packed reloc (base address and bitmap)
-            adjacent_offsets.saturating_sub(relr_entries * 2)
-        })
-        .sum::<u64>();
-    println!(
-        "bytes on disk saved by this approach {}",
-        saved_relocations * RELR_ENTRY_SIZE
-    );
 
     let mut current_section_offset: u64 = 0;
     for event in output_order {
