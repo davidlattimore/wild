@@ -189,11 +189,13 @@ use libwild::bail;
 use libwild::ensure;
 use libwild::error;
 use libwild::error::Context as _;
+use libwild::error::Error;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
+use object::elf;
 use object::read::elf::ProgramHeader;
 use os_info::Type;
 use serde::Deserialize;
@@ -1047,6 +1049,7 @@ struct Dep {
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
+    expected_program_headers: Vec<ExpectedProgramHeader>,
     expected_comments: Vec<String>,
     no_sym: HashSet<String>,
     no_dynsym: HashSet<String>,
@@ -1095,6 +1098,56 @@ impl ExpectedSymtabEntry {
             name: name.to_owned(),
             assertions,
         })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedProgramHeader {
+    kind: u32,
+    assertions: ProgramHeaderAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+struct ProgramHeaderAssertions {
+    offset: Option<u64>,
+    vaddr: Option<u64>,
+    paddr: Option<u64>,
+    filesz: Option<u64>,
+    memsz: Option<u64>,
+    flags: Option<u64>,
+    align: Option<u64>,
+}
+
+impl ExpectedProgramHeader {
+    fn parse(s: &str) -> Result<Self> {
+        let (kind_str, config_str) = s
+            .split_once(' ')
+            .map(|(s1, s2)| (s1, Some(s2)))
+            .unwrap_or((s, None));
+
+        // Add other program header types as needed
+        let kind = match kind_str {
+            "PT_PHDR" => elf::PT_PHDR,
+            "PT_INTERP" => elf::PT_INTERP,
+            "PT_LOAD" => elf::PT_LOAD,
+            "PT_DYNAMIC" => elf::PT_DYNAMIC,
+            "PT_NOTE" => elf::PT_NOTE,
+            "PT_TLS" => elf::PT_TLS,
+            _ => {
+                return Err(Error::with_message(format!(
+                    "Unknown program header type {}",
+                    kind_str
+                )));
+            }
+        };
+
+        let assertions = if let Some(config_str) = config_str {
+            serde_keyvalue::from_key_values(config_str)?
+        } else {
+            ProgramHeaderAssertions::default()
+        };
+
+        Ok(ExpectedProgramHeader { kind, assertions })
     }
 }
 
@@ -1339,6 +1392,10 @@ fn process_directive(
             .assertions
             .expected_comments
             .push(arg.trim().to_owned()),
+        "ExpectProgramHeader" => config.assertions.expected_program_headers.push(
+            ExpectedProgramHeader::parse(arg.trim())
+                .context("Failed to parse ExpectProgramHeader arguments")?,
+        ),
         "NoSym" => {
             config.assertions.no_sym.insert(arg.trim().to_owned());
         }
@@ -3045,9 +3102,52 @@ impl Assertions {
         self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
         self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
+        self.verify_program_header(&obj)?;
         self.verify_strings(&bytes)?;
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
+        Ok(())
+    }
+
+    fn verify_program_header(&self, obj: &ElfFile64) -> Result {
+        let e = LittleEndian;
+
+        for expected in self.expected_program_headers.iter() {
+            let assertions = &expected.assertions;
+
+            // Search for a program header that matches the assertions
+            let found = obj.elf_program_headers().iter().find(|header| {
+                header.p_type.get(e) == expected.kind
+                    && [
+                        header.p_offset.get(e),
+                        header.p_vaddr.get(e),
+                        header.p_paddr.get(e),
+                        header.p_filesz.get(e),
+                        header.p_memsz.get(e),
+                        header.p_flags.get(e).into(),
+                        header.p_align.get(e),
+                    ]
+                    .into_iter()
+                    .zip([
+                        assertions.offset,
+                        assertions.vaddr,
+                        assertions.paddr,
+                        assertions.filesz,
+                        assertions.memsz,
+                        assertions.flags,
+                        assertions.align,
+                    ])
+                    .filter_map(|(actual, expected)| expected.map(|val| val == actual))
+                    .all(|val| val)
+            });
+
+            if found.is_none() {
+                return Err(Error::with_message(format!(
+                    "Could not find program header that matches {:?}",
+                    expected
+                )));
+            }
+        }
         Ok(())
     }
 
