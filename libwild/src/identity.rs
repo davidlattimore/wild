@@ -1,6 +1,6 @@
 use git_version::git_version;
 
-/// Returns a string that identifies this linker.
+/// Returns a string that identifies this linker. This is written into the .comment
 /// section which usually also contains the versions of compilers that were used.
 pub(crate) fn linker_identity() -> String {
     let mut git_hash = git_version!(
