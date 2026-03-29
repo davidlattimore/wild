@@ -3059,7 +3059,7 @@ impl Assertions {
             let comment_section = obj.section_by_name(".comment");
             if let Some(section) = comment_section {
                 let data = section.data()?;
-                if !data.is_empty() && *data.last().unwrap() != 0 {
+                if !data.is_empty() && data.last() != Some(&0) {
                     bail!(".comment section is not null-terminated");
                 }
             }

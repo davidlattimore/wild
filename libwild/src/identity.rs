@@ -1,6 +1,6 @@
 use git_version::git_version;
 
-/// Returns a null-terminated string that identifies this linker. This is written into the .comment
+/// Returns a string that identifies this linker.
 /// section which usually also contains the versions of compilers that were used.
 pub(crate) fn linker_identity() -> String {
     let mut git_hash = git_version!(
@@ -12,7 +12,7 @@ pub(crate) fn linker_identity() -> String {
         git_hash = format!("({git_hash}) ");
     }
     format!(
-        "Wild version {} {}(compatible with GNU linkers)\0",
+        "Wild version {} {}(compatible with GNU linkers)",
         env!("CARGO_PKG_VERSION"),
         git_hash
     )
