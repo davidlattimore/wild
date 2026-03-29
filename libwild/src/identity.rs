@@ -12,7 +12,7 @@ pub(crate) fn linker_identity() -> String {
         git_hash = format!("({git_hash}) ");
     }
     format!(
-        "Wild version {} {}(compatible with GNU linkers)",
+        "Wild version {} {}(compatible with GNU linkers)\0",
         env!("CARGO_PKG_VERSION"),
         git_hash
     )
