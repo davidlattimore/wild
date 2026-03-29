@@ -887,7 +887,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.38.1",
+ "object 0.39.0",
  "perf-event",
  "perfetto-recorder",
  "rayon",
@@ -922,7 +922,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.38.1",
+ "object 0.39.0",
  "symbolic-demangle",
  "tabled",
  "tempfile",
@@ -957,7 +957,7 @@ dependencies = [
  "anyhow",
  "derive_more",
  "leb128",
- "object 0.38.1",
+ "object 0.39.0",
  "paste",
 ]
 
@@ -1238,8 +1238,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.38.1"
-source = "git+https://github.com/gimli-rs/object?rev=8b62d2f81b6312a74eef10a5890cba33b3239a87#8b62d2f81b6312a74eef10a5890cba33b3239a87"
+version = "0.39.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63944c133d03f44e75866bbd160b95af0ec3f6a13d936d69d31c81078cbc5baf"
 dependencies = [
  "memchr",
 ]
@@ -1833,7 +1834,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "once_cell",
  "rustix",
  "windows-sys",
@@ -2184,7 +2185,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object 0.38.1",
+ "object 0.39.0",
  "os_info",
  "regex",
  "serde",
