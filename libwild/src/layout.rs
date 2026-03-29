@@ -2604,7 +2604,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 start_symbol_id: SymbolId::zero(),
             },
             entry_symbol_id: None,
-            identity: format!("Linker: {}", crate::identity::linker_identity()),
+            identity: format!("Linker: {}\0", crate::identity::linker_identity()),
             header_info: None,
             dynamic_linker: None,
             format_specific: Default::default(),

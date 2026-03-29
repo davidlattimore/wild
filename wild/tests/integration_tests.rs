@@ -3054,6 +3054,16 @@ impl Assertions {
         if obj.kind() == ObjectKind::Relocatable {
             return Ok(());
         }
+        // Verify that the linker identity string is null-terminated.
+        if linker_used.is_wild() {
+            let comment_section = obj.section_by_name(".comment");
+            if let Some(section) = comment_section {
+                let data = section.data()?;
+                if !data.is_empty() && data.last() != Some(&0) {
+                    bail!(".comment section is not null-terminated");
+                }
+            }
+        }
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {
