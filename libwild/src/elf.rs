@@ -4071,7 +4071,7 @@ pub(crate) struct GroupLayoutExt {
 pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_relocations: usize,
     pub(crate) exception_frame_count: usize,
-    previous_relr: Option<i64>,
+    previous_relr: Option<u64>,
     pack_allocated: bool,
 }
 
@@ -4840,7 +4840,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                     if let Some(previous_relr) = common.format_specific.previous_relr
                         && rel_offset.is_multiple_of(RELR_ENTRY_SIZE)
                     {
-                        if rel.addend() > previous_relr && (rel.addend() - previous_relr) / 8 < 63 {
+                        if rel_offset > previous_relr && (rel_offset - previous_relr) / 8 < 63 {
                             // println!(
                             //     "pack offset {rel_offset:x} addend {:x} symbol {} type {}",
                             //     rel.addend(),
@@ -4862,13 +4862,13 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                             // TODO: chain bitmaps
                             dbg!("alloc base");
                             common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                            common.format_specific.previous_relr = Some(rel.addend());
+                            common.format_specific.previous_relr = Some(rel_offset);
                             common.format_specific.pack_allocated = false;
                         }
                     } else {
                         dbg!("alloc base");
                         common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                        common.format_specific.previous_relr = Some(rel.addend());
+                        common.format_specific.previous_relr = Some(rel_offset);
                         common.format_specific.pack_allocated = false;
                     }
                 } else {
