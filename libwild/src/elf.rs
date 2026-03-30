@@ -4073,6 +4073,7 @@ pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_count: usize,
     previous_relr: Option<u64>,
     pack_allocated: bool,
+    previous_part_id: Option<PartId>,
 }
 
 /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
@@ -4839,6 +4840,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
                     if let Some(previous_relr) = common.format_specific.previous_relr
                         && rel_offset.is_multiple_of(RELR_ENTRY_SIZE)
+                        && common.format_specific.previous_part_id == Some(part_id)
                     {
                         if rel_offset > previous_relr && (rel_offset - previous_relr) / 8 < 63 {
                             // println!(
@@ -4870,6 +4872,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                         common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                         common.format_specific.previous_relr = Some(rel_offset);
                         common.format_specific.pack_allocated = false;
+                        common.format_specific.previous_part_id = Some(part_id);
                     }
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);

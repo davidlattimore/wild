@@ -69,6 +69,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -577,6 +578,7 @@ struct RelrWriter<'out> {
     out: &'out mut [u8],
     previous_entry_value: Option<u64>,
     bitmap: Option<&'out mut u64>,
+    previous_part_id: Option<PartId>,
 }
 
 impl<'out> RelrWriter<'out> {
@@ -598,14 +600,16 @@ impl<'out> RelrWriter<'out> {
             out,
             previous_entry_value: None,
             bitmap: None,
+            previous_part_id: None,
         }
     }
 
-    fn add_entry(&mut self, value: u64, is_got: bool) {
+    fn add_entry(&mut self, value: u64, part_id: PartId) {
         println!("{value:x}");
         if let Some(previous_entry_value) = self.previous_entry_value
-            && !is_got
+            && part_id != part_id::GOT
             && previous_entry_value < value
+            && self.previous_part_id == Some(part_id)
             && value.is_multiple_of(RELR_ENTRY_SIZE)
         {
             let distance = value - previous_entry_value;
@@ -635,6 +639,7 @@ impl<'out> RelrWriter<'out> {
             let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
             out.copy_from_slice(&value.to_le_bytes());
             self.previous_entry_value = Some(value);
+            self.previous_part_id = Some(part_id);
             self.bitmap = None;
         }
     }
@@ -789,7 +794,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         } else {
             *got_entry = res.raw_value;
             if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value, true)?;
+                self.write_address_relocation::<A>(got_address, res.raw_value, part_id::GOT)?;
             }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
@@ -805,7 +810,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             let got_entry = self.take_next_got_entry()?;
             *got_entry = res.plt_address()?;
             if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry, true)?;
+                self.write_address_relocation::<A>(ifunc_got_address, *got_entry, part_id::GOT)?;
             }
         }
 
@@ -1083,7 +1088,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         &mut self,
         place: u64,
         relative_address: u64,
-        is_got: bool,
+        part_id: PartId,
     ) -> Result<u64> {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
@@ -1094,7 +1099,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(relr_writer) = &mut self.relr_writer
             && place.is_multiple_of(2)
         {
-            relr_writer.add_entry(place, is_got);
+            relr_writer.add_entry(place, part_id);
             Ok(relative_address)
         } else {
             let rela = self
@@ -2107,6 +2112,7 @@ fn apply_relocations<
             &relocation_cache,
             &relocations,
             relax_deltas,
+            section.part_id,
         )
         .with_context(|| {
             format!(
@@ -2343,6 +2349,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                     &RelocationCache::default(),
                     &iter::empty(),
                     None,
+                    part_id::EH_FRAME,
                 )
                 .with_context(|| {
                     format!(
@@ -2618,6 +2625,7 @@ fn apply_relocation<
     relocation_cache: &RelocationCache<R>,
     relocation_iterator: &I,
     relax_deltas: Option<&SectionRelaxDeltas>,
+    part_id: PartId,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
@@ -2687,6 +2695,7 @@ fn apply_relocation<
             symbol_index,
             object_layout,
             layout,
+            part_id,
         )?,
         RelocationKind::AbsoluteSet
         | RelocationKind::AbsoluteSetWord6
@@ -3173,6 +3182,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
     symbol_index: object::SymbolIndex,
     object_layout: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout,
+    part_id: PartId,
 ) -> Result<u64> {
     if !section_info.section_flags.is_alloc() {
         resolution.value_with_addend(
@@ -3212,7 +3222,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-        table_writer.write_address_relocation::<A>(place, address, false)
+        table_writer.write_address_relocation::<A>(place, address, part_id)
     } else {
         resolution.value_with_addend(
             addend,
