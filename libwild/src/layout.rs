@@ -250,8 +250,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let starting_mem_offsets_by_group =
         compute_start_offsets_by_group(&group_states, mem_offsets.clone());
 
-    let relr_offsets_by_group = compute_relr_offsets_by_group(&group_states, &output_order);
-
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
         &starting_mem_offsets_by_group,
@@ -287,7 +285,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         group_states,
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
-        relr_offsets_by_group,
         &resources,
     )?;
 
@@ -761,8 +758,6 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
                 &mut common.mem_sizes,
                 symbol_db.output_kind,
                 symbol_db.args.should_pack_relative_relocs(),
-                &mut common.relr_part_sizes,
-                None,
             );
 
             if symbol_db.args.common().verify_allocation_consistency {
@@ -809,14 +804,11 @@ pub(crate) fn compute_allocations<P: Platform>(
     pack_relative_relocs: bool,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    let mut relr_counts = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
     P::allocate_resolution(
         resolution.flags,
         &mut sizes,
         output_kind,
         pack_relative_relocs,
-        &mut relr_counts,
-        None,
     );
     sizes
 }
@@ -990,7 +982,6 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayo
 #[derive(Debug)]
 pub(crate) struct CommonGroupState<'data, P: Platform> {
     mem_sizes: OutputSectionPartMap<u64>,
-    pub(crate) relr_part_sizes: OutputSectionPartMap<u64>,
 
     section_attributes: OutputSectionMap<Option<P::SectionAttributes>>,
 
@@ -1007,7 +998,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     fn new(output_sections: &OutputSections<P>) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
-            relr_part_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
             format_specific: Default::default(),
@@ -1016,11 +1006,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
 
     fn validate_sizes(&self) -> Result {
         P::validate_sizes(&self.mem_sizes)
-    }
-
-    pub(crate) fn allocate_relr(&mut self, part_id: PartId, size: u64) {
-        self.mem_sizes.increment(part_id::RELR_DYN, size);
-        *self.relr_part_sizes.get_mut(part_id) += size;
     }
 
     fn finalise_layout(
@@ -1149,7 +1134,6 @@ pub(crate) struct GroupLayout<'data, P: Platform> {
 
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
-    pub(crate) relr_start_offsets: OutputSectionPartMap<u64>,
 
     pub(crate) format_specific: P::GroupLayoutExt,
 }
@@ -1492,37 +1476,6 @@ fn merge_secondary_parts<P: Platform>(
     }
 }
 
-fn compute_relr_offsets_by_group<P: Platform>(
-    group_states: &[GroupState<P>],
-    output_order: &OutputOrder,
-) -> Vec<OutputSectionPartMap<u64>> {
-    let mut group_offsets =
-        vec![
-            OutputSectionPartMap::with_size(group_states[0].common.relr_part_sizes.num_parts());
-            group_states.len()
-        ];
-
-    let mut current_section_offset: u64 = 0;
-    for event in output_order {
-        let OrderEvent::Section(sec_id) = event else {
-            continue;
-        };
-
-        for i in 0..sec_id.num_parts() {
-            for (group_id, group_state) in group_states.iter().enumerate() {
-                let part_id = sec_id.base_part_id().offset(i);
-                let part_size = *group_state.common.relr_part_sizes.get(part_id);
-                if part_size > 0 {
-                    current_section_offset += part_size;
-                    group_offsets[group_id].increment(part_id, current_section_offset);
-                }
-            }
-        }
-    }
-
-    group_offsets
-}
-
 fn compute_start_offsets_by_group<P: Platform>(
     group_states: &[GroupState<P>],
     mut mem_offsets: OutputSectionPartMap<u64>,
@@ -1543,7 +1496,6 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
     group_states: Vec<GroupState<'data, P>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution<P>>>],
-    relr_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
 ) -> Result<Vec<GroupLayout<'data, P>>> {
     timing_phase!("Assign symbol addresses");
@@ -1552,41 +1504,33 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
         .into_par_iter()
         .zip(starting_mem_offsets_by_group)
         .zip(per_group_res_writers)
-        .zip(relr_offsets_by_group)
-        .map(
-            |(((state, mut memory_offsets), symbols_out), relr_offsets)| {
-                verbose_timing_phase!("Assign addresses for group");
+        .map(|((state, mut memory_offsets), symbols_out)| {
+            verbose_timing_phase!("Assign addresses for group");
 
-                if cfg!(debug_assertions) {
-                    let offset_verifier = crate::verification::OffsetVerifier::new(
-                        &memory_offsets,
-                        &state.common.mem_sizes,
-                    );
+            if cfg!(debug_assertions) {
+                let offset_verifier = crate::verification::OffsetVerifier::new(
+                    &memory_offsets,
+                    &state.common.mem_sizes,
+                );
 
-                    // Make sure that ignored offsets really aren't used by `finalise_layout` by
-                    // setting them to an arbitrary value. If they are used,
-                    // we'll quickly notice.
-                    crate::verification::clear_ignored(&mut memory_offsets);
+                // Make sure that ignored offsets really aren't used by `finalise_layout` by
+                // setting them to an arbitrary value. If they are used,
+                // we'll quickly notice.
+                crate::verification::clear_ignored(&mut memory_offsets);
 
-                    let layout = state.finalise_layout(
-                        &mut memory_offsets,
-                        symbols_out,
-                        relr_offsets,
-                        resources,
-                    )?;
+                let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
 
-                    offset_verifier.verify(
-                        &memory_offsets,
-                        resources.output_sections,
-                        resources.output_order,
-                        &layout.files,
-                    )?;
-                    Ok(layout)
-                } else {
-                    state.finalise_layout(&mut memory_offsets, symbols_out, relr_offsets, resources)
-                }
-            },
-        )
+                offset_verifier.verify(
+                    &memory_offsets,
+                    resources.output_sections,
+                    resources.output_order,
+                    &layout.files,
+                )?;
+                Ok(layout)
+            } else {
+                state.finalise_layout(&mut memory_offsets, symbols_out, resources)
+            }
+        })
         .collect()
 }
 
@@ -2097,7 +2041,6 @@ impl<'data, P: Platform> GroupState<'data, P> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution<P>>>,
-        relr_start_offsets: OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result<GroupLayout<'data, P>> {
         let format_specific = P::finalise_group_layout(memory_offsets);
@@ -2139,7 +2082,6 @@ impl<'data, P: Platform> GroupState<'data, P> {
             symtab_global_start_index,
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
-            relr_start_offsets,
             format_specific,
         })
     }
@@ -2462,10 +2404,7 @@ fn compute_file_sizes<P: Platform>(
     output_sections: &OutputSections<'_, P>,
 ) -> OutputSectionPartMap<usize> {
     mem_sizes.map(|part_id, size| {
-        // HACK: avoid splitting .relr.dyn per groups via the normal path
-        if part_id == part_id::RELR_DYN {
-            0
-        } else if output_sections.has_data_in_file(part_id.output_section_id()) {
+        if output_sections.has_data_in_file(part_id.output_section_id()) {
             *size as usize
         } else {
             0
@@ -3774,8 +3713,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     &mut common.mem_sizes,
                     output_kind,
                     resources.symbol_db.args.should_pack_relative_relocs(),
-                    &mut common.relr_part_sizes,
-                    Some(section.part_id),
                 );
             }
         }
@@ -5114,15 +5051,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
-    let mut relr_counts = output_sections.new_part_map();
-    P::allocate_resolution(
-        flags,
-        &mut mem_sizes,
-        output_kind,
-        pack_relative_relocs,
-        &mut relr_counts,
-        None,
-    );
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind, pack_relative_relocs);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
