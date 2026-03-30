@@ -18,8 +18,8 @@
 __attribute__((weak, visibility("hidden"))) extern int get_value(void);
 
 int public_func(void) {
-    if (get_value) {
-        return get_value();
-    }
-    return 0;
+  if (get_value) {
+    return get_value();
+  }
+  return 0;
 }
