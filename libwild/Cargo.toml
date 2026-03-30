@@ -25,7 +25,6 @@ derive_more = { workspace = true }
 flate2 = { workspace = true }
 foldhash = { workspace = true }
 gimli = { workspace = true }
-git-version = { workspace = true }
 glob = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }
