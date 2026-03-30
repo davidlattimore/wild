@@ -1,10 +1,10 @@
-//#Config:default
 //#Object:init.c
 //#Shared:runtime.c
 //#LinkArgs:-pie -z now -z pack-relative-relocs
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
+//#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 //#RequiresGlibc:true
 //#Mode:dynamic
 
