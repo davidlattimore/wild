@@ -44,6 +44,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -2523,6 +2524,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     queue,
                     false,
                     scope,
+                    part_id::EH_FRAME,
                 )?;
 
                 if let Some(local_sym_index) = rel.symbol() {
@@ -2627,6 +2629,7 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
                     queue,
                     false,
                     scope,
+                    part_id::EH_FRAME,
                 )?;
             }
             common.format_specific.exception_frame_relocations +=
@@ -4674,6 +4677,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             queue,
             false,
             scope,
+            section.part_id,
         )
         .with_context(|| {
             format!(
@@ -4705,6 +4709,7 @@ fn load_debug_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>
             queue,
             true,
             scope,
+            section.part_id,
         )
         .with_context(|| {
             format!(
@@ -4731,6 +4736,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
+    part_id: PartId,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
@@ -4822,10 +4828,13 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             if section_is_writable {
                 // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for
                 // them.
-                println!(
-                    "offset {rel_offset:x} addend {:x}, prev {:x?}",
+                eprintln!(
+                    "offset {rel_offset:x} addend {:x}, prev {:x?} file {:?} section name {:?} part {:?}",
                     rel.addend(),
-                    common.format_specific.previous_relr
+                    common.format_specific.previous_relr,
+                    object.file_id,
+                    str::from_utf8(object.object.section_name(section).unwrap()).unwrap(),
+                    part_id
                 );
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
                     if let Some(previous_relr) = common.format_specific.previous_relr
