@@ -4569,20 +4569,18 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
                 / size_of::<elf::Rela>() as u64
         },
     ),
-    // TODO: Pending object crate release
     DynamicEntryWriter::optional(
-        36,
+        object::elf::DT_RELR,
         |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
-        // TODO: Yeah, non-sequential numbers are dumb, but what can we do.
-        35,
+        object::elf::DT_RELRSZ,
         |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
-        37,
+        object::elf::DT_RELRENT,
         |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
         |_| elf::RELR_ENTRY_SIZE,
     ),
