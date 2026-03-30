@@ -4558,17 +4558,13 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     }),
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
-    DynamicEntryWriter::optional(
-        object::elf::DT_RELACOUNT,
-        |inputs| inputs.has_data_in_section(output_section_id::RELA_DYN_RELATIVE),
-        |inputs| {
-            inputs
-                .section_part_layouts
-                .get(part_id::RELA_DYN_RELATIVE)
-                .mem_size
-                / size_of::<elf::Rela>() as u64
-        },
-    ),
+    DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |inputs| {
+        inputs
+            .section_part_layouts
+            .get(part_id::RELA_DYN_RELATIVE)
+            .mem_size
+            / size_of::<elf::Rela>() as u64
+    }),
     DynamicEntryWriter::optional(
         object::elf::DT_RELR,
         |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
