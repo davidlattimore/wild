@@ -576,7 +576,6 @@ impl<'out> VersionWriter<'out> {
 struct RelrWriter<'out> {
     out: &'out mut [u8],
     previous_entry_value: Option<u64>,
-    bitmap_position: u8,
     bitmap: Option<&'out mut u64>,
 }
 
@@ -598,7 +597,6 @@ impl<'out> RelrWriter<'out> {
         Self {
             out,
             previous_entry_value: None,
-            bitmap_position: 0,
             bitmap: None,
         }
     }
@@ -631,39 +629,14 @@ impl<'out> RelrWriter<'out> {
                 let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
                 out.copy_from_slice(&value.to_le_bytes());
                 self.previous_entry_value = Some(value);
-                self.bitmap_position = 0;
                 self.bitmap = None;
             }
         } else {
             let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
             out.copy_from_slice(&value.to_le_bytes());
             self.previous_entry_value = Some(value);
-            self.bitmap_position = 0;
             self.bitmap = None;
         }
-
-        // if let Some(bitmap_start) = self.previous_entry_offset {
-        //     let distance = value - bitmap_start;
-        //     let bitmap_pos = distance / 8;
-        //     if bitmap_pos < 63 {
-        //         let bitmap = &mut self.out[RELR_ENTRY_SIZE as usize];
-        //         *bitmap += 1 << bitmap_pos;
-        //     } else {
-        //         self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
-        //
-        //         let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
-        //         out.copy_from_slice(&value.to_le_bytes());
-        //         self.previous_entry_offset = Some(value + RELR_ENTRY_SIZE);
-        //         self.bitmap_position = 0;
-        //     }
-        // } else {
-        //     let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
-        //     out.copy_from_slice(&value.to_le_bytes());
-        //     self.previous_entry_offset = Some(value + RELR_ENTRY_SIZE);
-        //     self.bitmap_position = 0;
-        //     let bitmap = &mut self.out[RELR_ENTRY_SIZE as usize];
-        //     *bitmap += 1;
-        // }
     }
 }
 
