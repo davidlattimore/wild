@@ -581,6 +581,19 @@ struct RelrWriter<'out> {
 }
 
 impl<'out> RelrWriter<'out> {
+    pub(crate) fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.out.is_empty() {
+            return Err(excessive_allocation(
+                ".relr.dyn",
+                self.out.len() as u64,
+                *mem_sizes.get(part_id::RELR_DYN),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<'out> RelrWriter<'out> {
     fn new(out: &'out mut [u8]) -> Self {
         Self {
             out,
@@ -989,16 +1002,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
             ));
         }
-        // TODO: Update it with regard to RelrWriter
-        // if let Some(relr_dyn) = &self.relr_dyn
-        //     && !relr_dyn.is_empty()
-        // {
-        //     return Err(excessive_allocation(
-        //         ".relr.dyn",
-        //         relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
-        //         *mem_sizes.get(part_id::RELR_DYN),
-        //     ));
-        // }
+        if let Some(relr_writer) = &self.relr_writer {
+            relr_writer.check_exhausted(mem_sizes)?;
+        }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
         self.version_writer.check_exhausted(mem_sizes)?;
