@@ -13,27 +13,38 @@ pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed
         ));
     }
 
+    fn collect_files(dir: &Path, extensions: &[&str]) -> Vec<std::path::PathBuf> {
+        read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .flat_map(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_files(&path, extensions)
+                } else if path.is_file()
+                    && path
+                        .extension()
+                        .is_some_and(|ext| extensions.contains(&ext.to_str().unwrap()))
+                {
+                    vec![path]
+                } else {
+                    vec![]
+                }
+            })
+            .collect()
+    }
+
     let extensions = ["c", "cc", "h"];
     let sources_path = format!("{}/tests/sources", env!("CARGO_MANIFEST_DIR"));
-    let files_iter = read_dir(&sources_path).unwrap().filter_map(|entry| {
-        let path = entry.as_ref().unwrap().path();
-        if path.is_file()
-            && path
-                .extension()
-                .is_some_and(|extension| extensions.contains(&extension.to_str().unwrap()))
-        {
-            Some(path)
-        } else {
-            None
-        }
-    });
+    let source_files = collect_files(Path::new(&sources_path), &extensions);
 
     let clang_format_out = Command::new("clang-format")
         .arg("--dry-run")
         .arg("-Werror")
         // Undocumented option that forces the colours: https://github.com/llvm/llvm-project/issues/119224
         .arg("--color")
-        .args(files_iter)
+        .args(source_files)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -60,7 +71,7 @@ pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed
         let clang_version = String::from_utf8_lossy(&clang_out.stdout);
         let version_no_endline = clang_version.trim_end_matches('\n');
         return Err(Failed::from(format!(
-            "clang-format ({version_no_endline}) check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
+            "clang-format ({version_no_endline}) check failed:\n{out}\nRun `clang-format -i {sources_path}/*/*/*.{{{extensions_str}}}` to fix it.",
             extensions_str = extensions.join(",")
         )));
     }
