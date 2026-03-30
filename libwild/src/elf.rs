@@ -4829,14 +4829,14 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             if section_is_writable {
                 // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for
                 // them.
-                eprintln!(
-                    "offset {rel_offset:x} addend {:x}, prev {:x?} file {:?} section name {:?} part {:?}",
-                    rel.addend(),
-                    common.format_specific.previous_relr,
-                    object.file_id,
-                    str::from_utf8(object.object.section_name(section).unwrap()).unwrap(),
-                    part_id
-                );
+                // eprintln!(
+                //     "offset {rel_offset:x} addend {:x}, prev {:x?} file {:?} section name {:?}
+                // part {:?}",     rel.addend(),
+                //     common.format_specific.previous_relr,
+                //     object.file_id,
+                //     str::from_utf8(object.object.section_name(section).unwrap()).unwrap(),
+                //     part_id
+                // );
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
                     if let Some(previous_relr) = common.format_specific.previous_relr
                         && rel_offset.is_multiple_of(RELR_ENTRY_SIZE)
@@ -4854,21 +4854,21 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
                             if common.format_specific.pack_allocated {
                                 // packing, do not allocate more space
                                 // common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                                dbg!("no alloc");
+                                // dbg!("no alloc");
                             } else {
-                                dbg!("alloc bitmap");
+                                // dbg!("alloc bitmap");
                                 common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                                 common.format_specific.pack_allocated = true;
                             }
                         } else {
                             // TODO: chain bitmaps
-                            dbg!("alloc base");
+                            // dbg!("alloc base");
                             common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                             common.format_specific.previous_relr = Some(rel_offset);
                             common.format_specific.pack_allocated = false;
                         }
                     } else {
-                        dbg!("alloc base");
+                        // dbg!("alloc base");
                         common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                         common.format_specific.previous_relr = Some(rel_offset);
                         common.format_specific.pack_allocated = false;

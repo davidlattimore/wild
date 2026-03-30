@@ -605,7 +605,7 @@ impl<'out> RelrWriter<'out> {
     }
 
     fn add_entry(&mut self, value: u64, part_id: PartId) {
-        println!("{value:x}");
+        // println!("{value:x}");
         if let Some(previous_entry_value) = self.previous_entry_value
             && part_id != part_id::GOT
             && previous_entry_value < value
