@@ -5,7 +5,6 @@ use crate::args::DefsymValue;
 use crate::bail;
 use crate::error::Warning;
 use crate::grouping::Group;
-use crate::input_data::FileId;
 use crate::input_data::FileLoader;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
@@ -43,7 +42,6 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
-use object::SectionIndex;
 use rayon::Scope;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -547,7 +545,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
         pack_relative_relocs: bool,
-        relr_part_sizes: &mut OutputSectionPartMap<(u64, Vec<(FileId, SectionIndex, u64)>)>,
+        relr_part_sizes: &mut OutputSectionPartMap<u64>,
         output_section_id: Option<PartId>,
     );
 
