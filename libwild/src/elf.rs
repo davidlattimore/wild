@@ -4068,6 +4068,8 @@ pub(crate) struct GroupLayoutExt {
 pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_relocations: usize,
     pub(crate) exception_frame_count: usize,
+    previous_relr: Option<i64>,
+    pack_allocated: bool,
 }
 
 /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
@@ -4820,8 +4822,46 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             if section_is_writable {
                 // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for
                 // them.
+                println!(
+                    "offset {rel_offset:x} addend {:x}, prev {:x?}",
+                    rel.addend(),
+                    common.format_specific.previous_relr
+                );
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
-                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                    if let Some(previous_relr) = common.format_specific.previous_relr
+                        && rel_offset.is_multiple_of(RELR_ENTRY_SIZE)
+                    {
+                        if rel.addend() > previous_relr && (rel.addend() - previous_relr) / 8 < 63 {
+                            // println!(
+                            //     "pack offset {rel_offset:x} addend {:x} symbol {} type {}",
+                            //     rel.addend(),
+                            //     rel.symbol().map_or(1234567890, |a| a.0),
+                            //     rel.raw_type()
+                            // );
+                            // TODO: store it in the previous_rel? we know that it cannot be odd so
+                            // LSB is never zero
+                            if common.format_specific.pack_allocated {
+                                // packing, do not allocate more space
+                                // common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                dbg!("no alloc");
+                            } else {
+                                dbg!("alloc bitmap");
+                                common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                                common.format_specific.pack_allocated = true;
+                            }
+                        } else {
+                            // TODO: chain bitmaps
+                            dbg!("alloc base");
+                            common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                            common.format_specific.previous_relr = Some(rel.addend());
+                            common.format_specific.pack_allocated = false;
+                        }
+                    } else {
+                        dbg!("alloc base");
+                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                        common.format_specific.previous_relr = Some(rel.addend());
+                        common.format_specific.pack_allocated = false;
+                    }
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }

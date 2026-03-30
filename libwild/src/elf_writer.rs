@@ -575,12 +575,82 @@ impl<'out> VersionWriter<'out> {
 
 struct RelrWriter<'out> {
     out: &'out mut [u8],
+    previous_entry_value: Option<u64>,
+    bitmap_position: u8,
+    bitmap: Option<&'out mut u64>,
 }
 
-impl RelrWriter<'_> {
-    fn add_entry(&mut self, value: u64) {
-        let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
-        out.copy_from_slice(&value.to_le_bytes());
+impl<'out> RelrWriter<'out> {
+    fn new(out: &'out mut [u8]) -> Self {
+        Self {
+            out,
+            previous_entry_value: None,
+            bitmap_position: 0,
+            bitmap: None,
+        }
+    }
+
+    fn add_entry(&mut self, value: u64, is_got: bool) {
+        println!("{value:x}");
+        if let Some(previous_entry_value) = self.previous_entry_value
+            && !is_got
+            && previous_entry_value < value
+            && value.is_multiple_of(RELR_ENTRY_SIZE)
+        {
+            let distance = value - previous_entry_value;
+            let bitmap_pos = distance / 8;
+            if bitmap_pos < 63 {
+                // println!("bitmap pos {bitmap_pos}, value {value:x}");
+                let bitmap = if let Some(bitmap) = self.bitmap.as_mut() {
+                    bitmap
+                } else {
+                    let bitmap = object::from_bytes_mut::<u64>(
+                        self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap(),
+                    )
+                    .unwrap()
+                    .0;
+                    *bitmap = 1;
+                    self.bitmap = Some(bitmap);
+                    self.bitmap.as_mut().unwrap()
+                };
+                **bitmap |= 1 << bitmap_pos;
+            } else {
+                let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
+                out.copy_from_slice(&value.to_le_bytes());
+                self.previous_entry_value = Some(value);
+                self.bitmap_position = 0;
+                self.bitmap = None;
+            }
+        } else {
+            let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
+            out.copy_from_slice(&value.to_le_bytes());
+            self.previous_entry_value = Some(value);
+            self.bitmap_position = 0;
+            self.bitmap = None;
+        }
+
+        // if let Some(bitmap_start) = self.previous_entry_offset {
+        //     let distance = value - bitmap_start;
+        //     let bitmap_pos = distance / 8;
+        //     if bitmap_pos < 63 {
+        //         let bitmap = &mut self.out[RELR_ENTRY_SIZE as usize];
+        //         *bitmap += 1 << bitmap_pos;
+        //     } else {
+        //         self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
+        //
+        //         let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
+        //         out.copy_from_slice(&value.to_le_bytes());
+        //         self.previous_entry_offset = Some(value + RELR_ENTRY_SIZE);
+        //         self.bitmap_position = 0;
+        //     }
+        // } else {
+        //     let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
+        //     out.copy_from_slice(&value.to_le_bytes());
+        //     self.previous_entry_offset = Some(value + RELR_ENTRY_SIZE);
+        //     self.bitmap_position = 0;
+        //     let bitmap = &mut self.out[RELR_ENTRY_SIZE as usize];
+        //     *bitmap += 1;
+        // }
     }
 }
 
@@ -649,9 +719,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             versym.is_empty().not().then_some(versym),
         );
 
-        let relr_writer = pack_relative_relocs.then_some(RelrWriter {
-            out: buffers.take(part_id::RELR_DYN),
-        });
+        let relr_writer =
+            pack_relative_relocs.then_some(RelrWriter::new(buffers.take(part_id::RELR_DYN)));
 
         TableWriter {
             output_kind,
@@ -734,7 +803,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         } else {
             *got_entry = res.raw_value;
             if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value)?;
+                self.write_address_relocation::<A>(got_address, res.raw_value, true)?;
             }
         }
         if let Some(plt_address) = res.format_specific.plt_address {
@@ -750,7 +819,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             let got_entry = self.take_next_got_entry()?;
             *got_entry = res.plt_address()?;
             if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry)?;
+                self.write_address_relocation::<A>(ifunc_got_address, *got_entry, true)?;
             }
         }
 
@@ -1035,6 +1104,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         &mut self,
         place: u64,
         relative_address: u64,
+        is_got: bool,
     ) -> Result<u64> {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
@@ -1045,7 +1115,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if let Some(relr_writer) = &mut self.relr_writer
             && place.is_multiple_of(2)
         {
-            relr_writer.add_entry(place);
+            relr_writer.add_entry(place, is_got);
             Ok(relative_address)
         } else {
             let rela = self
@@ -3163,7 +3233,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-        table_writer.write_address_relocation::<A>(place, address)
+        table_writer.write_address_relocation::<A>(place, address, false)
     } else {
         resolution.value_with_addend(
             addend,
