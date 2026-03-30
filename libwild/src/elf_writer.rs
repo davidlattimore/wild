@@ -1093,7 +1093,10 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        if let Some(relr_writer) = &mut self.relr_writer {
+        // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
+        if let Some(relr_writer) = &mut self.relr_writer
+            && place.is_multiple_of(2)
+        {
             relr_writer.add_entry(part_id, place);
             Ok(relative_address)
         } else {
