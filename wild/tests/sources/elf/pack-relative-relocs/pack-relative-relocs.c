@@ -3,11 +3,6 @@
 //#LinkArgs:-pie -z now -z pack-relative-relocs
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
-// TODO: copied from other test, check and remove unnecessary ones
-//#DiffIgnore:segment.LOAD.RW.alignment
-//#DiffIgnore:.dynamic.DT_PREINIT_ARRAY
-//#DiffIgnore:.dynamic.DT_RELA
-//#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:section.got
 //#RequiresGlibc:true
 //#Mode:dynamic
