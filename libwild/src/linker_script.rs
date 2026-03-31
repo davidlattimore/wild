@@ -22,6 +22,7 @@ use winnow::combinator::preceded;
 use winnow::combinator::repeat_till;
 use winnow::error::ContextError;
 use winnow::error::FromExternalError;
+use winnow::token::one_of;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
@@ -583,6 +584,27 @@ fn parse_unary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     parse_primary.parse_next(input)
 }
 
+/// Parse hex and decimal numbers, applying an optional K (x1024) or M (x1024^2) suffix.
+fn parse_number_with_suffix<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+    let base_number = alt((
+        // Hex numbers (0x or 0X prefix)
+        preceded(alt(("0x", "0X")), hex_uint::<_, u64, _>),
+        // Decimal numbers
+        dec_uint::<_, u64, _>,
+    ))
+    .parse_next(input)?;
+
+    let suffix = opt(one_of(b"KkMm")).parse_next(input)?;
+
+    let final_value = match suffix {
+        Some(b'K') | Some(b'k') => base_number.wrapping_mul(1024),
+        Some(b'M') | Some(b'm') => base_number.wrapping_mul(1024 * 1024),
+        _ => base_number,
+    };
+
+    Ok(Expression::Number(final_value))
+}
+
 /// Parse primary expressions: numbers, symbols, functions, parentheses
 fn parse_primary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     multispace0.parse_next(input)?;
@@ -590,10 +612,8 @@ fn parse_primary<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     alt((
         // Parentheses - parse expression inside
         delimited('(', parse_expression, ')'),
-        // Hex numbers (0x or 0X prefix)
-        preceded(alt(("0x", "0X")), hex_uint::<_, u64, _>).map(Expression::Number),
-        // Decimal numbers
-        dec_uint::<_, u64, _>.map(Expression::Number),
+        // Numbers (hex/decimal) with optional size suffixes
+        parse_number_with_suffix,
         // Functions and symbols (identifiers) - this handles '.' as well
         parse_identifier_or_function,
     ))
@@ -1694,6 +1714,17 @@ mod tests {
                 );
             }
             _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_number_suffixes() {
+        let cases = [("1K", 1024), ("2k", 2048), ("1M", 1048576), ("2m", 2097152)];
+
+        for (input, expected) in cases {
+            let mut bstr = winnow::BStr::new(input.as_bytes());
+            let expr = parse_expression.parse_next(&mut bstr).unwrap();
+            assert_eq!(expr, Expression::Number(expected));
         }
     }
 }
