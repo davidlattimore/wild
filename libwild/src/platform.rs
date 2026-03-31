@@ -540,7 +540,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         flags: ValueFlags,
     ) -> Result;
 
-    fn allocate_resolution<'data>(
+    fn allocate_resolution(
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,

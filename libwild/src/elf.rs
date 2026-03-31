@@ -2355,7 +2355,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<elf::Elf>,
+        symbol_db: &SymbolDb<Elf>,
     ) -> Result {
         let e = LittleEndian;
         let mut version_count = 0;
