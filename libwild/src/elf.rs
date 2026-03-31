@@ -4520,8 +4520,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ty: sht::RELR,
         section_flags: shf::ALLOC,
         element_size: RELR_ENTRY_SIZE,
-        // TODO: Probably fine but need to check.
-        min_alignment: alignment::RELA_ENTRY,
+        min_alignment: alignment::RELR_ENTRY,
         ..DEFAULT_DEFS
     };
     defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
