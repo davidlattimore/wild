@@ -22,7 +22,6 @@ use crate::elf::NonAddressableCounts;
 use crate::elf::ProgramHeader;
 use crate::elf::RawSymbolName;
 use crate::elf::Rela;
-use crate::elf::Relr;
 use crate::elf::RiscVAttribute;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
@@ -571,34 +570,6 @@ impl<'out> VersionWriter<'out> {
     }
 }
 
-struct RelrWriter<'out> {
-    out: &'out mut [Relr],
-}
-
-impl<'out> RelrWriter<'out> {
-    pub(crate) fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if !self.out.is_empty() {
-            return Err(excessive_allocation(
-                ".relr.dyn",
-                self.out.len() as u64,
-                *mem_sizes.get(part_id::RELR_DYN),
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl<'out> RelrWriter<'out> {
-    fn new(out: &'out mut [Relr]) -> Self {
-        Self { out }
-    }
-
-    fn add_entry(&mut self, value: u64) {
-        let out = self.out.split_off_first_mut().unwrap();
-        out.0.set(LittleEndian, value);
-    }
-}
-
 struct TableWriter<'layout, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
@@ -607,7 +578,7 @@ struct TableWriter<'layout, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
-    relr_writer: Option<RelrWriter<'out>>,
+    relr_dyn: Option<&'out mut [elf::Relr]>,
     dynsym_writer: SymbolTableWriter<'layout, 'out>,
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
@@ -664,10 +635,6 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             versym.is_empty().not().then_some(versym),
         );
 
-        let relr_writer = pack_relative_relocs.then_some(RelrWriter::new(
-            slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN)),
-        ));
-
         TableWriter {
             output_kind,
             got: <[u64]>::mut_from_bytes(buffers.take(part_id::GOT)).unwrap(),
@@ -676,7 +643,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
-            relr_writer,
+            relr_dyn: pack_relative_relocs
+                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -935,8 +903,14 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
             ));
         }
-        if let Some(relr_writer) = &self.relr_writer {
-            relr_writer.check_exhausted(mem_sizes)?;
+        if let Some(relr_dyn) = &self.relr_dyn
+            && !relr_dyn.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".relr.dyn",
+                self.relr_dyn.as_ref().unwrap().len() as u64 * elf::RELR_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELR_DYN),
+            ));
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
@@ -1050,10 +1024,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         );
         let e = LittleEndian;
         // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
-        if let Some(relr_writer) = &mut self.relr_writer
+        if let Some(relr_writer) = &mut self.relr_dyn
             && place.is_multiple_of(2)
         {
-            relr_writer.add_entry(place);
+            let relr = relr_writer
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+            relr.0.set(LittleEndian, place);
             Ok(relative_address)
         } else {
             let rela = self
