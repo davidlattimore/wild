@@ -1,4 +1,4 @@
-//#Object:init.c
+//#Object:init.c:-fPIC
 //#Shared:runtime.c
 //#LinkArgs:-pie -z now -z pack-relative-relocs
 // We're linking different .so files, so this is expected.
