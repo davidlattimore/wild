@@ -431,14 +431,19 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         .e_phnum
         .set(e, header_info.active_segment_ids.len() as u16);
     header.e_shentsize.set(e, elf::SECTION_HEADER_SIZE);
-    header
-        .e_shnum
-        .set(e, header_info.num_output_sections_with_content);
+    header.e_shnum.set(
+        e,
+        header_info
+            .num_output_sections_with_content
+            .try_into()
+            .unwrap_or(0),
+    );
     header.e_shstrndx.set(
         e,
         layout
             .output_sections
             .output_index_of_section(output_section_id::SHSTRTAB)
+            .map(|size| size.try_into().unwrap_or(object::elf::SHN_XINDEX))
             .expect("we always write .shstrtab"),
     );
     Ok(())
@@ -1172,6 +1177,7 @@ struct SymbolTableWriter<'layout, 'out> {
     output_sections: &'layout OutputSections<'layout, Elf>,
     strtab_writer: StrTabWriter<'out>,
     is_dynamic: bool,
+    symtab_shndx_entries: Option<&'out mut [u32]>,
 }
 
 impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
@@ -1182,6 +1188,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
+        let symtab_shndx_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_SHNDX));
         let strings = buffers.take(part_id::STRTAB);
         Self {
             local_entries,
@@ -1192,6 +1199,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 out: strings,
             },
             is_dynamic: false,
+            symtab_shndx_entries: Some(symtab_shndx_entries),
         }
     }
 
@@ -1211,6 +1219,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 out: strings,
             },
             is_dynamic: true,
+            symtab_shndx_entries: None,
         }
     }
 
@@ -1242,7 +1251,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         &mut self,
         sym: &crate::elf::SymtabEntry,
         name: &[u8],
-        shndx: u16,
+        shndx: u32,
         value: u64,
         flags: ValueFlags,
     ) -> Result<&mut SymtabEntry> {
@@ -1269,7 +1278,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let is_local = flags.is_symtab_local(sym);
         let value = sym.st_value(e);
         let size = sym.st_size(e);
-        let entry = self.define_symbol(is_local, object::elf::SHN_ABS, value, size, name)?;
+        let entry =
+            self.define_symbol(is_local, u32::from(object::elf::SHN_ABS), value, size, name)?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
         // Fix binding if symbol was downgraded to local by version script
@@ -1283,7 +1293,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn define_symbol(
         &mut self,
         is_local: bool,
-        shndx: u16,
+        shndx: u32,
         value: u64,
         size: u64,
         name: &[u8],
@@ -1316,6 +1326,26 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         // Always save the name without the symbol version (e.g. foo@@VER_1).
         let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
+        let shndx = if shndx < u32::from(object::elf::SHN_LORESERVE)
+            || shndx == u32::from(object::elf::SHN_ABS)
+            || shndx == u32::from(object::elf::SHN_COMMON)
+        {
+            self.symtab_shndx_entries
+                .as_mut()
+                .map(|sym| sym.split_off_first_mut().map(|x| *x = 0));
+            shndx as u16
+        } else {
+            self.symtab_shndx_entries
+                .as_mut()
+                .map(|sym| sym.split_off_first_mut().map(|x| *x = shndx))
+                .with_context(|| {
+                    format!(
+                        "expected .symtab_shndx when setting shndx as SHN_XINDEX for symbol {}.",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+            object::elf::SHN_XINDEX
+        };
         entry.st_name.set(e, string_offset);
         entry.st_info = 0;
         entry.st_other = 0;
@@ -1355,6 +1385,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             output_sections: self.output_sections,
             strtab_writer: self.strtab_writer.take_prefix(strtab_size),
             is_dynamic: self.is_dynamic,
+            symtab_shndx_entries: None,
         }
     }
 }
@@ -1970,7 +2001,7 @@ fn write_symbols<'data>(
             }
             let name = RawSymbolName::parse(name).name;
             let entry = symbol_writer
-                .define_symbol(false, object::elf::SHN_UNDEF, 0, 0, name)
+                .define_symbol(false, u32::from(object::elf::SHN_UNDEF), 0, 0, name)
                 .with_context(|| {
                     format!(
                         "Failed to write undefined symbol `{}` for partial link",
@@ -3935,7 +3966,7 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16, u8)> {
+fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32, u8)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     let file = layout.symbol_db.file(file_id);
 
@@ -3966,7 +3997,7 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
                         }),
                     _ => None,
                 })
-                .unwrap_or(object::elf::SHN_ABS);
+                .unwrap_or(u32::from(object::elf::SHN_ABS));
 
             let st_type = sym.st_type();
 
@@ -3979,12 +4010,12 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
                 .symbol_defs
                 .get(local_index.0)
                 .and_then(|def_info| def_info.section_id())
-                .map_or(object::elf::SHN_ABS, |section_id| {
+                .map_or(u32::from(object::elf::SHN_ABS), |section_id| {
                     let section_id = layout.output_sections.primary_output_section(section_id);
                     layout
                         .output_sections
                         .output_index_of_section(section_id)
-                        .unwrap_or(object::elf::SHN_ABS)
+                        .unwrap_or(u32::from(object::elf::SHN_ABS))
                 });
 
             Ok((shndx, object::elf::STT_NOTYPE))
@@ -3994,20 +4025,21 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u16
             let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
                 format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
             })?;
-            let shndx = def_info
-                .section_id()
-                .map_or(object::elf::SHN_ABS, |section_id| {
-                    let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout
-                        .output_sections
-                        .output_index_of_section(section_id)
-                        .unwrap_or(object::elf::SHN_ABS)
-                });
+            let shndx =
+                def_info
+                    .section_id()
+                    .map_or(u32::from(object::elf::SHN_ABS), |section_id| {
+                        let section_id = layout.output_sections.primary_output_section(section_id);
+                        layout
+                            .output_sections
+                            .output_index_of_section(section_id)
+                            .unwrap_or(u32::from(object::elf::SHN_ABS))
+                    });
             Ok((shndx, def_info.elf_symbol_type.raw()))
         }
         crate::grouping::SequencedInput::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
-            Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
+            Ok((u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE))
         }
         #[cfg(feature = "plugins")]
         crate::grouping::SequencedInput::LtoInput(_) => {
@@ -4108,7 +4140,7 @@ fn write_defsym_dynsym(
                     .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
-            (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
+            (u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE)
         };
 
     let entry = dynsym_writer
@@ -4335,7 +4367,7 @@ fn write_internal_symbols(
                         })
                 })
                 .transpose()?
-                .unwrap_or(object::elf::SHN_ABS);
+                .unwrap_or(u32::from(object::elf::SHN_ABS));
 
             (shndx, def_info.elf_symbol_type.raw())
         };
@@ -4820,10 +4852,26 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
 
         let size;
         let alignment;
+        let mut link = link_ids(section_id)
+            .iter()
+            .find_map(|link_id| output_sections.output_index_of_section(*link_id))
+            .unwrap_or(0);
 
         if section_type == sht::NULL {
-            size = 0;
             alignment = 0;
+            if entries.len() > u16::MAX as usize {
+                size = entries.len() as u64;
+            } else {
+                size = 0;
+            }
+
+            let shstrndx = layout
+                .output_sections
+                .output_index_of_section(output_section_id::SHSTRTAB)
+                .unwrap();
+            if shstrndx >= u32::from(object::elf::SHN_LORESERVE) {
+                link = shstrndx;
+            }
         } else {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
@@ -4840,11 +4888,6 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
                 order.next();
             }
         };
-
-        let mut link = link_ids(section_id)
-            .iter()
-            .find_map(|link_id| output_sections.output_index_of_section(*link_id))
-            .unwrap_or(0);
 
         let entry = entries.next().unwrap();
         let e = LittleEndian;
@@ -4884,7 +4927,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
                     .custom_name_to_id(crate::output_section_id::SectionName(target_name))
                 && let Some(target_idx) = output_sections.output_index_of_section(target_id)
             {
-                info_value = u32::from(target_idx);
+                info_value = target_idx;
             }
         }
 
@@ -4898,7 +4941,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         );
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
-        entry.sh_link.set(e, link.into());
+        entry.sh_link.set(e, link);
         entry.sh_info.set(e, info_value);
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
@@ -4918,12 +4961,10 @@ fn compute_info_values(layout: &ElfLayout) -> OutputSectionMap<u32> {
     let mut infos = layout.output_sections.new_section_map();
 
     // .rela.plt contains relocations for .got, so should link to it.
-    *infos.get_mut(output_section_id::RELA_PLT) = u32::from(
-        layout
-            .output_sections
-            .output_index_of_section(output_section_id::GOT)
-            .unwrap_or(0),
-    );
+    *infos.get_mut(output_section_id::RELA_PLT) = layout
+        .output_sections
+        .output_index_of_section(output_section_id::GOT)
+        .unwrap_or(0);
 
     // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
     *infos.get_mut(output_section_id::DYNSYM) = 1;

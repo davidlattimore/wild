@@ -1023,6 +1023,11 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             *self.mem_sizes.get(part_id::SYMTAB_GLOBAL),
         );
 
+        memory_offsets.increment(
+            part_id::SYMTAB_SHNDX,
+            *self.mem_sizes.get(part_id::SYMTAB_SHNDX),
+        );
+
         strtab_offset_start
     }
 
@@ -2841,6 +2846,13 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             &mut extra_sizes,
         )?;
 
+        let entry_size = size_of::<P::SymtabEntry>() as u64;
+        let mut symtab_shndx_size = (total_sizes.get(part_id::SYMTAB_LOCAL)
+            + total_sizes.get(part_id::SYMTAB_GLOBAL)
+            + common.mem_sizes.get(part_id::SYMTAB_GLOBAL)
+            + common.mem_sizes.get(part_id::SYMTAB_LOCAL))
+            / entry_size;
+
         if resources.symbol_db.args.should_output_partial_object() {
             let mut num_section_syms = 0;
             let mut section_names_size = 0;
@@ -2852,9 +2864,15 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     }
                 }
             }
-            let entry_size = size_of::<P::SymtabEntry>() as u64;
             extra_sizes.increment(part_id::SYMTAB_LOCAL, num_section_syms * entry_size);
             extra_sizes.increment(part_id::STRTAB, section_names_size);
+            symtab_shndx_size += num_section_syms;
+        }
+        if output_sections
+            .output_index_of_section(output_section_id::SYMTAB_SHNDX)
+            .is_some()
+        {
+            extra_sizes.increment(part_id::SYMTAB_SHNDX, symtab_shndx_size * 4);
         }
 
         // We need to allocate both our own size record and the group totals, since they've already
@@ -2991,6 +3009,10 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
+        let num_sections_before_shndx = keep_sections.values_iter().filter(|p| **p).count();
+        if num_sections_before_shndx >= object::elf::SHN_LORESERVE as usize {
+            *keep_sections.get_mut(output_section_id::SYMTAB_SHNDX) = true;
+        }
         let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
         // Compute output indexes of each section.
@@ -3477,7 +3499,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
 
 #[derive(Debug)]
 pub(crate) struct HeaderInfo {
-    pub(crate) num_output_sections_with_content: u16,
+    pub(crate) num_output_sections_with_content: u32,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
 }
 

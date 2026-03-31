@@ -805,6 +805,8 @@ pub mod secnames {
     pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
     pub const RELRO_PADDING_SECTION_NAME_STR: &str = ".relro_padding";
     pub const RELRO_PADDING_SECTION_NAME: &[u8] = RELRO_PADDING_SECTION_NAME_STR.as_bytes();
+    pub const SYMTAB_SHNDX_SECTION_NAME_STR: &str = ".symtab_shndx";
+    pub const SYMTAB_SHNDX_SECTION_NAME: &[u8] = SYMTAB_SHNDX_SECTION_NAME_STR.as_bytes();
 
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
