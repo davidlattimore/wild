@@ -1,7 +1,9 @@
 use crate::Architecture;
 use crate::Result;
+use crate::external_tests::external_linker_name;
 use crate::external_tests::run_external_test;
 use crate::external_tests::should_not_ignore_tests;
+use crate::external_tests::using_third_party_linker;
 use crate::get_host_architecture;
 use crate::get_wild_test_cross;
 use libtest_mimic::Failed;
@@ -61,18 +63,26 @@ pub(crate) fn collect_tests(tests: &mut Vec<Trial>, filter: &crate::Filter) -> R
         return Ok(());
     }
 
+    let third_party = using_third_party_linker();
+    let linker_name = external_linker_name();
     let test_dir_path = crate::base_dir().join("../external_test_suites/mold/test");
     let dir = std::fs::read_dir(&test_dir_path)
         .with_context(|| format!("Failed to read directory {}", test_dir_path.display()))?;
+
     for ent in dir {
         let ent = ent?;
         let path = ent.path();
 
         if path.extension().is_some_and(|ext| ext == "sh") {
-            let name = format!(
-                "{PREFIX}/test/{}",
-                String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes())
-            );
+            let file_name =
+                String::from_utf8_lossy(path.file_name().unwrap().as_encoded_bytes()).to_string();
+
+            let name = if third_party {
+                format!("{PREFIX}[{linker_name}]/test/{file_name}")
+            } else {
+                format!("{PREFIX}/test/{file_name}")
+            };
+
             if !should_skip_mold_test(&path) && !should_skip_by_local_config(&path) {
                 tests.push(Trial::test(name, move || {
                     check_mold_tests_regression(path).map_err(|e| Failed::from(e.to_string()))
@@ -109,11 +119,19 @@ fn check_mold_tests_regression(mold_test: PathBuf) -> Result {
 fn verify_skipped_mold_tests_still_fail(mold_test: PathBuf) -> Result {
     let output = run_mold_test(&mold_test)?;
     if output.status.success() {
-        return Err(format!(
-            "Test `{}` is in skip list but now passes. Should be removed from skip list.",
-            mold_test.display()
-        )
-        .into());
+        let linker = external_linker_name();
+        let message = if using_third_party_linker() {
+            format!(
+                "Test `{}` is in the skip list (fails with wild) but passes with '{linker}'. This indicates the failure may be wild-specific.",
+                mold_test.display()
+            )
+        } else {
+            format!(
+                "Test `{}` is in skip list but now passes. Should be removed from skip list.",
+                mold_test.display()
+            )
+        };
+        return Err(message.into());
     }
 
     Ok(())
