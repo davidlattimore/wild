@@ -109,6 +109,10 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::Alignof(name) => Ok(section_align(name, section_layouts, output_sections)),
         Expression::Addr(name) => section_address(name, section_layouts, output_sections),
 
+        // TODO: This is a temporary alias for ADDR.
+        // Needs to be updated when AT(expr) and disjoint LMA/VMA tracking are implemented.
+        Expression::Loadaddr(name) => section_address(name, section_layouts, output_sections),
+
         Expression::Align(expr) => {
             let align = eval!(expr)?;
             if align == 0 {

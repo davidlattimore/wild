@@ -145,13 +145,13 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
-/// - Functions: SIZEOF, ALIGNOF, ADDR, ALIGN, MIN, MAX
+/// - Functions: SIZEOF, ALIGNOF, ADDR, LOADADDR, ALIGN, MIN, MAX
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
 /// Not yet supported (can be added when needed):
 /// - Ternary operator (? :)
-/// - Additional functions (LOADADDR, LENGTH, ORIGIN)
+/// - Additional functions (LENGTH, ORIGIN)
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
@@ -176,6 +176,7 @@ pub(crate) enum Expression<'a> {
     Sizeof(&'a [u8]),
     Alignof(&'a [u8]),
     Addr(&'a [u8]),
+    Loadaddr(&'a [u8]),
     Align(Box<Expression<'a>>),
     /// MIN and MAX functions (take two expressions)
     Min(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -634,6 +635,10 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             b"ADDR" => {
                 let arg = parse_function_arg.parse_next(input)?;
                 Ok(Expression::Addr(arg))
+            }
+            b"LOADADDR" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Loadaddr(arg))
             }
             b"ALIGN" => {
                 let arg_expr = parse_expression.parse_next(input)?;
@@ -1667,6 +1672,23 @@ mod tests {
                     assert_cmd.expression,
                     Expression::Equal(
                         Box::new(Expression::Alignof(".text".as_bytes())),
+                        Box::new(Expression::Number(8)),
+                    )
+                );
+            }
+            _ => panic!("Expected Assert command"),
+        }
+    }
+
+    #[test]
+    fn test_loadaddr_parsing() {
+        let script = parse_script(r#"ASSERT(LOADADDR(.text) == 8, "loadaddr test");"#).unwrap();
+        match &script.commands[0] {
+            Command::Assert(assert_cmd) => {
+                assert_eq!(
+                    assert_cmd.expression,
+                    Expression::Equal(
+                        Box::new(Expression::Loadaddr(".text".as_bytes())),
                         Box::new(Expression::Number(8)),
                     )
                 );
