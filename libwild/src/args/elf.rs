@@ -794,7 +794,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             writeln!(stdout, "{}", parser.generate_help())?;
 
             // The following listing is something autoconf detection relies on.
-            writeln!(stdout, "wild: supported targets:elf64 -x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch")?;
+            writeln!(stdout, "wild: supported targets: elf64-x86-64 elf64-littleaarch64 elf64-littleriscv elf64-loongarch")?;
             writeln!(stdout, "wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv elf64loongarch")?;
 
             std::process::exit(0);
