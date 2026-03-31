@@ -750,7 +750,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     parser
         .declare()
         .long("no-pie")
-        .help("Do not create a position-dependent executable (default)")
+        .help("Do not create a position-independent executable (default)")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
             args.should_output_executable = true;
