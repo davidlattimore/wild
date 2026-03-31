@@ -681,7 +681,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     parser
         .declare_with_param()
         .long("output")
-        .short("o")
+        .prefix("o")
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
             args.output = Arc::from(Path::new(value));
@@ -1925,6 +1925,7 @@ mod tests {
         "elf_x86_64",
         "-dynamic-linker",
         "/lib64/ld-linux-x86-64.so.2",
+        "-o/tmp/a.out",
         "-o",
         "/build/target/debug/deps/c1-a212b73b12b6d123",
         "/lib/x86_64-linux-gnu/Scrt1.o",
