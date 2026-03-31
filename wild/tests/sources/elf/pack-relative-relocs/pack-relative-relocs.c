@@ -6,6 +6,8 @@
 //#DiffIgnore:section.got
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 //#Mode:dynamic
+// Ubuntu 24.04's GNU ld doesn't crate .rela.dyn for AArch64.
+//#RequiresGlibcVersion:2.40
 
 #include "init.h"
 #include "runtime.h"
