@@ -5,7 +5,6 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
-//#RequiresGlibc:true
 //#Mode:dynamic
 
 #include "init.h"
