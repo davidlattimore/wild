@@ -44,7 +44,6 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
-use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -2524,7 +2523,6 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     queue,
                     false,
                     scope,
-                    part_id::EH_FRAME,
                 )?;
 
                 if let Some(local_sym_index) = rel.symbol() {
@@ -2629,7 +2627,6 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
                     queue,
                     false,
                     scope,
-                    part_id::EH_FRAME,
                 )?;
             }
             common.format_specific.exception_frame_relocations +=
@@ -4071,9 +4068,6 @@ pub(crate) struct GroupLayoutExt {
 pub(crate) struct CommonGroupStateExt {
     pub(crate) exception_frame_relocations: usize,
     pub(crate) exception_frame_count: usize,
-    previous_relr: Option<u64>,
-    pack_allocated: bool,
-    previous_part_id: Option<PartId>,
 }
 
 /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
@@ -4678,7 +4672,6 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             queue,
             false,
             scope,
-            section.part_id,
         )
         .with_context(|| {
             format!(
@@ -4710,7 +4703,6 @@ fn load_debug_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>
             queue,
             true,
             scope,
-            section.part_id,
         )
         .with_context(|| {
             format!(
@@ -4737,7 +4729,6 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
     scope: &Scope<'scope>,
-    part_id: PartId,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
@@ -4829,51 +4820,8 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             if section_is_writable {
                 // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for
                 // them.
-                // eprintln!(
-                //     "offset {rel_offset:x} addend {:x}, prev {:x?} file {:?} section name {:?}
-                // part {:?}",     rel.addend(),
-                //     common.format_specific.previous_relr,
-                //     object.file_id,
-                //     str::from_utf8(object.object.section_name(section).unwrap()).unwrap(),
-                //     part_id
-                // );
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
-                    if let Some(previous_relr) = common.format_specific.previous_relr
-                        && rel_offset.is_multiple_of(RELR_ENTRY_SIZE)
-                        && common.format_specific.previous_part_id == Some(part_id)
-                    {
-                        if rel_offset > previous_relr && (rel_offset - previous_relr) / 8 < 63 {
-                            // println!(
-                            //     "pack offset {rel_offset:x} addend {:x} symbol {} type {}",
-                            //     rel.addend(),
-                            //     rel.symbol().map_or(1234567890, |a| a.0),
-                            //     rel.raw_type()
-                            // );
-                            // TODO: store it in the previous_rel? we know that it cannot be odd so
-                            // LSB is never zero
-                            if common.format_specific.pack_allocated {
-                                // packing, do not allocate more space
-                                // common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                                // dbg!("no alloc");
-                            } else {
-                                // dbg!("alloc bitmap");
-                                common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                                common.format_specific.pack_allocated = true;
-                            }
-                        } else {
-                            // TODO: chain bitmaps
-                            // dbg!("alloc base");
-                            common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                            common.format_specific.previous_relr = Some(rel_offset);
-                            common.format_specific.pack_allocated = false;
-                        }
-                    } else {
-                        // dbg!("alloc base");
-                        common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
-                        common.format_specific.previous_relr = Some(rel_offset);
-                        common.format_specific.pack_allocated = false;
-                        common.format_specific.previous_part_id = Some(part_id);
-                    }
+                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
                 }

@@ -247,8 +247,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     )?;
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
-    let starting_mem_offsets_by_group =
-        compute_start_offsets_by_group(&group_states, mem_offsets.clone());
+    let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
 
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
@@ -1513,9 +1512,8 @@ fn compute_symbols_and_layouts<'data, P: Platform>(
                     &state.common.mem_sizes,
                 );
 
-                // Make sure that ignored offsets really aren't used by `finalise_layout` by
-                // setting them to an arbitrary value. If they are used,
-                // we'll quickly notice.
+                // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
+                // them to an arbitrary value. If they are used, we'll quickly notice.
                 crate::verification::clear_ignored(&mut memory_offsets);
 
                 let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
