@@ -910,7 +910,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             return Err(excessive_allocation(
                 ".relr.dyn",
-                self.relr_dyn.as_ref().unwrap().len() as u64 * elf::RELR_ENTRY_SIZE,
+                relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
                 *mem_sizes.get(part_id::RELR_DYN),
             ));
         }
