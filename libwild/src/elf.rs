@@ -3894,6 +3894,7 @@ pub(crate) struct NonAddressableCounts {
     pub(crate) verneed_count: u64,
     /// The number of verdef records provided in version script.
     pub(crate) verdef_count: u16,
+    /// LLD creates GLIBC_ABI_DT_RELR as the last version across all inputs, we mimic that.
     pub(crate) final_version_index: u16,
 }
 
