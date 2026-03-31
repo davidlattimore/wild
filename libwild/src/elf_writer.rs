@@ -4043,7 +4043,7 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
         }
         #[cfg(feature = "plugins")]
         crate::grouping::SequencedInput::LtoInput(_) => {
-            Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
+            Ok((u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE))
         }
     }
 }
