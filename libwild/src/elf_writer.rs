@@ -20,9 +20,9 @@ use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::NonAddressableCounts;
 use crate::elf::ProgramHeader;
-use crate::elf::RELR_ENTRY_SIZE;
 use crate::elf::RawSymbolName;
 use crate::elf::Rela;
+use crate::elf::Relr;
 use crate::elf::RiscVAttribute;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
@@ -572,7 +572,7 @@ impl<'out> VersionWriter<'out> {
 }
 
 struct RelrWriter<'out> {
-    out: &'out mut [u8],
+    out: &'out mut [Relr],
 }
 
 impl<'out> RelrWriter<'out> {
@@ -589,13 +589,13 @@ impl<'out> RelrWriter<'out> {
 }
 
 impl<'out> RelrWriter<'out> {
-    fn new(out: &'out mut [u8]) -> Self {
+    fn new(out: &'out mut [Relr]) -> Self {
         Self { out }
     }
 
     fn add_entry(&mut self, value: u64) {
-        let out = self.out.split_off_mut(..RELR_ENTRY_SIZE as usize).unwrap();
-        out.copy_from_slice(&value.to_le_bytes());
+        let out = self.out.split_off_first_mut().unwrap();
+        out.0.set(LittleEndian, value);
     }
 }
 
@@ -664,8 +664,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             versym.is_empty().not().then_some(versym),
         );
 
-        let relr_writer =
-            pack_relative_relocs.then_some(RelrWriter::new(buffers.take(part_id::RELR_DYN)));
+        let relr_writer = pack_relative_relocs.then_some(RelrWriter::new(
+            slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN)),
+        ));
 
         TableWriter {
             output_kind,
