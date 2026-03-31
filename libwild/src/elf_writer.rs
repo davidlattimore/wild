@@ -644,7 +644,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
             relr_dyn: pack_relative_relocs
-                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN))),
+                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN)))
+                .filter(|b| !b.is_empty()),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -5124,7 +5125,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
         }
 
-        if verneed_info.has_dt_relr_version {
+        if verneed_info.has_dt_relr_version && table_writer.relr_dyn.is_some() {
             let name_offset = table_writer
                 .dynsym_writer
                 .strtab_writer

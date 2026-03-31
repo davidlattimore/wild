@@ -2410,6 +2410,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             }
 
             if version_count > 0 {
+                // TODO: This doesn't check whether RELR relocations are actually created, so it
+                // might create this version needlessly.
                 let has_dt_relr_version =
                     symbol_db.args.pack_relative_relocs && lib_name.starts_with(b"libc.so.");
                 if has_dt_relr_version {
