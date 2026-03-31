@@ -804,6 +804,7 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution<Elf>,
+        args: &ElfArgs,
     ) -> Result {
         crate::elf_writer::verify_resolution_allocation(
             output_sections,
@@ -811,6 +812,7 @@ impl platform::Platform for Elf {
             output_kind,
             mem_sizes,
             resolution,
+            args,
         )
     }
 
@@ -1412,9 +1414,9 @@ impl platform::Platform for Elf {
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
+        args: &Self::Args,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
-        let pack_relative_relocs = todo!();
 
         if flags.needs_got() && !flags.is_tls() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
@@ -1426,7 +1428,7 @@ impl platform::Platform for Elf {
             } else if flags.is_interposable() && has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
-                if pack_relative_relocs {
+                if args.pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -1437,7 +1439,7 @@ impl platform::Platform for Elf {
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
             if output_kind.is_relocatable() {
-                if pack_relative_relocs {
+                if args.pack_relative_relocs {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);

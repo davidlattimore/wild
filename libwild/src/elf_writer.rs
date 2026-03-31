@@ -658,6 +658,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_resolution<'data, A: Arch<Platform = Elf>>(
         &mut self,
         layout: Option<&ElfLayout<'data>>,
+        args: &ElfArgs,
         res: &Resolution<Elf>,
     ) -> Result {
         let Some(got_address) = res.format_specific.got_address else {
@@ -682,11 +683,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
             if flags.needs_got_tls_module() {
-                self.process_got_tls_mod_and_offset::<A>(res, got_address)?;
+                self.process_got_tls_mod_and_offset::<A>(res, args, got_address)?;
                 got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
             }
             if flags.needs_got_tls_descriptor() {
-                self.process_got_tls_descriptor::<A>(res, got_address)?;
+                self.process_got_tls_descriptor::<A>(res, args, got_address)?;
             }
             return Ok(());
         }
@@ -699,7 +700,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             *got_entry = 0;
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, args)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 res.flags
@@ -772,7 +774,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, layout.args())
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write tpoff with no allocation. {}",
                 res.flags
@@ -785,6 +788,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_mod_and_offset<A: Arch<Platform = Elf>>(
         &mut self,
         res: &Resolution<Elf>,
+        args: &ElfArgs,
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
@@ -794,7 +798,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, args)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 res.flags
@@ -823,6 +828,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_descriptor<A: Arch<Platform = Elf>>(
         &mut self,
         res: &Resolution<Elf>,
+        args: &ElfArgs,
         got_address: u64,
     ) -> Result {
         // TLS descriptor occupies 2 entries
@@ -836,7 +842,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
-            *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+            *compute_allocations::<Elf>(res, self.output_kind, args).get(part_id::RELA_DYN_GENERAL)
+                > 0,
             "Tried to write TLS descriptor with no allocation. {}",
             res.flags
         );
@@ -1378,7 +1385,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
         if let Some(res) = resolution {
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| {
                     format!(
                         "Failed to process `{}` with resolution {res:?}",
@@ -3265,6 +3272,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
         if layout.symbol_db.output_kind.is_executable() {
             table_writer.process_resolution::<A>(
                 Some(layout),
+                layout.args(),
                 &Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                     dynamic_symbol_index: None,
@@ -3286,6 +3294,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
 
         table_writer.process_resolution::<A>(
             Some(layout),
+            layout.args(),
             &Resolution {
                 raw_value,
                 dynamic_symbol_index: None,
@@ -4962,7 +4971,7 @@ fn write_internal_symbols_plt_got_entries<'data, A: Arch<Platform = Elf>>(
         }
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| {
                     format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
                 })?;
@@ -5028,7 +5037,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
 
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
         }
     }
@@ -5263,6 +5272,7 @@ pub(crate) fn verify_resolution_allocation(
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution<Elf>,
+    args: &ElfArgs,
 ) -> Result {
     // Allocate however much space was requested.
 
@@ -5300,9 +5310,9 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
-        todo!(),
+        args.pack_relative_relocs,
     );
-    table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
+    table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, args, resolution)?;
     table_writer.validate_empty(mem_sizes)
 }
 
