@@ -804,7 +804,6 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution<Elf>,
-        pack_relative_relocs: bool,
     ) -> Result {
         crate::elf_writer::verify_resolution_allocation(
             output_sections,
@@ -812,7 +811,6 @@ impl platform::Platform for Elf {
             output_kind,
             mem_sizes,
             resolution,
-            pack_relative_relocs,
         )
     }
 
@@ -1414,9 +1412,9 @@ impl platform::Platform for Elf {
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
-        pack_relative_relocs: bool,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
+        let pack_relative_relocs = todo!();
 
         if flags.needs_got() && !flags.is_tls() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
@@ -2355,7 +2353,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        pack_relative_relocs: bool,
+        symbol_db: &SymbolDb<elf::Elf>,
     ) -> Result {
         let e = LittleEndian;
         let mut version_count = 0;
@@ -2410,7 +2408,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             }
 
             if version_count > 0 {
-                let has_dt_relr_version = pack_relative_relocs && lib_name.starts_with(b"libc.so.");
+                let has_dt_relr_version =
+                    symbol_db.args.pack_relative_relocs && lib_name.starts_with(b"libc.so.");
                 if has_dt_relr_version {
                     mem_sizes.increment(part_id::DYNSTR, GLIBC_ABI_DT_RELR.len() as u64 + 1);
                     version_count += 1;

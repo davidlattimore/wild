@@ -1871,10 +1871,6 @@ impl platform::Args for ElfArgs {
         !self.exclude_libs.should_exclude(lib_name)
     }
 
-    fn should_pack_relative_relocs(&self) -> bool {
-        self.pack_relative_relocs
-    }
-
     fn loadable_segment_alignment(&self) -> Alignment {
         if let Some(max_page_size) = self.max_page_size {
             return max_page_size;

@@ -699,8 +699,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             *got_entry = 0;
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind, false)
-                    .get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 res.flags
@@ -773,8 +772,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind, false)
-                    .get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write tpoff with no allocation. {}",
                 res.flags
@@ -796,8 +794,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind, false)
-                    .get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 res.flags
@@ -839,9 +836,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
-            *compute_allocations::<Elf>(res, self.output_kind, false)
-                .get(part_id::RELA_DYN_GENERAL)
-                > 0,
+            *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
             "Tried to write TLS descriptor with no allocation. {}",
             res.flags
         );
@@ -5268,7 +5263,6 @@ pub(crate) fn verify_resolution_allocation(
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution<Elf>,
-    pack_relative_relocs: bool,
 ) -> Result {
     // Allocate however much space was requested.
 
@@ -5306,7 +5300,7 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
-        pack_relative_relocs,
+        todo!(),
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)

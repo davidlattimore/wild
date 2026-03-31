@@ -106,9 +106,6 @@ impl platform::Args for MachOArgs {
         // TODO
         true
     }
-    fn should_pack_relative_relocs(&self) -> bool {
-        todo!("REMOVE")
-    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.

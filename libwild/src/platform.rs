@@ -390,7 +390,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         _output_kind: OutputKind,
         _mem_sizes: &OutputSectionPartMap<u64>,
         _resolution: &layout::Resolution<Self>,
-        _pack_relative_relocs: bool,
     ) -> Result {
         Ok(())
     }
@@ -540,11 +539,10 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         flags: ValueFlags,
     ) -> Result;
 
-    fn allocate_resolution(
+    fn allocate_resolution<'data>(
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
-        pack_relative_relocs: bool,
     );
 
     fn allocate_object_symtab_space<'data>(
@@ -728,7 +726,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         lib_name: &[u8],
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        pack_relative_relocs: bool,
+        symbol_db: &SymbolDb<'data, Self::Platform>,
     ) -> Result;
 
     fn apply_non_addressable_indexes_dynamic(
@@ -1220,6 +1218,4 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn should_output_partial_object(&self) -> bool {
         false
     }
-
-    fn should_pack_relative_relocs(&self) -> bool;
 }

@@ -6,6 +6,7 @@ use crate::OutputKind;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::platform;
+use crate::symbol_db::SymbolDb;
 use object::Endian;
 use object::Endianness;
 use object::macho;
@@ -179,8 +180,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        // TODO: REMOVE
-        _: bool,
+        symbol_db: &SymbolDb<'data, Self::Platform>,
     ) -> crate::error::Result {
         todo!()
     }
@@ -990,7 +990,6 @@ impl platform::Platform for MachO {
         flags: crate::value_flags::ValueFlags,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         output_kind: crate::output_kind::OutputKind,
-        pack_relative_relocs: bool,
     ) {
         todo!()
     }

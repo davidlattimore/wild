@@ -752,19 +752,10 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
 
             P::finalise_sizes_for_symbol(common, symbol_db, symbol_id, flags)?;
 
-            P::allocate_resolution(
-                flags,
-                &mut common.mem_sizes,
-                symbol_db.output_kind,
-                symbol_db.args.should_pack_relative_relocs(),
-            );
+            P::allocate_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
             if symbol_db.args.common().verify_allocation_consistency {
-                verify_consistent_allocation_handling::<P>(
-                    flags,
-                    symbol_db.output_kind,
-                    symbol_db.args.should_pack_relative_relocs(),
-                )?;
+                verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
             }
         }
 
@@ -795,20 +786,12 @@ pub(crate) fn export_dynamic<'data, P: Platform>(
 
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
 /// when we're writing, to make sure that we would have allocated memory before we write.
-// TODO: This is always called with `pack_relative_relocs = false` as debug assertions seem to care
-// only about general dynamic relocations
 pub(crate) fn compute_allocations<P: Platform>(
     resolution: &Resolution<P>,
     output_kind: OutputKind,
-    pack_relative_relocs: bool,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    P::allocate_resolution(
-        resolution.flags,
-        &mut sizes,
-        output_kind,
-        pack_relative_relocs,
-    );
+    P::allocate_resolution(resolution.flags, &mut sizes, output_kind);
     sizes
 }
 
@@ -2226,10 +2209,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
-                s.finalise_sizes(
-                    common,
-                    resources.symbol_db.args.should_pack_relative_relocs(),
-                )?;
+                s.finalise_sizes(common, resources)?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Prelude(s) => {
@@ -3706,12 +3686,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
-                P::allocate_resolution(
-                    section.flags,
-                    &mut common.mem_sizes,
-                    output_kind,
-                    resources.symbol_db.args.should_pack_relative_relocs(),
-                );
+                P::allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
             }
         }
 
@@ -4772,7 +4747,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        pack_relative_relocs: bool,
+        resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
         P::finalise_sizes_dynamic(self, common)?;
 
@@ -4780,7 +4755,7 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
             self.lib_name,
             &mut self.format_specific_state,
             &mut common.mem_sizes,
-            pack_relative_relocs,
+            resources.symbol_db,
         )?;
 
         Ok(())
@@ -5044,12 +5019,11 @@ fn test_no_disallowed_overlaps() {
 fn verify_consistent_allocation_handling<P: Platform>(
     flags: ValueFlags,
     output_kind: OutputKind,
-    pack_relative_relocs: bool,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
-    P::allocate_resolution(flags, &mut mem_sizes, output_kind, pack_relative_relocs);
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
@@ -5065,7 +5039,6 @@ fn verify_consistent_allocation_handling<P: Platform>(
         output_kind,
         &mem_sizes,
         &resolution,
-        pack_relative_relocs,
     )
     .with_context(|| {
         format!(
