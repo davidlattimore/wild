@@ -12,6 +12,9 @@ fn main() {
     }
 }
 
+/// The current Wild version as written by build.rs.
+const VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/version.txt"));
+
 fn run() -> libwild::error::Result {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
@@ -19,6 +22,7 @@ fn run() -> libwild::error::Result {
     libwild::init_timing()?;
 
     let mut args = libwild::Args::new(std::env::args)?;
+    args.set_version(VERSION);
     args.parse(std::env::args)?;
 
     if libwild::should_fork(&args) {

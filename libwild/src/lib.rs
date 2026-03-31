@@ -23,7 +23,6 @@ pub(crate) mod gc_stats;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
-pub(crate) mod identity;
 pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
@@ -76,7 +75,6 @@ pub(crate) mod version_script;
 use crate::elf::Elf;
 use crate::error::Context;
 use crate::error::Result;
-use crate::identity::linker_identity;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::macho::MachO;
 use crate::output_kind::OutputKind;
@@ -192,15 +190,16 @@ impl Linker {
         // thread pool.
         _thread_pool: &crate::args::ThreadPool,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let identity = args.common().linker_identity();
         match args.common().version_mode {
             args::VersionMode::ExitAfterPrint => {
                 let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "{}", linker_identity())?;
+                writeln!(stdout, "{identity}")?;
                 return Ok(LinkerOutput { layout: None });
             }
             args::VersionMode::Verbose => {
                 let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "{}", linker_identity())?;
+                writeln!(stdout, "{identity}")?;
                 // Continue linking
             }
             args::VersionMode::None => {

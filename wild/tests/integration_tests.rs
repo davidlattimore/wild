@@ -2839,6 +2839,7 @@ impl LinkCommand {
             let linker = libwild::Linker::new();
             let get_args = || std::iter::once("wild").chain(args.iter().copied());
             let mut parsed_args = libwild::Args::new(get_args)?;
+            parsed_args.set_version("integration-test");
             // Tests that are checking for warnings use a subprocess to capture output. For now, we
             // suppress warnings for tests that use libwild.
             parsed_args.on_warning(Box::new(|_| {}));
@@ -3054,16 +3055,16 @@ impl Assertions {
         if obj.kind() == ObjectKind::Relocatable {
             return Ok(());
         }
+
         // Verify that the linker identity string is null-terminated.
-        if linker_used.is_wild() {
-            let comment_section = obj.section_by_name(".comment");
-            if let Some(section) = comment_section {
-                let data = section.data()?;
-                if !data.is_empty() && data.last() != Some(&0) {
-                    bail!(".comment section is not null-terminated");
-                }
+        let comment_section = obj.section_by_name(".comment");
+        if let Some(section) = comment_section {
+            let data = section.data()?;
+            if !data.is_empty() && data.last() != Some(&0) {
+                bail!(".comment section is not null-terminated");
             }
         }
+
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {
@@ -3374,7 +3375,7 @@ fn was_linked_with_wild(obj: &ElfFile64) -> bool {
     };
     actual_comments
         .iter()
-        .any(|comment| comment.starts_with("Linker: Wild version"))
+        .any(|comment| comment.starts_with("Linker: Wild "))
 }
 
 fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'data, str>>> {
