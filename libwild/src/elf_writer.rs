@@ -1337,10 +1337,14 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             || shndx == u32::from(object::elf::SHN_ABS)
             || shndx == u32::from(object::elf::SHN_COMMON)
         {
-            shndx_symtab_entries.map(|s| *s = 0);
+            if let Some(s) = shndx_symtab_entries {
+                *s = 0;
+            }
             shndx as u16
         } else {
-            shndx_symtab_entries.map(|s| *s = shndx);
+            if let Some(s) = shndx_symtab_entries {
+                *s = shndx;
+            }
             object::elf::SHN_XINDEX
         };
         entry.st_name.set(e, string_offset);
