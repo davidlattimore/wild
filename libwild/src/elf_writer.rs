@@ -1016,6 +1016,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
+    /// Writes RELA or RELR entry and returns value that should be written at the relocation site.
     fn write_address_relocation<A: Arch<Platform = Elf>>(
         &mut self,
         place: u64,
