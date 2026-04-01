@@ -950,13 +950,6 @@ impl platform::Platform for Elf {
             elf_symbol_type: stt::TLS,
             is_hidden: false,
         });
-
-        // symbols.add_symbol(InternalSymDefInfo {
-        //     placement: SymbolPlacement::ForceUndefined,
-        //     name: GLIBC_ABI_DT_RELR,
-        //     elf_symbol_type: Default::default(),
-        //     is_hidden: false,
-        // });
     }
 
     fn built_in_section_infos<'data>()

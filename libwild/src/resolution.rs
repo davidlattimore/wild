@@ -6,7 +6,6 @@ use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::bail;
 use crate::debug_assert_bail;
-use crate::elf;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -802,13 +801,6 @@ fn load_prelude<'scope, 'data, P: Platform>(
         scope,
     );
 
-    load_symbol_named(
-        resources,
-        &mut SymbolId::undefined(),
-        elf::GLIBC_ABI_DT_RELR,
-        scope,
-    );
-
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
@@ -828,25 +820,7 @@ fn load_symbol_named<'scope, 'data, P: Platform>(
     name: &[u8],
     scope: &Scope<'scope>,
 ) {
-    if name == elf::GLIBC_ABI_DT_RELR {
-        let name =
-            PreHashedSymbolName::Versioned(VersionedSymbolName::prehashed(
-                UnversionedSymbolName::prehashed(name),
-                b"GLIBC_ABI_DT_RELR",
-            ))
-
-            // PreHashedSymbolName::Unversioned(UnversionedSymbolName::prehashed(name))
-
-            // PreHashedSymbolName::Unversioned(UnversionedSymbolName::prehashed(
-            //     b"GLIBC_ABI_DT_RELR@GLIBC_ABI_DT_RELR"))
-            ;
-        if let Some(symbol_id) = resources.symbol_db.get(&name, true) {
-            *definition_out = symbol_id;
-
-            let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-            resources.try_request_file_id(symbol_file_id, scope);
-        }
-    } else if let Some(symbol_id) = resources
+    if let Some(symbol_id) = resources
         .symbol_db
         .get_unversioned(&UnversionedSymbolName::prehashed(name))
     {

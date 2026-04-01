@@ -2758,27 +2758,23 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
-        let Some(symbol_id) = resources.symbol_db.get(
-            &crate::symbol::PreHashedSymbolName::Versioned(
-                crate::symbol::VersionedSymbolName::prehashed(
-                    UnversionedSymbolName::prehashed(crate::elf::GLIBC_ABI_DT_RELR),
+        let Some(symbol_id) =
+            resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(
                     crate::elf::GLIBC_ABI_DT_RELR,
-                ),
-            ),
-            true,
-        ) else {
+                ))
+        else {
             // We'll emit a warning when writing the file if it's an executable.
             return;
         };
-
-        let symbol_id = resources.symbol_db.definition(symbol_id);
 
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         let old_flags = resources
             .per_symbol_flags
             .get_atomic(symbol_id)
-            .fetch_or(ValueFlags::DYNAMIC);
-        // .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+            // .fetch_or(ValueFlags::EXPORT_DYNAMIC); // results in both symbol and version
+            .get(); // results in the imported version but no symbol
         if !old_flags.has_resolution() {
             queue.send_work::<A>(
                 resources,
