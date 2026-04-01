@@ -180,7 +180,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<'data, Self::Platform>,
     ) -> crate::error::Result {
         todo!()
     }

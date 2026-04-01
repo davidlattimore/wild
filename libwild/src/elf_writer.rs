@@ -14,7 +14,6 @@ use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::Elf;
 use crate::elf::FileHeader;
-use crate::elf::GLIBC_ABI_DT_RELR;
 use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
@@ -5125,26 +5124,6 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 aux_index += 1;
             }
         }
-
-        if verneed_info.has_dt_relr_version {
-            let name_offset = table_writer
-                .dynsym_writer
-                .strtab_writer
-                .write_str(GLIBC_ABI_DT_RELR);
-            let sysv_name_hash = object::elf::hash(GLIBC_ABI_DT_RELR);
-            let aux_out = auxes
-                .get_mut(aux_index)
-                .context("Insufficient vernaux allocation for GLIBC_ABI_DT_RELR")?;
-            aux_out.vna_next.set(e, 0);
-            aux_out
-                .vna_other
-                .set(e, layout.non_addressable_counts.final_version_index);
-            aux_out.vna_name.set(e, name_offset);
-            aux_out.vna_hash.set(e, sysv_name_hash);
-            aux_out.vna_flags.set(e, 0);
-            aux_index += 1;
-        }
-
         debug_assert_eq!(aux_index, auxes.len());
     }
 

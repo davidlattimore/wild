@@ -2355,7 +2355,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         lib_name: &[u8],
         state: &mut DynamicLayoutStateExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        symbol_db: &SymbolDb<Elf>,
     ) -> Result {
         let e = LittleEndian;
         let mut version_count = 0;
@@ -2410,15 +2409,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             }
 
             if version_count > 0 {
-                // TODO: This doesn't check whether RELR relocations are actually created, so it
-                // might create this version needlessly.
-                let has_dt_relr_version =
-                    symbol_db.args.pack_relative_relocs && lib_name.starts_with(b"libc.so.");
-                if has_dt_relr_version {
-                    mem_sizes.increment(part_id::DYNSTR, GLIBC_ABI_DT_RELR.len() as u64 + 1);
-                    version_count += 1;
-                }
-
                 mem_sizes.increment(part_id::DYNSTR, base_size);
                 mem_sizes.increment(
                     part_id::GNU_VERSION_R,
@@ -2430,7 +2420,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                     defs,
                     string_table_index: link,
                     version_count,
-                    has_dt_relr_version,
                 });
             }
         }
@@ -3829,7 +3818,6 @@ fn verneed_names_by_index<'data>(file: &File<'data>) -> Result<Vec<Option<&'data
 pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data>,
     pub(crate) string_table_index: object::SectionIndex,
-    pub(crate) has_dt_relr_version: bool,
 
     /// Number of symbol versions that we're going to emit. This is the number of entries in
     /// `symbol_versions_needed` that are true. Computed after graph traversal.
