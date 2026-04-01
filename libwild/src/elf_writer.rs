@@ -1188,7 +1188,9 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
-        let symtab_shndx_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_SHNDX));
+        let symtab_shndx_entries = Some(buffers.take(part_id::SYMTAB_SHNDX))
+            .and_then(|s| (!s.is_empty()).then(|| slice_from_all_bytes_mut(s)));
+
         let strings = buffers.take(part_id::STRTAB);
         Self {
             local_entries,
@@ -1199,7 +1201,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 out: strings,
             },
             is_dynamic: false,
-            symtab_shndx_entries: Some(symtab_shndx_entries),
+            symtab_shndx_entries,
         }
     }
 
@@ -1326,24 +1328,19 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         // Always save the name without the symbol version (e.g. foo@@VER_1).
         let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
+        let shndx_symtab_entries = self
+            .symtab_shndx_entries
+            .as_mut()
+            .and_then(|s| s.split_off_first_mut());
+
         let shndx = if shndx < u32::from(object::elf::SHN_LORESERVE)
             || shndx == u32::from(object::elf::SHN_ABS)
             || shndx == u32::from(object::elf::SHN_COMMON)
         {
-            self.symtab_shndx_entries
-                .as_mut()
-                .map(|sym| sym.split_off_first_mut().map(|x| *x = 0));
+            shndx_symtab_entries.map(|s| *s = 0);
             shndx as u16
         } else {
-            self.symtab_shndx_entries
-                .as_mut()
-                .map(|sym| sym.split_off_first_mut().map(|x| *x = shndx))
-                .with_context(|| {
-                    format!(
-                        "expected .symtab_shndx when setting shndx as SHN_XINDEX for symbol {}.",
-                        String::from_utf8_lossy(name)
-                    )
-                })?;
+            shndx_symtab_entries.map(|s| *s = shndx);
             object::elf::SHN_XINDEX
         };
         entry.st_name.set(e, string_offset);

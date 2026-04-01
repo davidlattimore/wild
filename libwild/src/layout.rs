@@ -2848,9 +2848,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         let entry_size = size_of::<P::SymtabEntry>() as u64;
         let mut symtab_shndx_size = (total_sizes.get(part_id::SYMTAB_LOCAL)
+            + common.mem_sizes.get(part_id::SYMTAB_LOCAL)
             + total_sizes.get(part_id::SYMTAB_GLOBAL)
-            + common.mem_sizes.get(part_id::SYMTAB_GLOBAL)
-            + common.mem_sizes.get(part_id::SYMTAB_LOCAL))
+            + common.mem_sizes.get(part_id::SYMTAB_GLOBAL))
             / entry_size;
 
         if resources.symbol_db.args.should_output_partial_object() {
