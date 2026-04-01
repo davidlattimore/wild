@@ -212,7 +212,6 @@ use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::IsTerminal;
 use std::io::Read;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -1826,18 +1825,8 @@ impl Program<'_> {
 
         let output = String::from_utf8_lossy(&output);
 
-        let exit_code = status.code().ok_or_else(|| {
-            let signal = status.signal().unwrap();
-            let possible_core_dumped_msg = if status.core_dumped() {
-                " (core dumped) "
-            } else {
-                ""
-            };
-            error!("Binary exited{possible_core_dumped_msg} with signal {signal}: {output}")
-        })?;
-
-        if exit_code != EXIT_SUCCESS {
-            bail!("Binary exited with unexpected exit code {exit_code}: {output}");
+        if status.code() != Some(EXIT_SUCCESS) {
+            bail!("Binary exited with unexpected {status}: {output}");
         }
 
         Ok(())
