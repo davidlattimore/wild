@@ -1,3 +1,5 @@
+// This test verifies that we correctly handle RELR relocations in a few edge
+// cases.
 //#Object:init.c:-fPIC
 //#Shared:runtime.c
 //#LinkArgs:-pie -z now -z pack-relative-relocs
@@ -19,17 +21,10 @@
 
 int target = 42;
 
-int foo = 0;
-short bar = 0;
-char baz = 0;
-
-__attribute__((constructor)) static void ctor_foo(void) { foo = 1; }
-__attribute__((constructor)) static void ctor_bar(void) { bar = 2; }
-__attribute__((constructor)) static void ctor_baz(void) { baz = 3; }
-__attribute__((destructor)) static void dtor_foo(void) { foo = 0; }
-
+// Typical aligned pointer; will result in RELR for .data that is multiple of 8.
 int* aligned_ptr = &target;
 
+// Unaligned pointer with odd address; will result in RELA for .data.
 struct __attribute__((packed)) {
   char padding;
   int* foo;
@@ -38,6 +33,8 @@ struct __attribute__((packed)) {
     .foo = &target,
 };
 
+// Unaligned pointer with even address; will result in RELR for .data that is
+// not multiple 8 and cannot be packed.
 struct __attribute__((packed)) {
   short padding;
   int* foo;
@@ -45,6 +42,20 @@ struct __attribute__((packed)) {
     .padding = 0,
     .foo = &target,
 };
+
+int foo = 0;
+short bar = 0;
+char baz = 0;
+
+// Init array that is susceptible to packing.
+__attribute__((constructor)) static void ctor_foo(void) { foo = 1; }
+__attribute__((constructor)) static void ctor_bar(void) { bar = 2; }
+__attribute__((constructor)) static void ctor_baz(void) { baz = 3; }
+// Due to how we process inputs at the time of writing this test, single
+// destructor goes through the layout phase before the constructors, but is
+// written after them. This nicely captures mismatches in RELR handling between
+// stages.
+__attribute__((destructor)) static void dtor_foo(void) { foo = 0; }
 
 void _start(void) {
   runtime_init();
