@@ -2639,6 +2639,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.load_entry_point::<A>(resources, queue, scope);
 
+        Self::load_glibc_symbol::<A>(resources, queue, scope);
+
         P::allocate_prelude(common, resources.symbol_db);
 
         if resources.symbol_db.output_kind.is_dynamic_executable() {
@@ -2741,6 +2743,42 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             .per_symbol_flags
             .get_atomic(symbol_id)
             .fetch_or(ValueFlags::DIRECT);
+        if !old_flags.has_resolution() {
+            queue.send_work::<A>(
+                resources,
+                file_id,
+                WorkItem::LoadGlobalSymbol(symbol_id),
+                scope,
+            );
+        }
+    }
+
+    fn load_glibc_symbol<'scope, A: Arch<Platform = P>>(
+        resources: &'scope GraphResources<'data, '_, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) {
+        let Some(symbol_id) = resources.symbol_db.get(
+            &crate::symbol::PreHashedSymbolName::Versioned(
+                crate::symbol::VersionedSymbolName::prehashed(
+                    UnversionedSymbolName::prehashed(crate::elf::GLIBC_ABI_DT_RELR),
+                    crate::elf::GLIBC_ABI_DT_RELR,
+                ),
+            ),
+            true,
+        ) else {
+            // We'll emit a warning when writing the file if it's an executable.
+            return;
+        };
+
+        let symbol_id = resources.symbol_db.definition(symbol_id);
+
+        let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
+        let old_flags = resources
+            .per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::DYNAMIC);
+        // .fetch_or(ValueFlags::EXPORT_DYNAMIC);
         if !old_flags.has_resolution() {
             queue.send_work::<A>(
                 resources,
