@@ -78,9 +78,6 @@ pub(crate) trait Arch: Send + Sync + 'static {
         0
     }
 
-    /// Some architectures use debug info relocation that depend on local symbols.
-    fn local_symbols_in_debug_info() -> bool;
-
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
@@ -348,16 +345,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        section: layout::Section,
-        scope: &Scope<'scope>,
-    ) -> Result;
-
-    /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'data, 'scope, A: Arch<Platform = Self>>(
         state: &layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,

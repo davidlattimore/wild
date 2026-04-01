@@ -691,45 +691,6 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
-    fn load_object_debug_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        section: layout::Section,
-        scope: &Scope<'scope>,
-    ) -> Result {
-        if resources.symbol_db.args.should_output_partial_object {
-            return Ok(());
-        }
-        match state.relocations(section.index)? {
-            RelocationList::Rela(relocations) => {
-                load_debug_relocations::<A, Rela>(
-                    state,
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.rel_iter(),
-                    scope,
-                )?;
-            }
-            RelocationList::Crel(relocations) => {
-                load_debug_relocations::<A, Crel>(
-                    state,
-                    common,
-                    queue,
-                    resources,
-                    section,
-                    relocations.flat_map(|r| r.ok()),
-                    scope,
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
     fn create_dynamic_symbol_definition<'data>(
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
@@ -4640,41 +4601,6 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
                 layout::section_debug::<Elf>(state.object, section.index)
             )
         })?;
-    }
-
-    Ok(())
-}
-
-fn load_debug_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>(
-    state: &layout::ObjectLayoutState<'data, Elf>,
-    common: &mut CommonGroupState<'data, Elf>,
-    queue: &mut layout::LocalWorkQueue,
-    resources: &'scope layout::GraphResources<'data, '_, Elf>,
-    section: layout::Section,
-    relocations: impl Iterator<Item = R>,
-    scope: &Scope<'scope>,
-) -> Result {
-    for rel in relocations {
-        let modifier = process_relocation::<A, R>(
-            state,
-            common,
-            &rel,
-            state.object.section(section.index)?,
-            resources,
-            queue,
-            true,
-            scope,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to copy section {} from file {state}",
-                layout::section_debug::<Elf>(state.object, section.index)
-            )
-        })?;
-        ensure!(
-            modifier == RelocationModifier::Normal,
-            "All debug relocations must be processed"
-        );
     }
 
     Ok(())

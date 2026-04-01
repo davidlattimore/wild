@@ -808,17 +808,6 @@ impl platform::Platform for MachO {
         todo!()
     }
 
-    fn load_object_debug_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        state: &crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        section: crate::layout::Section,
-        scope: &rayon::Scope<'scope>,
-    ) -> crate::error::Result {
-        todo!()
-    }
-
     fn create_dynamic_symbol_definition<'data>(
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         symbol_id: crate::symbol_db::SymbolId,
