@@ -8,6 +8,11 @@
 //#Mode:dynamic
 // Ubuntu 24.04's GNU ld doesn't crate .rela.dyn for AArch64.
 //#RequiresGlibcVersion:2.40
+//#ExpectDynamic:DT_RELR
+//#ExpectDynamic:DT_RELRSZ
+//#ExpectDynamic:DT_RELRENT
+//#Contains:.relr.dyn
+//#SkipArch:riscv64
 
 #include "init.h"
 #include "runtime.h"
