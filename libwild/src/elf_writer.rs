@@ -5125,7 +5125,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
         }
 
-        if verneed_info.has_dt_relr_version && table_writer.relr_dyn.is_some() {
+        if verneed_info.has_dt_relr_version {
             let name_offset = table_writer
                 .dynsym_writer
                 .strtab_writer
