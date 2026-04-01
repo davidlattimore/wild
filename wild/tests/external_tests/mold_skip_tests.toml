@@ -77,7 +77,6 @@ tests = [
   "z-dynamic-undefined-weak.sh",
   "z-nodefaultlib.sh",
   "z-nodump.sh",
-  "z-pack-relative-relocs.sh",
   "z-rodynamic.sh",
   "z-sectionheader.sh",
   "z-start-stop-visibility.sh",
