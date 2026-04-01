@@ -4902,7 +4902,10 @@ fn test_no_disallowed_overlaps() {
         output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
             crate::args::RelocationModel::NonRelocatable,
         ));
-    let args = crate::args::elf::ElfArgs::default();
+    let mut args = crate::args::elf::ElfArgs::default();
+    if args.arch == crate::arch::Architecture::Unsupported {
+        args.arch = crate::arch::Architecture::X86_64;
+    }
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts::<Elf>(

@@ -2098,6 +2098,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_file_only_options() {
         // Create a temporary file containing the same options (one per line) as INPUT1
         let file = NamedTempFile::new().expect("Could not create temp file");
@@ -2111,6 +2112,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_mixed_file_and_inline_options() {
         // Create a temporary file containing some options
         let file = NamedTempFile::new().expect("Could not create temp file");
@@ -2130,6 +2132,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_overlapping_file_and_inline_options() {
         // Create a set of file options that has a duplicate of an inline option
         let mut file_options = FILE_OPTIONS.to_vec();
@@ -2152,6 +2155,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "wasi", ignore = "wasi doesn't have a temp dir")]
     fn test_parse_recursive_file_option() {
         // Create a temporary file containing a @file option
         let file1 = NamedTempFile::new().expect("Could not create temp file");
