@@ -114,6 +114,8 @@
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
+// Ubuntu 24.04's GNU ld doesn't crate .rela.dyn for AArch64.
+//#RequiresGlibcVersion:2.40
 //#SkipArch: riscv64
 //#Contains:.relr.dyn
 //#Contains:GLIBC_ABI_DT_RELR
