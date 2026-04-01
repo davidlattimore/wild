@@ -3580,14 +3580,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
-                self.load_debug_section::<A>(
-                    common,
-                    queue,
-                    *part_id,
-                    section_index,
-                    resources,
-                    scope,
-                )?;
+                self.load_debug_section::<A>(common, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
                 bail!(
@@ -3649,20 +3642,20 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn load_debug_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        queue: &mut LocalWorkQueue,
-
         part_id: PartId,
         section_index: SectionIndex,
         resources: &'scope GraphResources<'data, '_, P>,
-        scope: &Scope<'scope>,
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        if A::local_symbols_in_debug_info() {
-            <A::Platform as Platform>::load_object_debug_relocations::<A>(
-                self, common, queue, resources, section, scope,
-            )?;
-        }
+
+        // Note: We intentionally do NOT process debug relocations here. On some architectures (like
+        // RISC-V and LoongArch64), debug sections reference local symbols (e.g. .LFB0, .LFE0) in
+        // code sections. Processing those relocations during GC would send symbol requests that
+        // load those code sections, defeating garbage collection. Instead, debug relocations are
+        // resolved at write time in `apply_debug_relocation`, which uses tombstone values for
+        // symbols in GC'd sections and computes addresses from section resolutions for symbols in
+        // live sections.
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section, resources.output_sections);

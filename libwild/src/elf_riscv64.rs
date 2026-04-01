@@ -95,10 +95,6 @@ impl crate::platform::Arch for ElfRiscV64 {
         RISCV_TLS_DTV_OFFSET
     }
 
-    fn local_symbols_in_debug_info() -> bool {
-        true
-    }
-
     fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
         layout.tls_start_address()
     }
