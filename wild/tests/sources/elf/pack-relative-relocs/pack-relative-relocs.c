@@ -14,6 +14,7 @@
 //#ExpectDynamic:DT_RELRSZ
 //#ExpectDynamic:DT_RELRENT
 //#Contains:.relr.dyn
+//#DoesNotContain:GLIBC_ABI_DT_RELR
 //#SkipArch:riscv64
 
 #include "init.h"

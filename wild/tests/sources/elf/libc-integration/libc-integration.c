@@ -109,6 +109,16 @@
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
 
+//#Config:gcc-relr:shared
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
+//#CompSoArgs:-g -fPIC
+//#LinkerDriver:gcc
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
+//#SkipArch: riscv64
+//#Contains:.relr.dyn
+//#Contains:GLIBC_ABI_DT_RELR
+//#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
