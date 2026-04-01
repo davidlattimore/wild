@@ -716,10 +716,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             self.write_ifunc_relocation::<A>(res)?;
         } else {
-            *got_entry = res.raw_value;
-            if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value)?;
-            }
+            *got_entry = if res.flags.is_address() && self.output_kind.is_relocatable() {
+                self.write_address_relocation::<A>(got_address, res.raw_value)?
+            } else {
+                res.raw_value
+            };
         }
         if let Some(plt_address) = res.format_specific.plt_address {
             self.write_plt_entry::<A>(got_address, plt_address.get())?;
@@ -732,10 +733,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if res.flags.needs_ifunc_got_for_address() {
             let ifunc_got_address = got_address + elf::GOT_ENTRY_SIZE;
             let got_entry = self.take_next_got_entry()?;
-            *got_entry = res.plt_address()?;
-            if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry)?;
-            }
+            let plt_address = res.plt_address()?;
+            *got_entry = if self.output_kind.is_relocatable() {
+                self.write_address_relocation::<A>(ifunc_got_address, plt_address)?
+            } else {
+                plt_address
+            };
         }
 
         Ok(())
