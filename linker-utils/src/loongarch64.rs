@@ -11,6 +11,7 @@ use crate::elf::SIZE_4GB;
 use crate::elf::SIZE_4KB;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
+use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 use crate::utils::u64_from_slice;
@@ -626,24 +627,40 @@ impl LoongArch64Instruction {
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         match self {
             LoongArch64Instruction::Shift5 => {
+                // j20 format: opcode[31:25], imm20[24:5], rd[4:0]
+                and_from_slice(dest, &0xFE00_001F_u32.to_le_bytes());
                 let mask = extracted_value << 5;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             LoongArch64Instruction::Shift10 => {
+                // k12 format: opcode[31:22], imm12[21:10], rj[9:5], rd[4:0]
+                and_from_slice(dest, &0xFFC0_03FF_u32.to_le_bytes());
                 let mask = extracted_value << 10;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             LoongArch64Instruction::Branch21or26 => {
+                // d10k16 format: opcode[31:26], imm_lo16[25:10], imm_hi10[9:0]
+                and_from_slice(dest, &0xFC00_0000_u32.to_le_bytes());
                 let low_part = (extracted_value & 0xffff) << 10;
                 let high_part = extracted_value >> 16;
                 or_from_slice(dest, &((low_part | high_part) as u32).to_le_bytes());
             }
             LoongArch64Instruction::Call30 => {
+                // Two instructions as u64 (little-endian):
+                //   insn1 (low  u32): bits[24:5]  = high part of immediate
+                //   insn2 (high u32): bits[18:10] = low part of immediate
+                const CLEAR: u64 = (0xFFF8_03FF_u64 << 32) | 0xFE00_001F_u64;
+                and_from_slice(dest, &CLEAR.to_le_bytes());
                 let low_part = (extracted_value & 0x1ff) << (32 + 10);
                 let high_part = (extracted_value & !0x1ff) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
             LoongArch64Instruction::Call36 => {
+                // Two instructions as u64 (little-endian):
+                //   insn1 (low  u32, pcaddu18i): bits[24:5]  = high part of immediate
+                //   insn2 (high u32, jirl):      bits[25:10] = low part of immediate
+                const CLEAR: u64 = (0xFC00_03FF_u64 << 32) | 0xFE00_001F_u64;
+                and_from_slice(dest, &CLEAR.to_le_bytes());
                 let low_part = (extracted_value & 0xffff) << (32 + 10);
                 let high_part = ((extracted_value + 0x8000) >> 16) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
