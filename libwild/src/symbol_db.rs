@@ -1998,9 +1998,9 @@ impl<'data> Prelude<'data> {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
             let mut flags = match definition.placement {
-                SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
-                    ValueFlags::ABSOLUTE
-                }
+                SymbolPlacement::Undefined
+                | SymbolPlacement::ForceUndefined
+                | SymbolPlacement::VersionImport => ValueFlags::ABSOLUTE,
                 SymbolPlacement::DefsymAbsolute(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
@@ -2034,7 +2034,8 @@ impl InternalSymDefInfo<'_> {
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::DefsymAbsolute(_)
-            | SymbolPlacement::DefsymSymbol(_, _) => None,
+            | SymbolPlacement::DefsymSymbol(_, _)
+            | SymbolPlacement::VersionImport => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),

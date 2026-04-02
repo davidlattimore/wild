@@ -950,6 +950,15 @@ impl platform::Platform for Elf {
             elf_symbol_type: stt::TLS,
             is_hidden: false,
         });
+
+        // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
+        // defined.
+        if args.pack_relative_relocs {
+            symbols.add_symbol(InternalSymDefInfo::new(
+                SymbolPlacement::VersionImport,
+                b"GLIBC_ABI_DT_RELR",
+            ));
+        }
     }
 
     fn built_in_section_infos<'data>()
@@ -2959,9 +2968,6 @@ const _ASSERTS: () = {
 
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
-
-/// When `-z pack-relative-relocs` is used, Glibc requires this special version to be defined.
-pub(crate) const GLIBC_ABI_DT_RELR: &[u8] = b"GLIBC_ABI_DT_RELR";
 
 /// For additional information on Elf_Prop, see
 /// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.

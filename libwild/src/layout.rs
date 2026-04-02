@@ -2639,8 +2639,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.load_entry_point::<A>(resources, queue, scope);
 
-        Self::load_glibc_symbol::<A>(resources, queue, scope);
-
         P::allocate_prelude(common, resources.symbol_db);
 
         if resources.symbol_db.output_kind.is_dynamic_executable() {
@@ -2659,6 +2657,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         self.mark_defsyms_as_used::<A>(resources, queue, scope);
+
+        self.load_versions::<A>(resources, queue, scope);
 
         Ok(())
     }
@@ -2753,35 +2753,33 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn load_glibc_symbol<'scope, A: Arch<Platform = P>>(
-        resources: &'scope GraphResources<'data, '_, P>,
+    fn load_versions<'scope, A: Arch>(
+        &self,
+        resources: &'scope GraphResources<'data, '_, A::Platform>,
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
-        let Some(symbol_id) =
-            resources
-                .symbol_db
-                .get_unversioned(&UnversionedSymbolName::prehashed(
-                    crate::elf::GLIBC_ABI_DT_RELR,
-                ))
-        else {
-            // We'll emit a warning when writing the file if it's an executable.
-            return;
-        };
+        for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
+            if def_info.placement != SymbolPlacement::VersionImport {
+                continue;
+            }
 
-        let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        let old_flags = resources
-            .per_symbol_flags
-            .get_atomic(symbol_id)
-            // .fetch_or(ValueFlags::EXPORT_DYNAMIC); // results in both symbol and version
-            .get(); // results in the imported version but no symbol
-        if !old_flags.has_resolution() {
-            queue.send_work::<A>(
-                resources,
-                file_id,
-                WorkItem::LoadGlobalSymbol(symbol_id),
-                scope,
-            );
+            let symbol_id = self.symbol_id_range.offset_to_id(index);
+            let canonical_target_id = resources.symbol_db.definition(symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+            let flags = resources
+                .per_symbol_flags
+                .get_atomic(canonical_target_id)
+                .get();
+
+            if !flags.has_resolution() {
+                queue.send_work::<A>(
+                    resources,
+                    file_id,
+                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                    scope,
+                );
+            }
         }
     }
 
@@ -3211,7 +3209,9 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
+        SymbolPlacement::Undefined
+        | SymbolPlacement::ForceUndefined
+        | SymbolPlacement::VersionImport => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
