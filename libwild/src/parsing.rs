@@ -101,8 +101,8 @@ pub(crate) enum SymbolPlacement<'data> {
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
 
-    // TODO: Versions are ELF specific
-    VersionImport,
+    /// A dynamic symbol that will be loaded even if unused.
+    ImportDynamicSymbol,
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".

@@ -806,9 +806,7 @@ fn load_prelude<'scope, 'data, P: Platform>(
     // symbol record to the definition.
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
         match def_info.placement {
-            SymbolPlacement::ForceUndefined
-            | SymbolPlacement::DefsymSymbol(_, _)
-            | SymbolPlacement::VersionImport => {
+            SymbolPlacement::ForceUndefined | SymbolPlacement::DefsymSymbol(_, _) => {
                 load_symbol_named(resources, definition_out, def_info.name, scope);
             }
             _ => {}

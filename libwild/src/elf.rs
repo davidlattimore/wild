@@ -955,7 +955,7 @@ impl platform::Platform for Elf {
         // defined.
         if args.pack_relative_relocs {
             symbols.add_symbol(InternalSymDefInfo::new(
-                SymbolPlacement::VersionImport,
+                SymbolPlacement::ImportDynamicSymbol,
                 b"GLIBC_ABI_DT_RELR",
             ));
         }

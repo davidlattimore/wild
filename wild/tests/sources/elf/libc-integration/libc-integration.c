@@ -114,11 +114,12 @@
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
-// Ubuntu 24.04's GNU ld doesn't crate .rela.dyn for AArch64.
-//#RequiresGlibcVersion:2.40
+// Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol dependency.
+//#SkipLinker:ld
+//#ExpectDynSym:GLIBC_ABI_DT_RELR
+//#RequiresGlibc:true
 //#SkipArch: riscv64
 //#Contains:.relr.dyn
-//#Contains:GLIBC_ABI_DT_RELR
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 
 #include <pthread.h>

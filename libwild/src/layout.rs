@@ -2759,18 +2759,25 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) {
-        for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
-            if def_info.placement != SymbolPlacement::VersionImport {
+        for def_info in &self.internal_symbols.symbol_definitions {
+            if def_info.placement != SymbolPlacement::ImportDynamicSymbol {
                 continue;
             }
 
-            let symbol_id = self.symbol_id_range.offset_to_id(index);
+            let Some(symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
+            else {
+                // No libs contain the requested symbol, skipping.
+                return;
+            };
+
             let canonical_target_id = resources.symbol_db.definition(symbol_id);
             let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
             let flags = resources
                 .per_symbol_flags
                 .get_atomic(canonical_target_id)
-                .get();
+                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
             if !flags.has_resolution() {
                 queue.send_work::<A>(
@@ -3211,7 +3218,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     let raw_value = match def_info.placement {
         SymbolPlacement::Undefined
         | SymbolPlacement::ForceUndefined
-        | SymbolPlacement::VersionImport => 0,
+        | SymbolPlacement::ImportDynamicSymbol => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
