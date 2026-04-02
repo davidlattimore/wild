@@ -127,7 +127,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
                 return Some(Relaxation {
                     kind: RelaxationKind::NoOp,
                     rel_info: relocation,
-                    mandatory: output_kind.is_static_executable(),
+                    mandatory: true,
                 });
             }
 
