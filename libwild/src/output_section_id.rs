@@ -96,7 +96,8 @@ pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.o
 pub(crate) const RELR_DYN: OutputSectionId = part_id::RELR_DYN.output_section_id();
 pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
 pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_section_id();
-pub(crate) const SYMTAB_SHNDX: OutputSectionId = part_id::SYMTAB_SHNDX.output_section_id();
+pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId = part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
+pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId = part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
 // Mach-O specific sections
 pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();

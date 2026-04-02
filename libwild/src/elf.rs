@@ -37,6 +37,7 @@ use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SYMTAB_SHNDX_LOCAL;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;
@@ -1267,9 +1268,20 @@ impl platform::Platform for Elf {
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        output_sections: &OutputSections<Self>,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
         finalise_gnu_version_size(mem_sizes, symbol_db);
+        if output_sections.has_data_in_file(SYMTAB_SHNDX_LOCAL) {
+            mem_sizes.increment(
+                part_id::SYMTAB_SHNDX_LOCAL,
+                *mem_sizes.get(part_id::SYMTAB_LOCAL) / 24 * 4,
+            );
+            mem_sizes.increment(
+                part_id::SYMTAB_SHNDX_GLOBAL,
+                *mem_sizes.get(part_id::SYMTAB_GLOBAL) / 24 * 4,
+            );
+        }
     }
 
     fn is_symbol_non_interposable<'data>(
@@ -1815,7 +1827,7 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SHSTRTAB);
         builder.add_section(output_section_id::SYMTAB_LOCAL);
-        builder.add_section(output_section_id::SYMTAB_SHNDX);
+        builder.add_section(output_section_id::SYMTAB_SHNDX_LOCAL);
         builder.add_section(output_section_id::STRTAB);
 
         builder.build()
@@ -4501,12 +4513,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         is_relro: true,
         ..DEFAULT_DEFS
     };
-    defs[output_section_id::SYMTAB_SHNDX.as_usize()] = BuiltInSectionDetails {
+    defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SYMTAB_SHNDX_SECTION_NAME)),
         ty: sht::SYMTAB_SHNDX,
         element_size: SYMTAB_SHNDX_ENTRY_SIZE,
         min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
         link: &[output_section_id::SYMTAB_LOCAL],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
         ..DEFAULT_DEFS
     };
     // Start of regular sections

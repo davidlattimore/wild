@@ -1177,7 +1177,8 @@ struct SymbolTableWriter<'layout, 'out> {
     output_sections: &'layout OutputSections<'layout, Elf>,
     strtab_writer: StrTabWriter<'out>,
     is_dynamic: bool,
-    symtab_shndx_entries: Option<&'out mut [u32]>,
+    symtab_shndx_local_entries: Option<&'out mut [u32]>,
+    symtab_shndx_global_entries: Option<&'out mut [u32]>,
 }
 
 impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
@@ -1188,7 +1189,9 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
-        let symtab_shndx_entries = Some(buffers.take(part_id::SYMTAB_SHNDX))
+        let symtab_shndx_local_entries = Some(buffers.take(part_id::SYMTAB_SHNDX_LOCAL))
+            .and_then(|s| (!s.is_empty()).then(|| slice_from_all_bytes_mut(s)));
+        let symtab_shndx_global_entries = Some(buffers.take(part_id::SYMTAB_SHNDX_GLOBAL))
             .and_then(|s| (!s.is_empty()).then(|| slice_from_all_bytes_mut(s)));
 
         let strings = buffers.take(part_id::STRTAB);
@@ -1201,7 +1204,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 out: strings,
             },
             is_dynamic: false,
-            symtab_shndx_entries,
+            symtab_shndx_local_entries,
+            symtab_shndx_global_entries,
         }
     }
 
@@ -1221,7 +1225,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 out: strings,
             },
             is_dynamic: true,
-            symtab_shndx_entries: None,
+            symtab_shndx_local_entries: None,
+            symtab_shndx_global_entries: None,
         }
     }
 
@@ -1300,49 +1305,55 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         size: u64,
         name: &[u8],
     ) -> Result<&mut SymtabEntry> {
-        let entry = if is_local {
-            self.local_entries.split_off_first_mut().with_context(|| {
-                format!(
-                    "Insufficient .symtab local entries allocated for symbol `{}`",
-                    String::from_utf8_lossy(name),
-                )
-            })?
+        let (entry, symtab_shndx_entries) = if is_local {
+            (
+                self.local_entries.split_off_first_mut().with_context(|| {
+                    format!(
+                        "Insufficient .symtab local entries allocated for symbol `{}`",
+                        String::from_utf8_lossy(name),
+                    )
+                })?,
+                self.symtab_shndx_local_entries
+                    .as_mut()
+                    .and_then(|x| x.split_off_first_mut()),
+            )
         } else {
             if self.is_dynamic {
                 tracing::trace!(name = %String::from_utf8_lossy(name), "Write .dynsym");
             }
-            self.global_entries.split_off_first_mut().with_context(|| {
-                format!(
-                    "Insufficient {} entries allocated for symbol `{}`",
-                    if self.is_dynamic {
-                        DYNSYM_SECTION_NAME_STR
-                    } else {
-                        ".symtab global"
-                    },
-                    String::from_utf8_lossy(name),
-                )
-            })?
+            (
+                self.global_entries.split_off_first_mut().with_context(|| {
+                    format!(
+                        "Insufficient {} entries allocated for symbol `{}`",
+                        if self.is_dynamic {
+                            DYNSYM_SECTION_NAME_STR
+                        } else {
+                            ".symtab global"
+                        },
+                        String::from_utf8_lossy(name),
+                    )
+                })?,
+                self.symtab_shndx_global_entries
+                    .as_mut()
+                    .and_then(|x| x.split_off_first_mut()),
+            )
         };
         let e = LittleEndian;
 
         // Always save the name without the symbol version (e.g. foo@@VER_1).
         let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
-        let shndx_symtab_entries = self
-            .symtab_shndx_entries
-            .as_mut()
-            .and_then(|s| s.split_off_first_mut());
 
         let shndx = if shndx < u32::from(object::elf::SHN_LORESERVE)
             || shndx == u32::from(object::elf::SHN_ABS)
             || shndx == u32::from(object::elf::SHN_COMMON)
         {
-            if let Some(s) = shndx_symtab_entries {
+            if let Some(s) = symtab_shndx_entries {
                 *s = 0;
             }
             shndx as u16
         } else {
-            if let Some(s) = shndx_symtab_entries {
+            if let Some(s) = symtab_shndx_entries {
                 *s = shndx;
             }
             object::elf::SHN_XINDEX
@@ -1386,7 +1397,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             output_sections: self.output_sections,
             strtab_writer: self.strtab_writer.take_prefix(strtab_size),
             is_dynamic: self.is_dynamic,
-            symtab_shndx_entries: None,
+            symtab_shndx_local_entries: None,
+            symtab_shndx_global_entries: None,
         }
     }
 }
