@@ -114,7 +114,8 @@
 //#CompSoArgs:-g -fPIC
 //#LinkerDriver:gcc
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
-// Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol dependency.
+// Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol
+// dependency.
 //#SkipLinker:ld
 //#ExpectDynSym:GLIBC_ABI_DT_RELR
 //#RequiresGlibc:true
