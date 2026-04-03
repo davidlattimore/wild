@@ -1144,15 +1144,16 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
-        let mut num_globals = 0;
-        let mut strings_size = 0;
-        for symbol in state.object.symbols_iter() {
-            // TODO: very basic
-            num_globals += 1;
-            strings_size += state.object.symbol_name(symbol)?.len() + 1;
-        }
-        let entry_size = size_of::<SymtabEntry>() as u64;
         // TODO
+        // let mut num_globals = 0;
+        // let mut strings_size = 0;
+        // for symbol in state.object.symbols_iter() {
+        //     // TODO: very basic
+        //     num_globals += 1;
+        //     strings_size += state.object.symbol_name(symbol)?.len() + 1;
+        // }
+        // let entry_size = size_of::<SymtabEntry>() as u64;
+        //
         // common.allocate(part_id::SYMTAB_GLOBAL, dbg!(num_globals * entry_size));
         // common.allocate(part_id::STRTAB, dbg!(strings_size as u64));
 

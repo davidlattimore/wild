@@ -130,11 +130,10 @@ fn get_segment_sections<'data>(
                 in_matching_segment = true;
             }
             OrderEvent::SegmentEnd(segment_id)
-                if layout.program_segments.segment_def(segment_id).segment_type == segment_type =>
+                if layout.program_segments.segment_def(segment_id).segment_type == segment_type
+                    && in_matching_segment =>
             {
-                if in_matching_segment {
-                    break;
-                }
+                break;
             }
             OrderEvent::Section(section_id) if in_matching_segment => {
                 let sizes = *layout.section_layouts.get(section_id);
