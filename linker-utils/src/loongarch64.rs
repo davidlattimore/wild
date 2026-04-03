@@ -11,6 +11,7 @@ use crate::elf::SIZE_4GB;
 use crate::elf::SIZE_4KB;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
+use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 use crate::utils::u64_from_slice;
@@ -336,7 +337,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_LARCH_B21 => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_loongarch64(2, 23, LoongArch64Instruction::Branch21or26),
+            RelocationSize::bit_mask_loongarch64(2, 23, LoongArch64Instruction::Branch21),
             None,
             // with check 23-bit signed overflow and a multiple of 4
             AllowedRange::from_bit_size(23, Sign::Signed),
@@ -345,7 +346,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_LARCH_B26 => (
             RelocationKind::PltRelative,
-            RelocationSize::bit_mask_loongarch64(2, 28, LoongArch64Instruction::Branch21or26),
+            RelocationSize::bit_mask_loongarch64(2, 28, LoongArch64Instruction::Branch26),
             None,
             // with check 28-bit signed overflow and a multiple of 4
             AllowedRange::from_bit_size(28, Sign::Signed),
@@ -626,24 +627,47 @@ impl LoongArch64Instruction {
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         match self {
             LoongArch64Instruction::Shift5 => {
+                // j20 format: opcode[31:25], imm20[24:5], rd[4:0]
+                and_from_slice(dest, &0xFE00_001F_u32.to_le_bytes());
                 let mask = extracted_value << 5;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             LoongArch64Instruction::Shift10 => {
+                // k12 format: opcode[31:22], imm12[21:10], rj[9:5], rd[4:0]
+                and_from_slice(dest, &0xFFC0_03FF_u32.to_le_bytes());
                 let mask = extracted_value << 10;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
-            LoongArch64Instruction::Branch21or26 => {
+            LoongArch64Instruction::Branch26 => {
+                // d10k16 format: opcode[31:26], imm_lo16[25:10], imm_hi10[9:0]
+                and_from_slice(dest, &0xFC00_0000_u32.to_le_bytes());
+                let low_part = (extracted_value & 0xffff) << 10;
+                let high_part = extracted_value >> 16;
+                or_from_slice(dest, &((low_part | high_part) as u32).to_le_bytes());
+            }
+            LoongArch64Instruction::Branch21 => {
+                // d5k16 format: opcode[31:26], imm_lo16[25:10], rj[9:5], imm_hi5[4:0]
+                and_from_slice(dest, &0xFC00_03E0_u32.to_le_bytes());
                 let low_part = (extracted_value & 0xffff) << 10;
                 let high_part = extracted_value >> 16;
                 or_from_slice(dest, &((low_part | high_part) as u32).to_le_bytes());
             }
             LoongArch64Instruction::Call30 => {
+                // Two instructions as u64 (little-endian):
+                //   insn1 (low  u32): bits[24:5]  = high part of immediate
+                //   insn2 (high u32): bits[18:10] = low part of immediate
+                const CLEAR: u64 = (0xFFF8_03FF_u64 << 32) | 0xFE00_001F_u64;
+                and_from_slice(dest, &CLEAR.to_le_bytes());
                 let low_part = (extracted_value & 0x1ff) << (32 + 10);
                 let high_part = (extracted_value & !0x1ff) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
             }
             LoongArch64Instruction::Call36 => {
+                // Two instructions as u64 (little-endian):
+                //   insn1 (low  u32, pcaddu18i): bits[24:5]  = high part of immediate
+                //   insn2 (high u32, jirl):      bits[25:10] = low part of immediate
+                const CLEAR: u64 = (0xFC00_03FF_u64 << 32) | 0xFE00_001F_u64;
+                and_from_slice(dest, &CLEAR.to_le_bytes());
                 let low_part = (extracted_value & 0xffff) << (32 + 10);
                 let high_part = ((extracted_value + 0x8000) >> 16) << 5;
                 or_from_slice(dest, &(low_part | high_part).to_le_bytes());
@@ -668,16 +692,25 @@ impl LoongArch64Instruction {
 
                 (u64::from(imm), false)
             }
-            LoongArch64Instruction::Branch21or26 => {
-                // For B21: low 16 bits in [25:10], high bits in [4:0]
-                // For B26: low 16 bits in [25:10], high 10 bits in [9:0]
-                // We decode assuming B26 format (more general)
+            LoongArch64Instruction::Branch26 => {
+                // B26: low 16 bits in [25:10], high 10 bits in [9:0]
                 let value = u32_from_slice(bytes);
                 let low_part = (value >> 10) & 0xffff;
                 let high_part = value & 0x3ff;
                 let imm = (high_part << 16) | low_part;
                 // Sign extend from bit 25
                 let sign_extended = ((imm as i32) << 6) >> 6;
+
+                (sign_extended as u64, sign_extended < 0)
+            }
+            LoongArch64Instruction::Branch21 => {
+                // B21: low 16 bits in [25:10], high 5 bits in [4:0]
+                let value = u32_from_slice(bytes);
+                let low_part = (value >> 10) & 0xffff;
+                let high_part = value & 0x1f;
+                let imm = (high_part << 16) | low_part;
+                // Sign extend from bit 20
+                let sign_extended = ((imm as i32) << 11) >> 11;
 
                 (sign_extended as u64, sign_extended < 0)
             }
