@@ -12,12 +12,17 @@ use crate::file_writer::split_output_into_sections;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::Layout;
+use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::macho::FileHeader;
 use crate::macho::MachO;
+use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
 use crate::macho::SegmentType;
+use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::SectionName;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
@@ -32,9 +37,13 @@ use object::macho::CPU_TYPE_ARM64;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
+use object::macho::SEG_DATA;
 use object::macho::SEG_PAGEZERO;
+use object::macho::SEG_TEXT;
+use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
 
@@ -101,7 +110,50 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .0;
     write_pagezero_command::<A>(pagezero_command);
 
+    write_segment_commands::<A>(layout, buffers)?;
+
     Ok(())
+}
+
+fn get_segment_sections<'data>(
+    layout: &MachOLayout<'data>,
+    segment_type: SegmentType,
+) -> Vec<(OutputRecordLayout, Option<SectionName<'data>>)> {
+    let mut in_matching_segment = false;
+    let mut sections = Vec::new();
+
+    for event in &layout.output_order {
+        match event {
+            OrderEvent::SegmentStart(segment_id)
+                if layout.program_segments.segment_def(segment_id).segment_type == segment_type =>
+            {
+                in_matching_segment = true;
+            }
+            OrderEvent::SegmentEnd(segment_id)
+                if layout.program_segments.segment_def(segment_id).segment_type == segment_type =>
+            {
+                if in_matching_segment {
+                    break;
+                }
+            }
+            OrderEvent::Section(section_id) if in_matching_segment => {
+                let sizes = *layout.section_layouts.get(section_id);
+                let merge_target = layout.output_sections.primary_output_section(section_id);
+
+                if sizes.file_size == 0
+                    && sizes.mem_size == 0
+                    && layout.output_sections.output_section_indexes[merge_target.as_usize()]
+                        .is_none()
+                {
+                    continue;
+                }
+                sections.push((sizes, layout.output_sections.name(section_id)));
+            }
+            _ => {}
+        }
+    }
+
+    sections
 }
 
 fn populate_file_header<A: Arch<Platform = MachO>>(
@@ -165,9 +217,63 @@ fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentComman
     command.flags.set(LE, 0);
 }
 
+fn split_segment_command_buffer(
+    bytes: &mut [u8],
+    section_count: usize,
+) -> Result<(&mut SegmentCommand, &mut [SectionEntry])> {
+    let (command, rest) =
+        from_bytes_mut(bytes).map_err(|_| error!("Invalid segment command allocation"))?;
+    let (sections, rest) = slice_from_bytes_mut(rest, section_count)
+        .map_err(|_| error!("Invalid segment section allocation"))?;
+    if !rest.is_empty() {
+        return Err(error!("Trailing bytes in segment command allocation"));
+    }
+    Ok((command, sections))
+}
+
 fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
-    _header_info: &HeaderInfo,
-    header: &mut FileHeader,
-) {
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    for (part_id, seg_name, segment_type) in [
+        (part_id::TEXT_SEGMENT, SEG_TEXT, SegmentType::Text),
+        (part_id::DATA_SEGMENT, SEG_DATA, SegmentType::Data),
+    ] {
+        let segment_sections = get_segment_sections(layout, segment_type);
+        let (command, sections) =
+            split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
+
+        debug_assert_eq!(sections.len(), segment_sections.len());
+
+        command.cmd.set(LE, LC_SEGMENT_64);
+        command.cmdsize.set(
+            LE,
+            (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * segment_sections.len())
+                as u32,
+        );
+        command.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+        command.segname[seg_name.len()..].zero();
+        // TODO
+        command.vmaddr.set(LE, 0);
+        command.vmsize.set(LE, 0);
+        command.fileoff.set(LE, 0);
+        command.filesize.set(LE, 0);
+        command.maxprot.set(LE, 0);
+        command.initprot.set(LE, 0);
+        command.nsects.set(LE, segment_sections.len() as u32);
+        command.flags.set(LE, 0);
+
+        for (section, (size, section_name)) in sections.iter_mut().zip(segment_sections) {
+            let section_name = section_name
+                .ok_or_else(|| error!("section name must be known"))?
+                .0;
+
+            section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+            section.segname[seg_name.len()..].zero();
+            section.sectname[..section_name.len()].copy_from_slice(section_name);
+            section.sectname[section_name.len()..].zero();
+            // TODO
+        }
+    }
+    Ok(())
 }

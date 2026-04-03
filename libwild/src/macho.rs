@@ -56,6 +56,7 @@ type Relocation = object::macho::Relocation<Endianness>;
 
 pub(crate) type FileHeader = object::macho::MachHeader64<Endianness>;
 pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
+pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -707,6 +708,20 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs
 };
 
+// TODO: a better approach?
+fn count_sections_for_segment_type(
+    output_sections: &crate::output_section_id::OutputSections<MachO>,
+    segment_type: SegmentType,
+) -> usize {
+    let segment_def = ProgramSegmentDef { segment_type };
+    output_sections
+        .ids_with_info()
+        .filter(|(section_id, _)| {
+            output_sections.should_include_in_segment(*section_id, segment_def)
+        })
+        .count()
+}
+
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     phantom: &'data [u8],
@@ -1091,10 +1106,20 @@ impl platform::Platform for MachO {
             part_id::PAGEZERO_SEGMENT,
             size_of::<SegmentCommand>() as u64,
         );
-        sizes.increment(part_id::TEXT_SEGMENT, size_of::<SegmentCommand>() as u64);
-        sizes.increment(part_id::DATA_SEGMENT, size_of::<SegmentCommand>() as u64);
-
-        // TODO
+        sizes.increment(
+            part_id::TEXT_SEGMENT,
+            (size_of::<SegmentCommand>()
+                + size_of::<SectionEntry>()
+                    * count_sections_for_segment_type(output_sections, SegmentType::Text))
+                as u64,
+        );
+        sizes.increment(
+            part_id::DATA_SEGMENT,
+            (size_of::<SegmentCommand>()
+                + size_of::<SectionEntry>()
+                    * count_sections_for_segment_type(output_sections, SegmentType::Data))
+                as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(

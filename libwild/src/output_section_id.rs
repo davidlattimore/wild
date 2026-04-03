@@ -415,7 +415,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns whether we should include the specified section in a program segment with the
     /// supplied properties.
-    fn should_include_in_segment(
+    pub(crate) fn should_include_in_segment(
         &self,
         section_id: OutputSectionId,
         segment_def: P::ProgramSegmentDef,
