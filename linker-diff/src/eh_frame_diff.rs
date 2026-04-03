@@ -4,11 +4,11 @@ use crate::header_diff::DiffMode;
 use crate::header_diff::FieldValues;
 use anyhow::Context;
 use anyhow::bail;
+use gimli::EndianSlice;
+use gimli::UnwindSection;
 use hashbrown::HashMap;
-use hashbrown::HashSet;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
 use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
-use linker_utils::utils::u32_from_slice;
 use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
@@ -104,8 +104,6 @@ fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
     Ok(values)
 }
 
-const EH_FRAME_PC_BEGIN_OFFSET: usize = 8;
-
 fn verify_frames(
     object: &crate::Binary,
     values: &mut FieldValues,
@@ -119,41 +117,37 @@ fn verify_frames(
         }
     }
 
-    let mut frame_to_info = HashMap::new();
-
     let eh_frame_section = object
         .section_by_name(EH_FRAME_SECTION_NAME_STR)
         .context("Missing .eh_frame section")?;
     let eh_frame_base = eh_frame_section.address();
     let eh_frame_data = eh_frame_section.data()?;
-    let mut offset = 0;
-    const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
-    while offset + PREFIX_LEN <= eh_frame_data.len() {
-        let prefix =
-            EhFrameEntryPrefix::read_from_bytes(&eh_frame_data[offset..offset + PREFIX_LEN])
-                .unwrap();
-        if prefix.cie_id != 0 {
-            // This is an FDE.
-            let pc_begin_bytes = eh_frame_data[offset + EH_FRAME_PC_BEGIN_OFFSET..]
-                .first_chunk::<4>()
-                .context("Invalid FDE")?;
-            let info_address = eh_frame_base + offset as u64;
-            let pc_begin = (info_address + EH_FRAME_PC_BEGIN_OFFSET as u64)
-                .wrapping_add(i64::from(i32::from_le_bytes(*pc_begin_bytes)) as u64);
+
+    let eh_frame: gimli::EhFrame<EndianSlice<'_, gimli::LittleEndian>> =
+        gimli::EhFrame::new(eh_frame_data, gimli::LittleEndian);
+    let bases = gimli::BaseAddresses::default().set_eh_frame(eh_frame_base);
+
+    // Multiple FDEs can legitimately share a pc_begin, so track all of them.
+    let mut frame_to_infos: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut info_to_pc_begin: HashMap<u64, u64> = HashMap::new();
+
+    let mut entries = eh_frame.entries(&bases);
+    while let Some(entry) = entries.next()? {
+        if let gimli::CieOrFde::Fde(partial) = entry {
+            let info_address = eh_frame_base + partial.offset() as u64;
+            let fde =
+                partial.parse(|section, bases, offset| section.cie_from_offset(bases, offset))?;
+            let pc_begin = fde.initial_address();
             functions_without_frame_info.remove(&pc_begin);
-            // Note, we don't check the symbol that we matched against because some frames won't
-            // have symbols.
-            if let Some(previous_info) = frame_to_info.insert(pc_begin, info_address) {
-                bail!(
-                    "Duplicate frame info for address 0x{pc_begin:x}. \
-                     0x:{previous_info:x}, 0x{info_address:x}"
-                );
-            }
+            frame_to_infos
+                .entry(pc_begin)
+                .or_default()
+                .push(info_address);
+            info_to_pc_begin.insert(info_address, pc_begin);
         }
-        offset += size_of_val(&prefix.length) + prefix.length as usize;
     }
 
-    // TODO: Enable this or clean it it up.
+    // TODO: Enable this or clean it up.
     if false {
         for sym in functions_without_frame_info.values() {
             if sym.size() == 0 {
@@ -166,26 +160,18 @@ fn verify_frames(
         }
     }
 
-    let mut seen = HashSet::new();
     for hdr in header_entries {
         let frame_address = (header_base as i64 + i64::from(hdr.frame_ptr)) as u64;
         let hdr_info_address = (header_base as i64 + i64::from(hdr.frame_info_ptr)) as u64;
-        if let Some(info_address) = frame_to_info.remove(&frame_address) {
-            seen.insert(frame_address);
-            if hdr_info_address != info_address {
+        if let Some(infos) = frame_to_infos.get(&frame_address) {
+            if !infos.contains(&hdr_info_address) {
                 bail!(
                     ".eh_frame_hdr info address didn't match for 0x{frame_address:x}. \
-                     .eh_frame_hdr has 0x{hdr_info_address:x}, but .eh_frame has \
-                     0x{info_address:x}"
+                     .eh_frame_hdr has 0x{hdr_info_address:x}, but .eh_frame has {:?}",
+                    infos.iter().map(|a| format!("0x{a:x}")).collect::<Vec<_>>()
                 );
             }
-        } else if seen.contains(&frame_address) {
-            // TODO: Investigate and consider if this should be an error.
-
-            //bail!("Address 0x{frame_address:x} is duplicated in .eh_frame_hdr");
-        } else if let Some(pc_begin) =
-            read_eh_frame_pc_begin(eh_frame_data, hdr_info_address, eh_frame_base)
-        {
+        } else if let Some(&pc_begin) = info_to_pc_begin.get(&hdr_info_address) {
             let offset = hdr_info_address - eh_frame_base;
             bail!(
                 ".eh_frame_hdr is inconsistent with .eh_frame. Entry at 0x{hdr_info_address:x} \
@@ -198,22 +184,6 @@ fn verify_frames(
     }
 
     Ok(())
-}
-
-fn read_eh_frame_pc_begin(
-    eh_frame_data: &[u8],
-    hdr_info_address: u64,
-    eh_frame_base: u64,
-) -> Option<u64> {
-    let start_offset =
-        hdr_info_address.checked_sub(eh_frame_base)? as usize + EH_FRAME_PC_BEGIN_OFFSET;
-    if start_offset >= eh_frame_data.len() {
-        return None;
-    }
-    Some(
-        (hdr_info_address + EH_FRAME_PC_BEGIN_OFFSET as u64)
-            .wrapping_add(i64::from(u32_from_slice(&eh_frame_data[start_offset..])) as u64),
-    )
 }
 
 fn eh_frame_segment(object: &crate::Binary) -> Option<ProgramHeader64<LittleEndian>> {
@@ -243,11 +213,4 @@ struct EhFrameHdr {
 struct EhFrameHdrEntry {
     frame_ptr: i32,
     frame_info_ptr: i32,
-}
-
-#[derive(FromBytes, Clone, Copy)]
-#[repr(C)]
-struct EhFrameEntryPrefix {
-    length: u32,
-    cie_id: u32,
 }
