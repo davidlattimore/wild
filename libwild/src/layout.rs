@@ -2657,7 +2657,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
-        self.load_versions::<A>(resources, queue, scope);
+        self.load_explicit_imports::<A>(resources, queue, scope);
 
         Ok(())
     }
@@ -2752,7 +2752,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
     }
 
-    fn load_versions<'scope, A: Arch>(
+    fn load_explicit_imports<'scope, A: Arch>(
         &self,
         resources: &'scope GraphResources<'data, '_, A::Platform>,
         queue: &mut LocalWorkQueue,
