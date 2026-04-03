@@ -265,6 +265,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         // TODO: segment OutputRecordLayout
         segment_cmd.vmaddr.set(LE, segment_sizes.mem_offset);
         segment_cmd.vmsize.set(LE, segment_sizes.mem_size);
+        // TODO: should be likely offset relative to the place after the commands
         segment_cmd
             .fileoff
             .set(LE, segment_sizes.file_offset as u64);
