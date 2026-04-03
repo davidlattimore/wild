@@ -243,7 +243,9 @@ fn test_merge_parts() {
             1
         },
     );
-    let num_regular_sections = output_sections.num_regular_sections();
+
+    // Subtract the Mach-O specific sections.
+    let num_regular_sections = output_sections.num_regular_sections() - 1;
     let mut num_sections_with_17 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
 
@@ -251,6 +253,7 @@ fn test_merge_parts() {
         output_section_id::PAGEZERO_SEGMENT,
         output_section_id::TEXT_SEGMENT,
         output_section_id::DATA_SEGMENT,
+        output_section_id::CSTRING,
     ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {

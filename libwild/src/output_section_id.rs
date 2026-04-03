@@ -116,6 +116,7 @@ pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
 pub(crate) const NOTE_ABI_TAG: OutputSectionId = OutputSectionId::regular(13);
 pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
+// Mach-O specific sections
 pub(crate) const CSTRING: OutputSectionId = OutputSectionId::regular(15);
 
 pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 16;
