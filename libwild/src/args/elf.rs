@@ -115,6 +115,7 @@ pub struct ElfArgs {
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
     pack_dyn_relocs: PackDynRelocs,
+    pub(crate) use_android_relr_tags: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -217,7 +218,6 @@ pub(super) const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
-    "use-android-relr-tags",
     "x", // alias for --discard-all
 ];
 
@@ -228,7 +228,6 @@ const DEFAULT_FLAGS: &[&str] = &[
     "no-add-needed",
     "discard-locals",
     "no-fatal-warnings",
-    "no-use-android-relr-tags",
 ];
 const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X",  // alias for --discard-locals
@@ -292,6 +291,7 @@ impl Default for ElfArgs {
             hash_style: HashStyle::Both,
             trace: false,
             pack_dyn_relocs: PackDynRelocs::None,
+            use_android_relr_tags: false,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -1706,6 +1706,24 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Treat unresolved symbols as warnings")
         .execute(|args, _modifier_stack| {
             args.error_unresolved_symbols = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("use-android-relr-tags")
+        .help("Use Android version of SHT_RELR and DT_RELR")
+        .execute(|args, _modifier_stack| {
+            args.use_android_relr_tags = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-use-android-relr-tags")
+        .help("Do not use Android version of SHT_RELR and DT_RELR (default)")
+        .execute(|args, _modifier_stack| {
+            args.use_android_relr_tags = false;
             Ok(())
         });
 

@@ -4646,17 +4646,50 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     }),
     DynamicEntryWriter::optional(
         object::elf::DT_RELR,
-        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN)
+                && !has_android_relr_tags(inputs)
+        },
         |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_RELRSZ,
-        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN)
+                && !has_android_relr_tags(inputs)
+        },
         |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_RELRENT,
-        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN)
+                && !has_android_relr_tags(inputs)
+        },
+        |_| elf::RELR_ENTRY_SIZE,
+    ),
+    DynamicEntryWriter::optional(
+        // TODO(object): Not yet added
+        0x6fff_e000,
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
+        },
+        |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        // TODO(object): Not yet added
+        0x6fff_e001,
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
+        },
+        |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        // TODO(object): Not yet added
+        0x6fff_e003,
+        |inputs| {
+            inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
+        },
         |_| elf::RELR_ENTRY_SIZE,
     ),
     DynamicEntryWriter::optional(
@@ -4929,7 +4962,14 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_type.raw());
+
+        let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
+            // TODO(object): Not yet added
+            0x6fffff00
+        } else {
+            section_type.raw()
+        };
+        entry.sh_type.set(e, sh_type);
 
         // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
@@ -5343,6 +5383,10 @@ fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
     let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
     let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
     relative.mem_size > 0 || general.mem_size > 0
+}
+
+fn has_android_relr_tags(inputs: &DynamicEntryInputs) -> bool {
+    inputs.args.use_android_relr_tags
 }
 
 pub(crate) fn verify_resolution_allocation(
