@@ -138,15 +138,6 @@ fn get_segment_sections<'data>(
             }
             OrderEvent::Section(section_id) if in_matching_segment => {
                 let sizes = *layout.section_layouts.get(section_id);
-                let merge_target = layout.output_sections.primary_output_section(section_id);
-
-                if sizes.file_size == 0
-                    && sizes.mem_size == 0
-                    && layout.output_sections.output_section_indexes[merge_target.as_usize()]
-                        .is_none()
-                {
-                    continue;
-                }
                 sections.push((sizes, layout.output_sections.name(section_id)));
             }
             _ => {}
