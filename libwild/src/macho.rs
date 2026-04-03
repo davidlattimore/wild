@@ -1120,8 +1120,9 @@ impl platform::Platform for MachO {
             strings_size += state.object.symbol_name(symbol)?.len() + 1;
         }
         let entry_size = size_of::<SymtabEntry>() as u64;
-        common.allocate(part_id::SYMTAB_GLOBAL, dbg!(num_globals * entry_size));
-        common.allocate(part_id::STRTAB, dbg!(strings_size as u64));
+        // TODO
+        // common.allocate(part_id::SYMTAB_GLOBAL, dbg!(num_globals * entry_size));
+        // common.allocate(part_id::STRTAB, dbg!(strings_size as u64));
 
         Ok(())
     }
