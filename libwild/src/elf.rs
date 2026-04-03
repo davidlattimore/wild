@@ -4810,8 +4810,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             && flags.is_address()
         {
             if section_is_writable {
-                // Uneven offsets mean bitmaps in RELR, so we need to fall back to RELA for
-                // them.
+                // Odd offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
                 if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
                     common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
