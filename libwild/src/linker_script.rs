@@ -74,6 +74,7 @@ pub(crate) enum Command<'a> {
     },
     Provide(ProvideSymbolDefinition<'a>),
     Assert(AssertCommand<'a>),
+    Memory(Vec<MemoryRegion<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +100,13 @@ pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct MemoryRegion<'a> {
+    pub(crate) name: &'a [u8],
+    pub(crate) origin: Expression<'a>,
+    pub(crate) length: Expression<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -176,6 +184,8 @@ pub(crate) enum Expression<'a> {
     /// Function calls
     Sizeof(&'a [u8]),
     Alignof(&'a [u8]),
+    Origin(&'a [u8]),
+    Length(&'a [u8]),
     Addr(&'a [u8]),
     Loadaddr(&'a [u8]),
     Align(Box<Expression<'a>>),
@@ -294,6 +304,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"PROVIDE" => Command::Provide(parse_provide(input, false)?),
         b"PROVIDE_HIDDEN" => Command::Provide(parse_provide(input, true)?),
         b"ASSERT" => Command::Assert(parse_assert(input)?),
+        b"MEMORY" => Command::Memory(parse_memory(input)?),
         other => {
             if input.starts_with(b"=") {
                 // Symbol definition
@@ -365,6 +376,49 @@ fn parse_assert<'input>(input: &mut &'input BStr) -> winnow::Result<AssertComman
         message,
         remainder,
     })
+}
+
+fn parse_memory_region<'input>(input: &mut &'input BStr) -> winnow::Result<MemoryRegion<'input>> {
+    let name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse the colon separator
+    ':'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse the Origin block
+    alt(("ORIGIN", "org", "o")).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    '='.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let origin = parse_expression.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse the comma separator
+    ','.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    // Parse the Length block
+    alt(("LENGTH", "len", "l")).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    '='.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let length = parse_expression.parse_next(input)?;
+
+    Ok(MemoryRegion {
+        name,
+        origin,
+        length,
+    })
+}
+
+fn parse_memory<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<MemoryRegion<'input>>> {
+    '{'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let (regions, _) = repeat_till(0.., parse_memory_region, '}').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(regions)
 }
 
 /// Parse an expression - entry point for expression parsing
@@ -655,6 +709,14 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
             b"ADDR" => {
                 let arg = parse_function_arg.parse_next(input)?;
                 Ok(Expression::Addr(arg))
+            }
+            b"ORIGIN" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Origin(arg))
+            }
+            b"LENGTH" => {
+                let arg = parse_function_arg.parse_next(input)?;
+                Ok(Expression::Length(arg))
             }
             b"LOADADDR" => {
                 let arg = parse_function_arg.parse_next(input)?;
@@ -1725,6 +1787,56 @@ mod tests {
             let mut bstr = winnow::BStr::new(input.as_bytes());
             let expr = parse_expression.parse_next(&mut bstr).unwrap();
             assert_eq!(expr, Expression::Number(expected));
+        }
+    }
+
+    #[test]
+    fn test_memory_block_parsing() {
+        let script = parse_script(
+            r#"MEMORY {
+                rom : ORIGIN = 256K, LENGTH = 1M
+                ram : org = 0x20000000, l = 32K
+            }"#,
+        )
+        .unwrap();
+        let Command::Memory(regions) = &script.commands[0] else {
+            panic!("Expected Memory command")
+        };
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].name, b"rom");
+        assert_eq!(regions[0].origin, Expression::Number(262144));
+        assert_eq!(regions[0].length, Expression::Number(1048576));
+        assert_eq!(regions[1].name, b"ram");
+        assert_eq!(regions[1].origin, Expression::Number(0x20000000));
+        assert_eq!(regions[1].length, Expression::Number(32768));
+    }
+
+    #[test]
+    fn test_memory_functions_parsing() {
+        let cases = [
+            (
+                r#"ASSERT(ORIGIN(rom) == 256K, "");"#,
+                Expression::Origin(b"rom"),
+                262144u64,
+            ),
+            (
+                r#"ASSERT(LENGTH(ram) == 32K, "");"#,
+                Expression::Length(b"ram"),
+                32768,
+            ),
+        ];
+        for (input, expected_fn, expected_val) in cases {
+            let script = parse_script(input).unwrap();
+            let Command::Assert(cmd) = &script.commands[0] else {
+                panic!()
+            };
+            assert_eq!(
+                cmd.expression,
+                Expression::Equal(
+                    Box::new(expected_fn),
+                    Box::new(Expression::Number(expected_val))
+                )
+            );
         }
     }
 }

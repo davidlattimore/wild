@@ -139,6 +139,7 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
         Expression::BitwiseNot(e) => Ok(!eval!(e)?),
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
+        Expression::Origin(_) | Expression::Length(_) => todo!(),
     }
 }
 
