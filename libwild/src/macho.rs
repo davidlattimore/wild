@@ -936,7 +936,6 @@ impl platform::Platform for MachO {
         keep_segments: &mut [bool],
         args: &Self::Args,
     ) {
-        dbg!(&program_segments);
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -1087,7 +1086,6 @@ impl platform::Platform for MachO {
         );
         sizes.increment(part_id::TEXT_SEGMENT, size_of::<SegmentCommand>() as u64);
         sizes.increment(part_id::DATA_SEGMENT, size_of::<SegmentCommand>() as u64);
-        dbg!("allocate text segmet");
 
         // TODO
     }
