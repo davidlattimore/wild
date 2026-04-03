@@ -1,21 +1,24 @@
 // This test verifies that we correctly handle RELR relocations in a few edge
 // cases.
 //#Object:init.c:-fPIC
-//#Shared:runtime.c
+//#Object:runtime.c
+//#Shared:empty.c
+// LLD doesn't allow simultaneous `-pie` and `-shared`, so disable PIE for deps.
+//#LinkSoArgs:-no-pie
 //#LinkArgs:-pie -z now -z pack-relative-relocs
+// GNU ld ignores `-z pack-relative-relocs` on RISC-V.
+//#EnableLinker:lld
+//#SkipLinker:ld
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
-//#DiffIgnore:section.got
-//#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
+//#DiffIgnore:dynsym.__global_pointer$.section
+//#DiffIgnore:section.got.plt.entsize
 //#Mode:dynamic
-// Ubuntu 24.04's GNU ld doesn't crate .rela.dyn for AArch64.
-//#RequiresGlibcVersion:2.40
 //#ExpectDynamic:DT_RELR
 //#ExpectDynamic:DT_RELRSZ
 //#ExpectDynamic:DT_RELRENT
 //#Contains:.relr.dyn
 //#DoesNotContain:GLIBC_ABI_DT_RELR
-//#SkipArch:riscv64
 
 #include "init.h"
 #include "runtime.h"
