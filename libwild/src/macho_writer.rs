@@ -245,6 +245,15 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
 
         debug_assert_eq!(sections.len(), segment_sections.len());
 
+        // TODO: a better approach?
+        let segment_sizes = layout
+            .segment_layouts
+            .segments
+            .iter()
+            .find(|s| layout.program_segments.segment_def(s.id).segment_type == segment_type)
+            .ok_or_else(|| error!("Missing layout for segment {segment_type:?}"))?
+            .sizes;
+
         command.cmd.set(LE, LC_SEGMENT_64);
         command.cmdsize.set(
             LE,
@@ -254,10 +263,10 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         command.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         command.segname[seg_name.len()..].zero();
         // TODO: segment OutputRecordLayout
-        command.vmaddr.set(LE, 0);
-        command.vmsize.set(LE, 0);
-        command.fileoff.set(LE, 0);
-        command.filesize.set(LE, 0);
+        command.vmaddr.set(LE, segment_sizes.mem_offset);
+        command.vmsize.set(LE, segment_sizes.mem_size);
+        command.fileoff.set(LE, segment_sizes.file_offset as u64);
+        command.filesize.set(LE, segment_sizes.file_size as u64);
         command.maxprot.set(LE, 0);
         command.initprot.set(LE, 0);
         command.nsects.set(LE, segment_sections.len() as u32);
