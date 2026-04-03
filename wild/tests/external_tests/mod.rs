@@ -67,7 +67,7 @@ fn get_external_linker() -> &'static ExternalLinker {
                     };
                 }
 
-                let path = which::which(&val).unwrap_or_else(|_| {
+                let path = which::which(val).unwrap_or_else(|_| {
                     panic!("WILD_EXTERNAL_LINKER={val}: not found as a file and not on PATH")
                 });
 

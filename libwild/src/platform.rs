@@ -536,7 +536,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         common: &mut CommonGroupState<'data, Self>,
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    );
+    ) -> Result;
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
@@ -723,7 +723,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn section_name(
         &self,
-        section_header: &<Self::Platform as Platform>::SectionHeader,
+        section_header: &'data <Self::Platform as Platform>::SectionHeader,
     ) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.

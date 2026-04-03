@@ -1423,7 +1423,7 @@ impl platform::Platform for Elf {
         common: &mut CommonGroupState<'data, Elf>,
         symbol_db: &SymbolDb<'data, Elf>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    ) {
+    ) -> Result {
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
@@ -1467,6 +1467,7 @@ impl platform::Platform for Elf {
         common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
+        Ok(())
     }
 
     fn allocate_internal_symbol(
@@ -1946,7 +1947,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, section: &'data SectionHeader) -> Result<&'data [u8]> {
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 

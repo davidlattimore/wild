@@ -2204,7 +2204,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, output_sections, per_symbol_flags, resources);
+                s.finalise_sizes(common, output_sections, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
@@ -3670,10 +3670,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
-    ) {
+    ) -> Result {
         common.mem_sizes.resize(output_sections.num_parts());
         if !resources.symbol_db.args.should_strip_all() {
-            self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags);
+            self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags)?;
         }
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
@@ -3683,6 +3683,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
 
         P::finalise_object_sizes(self, common);
+        Ok(())
     }
 
     fn allocate_symtab_space(
@@ -3690,9 +3691,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         symbol_db: &SymbolDb<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    ) {
+    ) -> Result {
         let _file_span = symbol_db.args.common().trace_span_for_file(self.file_id());
-        P::allocate_object_symtab_space(self, common, symbol_db, per_symbol_flags);
+        P::allocate_object_symtab_space(self, common, symbol_db, per_symbol_flags)
     }
 
     fn finalise_layout(
