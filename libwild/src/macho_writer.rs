@@ -188,8 +188,6 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
         .skip(1)
         .take_while(|event| !matches!(event, OrderEvent::SegmentEnd(..)))
         .count();
-    dbg!(commands);
-    dbg!(load_commands_size);
 
     header.magic = U32::new(BigEndian, MH_CIGAM_64);
     header.cputype = U32::new(LE, CPU_TYPE_ARM64);
