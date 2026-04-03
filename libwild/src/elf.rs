@@ -1113,12 +1113,9 @@ impl platform::Platform for Elf {
 
     fn apply_non_addressable_indexes<'data, 'groups>(
         symbol_db: &SymbolDb<'data, Self>,
-        counts: &mut NonAddressableCounts,
-        indexes: &NonAddressableIndexes,
+        counts: &NonAddressableCounts,
         mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
     ) {
-        counts.final_version_index = indexes.next_gnu_version_r_index - 1;
-
         // If we were going to output symbol versions, but we didn't actually use any, then we drop
         // all versym allocations. This is partly to avoid wasting unnecessary space in the output
         // file, but mostly in order match what GNU ld does.
@@ -3890,8 +3887,6 @@ pub(crate) struct NonAddressableCounts {
     pub(crate) verneed_count: u64,
     /// The number of verdef records provided in version script.
     pub(crate) verdef_count: u16,
-    /// LLD creates GLIBC_ABI_DT_RELR as the last version across all inputs, we mimic that.
-    pub(crate) final_version_index: u16,
 }
 
 #[derive(Debug)]

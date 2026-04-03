@@ -458,8 +458,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     fn apply_non_addressable_indexes<'data, 'groups>(
         symbol_db: &SymbolDb<'data, Self>,
-        counts: &mut Self::NonAddressableCounts,
-        indexes: &Self::NonAddressableIndexes,
+        counts: &Self::NonAddressableCounts,
         mem_sizes_iter: impl Iterator<Item = &'groups mut OutputSectionPartMap<u64>>,
     );
 

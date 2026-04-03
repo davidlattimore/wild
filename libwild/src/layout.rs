@@ -1771,8 +1771,7 @@ fn apply_non_addressable_indexes<'data, P: Platform>(
 
     P::apply_non_addressable_indexes(
         symbol_db,
-        &mut counts,
-        &indexes,
+        &counts,
         group_states.iter_mut().map(|g| &mut g.common.mem_sizes),
     );
 
