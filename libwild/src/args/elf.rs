@@ -600,9 +600,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             },
         )
         .sub_option("pack-relative-relocs", "", |args, _| {
-            if args.arch != Architecture::RISCV64 {
-                args.pack_relative_relocs = true;
-            }
+            args.pack_relative_relocs = true;
             Ok(())
         })
         .sub_option("nopack-relative-relocs", "", |args, _| {

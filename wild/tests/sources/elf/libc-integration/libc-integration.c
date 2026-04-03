@@ -119,9 +119,7 @@
 //#SkipLinker:ld
 //#ExpectDynSym:GLIBC_ABI_DT_RELR
 //#RequiresGlibc:true
-//#SkipArch: riscv64
 //#Contains:.relr.dyn
-//#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 
 #include <pthread.h>
 #include <stdlib.h>
