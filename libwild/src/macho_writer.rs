@@ -253,7 +253,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         );
         command.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         command.segname[seg_name.len()..].zero();
-        // TODO
+        // TODO: segment OutputRecordLayout
         command.vmaddr.set(LE, 0);
         command.vmsize.set(LE, 0);
         command.fileoff.set(LE, 0);
@@ -272,7 +272,17 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             section.segname[seg_name.len()..].zero();
             section.sectname[..section_name.len()].copy_from_slice(section_name);
             section.sectname[section_name.len()..].zero();
+            section.addr.set(LE, size.mem_offset);
+            section.size.set(LE, size.mem_size);
+            section.offset.set(LE, size.file_offset as u32);
             // TODO
+            section.align.set(LE, 0);
+            section.reloff.set(LE, 0);
+            section.nreloc.set(LE, 0);
+            section.flags.set(LE, 0);
+            section.reserved1.set(LE, 0);
+            section.reserved2.set(LE, 0);
+            section.reserved3.set(LE, 0);
         }
     }
     Ok(())
