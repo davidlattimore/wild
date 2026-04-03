@@ -599,14 +599,22 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
-        .sub_option("pack-relative-relocs", "", |args, _| {
-            args.pack_relative_relocs = true;
-            Ok(())
-        })
-        .sub_option("nopack-relative-relocs", "", |args, _| {
-            args.pack_relative_relocs = false;
-            Ok(())
-        })
+        .sub_option(
+            "pack-relative-relocs",
+            "Pack relative relocations into SHT_RELR",
+            |args, _| {
+                args.pack_relative_relocs = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "nopack-relative-relocs",
+            "Do not pack relative relocations into SHT_RELR (default)",
+            |args, _| {
+                args.pack_relative_relocs = false;
+                Ok(())
+            },
+        )
         .sub_option(
             "x86-64-baseline",
             "Mark x86-64-baseline ISA as needed",
