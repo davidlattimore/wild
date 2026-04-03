@@ -164,3 +164,10 @@ fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentComman
     command.nsects.set(LE, 0);
     command.flags.set(LE, 0);
 }
+
+fn write_segment_commands<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    _header_info: &HeaderInfo,
+    header: &mut FileHeader,
+) {
+}

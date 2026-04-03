@@ -31,6 +31,9 @@ use object::macho::N_EXT;
 use object::macho::N_PEXT;
 use object::macho::N_TYPE;
 use object::macho::N_WEAK_DEF;
+use object::macho::SEG_DATA;
+use object::macho::SEG_PAGEZERO;
+use object::macho::SEG_TEXT;
 use object::macho::Section64;
 use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
@@ -639,7 +642,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
                 output_section_id::PAGEZERO_SEGMENT
                 | output_section_id::TEXT_SEGMENT
                 | output_section_id::DATA_SEGMENT => SegmentType::LoadCommand,
-                output_section_id::TEXT => SegmentType::Text,
+                output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
                 output_section_id::DATA => SegmentType::Data,
                 _ => SegmentType::Misc,
             }
@@ -667,15 +670,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::Header),
     };
     defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"PAGEZERO_SEGMENT")),
+        kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommand),
     };
     defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"TEXT_SEGMENT")),
+        kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommand),
     };
     defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"DATA_SEGMENT")),
+        kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommand),
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
@@ -690,6 +693,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     // Start of regular sections
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__text")),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__cstring")),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
@@ -1192,6 +1199,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::DATA_SEGMENT);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
+        builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
 
@@ -1202,6 +1210,7 @@ impl platform::Platform for MachO {
 // TODO: sort properly
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact_section_keep(b"__text", crate::output_section_id::TEXT),
+    SectionRule::exact_section_keep(b"__cstring", crate::output_section_id::CSTRING),
     SectionRule::exact_section_keep(b"__data", crate::output_section_id::DATA),
     // SectionRule::exact_section_keep(b"__compact_unwind", crate::output_section_id::EH_FRAME),
 ];
