@@ -823,10 +823,6 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
-    pub(crate) fn len(&self) -> usize {
-        self.events.len()
-    }
-
     pub(crate) fn display<'a, 'data, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,
