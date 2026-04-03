@@ -29,7 +29,7 @@
 //#LinkArgs:-static -Wl,-z,now,-no-relax
 //#DiffIgnore:rel.extra-got-plt-got
 //#DiffIgnore:section.rela.plt.link
-// TODO: This is likely an important issue.
+// GNU ld unlike LLD and us, doesn't sort init_array.
 //#DiffIgnore:init_array
 // TODO: Missing `endbr64` relaxations.
 //#DiffIgnore:rel.match_failed.R_X86_64_GOTPCRELX
