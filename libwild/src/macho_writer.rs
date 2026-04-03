@@ -240,7 +240,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         (part_id::DATA_SEGMENT, SEG_DATA, SegmentType::Data),
     ] {
         let segment_sections = get_segment_sections(layout, segment_type);
-        let (command, sections) =
+        let (segment_cmd, sections) =
             split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
         debug_assert_eq!(sections.len(), segment_sections.len());
@@ -254,23 +254,25 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             .ok_or_else(|| error!("Missing layout for segment {segment_type:?}"))?
             .sizes;
 
-        command.cmd.set(LE, LC_SEGMENT_64);
-        command.cmdsize.set(
+        segment_cmd.cmd.set(LE, LC_SEGMENT_64);
+        segment_cmd.cmdsize.set(
             LE,
             (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * segment_sections.len())
                 as u32,
         );
-        command.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-        command.segname[seg_name.len()..].zero();
+        segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+        segment_cmd.segname[seg_name.len()..].zero();
         // TODO: segment OutputRecordLayout
-        command.vmaddr.set(LE, segment_sizes.mem_offset);
-        command.vmsize.set(LE, segment_sizes.mem_size);
-        command.fileoff.set(LE, segment_sizes.file_offset as u64);
-        command.filesize.set(LE, segment_sizes.file_size as u64);
-        command.maxprot.set(LE, 0);
-        command.initprot.set(LE, 0);
-        command.nsects.set(LE, segment_sections.len() as u32);
-        command.flags.set(LE, 0);
+        segment_cmd.vmaddr.set(LE, segment_sizes.mem_offset);
+        segment_cmd.vmsize.set(LE, segment_sizes.mem_size);
+        segment_cmd
+            .fileoff
+            .set(LE, segment_sizes.file_offset as u64);
+        segment_cmd.filesize.set(LE, segment_sizes.file_size as u64);
+        segment_cmd.maxprot.set(LE, 0);
+        segment_cmd.initprot.set(LE, 0);
+        segment_cmd.nsects.set(LE, segment_sections.len() as u32);
+        segment_cmd.flags.set(LE, 0);
 
         for (section, (size, section_name)) in sections.iter_mut().zip(segment_sections) {
             let section_name = section_name
