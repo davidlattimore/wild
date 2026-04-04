@@ -1268,20 +1268,9 @@ impl platform::Platform for Elf {
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        output_sections: &OutputSections<Self>,
         symbol_db: &SymbolDb<'data, Self>,
     ) {
         finalise_gnu_version_size(mem_sizes, symbol_db);
-        if output_sections.has_data_in_file(SYMTAB_SHNDX_LOCAL) {
-            mem_sizes.increment(
-                part_id::SYMTAB_SHNDX_LOCAL,
-                *mem_sizes.get(part_id::SYMTAB_LOCAL) / 24 * 4,
-            );
-            mem_sizes.increment(
-                part_id::SYMTAB_SHNDX_GLOBAL,
-                *mem_sizes.get(part_id::SYMTAB_GLOBAL) / 24 * 4,
-            );
-        }
     }
 
     fn is_symbol_non_interposable<'data>(

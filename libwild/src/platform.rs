@@ -459,7 +459,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut OutputSectionPartMap<u64>,
-        output_sections: &OutputSections<Self>,
         symbol_db: &SymbolDb<'data, Self>,
     );
 

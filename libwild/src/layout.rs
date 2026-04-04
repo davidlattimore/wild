@@ -1726,6 +1726,14 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         resources,
     )?;
 
+    let num_sections = prelude
+        .header_info
+        .as_ref()
+        .unwrap()
+        .num_output_sections_with_content;
+
+    compute_shndx_section(group_states, &mut total_sizes, num_sections);
+
     Ok(total_sizes)
 }
 
@@ -2249,7 +2257,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
             FileLayoutState::NotLoaded(_) => {}
         }
 
-        P::finalise_sizes_all(&mut common.mem_sizes, output_sections, resources.symbol_db);
+        P::finalise_sizes_all(&mut common.mem_sizes, resources.symbol_db);
 
         Ok(())
     }
@@ -2866,12 +2874,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
             extra_sizes.increment(part_id::SYMTAB_LOCAL, num_section_syms * entry_size);
             extra_sizes.increment(part_id::STRTAB, section_names_size);
-            if output_sections
-                .output_index_of_section(output_section_id::SYMTAB_SHNDX_LOCAL)
-                .is_some()
-            {
-                extra_sizes.increment(part_id::SYMTAB_SHNDX_LOCAL, num_section_syms * 4);
-            }
         }
 
         // We need to allocate both our own size record and the group totals, since they've already
@@ -3008,11 +3010,11 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
-        let num_sections_before_shndx = keep_sections.values_iter().filter(|p| **p).count();
-        if num_sections_before_shndx >= object::elf::SHN_LORESERVE as usize {
+        let mut num_sections = keep_sections.values_iter().filter(|p| **p).count();
+        if num_sections >= object::elf::SHN_LORESERVE as usize {
             *keep_sections.get_mut(output_section_id::SYMTAB_SHNDX_LOCAL) = true;
+            num_sections += 1;
         }
-        let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
         // Compute output indexes of each section.
         let mut next_output_index = 0;
@@ -5145,4 +5147,25 @@ impl OutputRecordLayout {
 // the type parameter P, allowing deferred dropping to occur.
 impl<'data, P: Platform> Drop for Layout<'data, P> {
     fn drop(&mut self) {}
+}
+
+fn compute_shndx_section<'data, P: Platform>(
+    group_states: &mut [GroupState<'data, P>],
+    total_sizes: &mut OutputSectionPartMap<u64>,
+    num_sections: u32,
+) {
+    if num_sections < object::elf::SHN_LORESERVE as u32 {
+        return;
+    }
+    group_states.iter_mut().for_each(|s| {
+        let locals = s.common.mem_sizes.get(part_id::SYMTAB_LOCAL) / 24;
+        let globals = s.common.mem_sizes.get(part_id::SYMTAB_GLOBAL) / 24;
+
+        let mut extra_sizes = OutputSectionPartMap::with_size(s.common.mem_sizes.num_parts());
+        extra_sizes.increment(part_id::SYMTAB_SHNDX_LOCAL, locals * 4);
+        extra_sizes.increment(part_id::SYMTAB_SHNDX_GLOBAL, globals * 4);
+
+        s.common.mem_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
+    })
 }

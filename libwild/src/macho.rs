@@ -1051,7 +1051,6 @@ impl platform::Platform for MachO {
 
     fn finalise_sizes_all<'data>(
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        output_sections: &crate::output_section_id::OutputSections<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
     }
