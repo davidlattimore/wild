@@ -130,7 +130,7 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
         .iter()
         .find(|seg| {
             layout.program_segments.segment_def(seg.id).segment_type
-                == crate::macho::SegmentType::LoadCommand
+                == crate::macho::SegmentType::LoadCommands
         })
         .map_or(0, |seg| seg.sizes.file_size);
     let commands = layout
@@ -142,7 +142,7 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
                     .program_segments
                     .segment_def(*segment_id)
                     .segment_type
-                    != SegmentType::LoadCommand
+                    != SegmentType::LoadCommands
             } else {
                 true
             }

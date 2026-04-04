@@ -584,7 +584,8 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
 #[derive(Debug, Copy, Clone, Default, PartialEq)]
 pub(crate) enum SegmentType {
     Header,
-    LoadCommand,
+    // All load commands are grouped into the segment.
+    LoadCommands,
     // Sections belonging to __TEXT segment.
     Text,
     // Sections belonging to __DATA segment.
@@ -649,7 +650,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
                 output_section_id::FILE_HEADER => SegmentType::Header,
                 output_section_id::PAGEZERO_SEGMENT
                 | output_section_id::TEXT_SEGMENT
-                | output_section_id::DATA_SEGMENT => SegmentType::LoadCommand,
+                | output_section_id::DATA_SEGMENT => SegmentType::LoadCommands,
                 output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
                 output_section_id::DATA => SegmentType::Data,
                 _ => SegmentType::Misc,
@@ -679,15 +680,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommand),
+        target_segment_type: Some(SegmentType::LoadCommands),
     };
     defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommand),
+        target_segment_type: Some(SegmentType::LoadCommands),
     };
     defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommand),
+        target_segment_type: Some(SegmentType::LoadCommands),
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
@@ -1243,7 +1244,7 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_type: SegmentType::Header,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::LoadCommand,
+        segment_type: SegmentType::LoadCommands,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::Text,
