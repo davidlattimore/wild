@@ -56,7 +56,8 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
-// Both ld and lld complain about a duplicate eh_frame info (loongarch64).
+// riscv64: lld-linked binary crashes with SIGSEGV under QEMU.
+// loongarch64: wild produces output that differs from both ld and lld (#1702).
 //#SkipArch: loongarch64,riscv64
 
 //#Config:clang-initial-exec:shared

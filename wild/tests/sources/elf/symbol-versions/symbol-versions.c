@@ -25,6 +25,7 @@
 //#LinkerDriver:gcc
 //#CompArgs:-flto -znow
 //#LinkArgs:--shared -Wl,--version-script=./symbol-versions-script.map -flto
+//#DiffIgnore:eh_frame
 
 //#Config:with-escaping:verdef
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
