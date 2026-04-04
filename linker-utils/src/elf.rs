@@ -1385,7 +1385,8 @@ impl fmt::Display for RelocationSize {
 }
 
 impl RelocationSize {
-    pub(crate) const fn bit_mask_aarch64(
+    #[must_use]
+    pub const fn bit_mask_aarch64(
         bit_start: u32,
         bit_end: u32,
         instruction: AArch64Instruction,

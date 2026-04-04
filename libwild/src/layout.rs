@@ -2984,7 +2984,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             }
         }
 
-        if !resources.symbol_db.args.should_output_partial_object() {
+        if !resources.symbol_db.args.should_output_partial_object() && !keep_segments.is_empty() {
             // Always keep the program headers segment even though we don't emit any sections in it.
             keep_segments[0] = true;
         }
