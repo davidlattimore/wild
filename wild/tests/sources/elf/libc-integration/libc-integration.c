@@ -110,6 +110,18 @@
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
 
+//#Config:gcc-relr:shared
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
+//#CompSoArgs:-g -fPIC
+//#LinkerDriver:gcc
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
+// Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol
+// dependency.
+//#SkipLinker:ld
+//#ExpectDynSym:GLIBC_ABI_DT_RELR
+//#RequiresGlibc:true
+//#Contains:.relr.dyn
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>

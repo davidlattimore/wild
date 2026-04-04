@@ -44,12 +44,13 @@ pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(24);
 pub(crate) const RELA_DYN_GENERAL: PartId = PartId(25);
 pub(crate) const RISCV_ATTRIBUTES: PartId = PartId(26);
 pub(crate) const RELRO_PADDING: PartId = PartId(27);
+pub(crate) const RELR_DYN: PartId = PartId(28);
 // Mach-O specific sections
-pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(28);
-pub(crate) const TEXT_SEGMENT: PartId = PartId(29);
-pub(crate) const DATA_SEGMENT: PartId = PartId(30);
+pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(29);
+pub(crate) const TEXT_SEGMENT: PartId = PartId(30);
+pub(crate) const DATA_SEGMENT: PartId = PartId(31);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 31;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 32;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

@@ -752,10 +752,19 @@ trait SymbolRequestHandler<'data, P: Platform>: std::fmt::Display + HandlerData 
 
             P::finalise_sizes_for_symbol(common, symbol_db, symbol_id, flags)?;
 
-            P::allocate_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
+            P::allocate_resolution(
+                flags,
+                &mut common.mem_sizes,
+                symbol_db.output_kind,
+                symbol_db.args,
+            );
 
             if symbol_db.args.common().verify_allocation_consistency {
-                verify_consistent_allocation_handling::<P>(flags, symbol_db.output_kind)?;
+                verify_consistent_allocation_handling::<P>(
+                    flags,
+                    symbol_db.output_kind,
+                    symbol_db.args,
+                )?;
             }
         }
 
@@ -789,9 +798,10 @@ pub(crate) fn export_dynamic<'data, P: Platform>(
 pub(crate) fn compute_allocations<P: Platform>(
     resolution: &Resolution<P>,
     output_kind: OutputKind,
+    args: &P::Args,
 ) -> OutputSectionPartMap<u64> {
     let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
-    P::allocate_resolution(resolution.flags, &mut sizes, output_kind);
+    P::allocate_resolution(resolution.flags, &mut sizes, output_kind, args);
     sizes
 }
 
@@ -2647,6 +2657,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
+        self.load_explicit_imports::<A>(resources, queue, scope);
+
         Ok(())
     }
 
@@ -2737,6 +2749,43 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 WorkItem::LoadGlobalSymbol(symbol_id),
                 scope,
             );
+        }
+    }
+
+    fn load_explicit_imports<'scope, A: Arch>(
+        &self,
+        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) {
+        for def_info in &self.internal_symbols.symbol_definitions {
+            if def_info.placement != SymbolPlacement::ImportDynamicSymbol {
+                continue;
+            }
+
+            let Some(symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
+            else {
+                // No libs contain the requested symbol, skipping.
+                return;
+            };
+
+            let canonical_target_id = resources.symbol_db.definition(symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+            let flags = resources
+                .per_symbol_flags
+                .get_atomic(canonical_target_id)
+                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+
+            if !flags.has_resolution() {
+                queue.send_work::<A>(
+                    resources,
+                    file_id,
+                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                    scope,
+                );
+            }
         }
     }
 
@@ -3166,7 +3215,9 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
+        SymbolPlacement::Undefined
+        | SymbolPlacement::ForceUndefined
+        | SymbolPlacement::ImportDynamicSymbol => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
@@ -3678,7 +3729,12 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
-                P::allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
+                P::allocate_resolution(
+                    section.flags,
+                    &mut common.mem_sizes,
+                    output_kind,
+                    resources.symbol_db.args,
+                );
             }
         }
 
@@ -5010,11 +5066,12 @@ fn test_no_disallowed_overlaps() {
 fn verify_consistent_allocation_handling<P: Platform>(
     flags: ValueFlags,
     output_kind: OutputKind,
+    args: &P::Args,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order(output_kind);
     let mut mem_sizes = output_sections.new_part_map();
-    P::allocate_resolution(flags, &mut mem_sizes, output_kind);
+    P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
@@ -5030,6 +5087,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
         output_kind,
         &mem_sizes,
         &resolution,
+        args,
     )
     .with_context(|| {
         format!(

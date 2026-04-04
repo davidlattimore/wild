@@ -113,6 +113,7 @@ pub struct ElfArgs {
     pub(crate) z_stack_size: Option<NonZeroU64>,
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
+    pub(crate) pack_relative_relocs: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -283,6 +284,7 @@ impl Default for ElfArgs {
             relax: true,
             hash_style: HashStyle::Both,
             trace: false,
+            pack_relative_relocs: false,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -594,6 +596,22 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 let size: u64 = parse_number(value)?;
                 args.z_stack_size = NonZero::new(size);
 
+                Ok(())
+            },
+        )
+        .sub_option(
+            "pack-relative-relocs",
+            "Pack relative relocations into SHT_RELR",
+            |args, _| {
+                args.pack_relative_relocs = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "nopack-relative-relocs",
+            "Do not pack relative relocations into SHT_RELR (default)",
+            |args, _| {
+                args.pack_relative_relocs = false;
                 Ok(())
             },
         )

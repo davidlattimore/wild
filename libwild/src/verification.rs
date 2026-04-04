@@ -103,6 +103,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::EH_FRAME_HDR,
         part_id::RELA_DYN_GENERAL,
         part_id::RELA_DYN_RELATIVE,
+        part_id::RELR_DYN,
         part_id::GNU_VERSION,
         part_id::GNU_HASH,
         part_id::DYNAMIC,

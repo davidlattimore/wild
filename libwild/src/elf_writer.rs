@@ -577,6 +577,7 @@ struct TableWriter<'layout, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
+    relr_dyn: Option<&'out mut [elf::Relr]>,
     dynsym_writer: SymbolTableWriter<'layout, 'out>,
     debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
@@ -610,6 +611,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
+            layout.symbol_db.args.pack_relative_relocs,
         )
     }
 
@@ -620,6 +622,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         dynsym_writer: SymbolTableWriter<'layout, 'out>,
         debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
+        pack_relative_relocs: bool,
     ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -639,6 +642,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
             rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
+            relr_dyn: pack_relative_relocs
+                .then(|| slice_from_all_bytes_mut(buffers.take(part_id::RELR_DYN)))
+                .filter(|b| !b.is_empty()),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -652,6 +658,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_resolution<'data, A: Arch<Platform = Elf>>(
         &mut self,
         layout: Option<&ElfLayout<'data>>,
+        args: &ElfArgs,
         res: &Resolution<Elf>,
     ) -> Result {
         let Some(got_address) = res.format_specific.got_address else {
@@ -676,11 +683,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
             if flags.needs_got_tls_module() {
-                self.process_got_tls_mod_and_offset::<A>(res, got_address)?;
+                self.process_got_tls_mod_and_offset::<A>(res, args, got_address)?;
                 got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
             }
             if flags.needs_got_tls_descriptor() {
-                self.process_got_tls_descriptor::<A>(res, got_address)?;
+                self.process_got_tls_descriptor::<A>(res, args, got_address)?;
             }
             return Ok(());
         }
@@ -693,7 +700,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         {
             *got_entry = 0;
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, args)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 res.flags
@@ -708,10 +716,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             self.write_ifunc_relocation::<A>(res)?;
         } else {
-            *got_entry = res.raw_value;
-            if res.flags.is_address() && self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
-            }
+            *got_entry = if res.flags.is_address() && self.output_kind.is_relocatable() {
+                self.write_address_relocation::<A>(got_address, res.raw_value)?
+            } else {
+                res.raw_value
+            };
         }
         if let Some(plt_address) = res.format_specific.plt_address {
             self.write_plt_entry::<A>(got_address, plt_address.get())?;
@@ -724,10 +733,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if res.flags.needs_ifunc_got_for_address() {
             let ifunc_got_address = got_address + elf::GOT_ENTRY_SIZE;
             let got_entry = self.take_next_got_entry()?;
-            *got_entry = res.plt_address()?;
-            if self.output_kind.is_relocatable() {
-                self.write_address_relocation::<A>(ifunc_got_address, *got_entry as i64)?;
-            }
+            let plt_address = res.plt_address()?;
+            *got_entry = if self.output_kind.is_relocatable() {
+                self.write_address_relocation::<A>(ifunc_got_address, plt_address)?
+            } else {
+                plt_address
+            };
         }
 
         Ok(())
@@ -766,7 +777,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, layout.args())
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write tpoff with no allocation. {}",
                 res.flags
@@ -779,6 +791,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_mod_and_offset<A: Arch<Platform = Elf>>(
         &mut self,
         res: &Resolution<Elf>,
+        args: &ElfArgs,
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
@@ -788,7 +801,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
-                *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL)
+                *compute_allocations::<Elf>(res, self.output_kind, args)
+                    .get(part_id::RELA_DYN_GENERAL)
                     > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 res.flags
@@ -817,6 +831,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn process_got_tls_descriptor<A: Arch<Platform = Elf>>(
         &mut self,
         res: &Resolution<Elf>,
+        args: &ElfArgs,
         got_address: u64,
     ) -> Result {
         // TLS descriptor occupies 2 entries
@@ -830,7 +845,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
-            *compute_allocations::<Elf>(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+            *compute_allocations::<Elf>(res, self.output_kind, args).get(part_id::RELA_DYN_GENERAL)
+                > 0,
             "Tried to write TLS descriptor with no allocation. {}",
             res.flags
         );
@@ -890,6 +906,15 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 ".rela.dyn (general)",
                 self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE,
                 *mem_sizes.get(part_id::RELA_DYN_GENERAL),
+            ));
+        }
+        if let Some(relr_dyn) = &self.relr_dyn
+            && !relr_dyn.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".relr.dyn",
+                relr_dyn.len() as u64 * elf::RELR_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELR_DYN),
             ));
         }
         self.dynsym_writer.check_exhausted()?;
@@ -993,27 +1018,39 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
+    /// Writes RELA or RELR entry and returns value that should be written at the relocation site.
     fn write_address_relocation<A: Arch<Platform = Elf>>(
         &mut self,
         place: u64,
-        relative_address: i64,
-    ) -> Result {
+        relative_address: u64,
+    ) -> Result<u64> {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        let rela = self
-            .rela_dyn_relative
-            .split_off_first_mut()
-            .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
-        rela.r_offset.set(e, place);
-        rela.r_addend.set(e, relative_address);
-        rela.r_info.set(
-            e,
-            A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
-        );
-        Ok(())
+        // Odd offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
+        if let Some(relr_writer) = &mut self.relr_dyn
+            && place.is_multiple_of(2)
+        {
+            let relr = relr_writer
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".relr.dyn"))?;
+            relr.0.set(LittleEndian, place);
+            Ok(relative_address)
+        } else {
+            let rela = self
+                .rela_dyn_relative
+                .split_off_first_mut()
+                .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
+            rela.r_offset.set(e, place);
+            rela.r_addend.set(e, relative_address as i64);
+            rela.r_info.set(
+                e,
+                A::get_dynamic_relocation_type(DynamicRelocationKind::Relative).into(),
+            );
+            Ok(0)
+        }
     }
 
     fn write_ifunc_relocation_for_data<A: Arch<Platform = Elf>>(
@@ -1352,7 +1389,7 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
         if let Some(res) = resolution {
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| {
                     format!(
                         "Failed to process `{}` with resolution {res:?}",
@@ -3134,10 +3171,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
-
-        table_writer.write_address_relocation::<A>(place, address as i64)?;
-
-        Ok(0)
+        table_writer.write_address_relocation::<A>(place, address)
     } else {
         resolution.value_with_addend(
             addend,
@@ -3259,6 +3293,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
         if layout.symbol_db.output_kind.is_executable() {
             table_writer.process_resolution::<A>(
                 Some(layout),
+                layout.args(),
                 &Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                     dynamic_symbol_index: None,
@@ -3280,6 +3315,7 @@ fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
 
         table_writer.process_resolution::<A>(
             Some(layout),
+            layout.args(),
             &Resolution {
                 raw_value,
                 dynamic_symbol_index: None,
@@ -4540,6 +4576,21 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
             / size_of::<elf::Rela>() as u64
     }),
     DynamicEntryWriter::optional(
+        object::elf::DT_RELR,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_RELRSZ,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_RELRENT,
+        |inputs| inputs.has_data_in_section(output_section_id::RELR_DYN),
+        |_| elf::RELR_ENTRY_SIZE,
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_HASH,
         |inputs| inputs.has_data_in_section(output_section_id::HASH),
         |inputs| inputs.vma_of_section(output_section_id::HASH),
@@ -4941,7 +4992,7 @@ fn write_internal_symbols_plt_got_entries<'data, A: Arch<Platform = Elf>>(
         }
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| {
                     format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
                 })?;
@@ -5007,7 +5058,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
             }
 
             table_writer
-                .process_resolution::<A>(Some(layout), res)
+                .process_resolution::<A>(Some(layout), layout.args(), res)
                 .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
         }
     }
@@ -5222,6 +5273,7 @@ pub(crate) fn verify_resolution_allocation(
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution<Elf>,
+    args: &ElfArgs,
 ) -> Result {
     // Allocate however much space was requested.
 
@@ -5259,8 +5311,9 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
+        args.pack_relative_relocs,
     );
-    table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, resolution)?;
+    table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, args, resolution)?;
     table_writer.validate_empty(mem_sizes)
 }
 
