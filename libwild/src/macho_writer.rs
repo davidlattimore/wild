@@ -18,7 +18,9 @@ use crate::macho::FileHeader;
 use crate::macho::MachO;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
+use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
+use crate::macho::get_segment_sections;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
@@ -115,37 +117,6 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn get_segment_sections<'data>(
-    layout: &MachOLayout<'data>,
-    segment_type: SegmentType,
-) -> Vec<(OutputRecordLayout, Option<SectionName<'data>>)> {
-    let mut in_matching_segment = false;
-    let mut sections = Vec::new();
-
-    for event in &layout.output_order {
-        match event {
-            OrderEvent::SegmentStart(segment_id)
-                if layout.program_segments.segment_def(segment_id).segment_type == segment_type =>
-            {
-                in_matching_segment = true;
-            }
-            OrderEvent::SegmentEnd(segment_id)
-                if layout.program_segments.segment_def(segment_id).segment_type == segment_type
-                    && in_matching_segment =>
-            {
-                break;
-            }
-            OrderEvent::Section(section_id) if in_matching_segment => {
-                let sizes = *layout.section_layouts.get(section_id);
-                sections.push((sizes, layout.output_sections.name(section_id)));
-            }
-            _ => {}
-        }
-    }
-
-    sections
-}
-
 fn populate_file_header<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     _header_info: &HeaderInfo,
@@ -227,20 +198,14 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         (part_id::TEXT_SEGMENT, SEG_TEXT, SegmentType::Text),
         (part_id::DATA_SEGMENT, SEG_DATA, SegmentType::Data),
     ] {
-        let segment_sections = get_segment_sections(layout, segment_type);
+        let SegmentSectionsInfo {
+            segment_size,
+            segment_sections,
+        } = get_segment_sections(layout, segment_type);
         let (segment_cmd, sections) =
             split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
         debug_assert_eq!(sections.len(), segment_sections.len());
-
-        // TODO: a better approach?
-        let segment_sizes = layout
-            .segment_layouts
-            .segments
-            .iter()
-            .find(|s| layout.program_segments.segment_def(s.id).segment_type == segment_type)
-            .ok_or_else(|| error!("Missing layout for segment {segment_type:?}"))?
-            .sizes;
 
         segment_cmd.cmd.set(LE, LC_SEGMENT_64);
         segment_cmd.cmdsize.set(
@@ -251,13 +216,11 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         segment_cmd.segname[seg_name.len()..].zero();
         // TODO: segment OutputRecordLayout
-        segment_cmd.vmaddr.set(LE, segment_sizes.mem_offset);
-        segment_cmd.vmsize.set(LE, segment_sizes.mem_size);
+        segment_cmd.vmaddr.set(LE, segment_size.mem_offset);
+        segment_cmd.vmsize.set(LE, segment_size.mem_size);
         // TODO: should be likely offset relative to the place after the commands
-        segment_cmd
-            .fileoff
-            .set(LE, segment_sizes.file_offset as u64);
-        segment_cmd.filesize.set(LE, segment_sizes.file_size as u64);
+        segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
+        segment_cmd.filesize.set(LE, segment_size.file_size as u64);
         segment_cmd.maxprot.set(LE, 0);
         segment_cmd.initprot.set(LE, 0);
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);

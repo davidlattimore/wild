@@ -8,11 +8,14 @@ use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::layout::Layout;
+use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::macho_writer;
 use crate::output_section_id;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
@@ -708,20 +711,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs
 };
 
-// TODO: a better approach?
-fn count_sections_for_segment_type(
-    output_sections: &crate::output_section_id::OutputSections<MachO>,
-    segment_type: SegmentType,
-) -> usize {
-    let segment_def = ProgramSegmentDef { segment_type };
-    output_sections
-        .ids_with_info()
-        .filter(|(section_id, _)| {
-            output_sections.should_include_in_segment(*section_id, segment_def)
-        })
-        .count()
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     phantom: &'data [u8],
@@ -1261,3 +1250,64 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_type: SegmentType::Misc,
     },
 ];
+
+fn count_sections_for_segment_type(
+    output_sections: &crate::output_section_id::OutputSections<MachO>,
+    segment_type: SegmentType,
+) -> usize {
+    let segment_def = ProgramSegmentDef { segment_type };
+    output_sections
+        .ids_with_info()
+        .filter(|(section_id, _)| {
+            output_sections.should_include_in_segment(*section_id, segment_def)
+        })
+        .count()
+}
+
+pub(crate) struct SegmentSectionsInfo<'data> {
+    pub(crate) segment_size: OutputRecordLayout,
+    pub(crate) segment_sections: Vec<(OutputRecordLayout, Option<SectionName<'data>>)>,
+}
+
+pub(crate) fn get_segment_sections<'data>(
+    layout: &Layout<'data, MachO>,
+    segment_type: SegmentType,
+) -> SegmentSectionsInfo<'data> {
+    let mut in_matching_segment = false;
+    let mut sections = Vec::new();
+    let mut segment_id = None;
+
+    for event in &layout.output_order {
+        match event {
+            OrderEvent::SegmentStart(seg_id)
+                if layout.program_segments.segment_def(seg_id).segment_type == segment_type =>
+            {
+                segment_id = Some(seg_id);
+                in_matching_segment = true;
+            }
+            OrderEvent::SegmentEnd(seg_id)
+                if layout.program_segments.segment_def(seg_id).segment_type == segment_type
+                    && in_matching_segment =>
+            {
+                break;
+            }
+            OrderEvent::Section(section_id) if in_matching_segment => {
+                let sizes = *layout.section_layouts.get(section_id);
+                sections.push((sizes, layout.output_sections.name(section_id)));
+            }
+            _ => {}
+        }
+    }
+
+    let segment_id = segment_id.expect("must be visited in the output order");
+    SegmentSectionsInfo {
+        segment_sections: sections,
+        segment_size: layout
+            .segment_layouts
+            .segments
+            .iter()
+            .find(|seg| seg.id == segment_id)
+            .unwrap()
+            .sizes,
+    }
+}
