@@ -17,6 +17,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Section;
+use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
@@ -43,6 +44,7 @@ use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
@@ -118,8 +120,13 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid PAGEZERO segment allocation"))?
             .0;
     write_pagezero_command::<A>(pagezero_command);
-
     write_segment_commands::<A>(layout, buffers)?;
+
+    let entry_point_command: &mut EntryPointCommand =
+        from_bytes_mut(buffers.get_mut(part_id::ENTRY_POINT))
+            .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
+            .0;
+    write_entry_point_command::<A>(layout, entry_point_command);
 
     Ok(())
 }
@@ -299,4 +306,18 @@ fn write_section_raw<'out, 'data>(
     } else {
         Ok(&mut [])
     }
+}
+
+fn write_entry_point_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut EntryPointCommand,
+) {
+    let SegmentSectionsInfo { segment_size, .. } = get_segment_sections(layout, SegmentType::Text);
+
+    command.cmd.set(LE, LC_MAIN);
+    command
+        .cmdsize
+        .set(LE, size_of::<EntryPointCommand>() as u32);
+    command.entryoff.set(LE, segment_size.file_offset as u64);
+    command.stacksize.set(LE, 0);
 }

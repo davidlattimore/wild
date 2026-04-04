@@ -100,6 +100,7 @@ pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_
 pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
 pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
+pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
 
 // Regular sections copied from the input objects.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);

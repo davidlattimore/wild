@@ -49,8 +49,9 @@ pub(crate) const RELR_DYN: PartId = PartId(28);
 pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(29);
 pub(crate) const TEXT_SEGMENT: PartId = PartId(30);
 pub(crate) const DATA_SEGMENT: PartId = PartId(31);
+pub(crate) const ENTRY_POINT: PartId = PartId(32);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 32;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 33;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

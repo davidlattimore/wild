@@ -71,6 +71,7 @@ type Relocation = object::macho::Relocation<Endianness>;
 pub(crate) type FileHeader = object::macho::MachHeader64<Endianness>;
 pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
 pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
+pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -686,7 +687,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
                 output_section_id::FILE_HEADER => SegmentType::Header,
                 output_section_id::PAGEZERO_SEGMENT
                 | output_section_id::TEXT_SEGMENT
-                | output_section_id::DATA_SEGMENT => SegmentType::LoadCommands,
+                | output_section_id::DATA_SEGMENT
+                | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
                 output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
                 output_section_id::DATA => SegmentType::Data,
                 _ => SegmentType::Misc,
@@ -1109,6 +1111,7 @@ impl platform::Platform for MachO {
                     * count_sections_for_segment_type(output_sections, SegmentType::Data))
                 as u64,
         );
+        sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1213,6 +1216,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::PAGEZERO_SEGMENT);
         builder.add_section(output_section_id::TEXT_SEGMENT);
         builder.add_section(output_section_id::DATA_SEGMENT);
+        builder.add_section(output_section_id::ENTRY_POINT);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
@@ -1236,6 +1240,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::Header),
         ..DEFAULT_DEFS
     };
+    // Load commands
     defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
@@ -1251,6 +1256,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
         section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_WRITE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_MAIN")),
+        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
