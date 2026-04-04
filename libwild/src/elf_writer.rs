@@ -1485,7 +1485,7 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
 }
 
 fn build_section_sym_indices(layout: &ElfLayout<'_>) -> OutputSectionMap<u32> {
-    let mut map = OutputSectionMap::with_size(layout.output_order.len());
+    let mut map = OutputSectionMap::with_size(layout.output_sections.num_sections());
     let mut next_sym_idx: u32 = 1;
     for event in &layout.output_order {
         let OrderEvent::Section(section_id) = event else {
