@@ -123,41 +123,14 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     _header_info: &HeaderInfo,
     header: &mut FileHeader,
 ) {
-    // TODO: can we do better?
-    let load_commands_size = layout
-        .segment_layouts
-        .segments
-        .iter()
-        .find(|seg| {
-            layout.program_segments.segment_def(seg.id).segment_type
-                == crate::macho::SegmentType::LoadCommands
-        })
-        .map_or(0, |seg| seg.sizes.file_size);
-    let commands = layout
-        .output_order
-        .into_iter()
-        .skip_while(|event| {
-            if let OrderEvent::SegmentStart(segment_id) = event {
-                layout
-                    .program_segments
-                    .segment_def(*segment_id)
-                    .segment_type
-                    != SegmentType::LoadCommands
-            } else {
-                true
-            }
-        })
-        .skip(1)
-        .take_while(|event| !matches!(event, OrderEvent::SegmentEnd(..)))
-        .count();
+    let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands);
 
     header.magic = U32::new(BigEndian, MH_CIGAM_64);
     header.cputype = U32::new(LE, CPU_TYPE_ARM64);
     header.cpusubtype = U32::new(LE, 0);
-    // TODO
     header.filetype = U32::new(LE, MH_EXECUTE);
-    header.ncmds = U32::new(LE, commands as u32);
-    header.sizeofcmds = U32::new(LE, load_commands_size as u32);
+    header.ncmds = U32::new(LE, load_commands_info.segment_sections.len() as u32);
+    header.sizeofcmds = U32::new(LE, load_commands_info.segment_size.file_size as u32);
     header.flags = U32::new(LE, 0);
     header.reserved = U32::new(LE, 0);
 }
