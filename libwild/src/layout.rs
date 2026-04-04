@@ -5157,13 +5157,21 @@ fn compute_shndx_section<'data, P: Platform>(
     if num_sections < u32::from(object::elf::SHN_LORESERVE) {
         return;
     }
+    let symtab_entry_size = size_of::<P::SymtabEntry>() as u64;
+    let symtab_shndx_entry_size = size_of::<P::SymtabShndxEntry>() as u64;
     group_states.iter_mut().for_each(|s| {
-        let locals = s.common.mem_sizes.get(part_id::SYMTAB_LOCAL) / 24;
-        let globals = s.common.mem_sizes.get(part_id::SYMTAB_GLOBAL) / 24;
+        let locals = s.common.mem_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
+        let globals = s.common.mem_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
 
         let mut extra_sizes = OutputSectionPartMap::with_size(s.common.mem_sizes.num_parts());
-        extra_sizes.increment(part_id::SYMTAB_SHNDX_LOCAL, locals * 4);
-        extra_sizes.increment(part_id::SYMTAB_SHNDX_GLOBAL, globals * 4);
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_LOCAL,
+            locals * symtab_shndx_entry_size,
+        );
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_GLOBAL,
+            globals * symtab_shndx_entry_size,
+        );
 
         s.common.mem_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);

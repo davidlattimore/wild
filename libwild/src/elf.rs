@@ -326,6 +326,7 @@ impl platform::Platform for Elf {
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
+    type SymtabShndxEntry = SymtabShndxEntry;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -4845,6 +4846,11 @@ pub(crate) struct ResolutionExt {
     /// offset within module).
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SymtabShndxEntry {
+    pub(crate) _shndx: u32,
 }
 
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {

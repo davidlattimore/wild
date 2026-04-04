@@ -800,6 +800,7 @@ impl platform::Platform for MachO {
     type ArchIdentifier = ();
     type Args = MachOArgs;
     type ResolutionExt = ();
+    type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
     type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;

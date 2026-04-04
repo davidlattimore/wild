@@ -192,6 +192,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
+    type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
