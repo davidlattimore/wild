@@ -102,7 +102,7 @@ pub(crate) struct Section<'a> {
     pub(crate) alignment: Option<Alignment>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) struct MemoryRegion<'a> {
     pub(crate) name: &'a [u8],
     pub(crate) origin: Expression<'a>,

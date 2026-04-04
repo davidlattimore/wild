@@ -11,6 +11,7 @@ use crate::error::Warning;
 use crate::grouping::Group;
 use crate::layout::OutputRecordLayout;
 use crate::linker_script::Expression;
+use crate::linker_script::MemoryRegion;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
@@ -44,6 +45,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
                     section_layouts,
                     output_sections,
                     warning_callback,
+                    &parsed.memory_regions,
                 )
                 .with_context(|| format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line))?;
 
@@ -62,10 +64,17 @@ fn evaluate_expression<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     warning_callback: &WarningCallback,
+    memory_regions: &[MemoryRegion<'data>],
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
-            evaluate_expression($e, section_layouts, output_sections, warning_callback)
+            evaluate_expression(
+                $e,
+                section_layouts,
+                output_sections,
+                warning_callback,
+                memory_regions,
+            )
         };
     }
 
@@ -139,7 +148,31 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
         Expression::BitwiseNot(e) => Ok(!eval!(e)?),
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
-        Expression::Origin(_) | Expression::Length(_) => todo!(),
+
+        Expression::Origin(name) => {
+            let region = memory_regions
+                .iter()
+                .find(|r| r.name == *name)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "ORIGIN: memory region '{}' not found",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+            eval!(&region.origin)
+        }
+        Expression::Length(name) => {
+            let region = memory_regions
+                .iter()
+                .find(|r| r.name == *name)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "LENGTH: memory region '{}' not found",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+            eval!(&region.length)
+        }
     }
 }
 
@@ -208,7 +241,7 @@ mod tests {
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
         let (layouts, sections) = dummy_context();
-        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {})
+        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &[])
     }
 
     #[test]
@@ -527,6 +560,7 @@ mod tests {
                 symbol_defs: Vec::new(),
                 assertions,
                 file_bytes: b"",
+                memory_regions: Vec::new(),
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),
