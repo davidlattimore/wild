@@ -1863,6 +1863,14 @@ impl platform::Platform for Elf {
 
         SectionRuleOutcome::Custom
     }
+
+    fn start_memory_address(output_kind: OutputKind) -> u64 {
+        if output_kind.is_relocatable() {
+            0
+        } else {
+            crate::elf::NON_PIE_START_MEM_ADDRESS
+        }
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {

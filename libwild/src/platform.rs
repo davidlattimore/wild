@@ -622,6 +622,9 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
     }
+
+    /// Return a starting address in memory.
+    fn start_memory_address(output_kind: OutputKind) -> u64;
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

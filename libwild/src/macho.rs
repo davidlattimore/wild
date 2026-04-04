@@ -51,6 +51,10 @@ pub(crate) struct MachO;
 
 const LE: Endianness = Endianness::Little;
 
+/// Mach-O uses a zero page for all 32bit addresses and thus we begin the memory
+/// offsets right after that (1GiB).
+pub const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
+
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
 type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
@@ -1219,6 +1223,10 @@ impl platform::Platform for MachO {
         // The rest (e.g. symbol table, string table).
 
         builder.build()
+    }
+
+    fn start_memory_address(output_kind: OutputKind) -> u64 {
+        MACHO_START_MEM_ADDRESS
     }
 }
 

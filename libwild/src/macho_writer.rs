@@ -15,6 +15,7 @@ use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::macho::FileHeader;
+use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
@@ -166,8 +167,7 @@ fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentComman
     command.cmdsize.set(LE, size_of::<SegmentCommand>() as u32);
     command.segname[..SEG_PAGEZERO.len()].copy_from_slice(SEG_PAGEZERO.as_bytes());
     command.vmaddr.set(LE, 0);
-    // The entire 32-bit address space maps to the zero page.
-    command.vmsize.set(LE, 1 << 32);
+    command.vmsize.set(LE, MACHO_START_MEM_ADDRESS);
     command.fileoff.set(LE, 0);
     command.filesize.set(LE, 0);
     command.maxprot.set(LE, 0);
