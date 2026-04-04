@@ -185,6 +185,10 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
         debug_assert_eq!(sections.len(), segment_sections.len());
+        let prot_flags = layout
+            .output_sections
+            .section_flags(part_id.output_section_id())
+            .raw();
 
         segment_cmd.cmd.set(LE, LC_SEGMENT_64);
         segment_cmd.cmdsize.set(
@@ -194,14 +198,13 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         );
         segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         segment_cmd.segname[seg_name.len()..].zero();
-        // TODO: segment OutputRecordLayout
         segment_cmd.vmaddr.set(LE, segment_size.mem_offset);
         segment_cmd.vmsize.set(LE, segment_size.mem_size);
         // TODO: should be likely offset relative to the place after the commands
         segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
         segment_cmd.filesize.set(LE, segment_size.file_size as u64);
-        segment_cmd.maxprot.set(LE, 0);
-        segment_cmd.initprot.set(LE, 0);
+        segment_cmd.maxprot.set(LE, prot_flags);
+        segment_cmd.initprot.set(LE, prot_flags);
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 

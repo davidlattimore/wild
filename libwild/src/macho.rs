@@ -451,7 +451,24 @@ impl platform::SectionType for SectionType {
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionFlags {}
+pub(crate) struct SectionFlags(u32);
+
+impl SectionFlags {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub const fn from_u32(raw: u32) -> SectionFlags {
+        SectionFlags(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
@@ -539,13 +556,15 @@ impl platform::Symbol for SymtabEntry {
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionAttributes {}
+pub(crate) struct SectionAttributes {
+    pub(crate) flags: SectionFlags,
+}
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = MachO;
 
     fn merge(&mut self, rhs: Self) {
-        todo!()
+        self.flags = SectionFlags::from_u32(self.flags.raw() | rhs.flags.raw());
     }
 
     fn apply(
@@ -580,7 +599,7 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
-        SectionFlags {}
+        self.flags
     }
 
     fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
@@ -677,6 +696,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
+    pub(crate) section_flags: SectionFlags,
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
@@ -684,53 +704,8 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
+    section_flags: SectionFlags::empty(),
     target_segment_type: None,
-};
-
-const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
-    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
-        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
-
-    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
-        target_segment_type: Some(SegmentType::Header),
-    };
-    defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-    };
-    defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-    };
-    defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-    };
-    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
-        ..DEFAULT_DEFS
-    };
-    // Multi-part generated sections
-    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
-        ..DEFAULT_DEFS
-    };
-    // Start of regular sections
-    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__text")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__cstring")),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__data")),
-        ..DEFAULT_DEFS
-    };
-
-    defs
 };
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -846,8 +821,9 @@ impl platform::Platform for MachO {
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
-        // TODO
-        Self::SectionAttributes {}
+        Self::SectionAttributes {
+            ..Default::default()
+        }
     }
 
     fn apply_force_keep_sections(
@@ -991,7 +967,9 @@ impl platform::Platform for MachO {
         SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                section_attributes: SectionAttributes {},
+                section_attributes: SectionAttributes {
+                    flags: d.section_flags,
+                },
                 kind: d.kind,
                 min_alignment: alignment::MIN,
                 location: None,
@@ -1248,6 +1226,58 @@ impl platform::Platform for MachO {
         MACHO_START_MEM_ADDRESS
     }
 }
+
+const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
+    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
+        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
+
+    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
+        target_segment_type: Some(SegmentType::Header),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_EXECUTE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_WRITE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
+        ..DEFAULT_DEFS
+    };
+    // Multi-part generated sections
+    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
+        ..DEFAULT_DEFS
+    };
+    // Start of regular sections
+    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__text")),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__cstring")),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__data")),
+        ..DEFAULT_DEFS
+    };
+
+    defs
+};
 
 // TODO: sort properly
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
