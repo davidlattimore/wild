@@ -37,7 +37,6 @@ use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SYMTAB_SHNDX_LOCAL;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::output_section_map::OutputSectionMap;

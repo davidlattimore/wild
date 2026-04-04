@@ -5154,7 +5154,7 @@ fn compute_shndx_section<'data, P: Platform>(
     total_sizes: &mut OutputSectionPartMap<u64>,
     num_sections: u32,
 ) {
-    if num_sections < object::elf::SHN_LORESERVE as u32 {
+    if num_sections < u32::from(object::elf::SHN_LORESERVE) {
         return;
     }
     group_states.iter_mut().for_each(|s| {
@@ -5167,5 +5167,5 @@ fn compute_shndx_section<'data, P: Platform>(
 
         s.common.mem_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);
-    })
+    });
 }
