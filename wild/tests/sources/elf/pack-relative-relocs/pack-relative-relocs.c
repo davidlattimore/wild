@@ -1,14 +1,13 @@
-// This test verifies that we correctly handle RELR relocations in a few edge
-// cases.
+// Verify that we correctly handle RELR relocations in a few edge cases.
+// Note that while `-z pack-relative-relocs` and `--pack-dyn-relocs=relr` are
+// similar, they don't override each other.
+
+//#AbstractConfig:default
 //#Object:init.c:-fPIC
 //#Object:runtime.c
 //#Shared:empty.c
 // LLD doesn't allow simultaneous `-pie` and `-shared`, so disable PIE for deps.
 //#LinkSoArgs:-no-pie
-//#LinkArgs:-pie -z now -z pack-relative-relocs
-// GNU ld ignores `-z pack-relative-relocs` on RISC-V.
-//#EnableLinker:lld
-//#SkipLinker:ld
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:dynsym.__global_pointer$.section
@@ -19,6 +18,18 @@
 //#ExpectDynamic:DT_RELRENT
 //#Contains:.relr.dyn
 //#DoesNotContain:GLIBC_ABI_DT_RELR
+
+//#Config:z-pack-relative-relocs:default
+//#LinkArgs:-pie -z now -z pack-relative-relocs --pack-dyn-relocs=none
+// GNU ld ignores `-z pack-relative-relocs` on RISC-V.
+//#EnableLinker:lld
+//#SkipLinker:ld
+
+//#Config:pack-dyn-relocs-relr:default
+//#LinkArgs:-pie -z now --pack-dyn-relocs=relr -z nopack-relative-relocs
+// GNU ld doesn't support `--pack-dyn-relocs.
+//#EnableLinker:lld
+//#SkipLinker:ld
 
 #include "init.h"
 #include "runtime.h"

@@ -611,7 +611,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
-            layout.symbol_db.args.pack_relative_relocs,
+            layout.symbol_db.args.is_relr_enabled(),
         )
     }
 
@@ -5311,7 +5311,7 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
-        args.pack_relative_relocs,
+        args.is_relr_enabled(),
     );
     table_writer.process_resolution::<crate::elf_x86_64::ElfX86_64>(None, args, resolution)?;
     table_writer.validate_empty(mem_sizes)

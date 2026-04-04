@@ -122,6 +122,22 @@
 //#RequiresGlibc:true
 //#Contains:.relr.dyn
 
+//#Config:gcc-pack-dyn-relocs-relr:shared
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
+//#CompSoArgs:-g -fPIC
+//#LinkerDriver:gcc
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,--pack-dyn-relocs=relr
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#NoSym:GLIBC_ABI_DT_RELR
+//#Contains:.relr.dyn
+//#DiffIgnore:section.gnu.version_r.alignment
+//#DiffIgnore:section.got.plt.entsize
+//#DiffIgnore:rel.missing-opt.*
+// Glibc refuses to run binaries with RELR unless `GLIBC_ABI_DT_RELR` version is
+// imported.
+//#RunEnabled:false
+
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>

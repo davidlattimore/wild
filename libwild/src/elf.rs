@@ -914,7 +914,7 @@ impl platform::Platform for Elf {
 
         // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
         // defined.
-        if args.pack_relative_relocs {
+        if args.z_pack_relative_relocs {
             symbols.add_symbol(InternalSymDefInfo::new(
                 SymbolPlacement::ImportDynamicSymbol,
                 b"GLIBC_ABI_DT_RELR",
@@ -1395,7 +1395,7 @@ impl platform::Platform for Elf {
             } else if flags.is_interposable() && has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
-                if args.pack_relative_relocs {
+                if args.is_relr_enabled() {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -1406,7 +1406,7 @@ impl platform::Platform for Elf {
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
             if output_kind.is_relocatable() {
-                if args.pack_relative_relocs {
+                if args.is_relr_enabled() {
                     mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -4746,7 +4746,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         {
             if section_is_writable {
                 // Odd offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
-                if resources.symbol_db.args.pack_relative_relocs && rel.offset().is_multiple_of(2) {
+                if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
                     common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
                 } else {
                     common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
