@@ -8,6 +8,7 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
+use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
 
@@ -986,13 +987,17 @@ impl AArch64Instruction {
             }
             // C6.2.253, C6.2.254
             AArch64Instruction::Movnz => {
+                // Clear all bits except rd[4:0] and hw[22:21]
+                and_from_slice(dest, &0x0060_001F_u32.to_le_bytes());
                 let mut value = extracted_value as i64;
                 mask = 0u32;
                 if negative {
                     value = !value;
+                    // MOVN opcode: sf=1, opc=00, fixed=100101
+                    mask |= 0x9280_0000;
                 } else {
-                    // Set opcode for MOVZ instruction
-                    mask |= 1 << 30;
+                    // MOVZ opcode: sf=1, opc=10, fixed=100101
+                    mask |= 0xd280_0000;
                 }
                 mask |= ((value as u64).extract_bit_range(0..16) as u32) << 5;
             }
