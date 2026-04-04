@@ -1353,9 +1353,9 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             }
             shndx as u16
         } else {
-            if let Some(s) = symtab_shndx_entries {
-                *s = shndx;
-            }
+            symtab_shndx_entries.map(|s| *s = shndx).with_context(|| {
+                format!("Expected .symtab_shndx section when writing symbol {} with shndx set to SHN_XINDEX.", String::from_utf8_lossy(name))
+            })?;
             object::elf::SHN_XINDEX
         };
         entry.st_name.set(e, string_offset);
@@ -1384,6 +1384,17 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                 self.local_entries.len(),
                 self.global_entries.len(),
                 self.strtab_writer.out.len()
+            );
+        }
+
+        if let Some(symtab_shndx_local_entries) = self.symtab_shndx_local_entries.as_ref()
+            && let Some(symtab_shndx_global_entries) = self.symtab_shndx_global_entries.as_ref()
+            && (!symtab_shndx_global_entries.is_empty() || !symtab_shndx_local_entries.is_empty())
+        {
+            bail!(
+                "Didn't use up all allocated symtab_shndx space. local={} global={}",
+                symtab_shndx_local_entries.len(),
+                symtab_shndx_global_entries.len()
             );
         }
         Ok(())

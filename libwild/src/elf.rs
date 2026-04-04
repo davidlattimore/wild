@@ -2928,7 +2928,7 @@ pub(crate) const RELA_ENTRY_SIZE: u64 = size_of::<Rela>() as u64;
 pub(crate) const RELR_ENTRY_SIZE: u64 = size_of::<Relr>() as u64;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
-pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = 0x4;
+pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = size_of::<SymtabShndxEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
 
 const _ASSERTS: () = {

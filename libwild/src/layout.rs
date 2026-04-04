@@ -1729,7 +1729,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     let num_sections = prelude
         .header_info
         .as_ref()
-        .unwrap()
+        .expect("we should have computed header info by now")
         .num_output_sections_with_content;
 
     compute_shndx_section(group_states, &mut total_sizes, num_sections);
