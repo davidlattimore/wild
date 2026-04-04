@@ -30,6 +30,11 @@ fn run() -> libwild::error::Result {
         unsafe { libwild::run_in_subprocess(args) };
     } else {
         // Run the linker in this process without forking.
+
+        // Note, we need to setup tracing before worker, otherwise the threads won't contribute to
+        // counters such as --time=cycles,instructions etc.
+        libwild::setup_tracing(&args)?;
+
         libwild::run(args)
     }
 }

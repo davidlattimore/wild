@@ -104,10 +104,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(mut args: Args) -> error::Result {
-    // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
-    // initialise the timing module before the worker threads are started, otherwise the threads
-    // won't contribute to counters such as --time=cycles,instructions etc.
-    setup_tracing(&args)?;
     let thread_pool = args.common_mut().activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args, &thread_pool)?;
