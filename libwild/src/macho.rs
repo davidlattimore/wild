@@ -1265,14 +1265,19 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     // Start of regular sections
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__text")),
+        section_flags: SectionFlags::from_u32(
+            macho::S_REGULAR | macho::S_ATTR_PURE_INSTRUCTIONS | macho::S_ATTR_SOME_INSTRUCTIONS,
+        ),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__cstring")),
+        section_flags: SectionFlags::from_u32(macho::S_CSTRING_LITERALS),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__data")),
+        section_flags: SectionFlags::from_u32(macho::S_REGULAR),
         ..DEFAULT_DEFS
     };
 
@@ -1323,7 +1328,8 @@ fn count_sections_for_segment_type(
 
 pub(crate) struct SegmentSectionsInfo<'data> {
     pub(crate) segment_size: OutputRecordLayout,
-    pub(crate) segment_sections: Vec<(OutputRecordLayout, Option<SectionName<'data>>)>,
+    pub(crate) segment_sections:
+        Vec<(OutputRecordLayout, Option<SectionName<'data>>, SectionFlags)>,
 }
 
 pub(crate) fn get_segment_sections<'data>(
@@ -1350,7 +1356,11 @@ pub(crate) fn get_segment_sections<'data>(
             }
             OrderEvent::Section(section_id) if in_matching_segment => {
                 let sizes = *layout.section_layouts.get(section_id);
-                sections.push((sizes, layout.output_sections.name(section_id)));
+                sections.push((
+                    sizes,
+                    layout.output_sections.name(section_id),
+                    layout.output_sections.section_flags(section_id),
+                ));
             }
             _ => {}
         }

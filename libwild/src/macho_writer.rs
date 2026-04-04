@@ -208,7 +208,9 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 
-        for (section, (size, section_name)) in sections.iter_mut().zip(segment_sections) {
+        for (section, (size, section_name, section_flags)) in
+            sections.iter_mut().zip(segment_sections)
+        {
             let section_name = section_name
                 .ok_or_else(|| error!("section name must be known"))?
                 .0;
@@ -224,7 +226,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             section.align.set(LE, 0);
             section.reloff.set(LE, 0);
             section.nreloc.set(LE, 0);
-            section.flags.set(LE, 0);
+            section.flags.set(LE, section_flags.raw());
             section.reserved1.set(LE, 0);
             section.reserved2.set(LE, 0);
             section.reserved3.set(LE, 0);
