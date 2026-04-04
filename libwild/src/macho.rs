@@ -23,12 +23,14 @@ use crate::part_id;
 use crate::platform;
 use crate::platform::ObjectFile;
 use crate::platform::ProgramSegmentDef as _;
+use crate::platform::SECTION_PAR_COPY_SIZE_THRESHOLD;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use itertools::Itertools;
 use linker_utils::elf::secnames;
 use object::Endian;
 use object::Endianness;
+use object::LittleEndian;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -43,6 +45,10 @@ use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSlice;
+use rayon::slice::ParallelSliceMut;
 use std::borrow::Cow;
 use std::default;
 use winnow::combinator::todo;
@@ -256,12 +262,22 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn copy_section_data(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-        out: &mut [u8],
-    ) -> crate::error::Result {
-        todo!()
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+        let data = section
+            .data(LE, self.data)
+            .map_err(|_e| error!("cannot get section data"))?;
+
+        if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
+            let threads = rayon::current_num_threads();
+            let chunk_size = (data.len() / threads).max(1);
+
+            data.par_chunks(chunk_size)
+                .zip(out.par_chunks_mut(chunk_size))
+                .for_each(|(src, dst)| dst.copy_from_slice(src));
+        } else {
+            out.copy_from_slice(data);
+        }
+        Ok(())
     }
 
     fn section_data_cow(

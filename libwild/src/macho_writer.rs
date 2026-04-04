@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 #![allow(unused)]
 
+use crate::bail;
 use crate::error;
 use crate::error::Context;
 use crate::error::Result;
@@ -12,8 +13,10 @@ use crate::file_writer::split_output_into_sections;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::Layout;
+use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::Section;
 use crate::macho::FileHeader;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
@@ -30,6 +33,9 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::platform::Arch;
+use crate::platform::Args;
+use crate::platform::ObjectFile;
+use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::BigEndian;
@@ -46,6 +52,7 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use tracing::debug_span;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
@@ -84,8 +91,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            // TODO
-            // write_object::<A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
+            write_object::<A>(s, buffers, layout)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
         _ => {
@@ -222,4 +228,70 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         }
     }
     Ok(())
+}
+
+fn write_object<'data, A: Arch<Platform = MachO>>(
+    object: &ObjectLayout<'data, MachO>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &MachOLayout<'data>,
+) -> Result {
+    verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
+
+    let _span = debug_span!("write_file", filename = %object.input).entered();
+    let _file_span = layout.args().common().trace_span_for_file(object.file_id);
+    for sec in &object.sections {
+        match sec {
+            SectionSlot::Loaded(sec) => {
+                write_object_section::<A>(object, layout, sec, buffers)?;
+            }
+            _ => (),
+        }
+    }
+
+    Ok(())
+}
+
+fn write_object_section<'data, A: Arch<Platform = MachO>>(
+    object: &ObjectLayout<'data, MachO>,
+    layout: &MachOLayout<'data>,
+    section: &Section,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    write_section_raw(object, layout, section, buffers)?;
+    Ok(())
+
+    // TODO: process relocations
+}
+
+fn write_section_raw<'out, 'data>(
+    object: &ObjectLayout<'data, MachO>,
+    layout: &MachOLayout,
+    sec: &Section,
+    buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+) -> Result<&'out mut [u8]> {
+    if layout
+        .output_sections
+        .has_data_in_file(sec.output_section_id())
+    {
+        let section_buffer = buffers.get_mut(sec.output_part_id());
+        let allocation_size = sec.capacity(&layout.output_sections) as usize;
+        if section_buffer.len() < allocation_size {
+            bail!(
+                "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+                object.object.section_display_name(sec.index),
+                allocation_size,
+                section_buffer.len()
+            );
+        }
+        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
+        let object_section = object.object.section(sec.index)?;
+
+        let section_size = object.object.section_size(object_section)?;
+        let (out, padding) = out.split_at_mut(section_size as usize);
+        object.object.copy_section_data(object_section, out)?;
+        padding.fill(0);
+        Ok(out)
+    } else {
+        Ok(&mut [])
+    }
 }

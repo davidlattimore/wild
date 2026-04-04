@@ -52,6 +52,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Threshold size for using parallel copy for section data copying.
+pub(crate) const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;

@@ -56,6 +56,7 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
+use crate::platform::SECTION_PAR_COPY_SIZE_THRESHOLD;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -287,9 +288,6 @@ impl<'data> RelocationSequence<'data> for Vec<Crel> {
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
 // its contents.
 const _: () = assert!(!core::mem::needs_drop::<File>());
-
-/// Threshold size for using parallel copy for section data copying.
-const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
