@@ -593,4 +593,35 @@ mod tests {
         let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("intentional failure"));
     }
+
+    #[test]
+    fn test_memory_functions_evaluation() {
+        let (layouts, sections) = dummy_context();
+        let regions = [
+            MemoryRegion {
+                name: b"rom",
+                origin: Expression::Number(0x08000000),
+                length: Expression::Number(0x100000),
+            },
+            MemoryRegion {
+                name: b"ram",
+                origin: Expression::Number(0x20000000),
+                length: Expression::Number(0x40000),
+            },
+        ];
+        let eval = |expr: &Expression| {
+            evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &regions)
+        };
+        assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);
+        assert_eq!(eval(&Expression::Length(b"rom")).unwrap(), 0x100000);
+        assert_eq!(eval(&Expression::Origin(b"ram")).unwrap(), 0x20000000);
+        assert_eq!(eval(&Expression::Length(b"ram")).unwrap(), 0x40000);
+        // end of rom = origin + length
+        let end = Expression::Add(
+            Box::new(Expression::Origin(b"rom")),
+            Box::new(Expression::Length(b"rom")),
+        );
+        assert_eq!(eval(&end).unwrap(), 0x08100000);
+        assert!(eval(&Expression::Origin(b"flash")).is_err());
+    }
 }
