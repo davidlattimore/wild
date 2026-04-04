@@ -2214,7 +2214,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, output_sections, per_symbol_flags, resources);
+                s.finalise_sizes(common, output_sections, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
             FileLayoutState::Dynamic(s) => {
@@ -3631,14 +3631,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
-                self.load_debug_section::<A>(
-                    common,
-                    queue,
-                    *part_id,
-                    section_index,
-                    resources,
-                    scope,
-                )?;
+                self.load_debug_section::<A>(common, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
                 bail!(
@@ -3700,20 +3693,20 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn load_debug_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        queue: &mut LocalWorkQueue,
-
         part_id: PartId,
         section_index: SectionIndex,
         resources: &'scope GraphResources<'data, '_, P>,
-        scope: &Scope<'scope>,
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        if A::local_symbols_in_debug_info() {
-            <A::Platform as Platform>::load_object_debug_relocations::<A>(
-                self, common, queue, resources, section, scope,
-            )?;
-        }
+
+        // Note: We intentionally do NOT process debug relocations here. On some architectures (like
+        // RISC-V and LoongArch64), debug sections reference local symbols (e.g. .LFB0, .LFE0) in
+        // code sections. Processing those relocations during GC would send symbol requests that
+        // load those code sections, defeating garbage collection. Instead, debug relocations are
+        // resolved at write time in `apply_debug_relocation`, which uses tombstone values for
+        // symbols in GC'd sections and computes addresses from section resolutions for symbols in
+        // live sections.
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section, resources.output_sections);
@@ -3728,10 +3721,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         output_sections: &OutputSections<P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
-    ) {
+    ) -> Result {
         common.mem_sizes.resize(output_sections.num_parts());
         if !resources.symbol_db.args.should_strip_all() {
-            self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags);
+            self.allocate_symtab_space(common, resources.symbol_db, per_symbol_flags)?;
         }
         let output_kind = resources.symbol_db.output_kind;
         for slot in &mut self.sections {
@@ -3746,6 +3739,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
 
         P::finalise_object_sizes(self, common);
+        Ok(())
     }
 
     fn allocate_symtab_space(
@@ -3753,9 +3747,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         symbol_db: &SymbolDb<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    ) {
+    ) -> Result {
         let _file_span = symbol_db.args.common().trace_span_for_file(self.file_id());
-        P::allocate_object_symtab_space(self, common, symbol_db, per_symbol_flags);
+        P::allocate_object_symtab_space(self, common, symbol_db, per_symbol_flags)
     }
 
     fn finalise_layout(
@@ -4958,7 +4952,10 @@ fn test_no_disallowed_overlaps() {
         output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
             crate::args::RelocationModel::NonRelocatable,
         ));
-    let args = crate::args::elf::ElfArgs::default();
+    let mut args = crate::args::elf::ElfArgs::default();
+    if args.arch == crate::arch::Architecture::Unsupported {
+        args.arch = crate::arch::Architecture::X86_64;
+    }
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
 
     let section_part_layouts = layout_section_parts::<Elf>(

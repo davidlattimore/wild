@@ -59,11 +59,12 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_strip_all(&self) -> bool {
-        todo!()
+        false
     }
 
     fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
-        todo!()
+        // TODO: probably add option
+        b"_main"
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -95,7 +96,8 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_merge_sections(&self) -> bool {
-        todo!()
+        // TODO
+        true
     }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
@@ -135,6 +137,17 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .help("Set the output filename")
         .execute(|args, _modifier_stack, value| {
             args.output = Arc::from(Path::new(value));
+            Ok(())
+        });
+    parser
+        .declare_with_optional_param()
+        .long("time")
+        .help("Show timing information")
+        .execute(|args, _modifier_stack, value| {
+            args.common.time_phase_options = match value {
+                Some(v) => Some(super::parse_time_phase_options(v)?),
+                None => Some(Vec::new()),
+            };
             Ok(())
         });
 

@@ -229,6 +229,9 @@ jobs:
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-wasip1
+      # -p libwild prevents integration tests from running. they depend on
+      # spawning processes, which isn't supported on wasi.
+      - run: cargo test --profile ci -p libwild
 
   spelling:
     name: Spell Check with Typos
@@ -239,7 +242,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.44.0
+        uses: crate-ci/typos@v1.45.0
 
   calc-matrix:
     name: Find Nix checks

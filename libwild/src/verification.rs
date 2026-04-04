@@ -112,6 +112,9 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::PROGRAM_HEADERS,
         part_id::SECTION_HEADERS,
         part_id::SHSTRTAB,
+        part_id::TEXT_SEGMENT,
+        part_id::DATA_SEGMENT,
+        part_id::PAGEZERO_SEGMENT,
     ];
 
     for part_id in IGNORED {

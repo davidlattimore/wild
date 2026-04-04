@@ -61,10 +61,6 @@ impl crate::platform::Arch for MachOAArch64 {
         todo!()
     }
 
-    fn local_symbols_in_debug_info() -> bool {
-        todo!()
-    }
-
     fn tp_offset_start(layout: &crate::layout::Layout<Self::Platform>) -> u64 {
         todo!()
     }

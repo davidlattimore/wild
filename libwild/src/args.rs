@@ -120,8 +120,7 @@ impl Args {
         }
     }
 
-    /// Parse CLI arguments. Detects target format from `--target=<triple>`, `-m`,
-    /// or host default, then routes to the format-specific parser.
+    /// Parse CLI arguments. Runs format-specific parser based on the host target.
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(
         &mut self,
         input: F,

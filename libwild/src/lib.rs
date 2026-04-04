@@ -31,6 +31,7 @@ mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
+pub(crate) mod macho_writer;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
@@ -103,10 +104,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(mut args: Args) -> error::Result {
-    // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
-    // initialise the timing module before the worker threads are started, otherwise the threads
-    // won't contribute to counters such as --time=cycles,instructions etc.
-    setup_tracing(&args)?;
     let thread_pool = args.common_mut().activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args, &thread_pool)?;
@@ -264,7 +261,8 @@ impl Linker {
 
         let mut output = file_writer::Output::new(args, output_kind);
 
-        let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
+        let mut output_sections =
+            OutputSections::with_base_address(P::start_memory_address(output_kind));
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 

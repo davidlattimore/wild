@@ -95,10 +95,6 @@ impl crate::platform::Arch for ElfAArch64 {
         Ok(())
     }
 
-    fn local_symbols_in_debug_info() -> bool {
-        false
-    }
-
     fn tp_offset_start(layout: &Layout<Elf>) -> u64 {
         layout.tls_start_address_aarch64()
     }

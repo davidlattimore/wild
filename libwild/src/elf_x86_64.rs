@@ -87,10 +87,6 @@ impl crate::platform::Arch for ElfX86_64 {
         x86_64_rel_type_to_string(r_type)
     }
 
-    fn local_symbols_in_debug_info() -> bool {
-        false
-    }
-
     fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
         layout.tls_end_address()
     }

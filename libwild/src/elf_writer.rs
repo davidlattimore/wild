@@ -1522,7 +1522,7 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
 }
 
 fn build_section_sym_indices(layout: &ElfLayout<'_>) -> OutputSectionMap<u32> {
-    let mut map = OutputSectionMap::with_size(layout.output_order.len());
+    let mut map = OutputSectionMap::with_size(layout.output_sections.num_sections());
     let mut next_sym_idx: u32 = 1;
     for event in &layout.output_order {
         let OrderEvent::Section(section_id) = event else {
@@ -3018,7 +3018,24 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
         .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
         .or_else(|| {
             section_index.and_then(|section_index| {
-                object_layout.section_resolutions[section_index.0].full_resolution()
+                let section_address =
+                    object_layout.section_resolutions[section_index.0].address()?;
+                // Include the symbol's offset within the section (adjusted for any relaxation
+                // deltas). This is necessary on architectures like RISC-V and LoongArch64 where
+                // debug info references local symbols (e.g. .LFB0, .LFE0) whose value is their
+                // offset within the section, rather than section symbols where the offset is
+                // encoded in the relocation addend.
+                let output_offset = opt_input_to_output(
+                    object_layout.section_relax_deltas.get(section_index.0),
+                    crate::platform::Symbol::value(sym),
+                );
+
+                Some(Resolution {
+                    raw_value: section_address + output_offset,
+                    dynamic_symbol_index: None,
+                    flags: ValueFlags::empty(),
+                    format_specific: Default::default(),
+                })
             })
         });
 

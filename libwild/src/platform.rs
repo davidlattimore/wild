@@ -78,9 +78,6 @@ pub(crate) trait Arch: Send + Sync + 'static {
         0
     }
 
-    /// Some architectures use debug info relocation that depend on local symbols.
-    fn local_symbols_in_debug_info() -> bool;
-
     /// Get position of the $tp (thread pointer) in the TLS section. Each platform defines
     /// a different place based on the following article:
     /// https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
@@ -356,16 +353,6 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         scope: &Scope<'scope>,
     ) -> Result;
 
-    /// Calls `load_debug_relocations` on `state` for the relocations in `section`.
-    fn load_object_debug_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
-        common: &mut layout::CommonGroupState<'data, Self>,
-        queue: &mut layout::LocalWorkQueue,
-        resources: &'scope layout::GraphResources<'data, '_, Self>,
-        section: layout::Section,
-        scope: &Scope<'scope>,
-    ) -> Result;
-
     fn create_dynamic_symbol_definition<'data>(
         symbol_db: &SymbolDb<'data, Self>,
         symbol_id: SymbolId,
@@ -551,7 +538,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         common: &mut CommonGroupState<'data, Self>,
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    );
+    ) -> Result;
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
@@ -637,6 +624,9 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
     }
+
+    /// Return a starting address in memory.
+    fn start_memory_address(output_kind: OutputKind) -> u64;
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
@@ -738,7 +728,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn section_name(
         &self,
-        section_header: &<Self::Platform as Platform>::SectionHeader,
+        section_header: &'data <Self::Platform as Platform>::SectionHeader,
     ) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.

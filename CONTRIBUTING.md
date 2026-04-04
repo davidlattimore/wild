@@ -175,6 +175,8 @@ git submodule update --init --recursive
 cargo test --features mold_tests
 ```
 
+The output will be placed under `fakes-debug/out/test/`.
+
 You can use this command instead of the second one to run all external tests together:
 
 ```sh
@@ -194,6 +196,20 @@ WILD_IGNORE_SKIP=mold cargo test --features mold_tests
 # Run all external tests without skipping any test
 WILD_IGNORE_SKIP=all cargo test --features external_tests
 ```
+
+### Running external tests with other linkers
+
+When debugging a failing test, it can be useful to see how other linkers (such as GNU ld or lld) behave on the same test. You can use the `WILD_EXTERNAL_LINKER` environment variable to run test scripts with a different linker:
+
+```sh
+WILD_EXTERNAL_LINKER=ld cargo test --features mold_tests discard.sh
+
+WILD_EXTERNAL_LINKER=lld cargo test --features mold_tests allow-multiple-definition.sh
+```
+
+The skip list is still applied, so `expect_failure` tests work as usual. This is useful for determining whether a test that fails with wild also fails with another linker, or whether the failure is specific to wild.
+
+When using a third-party linker, the path to the temporary directory is printed to stderr, so you can inspect the output files (e.g. under `/tmp/foo/out/test/`).
 
 ## Commit messages
 

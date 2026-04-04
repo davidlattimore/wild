@@ -77,10 +77,6 @@ impl crate::platform::Arch for ElfLoongArch64 {
         0
     }
 
-    fn local_symbols_in_debug_info() -> bool {
-        true
-    }
-
     fn tp_offset_start(layout: &crate::layout::Layout<Elf>) -> u64 {
         layout.tls_start_address()
     }
@@ -131,7 +127,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
                 return Some(Relaxation {
                     kind: RelaxationKind::NoOp,
                     rel_info: relocation,
-                    mandatory: output_kind.is_static_executable(),
+                    mandatory: true,
                 });
             }
 
