@@ -57,6 +57,9 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
+//! ExpectSectionBytes:{section_name}=0x{hex_bytes} Checks that the specified section contains
+//! exactly the given bytes.
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -1055,6 +1058,13 @@ struct Assertions {
     expected_load_alignment: Option<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
+    expected_section_bytes: Vec<ExpectedSectionBytes>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedSectionBytes {
+    section_name: String,
+    expected_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1352,6 +1362,24 @@ fn process_directive(
             .assertions
             .contains_strings
             .push(arg.trim().to_owned()),
+        "ExpectSectionBytes" => {
+            let (section_name, hex_str) = arg.trim().split_once('=').with_context(|| {
+                format!("ExpectSectionBytes requires section_name=0xhex_bytes, got `{arg}`")
+            })?;
+            let hex_str = hex_str.trim().strip_prefix("0x").with_context(|| {
+                format!("ExpectSectionBytes value must start with 0x, got `{hex_str}`")
+            })?;
+            let expected_bytes = hex::decode(hex_str)
+                .with_context(|| format!("Invalid hex in ExpectSectionBytes: {hex_str}"))?;
+
+            config
+                .assertions
+                .expected_section_bytes
+                .push(ExpectedSectionBytes {
+                    section_name: section_name.to_owned(),
+                    expected_bytes,
+                });
+        }
         "ExpectDynamic" => config
             .assertions
             .expected_dynamic_entries
@@ -3037,6 +3065,24 @@ impl Assertions {
         self.verify_strings(&bytes)?;
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
+        self.verify_section_bytes(&obj)?;
+        Ok(())
+    }
+
+    fn verify_section_bytes(&self, obj: &ElfFile64) -> Result {
+        for expected in &self.expected_section_bytes {
+            let section = obj
+                .section_by_name(&expected.section_name)
+                .with_context(|| format!("Section `{}` not found", expected.section_name))?;
+            let data = section.data()?;
+            ensure!(
+                data == expected.expected_bytes.as_slice(),
+                "Section `{}` bytes mismatch: expected {:02x?}, got {:02x?}",
+                expected.section_name,
+                expected.expected_bytes,
+                data,
+            );
+        }
         Ok(())
     }
 

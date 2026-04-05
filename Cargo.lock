@@ -2158,6 +2158,7 @@ dependencies = [
  "ar",
  "dhat",
  "foldhash 0.2.0",
+ "hex",
  "itertools",
  "libloading",
  "libtest-mimic",
