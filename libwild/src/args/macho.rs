@@ -1,7 +1,6 @@
 // Mach-O argument parsing for the macOS linker driver interface.
 #![allow(unused_variables)]
 
-use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
 use crate::args::Input;
 use crate::args::InputSpec;
@@ -53,13 +52,8 @@ impl platform::Args for MachOArgs {
         parse(self, input)
     }
 
-    fn should_strip_debug(&self) -> bool {
-        false
-    }
-
-    fn should_strip_all(&self) -> bool {
-        false
-    }
+    fn should_strip_debug(&self) -> bool { false }
+    fn should_strip_all(&self) -> bool { false }
 
     fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
         linker_script_entry
@@ -71,158 +65,191 @@ impl platform::Args for MachOArgs {
         &self.lib_search_paths
     }
 
-    fn output(&self) -> &std::sync::Arc<std::path::Path> {
-        &self.output
-    }
-
-    fn common(&self) -> &crate::args::CommonArgs {
-        &self.common
-    }
-
-    fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
-        &mut self.common
-    }
-
-    fn should_export_all_dynamic_symbols(&self) -> bool {
-        false
-    }
-
-    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
-        false
-    }
+    fn output(&self) -> &std::sync::Arc<std::path::Path> { &self.output }
+    fn common(&self) -> &crate::args::CommonArgs { &self.common }
+    fn common_mut(&mut self) -> &mut crate::args::CommonArgs { &mut self.common }
+    fn should_export_all_dynamic_symbols(&self) -> bool { false }
+    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool { false }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
-        // Apple Silicon uses 16KB pages
-        crate::alignment::Alignment { exponent: 14 }
+        crate::alignment::Alignment { exponent: 14 } // 16KB pages
     }
 
-    fn should_merge_sections(&self) -> bool {
-        false
+    fn base_address(&self, _output_kind: crate::output_kind::OutputKind) -> u64 {
+        0x1_0000_0000 // PAGEZERO size -- Mach-O addresses start after 4GB null page
     }
+
+    fn should_merge_sections(&self) -> bool { false }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
         self.relocation_model
     }
 
-    fn should_output_executable(&self) -> bool {
-        true
-    }
+    fn should_output_executable(&self) -> bool { true }
 }
 
-/// Parse the supplied input arguments, which should not include the program name.
+/// Parse macOS linker arguments. Handles the ld64-compatible flags that clang passes.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut MachOArgs,
     mut input: I,
 ) -> Result {
     let mut modifier_stack = vec![Modifiers::default()];
 
-    let arg_parser = setup_argument_parser();
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
-        arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+
+        // Handle @response files
+        if let Some(path) = arg.strip_prefix('@') {
+            let file_args = crate::args::read_args_from_file(Path::new(path))?;
+            // Re-parse the file contents (simplified - no recursion limit)
+            let mut file_iter = file_args.iter().map(|s| s.as_str());
+            while let Some(file_arg) = file_iter.next() {
+                parse_one_arg(args, file_arg, &mut file_iter, &mut modifier_stack)?;
+            }
+            continue;
+        }
+
+        parse_one_arg(args, arg, &mut input, &mut modifier_stack)?;
     }
 
     Ok(())
 }
 
-/// Flags that macOS ld passes but we safely ignore for now.
-const MACHO_IGNORED_FLAGS: &[&str] = &[
-    "demangle",
-    "dynamic",
-    "lto_library",
-    "mllvm",
-    "no_deduplicate",
-    "no_compact_unwind",
-    "dead_strip",
-    "dead_strip_dylibs",
-    "headerpad_max_install_names",
-    "export_dynamic",
-    "application_extension",
-    "no_objc_category_merging",
-    "objc_abi_version",
-    "mark_dead_strippable_dylib",
-];
-
-fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
-    let mut parser = ArgumentParser::<MachOArgs>::new();
-
-    parser
-        .declare_with_param()
-        .long("output")
-        .short("o")
-        .help("Set the output filename")
-        .execute(|args, _modifier_stack, value| {
-            args.output = Arc::from(Path::new(value));
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .long("arch")
-        .help("Architecture")
-        .execute(|_args, _modifier_stack, _value| {
-            // We only support arm64 currently, ignore the flag
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .long("platform_version")
-        .help("Set platform version (takes 3 args: platform min_version sdk_version)")
-        .execute(|_args, _modifier_stack, _value| {
-            // platform_version takes 3 arguments: platform, min_version, sdk_version
-            // The ArgumentParser already consumed one arg for us, but we need 2 more.
-            // They'll get treated as unrecognised positional args. That's OK for now.
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .long("syslibroot")
-        .help("Set the system library root path")
-        .execute(|args, _modifier_stack, value| {
-            args.syslibroot = Some(Box::from(Path::new(value)));
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .short("e")
-        .help("Set the entry point symbol name")
-        .execute(|args, _modifier_stack, value| {
-            args.entry_symbol = Some(value.as_bytes().to_vec());
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .prefix("l")
-        .help("Link with library")
-        .execute(|args, modifier_stack, value| {
-            let spec = InputSpec::Lib(Box::from(value));
-            args.common.inputs.push(Input {
-                spec,
-                search_first: None,
-                modifiers: *modifier_stack.last().unwrap(),
-            });
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .prefix("L")
-        .help("Add library search path")
-        .execute(|args, _modifier_stack, value| {
-            args.lib_search_paths.push(Box::from(Path::new(value)));
-            Ok(())
-        });
-
-    // Register ignored flags
-    for flag in MACHO_IGNORED_FLAGS {
-        // Try to register flags that take no params as ignored
-        // Some take params (like lto_library, mllvm) -- we handle those by just
-        // letting them fall through to unrecognised options for now
+fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
+    args: &mut MachOArgs,
+    arg: &str,
+    input: &mut I,
+    modifier_stack: &mut Vec<Modifiers>,
+) -> Result {
+    // Flags that take a following argument (must be checked before prefix matching)
+    match arg {
+        "-o" | "--output" => {
+            if let Some(val) = input.next() {
+                args.output = Arc::from(Path::new(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-arch" => { input.next(); return Ok(()); } // consume and ignore
+        "-syslibroot" => {
+            if let Some(val) = input.next() {
+                args.syslibroot = Some(Box::from(Path::new(val.as_ref())));
+            }
+            return Ok(());
+        }
+        "-e" => {
+            if let Some(val) = input.next() {
+                args.entry_symbol = Some(val.as_ref().as_bytes().to_vec());
+            }
+            return Ok(());
+        }
+        // Flags that take 1 argument, ignored
+        "-lto_library" | "-mllvm" | "-headerpad" | "-install_name"
+        | "-compatibility_version" | "-current_version" | "-rpath"
+        | "-object_path_lto" | "-order_file" | "-exported_symbols_list"
+        | "-unexported_symbols_list" | "-filelist" | "-sectcreate"
+        | "-framework" | "-weak_framework" | "-weak_library"
+        | "-reexport_library" | "-umbrella" | "-allowable_client"
+        | "-client_name" | "-sub_library" | "-sub_umbrella"
+        | "-objc_abi_version" => {
+            input.next(); // consume the argument
+            return Ok(());
+        }
+        // -platform_version takes 3 arguments: platform min_version sdk_version
+        "-platform_version" => {
+            input.next(); // platform
+            input.next(); // min_version
+            input.next(); // sdk_version
+            return Ok(());
+        }
+        // Flags that take 1 argument, ignored (group 2)
+        "-undefined" | "-multiply_defined" | "-force_load" | "-weak-l"
+        | "-needed-l" | "-reexport-l" | "-upward-l" | "-alignment" => {
+            input.next();
+            return Ok(());
+        }
+        // No-argument flags, ignored
+        "-demangle" | "-dynamic" | "-no_deduplicate" | "-no_compact_unwind"
+        | "-dead_strip" | "-dead_strip_dylibs" | "-headerpad_max_install_names"
+        | "-export_dynamic" | "-application_extension" | "-no_objc_category_merging"
+        | "-mark_dead_strippable_dylib" | "-ObjC" | "-all_load"
+        | "-no_implicit_dylibs" | "-search_paths_first" | "-two_levelnamespace"
+        | "-flat_namespace" | "-bind_at_load"
+        | "-pie" | "-no_pie" | "-execute" | "-dylib" | "-bundle" => {
+            return Ok(());
+        }
+        _ => {}
     }
 
-    parser
+    // -L<path> (library search path)
+    if let Some(path) = arg.strip_prefix("-L") {
+        if path.is_empty() {
+            if let Some(val) = input.next() {
+                args.lib_search_paths.push(Box::from(Path::new(val.as_ref())));
+            }
+        } else {
+            args.lib_search_paths.push(Box::from(Path::new(path)));
+        }
+        return Ok(());
+    }
+
+    // -l<name> (link library) -- must come after -lto_library check above
+    if let Some(lib) = arg.strip_prefix("-l") {
+        if !lib.is_empty() {
+            // On macOS, libSystem is implicitly linked (we emit LC_LOAD_DYLIB for it).
+            // Skip it and other system dylibs that we handle implicitly.
+            if lib == "System" || lib == "c" || lib == "m" || lib == "pthread" {
+                return Ok(());
+            }
+            // Try to find the library on the search path, including syslibroot
+            let mut found = false;
+            let extensions = [".tbd", ".dylib", ".a"];
+            let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
+            if let Some(ref root) = args.syslibroot {
+                search_paths.push(Box::from(root.join("usr/lib")));
+                search_paths.push(Box::from(root.join("usr/lib/swift")));
+            }
+            for ext in &extensions {
+                let filename = format!("lib{lib}{ext}");
+                for dir in &search_paths {
+                    let path = dir.join(&filename);
+                    if path.exists() {
+                        // For .tbd files, skip (text-based stubs, dylib references)
+                        if *ext == ".tbd" {
+                            found = true;
+                            break;
+                        }
+                        args.common.inputs.push(Input {
+                            spec: InputSpec::File(Box::from(path.as_path())),
+                            search_first: None,
+                            modifiers: *modifier_stack.last().unwrap(),
+                        });
+                        found = true;
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+            // If not found, warn but don't error (might be a system dylib we handle implicitly)
+            if !found {
+                tracing::warn!("library not found: -l{lib}");
+            }
+        }
+        return Ok(());
+    }
+
+    // Unknown flags starting with - go to unrecognized
+    if arg.starts_with('-') {
+        args.common.unrecognized_options.push(arg.to_owned());
+        return Ok(());
+    }
+
+    // Positional argument = input file
+    args.common.save_dir.handle_file(arg);
+    args.common.inputs.push(Input {
+        spec: InputSpec::File(Box::from(Path::new(arg))),
+        search_first: None,
+        modifiers: *modifier_stack.last().unwrap(),
+    });
+
+    Ok(())
 }

@@ -699,6 +699,16 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
 
+    /// Returns the symbol's offset within its section. For ELF, st_value is already
+    /// section-relative. For Mach-O, n_value is absolute so we subtract the section base.
+    fn symbol_value_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
+
     fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
 
     fn dynamic_symbol_used(
@@ -1164,6 +1174,12 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     }
 
     fn loadable_segment_alignment(&self) -> Alignment;
+
+    /// The base VM address for the output binary. Sections start at this address.
+    /// For ELF: 0x400000. For Mach-O: 0x100000000 (PAGEZERO size).
+    fn base_address(&self, output_kind: crate::output_kind::OutputKind) -> u64 {
+        output_kind.base_address()
+    }
 
     fn should_merge_sections(&self) -> bool;
 

@@ -157,11 +157,37 @@ impl crate::platform::Arch for MachOAArch64 {
     }
 
     fn write_plt_entry(
-        _plt_entry: &mut [u8],
-        _got_address: u64,
-        _plt_address: u64,
+        plt_entry: &mut [u8],
+        got_address: u64,
+        plt_address: u64,
     ) -> crate::error::Result {
-        // Mach-O uses stubs instead of PLT entries; handled separately
+        // Mach-O __stubs entry: 12 bytes
+        //   adrp x16, GOT_PAGE
+        //   ldr  x16, [x16, GOT_OFFSET]
+        //   br   x16
+        let stub: [u8; 12] = [
+            0x10, 0x00, 0x00, 0x90, // adrp x16, #0
+            0x10, 0x02, 0x40, 0xf9, // ldr  x16, [x16]
+            0x00, 0x02, 0x1f, 0xd6, // br   x16
+        ];
+        plt_entry[..12].copy_from_slice(&stub);
+
+        // Patch ADRP with page distance to GOT entry
+        let stub_page = plt_address & !0xFFF;
+        let got_page = got_address & !0xFFF;
+        let page_delta = got_page.wrapping_sub(stub_page) as i64 >> 12;
+        let immlo = ((page_delta & 0x3) as u32) << 29;
+        let immhi = (((page_delta >> 2) & 0x7_FFFF) as u32) << 5;
+        let adrp = u32::from_le_bytes(plt_entry[0..4].try_into().unwrap());
+        let adrp = (adrp & 0x9F00_001F) | immhi | immlo;
+        plt_entry[0..4].copy_from_slice(&adrp.to_le_bytes());
+
+        // Patch LDR with page offset to GOT entry (scaled by 8)
+        let page_off = ((got_address & 0xFFF) >> 3) as u32;
+        let ldr = u32::from_le_bytes(plt_entry[4..8].try_into().unwrap());
+        let ldr = (ldr & 0xFFC0_03FF) | (page_off << 10);
+        plt_entry[4..8].copy_from_slice(&ldr.to_le_bytes());
+
         Ok(())
     }
 

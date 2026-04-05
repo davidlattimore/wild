@@ -6,6 +6,7 @@ use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
 use crate::platform;
+use crate::platform::SectionAttributes as _;
 use object::Endianness;
 use object::macho;
 use object::read::macho::MachHeader;
@@ -178,6 +179,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
+    fn symbol_value_in_section(
+        &self,
+        symbol: &SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> crate::error::Result<u64> {
+        let section = &self.sections[section_index.0];
+        let section_addr = section.addr.get(LE);
+        let sym_value = symbol.n_value(LE);
+        Ok(sym_value.wrapping_sub(section_addr))
+    }
+
     fn symbol_versions(&self) -> &[()]{
         // Mach-O doesn't have symbol versioning
         &[]
@@ -210,8 +222,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_name(&self, section_header: &SectionHeader) -> crate::error::Result<&'data [u8]> {
-        // Section names in Mach-O are stored inline in the section header (16 bytes).
-        // We need to find this section in self.sections to get the 'data lifetime.
         for s in self.sections {
             if std::ptr::eq(
                 s as *const macho::Section64<Endianness>,
@@ -638,11 +648,32 @@ pub(crate) struct SegmentType {}
 impl platform::SegmentType for SegmentType {}
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct ProgramSegmentDef {}
+pub(crate) struct ProgramSegmentDef {
+    pub(crate) writable: bool,
+    pub(crate) executable: bool,
+}
+
+/// __TEXT segment: r-x, contains headers + code + read-only data
+const TEXT_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    writable: false,
+    executable: true,
+};
+
+/// __DATA segment: rw-, contains writable data + GOT + BSS
+const DATA_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    writable: true,
+    executable: false,
+};
+
+const MACHO_SEGMENT_DEFS: &[ProgramSegmentDef] = &[TEXT_SEGMENT_DEF, DATA_SEGMENT_DEF];
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "<macho segment>")
+        if self.executable {
+            write!(f, "__TEXT")
+        } else {
+            write!(f, "__DATA")
+        }
     }
 }
 
@@ -650,19 +681,19 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     type Platform = MachO;
 
     fn is_writable(self) -> bool {
-        false
+        self.writable
     }
 
     fn is_executable(self) -> bool {
-        false
+        self.executable
     }
 
     fn always_keep(self) -> bool {
-        false
+        true // Both __TEXT and __DATA are always emitted
     }
 
     fn is_loadable(self) -> bool {
-        false
+        true // Both are loadable
     }
 
     fn is_stack(self) -> bool {
@@ -674,21 +705,38 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn order_key(self) -> usize {
-        0
+        if self.executable { 0 } else { 1 }
     }
 
     fn should_include_section(
         self,
-        _section_info: &crate::output_section_id::SectionOutputInfo<MachO>,
+        section_info: &crate::output_section_id::SectionOutputInfo<MachO>,
         _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        false
+        let attrs = &section_info.section_attributes;
+        if !attrs.is_alloc() {
+            return false;
+        }
+        if self.writable {
+            attrs.is_writable()
+        } else {
+            !attrs.is_writable()
+        }
     }
 }
 
 pub(crate) struct BuiltInSectionDetails {}
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
+
+/// Mach-O specific resolution data attached to each resolved symbol.
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct MachOResolutionExt {
+    /// GOT entry address (if the symbol needs a GOT slot).
+    pub(crate) got_address: Option<u64>,
+    /// PLT stub address (if the symbol needs a dynamic call stub).
+    pub(crate) plt_address: Option<u64>,
+}
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
@@ -786,7 +834,7 @@ impl platform::Platform for MachO {
     type CommonGroupStateExt = ();
     type ArchIdentifier = ();
     type Args = MachOArgs;
-    type ResolutionExt = ();
+    type ResolutionExt = MachOResolutionExt;
     type SymbolVersionIndex = ();
     type LayoutExt = ();
     type SectionIterator<'data> = MachOSectionIter<'data>;
@@ -915,13 +963,50 @@ impl platform::Platform for MachO {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        _state: &crate::layout::ObjectLayoutState<'data, Self>,
+        state: &crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-        _queue: &mut crate::layout::LocalWorkQueue,
-        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        _section: crate::layout::Section,
-        _scope: &rayon::Scope<'scope>,
+        queue: &mut crate::layout::LocalWorkQueue,
+        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        section: crate::layout::Section,
+        scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
+        // Scan relocations to discover referenced symbols and trigger loading
+        // of their containing sections.
+        let le = object::Endianness::Little;
+        let input_section = state.object.sections.get(section.index.0)
+            .ok_or_else(|| crate::error!("Section index out of range"))?;
+        let relocs = match input_section.relocations(le, state.object.data) {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        for reloc_raw in relocs {
+            let reloc = reloc_raw.info(le);
+            if !reloc.r_extern { continue; }
+            // Skip ADDEND (type 10) and SUBTRACTOR (type 1)
+            if reloc.r_type == 10 || reloc.r_type == 1 { continue; }
+
+            let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+            let local_symbol_id = state.symbol_id_range.input_to_id(sym_idx);
+            let symbol_id = resources.symbol_db.definition(local_symbol_id);
+
+            // Set resolution flags based on relocation type
+            let is_undef = resources.symbol_db.is_undefined(symbol_id);
+            let flags_to_add = match reloc.r_type {
+                5 | 6 => crate::value_flags::ValueFlags::GOT, // GOT_LOAD
+                2 if is_undef => {
+                    // BRANCH26 to undefined symbol needs a stub (PLT) + GOT entry
+                    crate::value_flags::ValueFlags::PLT | crate::value_flags::ValueFlags::GOT
+                }
+                _ => crate::value_flags::ValueFlags::DIRECT,
+            };
+            let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+            let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+            // Request this symbol to be loaded (which loads its section)
+            if !previous_flags.has_resolution() {
+                queue.send_symbol_request::<A>(symbol_id, resources, scope);
+            }
+        }
         Ok(())
     }
 
@@ -937,10 +1022,12 @@ impl platform::Platform for MachO {
         _keep_segments: &mut [bool],
         _args: &Self::Args,
     ) {
+        // Default keep logic is sufficient -- segments with sections are kept automatically.
+        // The pipeline sets keep_segments[0] = true for the first segment (__TEXT).
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        &[]
+        MACHO_SEGMENT_DEFS
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -984,7 +1071,7 @@ impl platform::Platform for MachO {
             secondary_order: None,
         };
         infos[crate::output_section_id::RODATA.as_usize()] = SectionOutputInfo {
-            kind: SectionKind::Primary(SectionName(b"__const")),
+            kind: SectionKind::Primary(SectionName(b"__rodata")),
             section_attributes: SectionAttributes::default(),
             min_alignment: crate::alignment::MIN,
             location: None,
@@ -997,6 +1084,26 @@ impl platform::Platform for MachO {
                 segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
             },
             min_alignment: crate::alignment::MIN,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::GOT.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__got")),
+            section_attributes: SectionAttributes {
+                flags: 0x06, // S_NON_LAZY_SYMBOL_POINTERS
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::GOT_ENTRY,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::TDATA.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__thread_data")),
+            section_attributes: SectionAttributes {
+                flags: macho::S_THREAD_LOCAL_REGULAR,
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::Alignment { exponent: 3 }, // 8-byte align
             location: None,
             secondary_order: None,
         };
@@ -1121,10 +1228,14 @@ impl platform::Platform for MachO {
 
     fn allocate_header_sizes(
         _prelude: &mut crate::layout::PreludeLayoutState<Self>,
-        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _header_info: &crate::layout::HeaderInfo,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
+        // Reserve a full page for headers. Mach-O __TEXT segment starts at page 0 and
+        // includes the headers. Sections start after the headers, page-aligned.
+        // A full page (16KB) is more than enough for headers + load commands.
+        sizes.increment(crate::part_id::FILE_HEADER, 0x4000); // 16KB page
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1137,10 +1248,17 @@ impl platform::Platform for MachO {
     }
 
     fn allocate_resolution(
-        _flags: crate::value_flags::ValueFlags,
-        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        flags: crate::value_flags::ValueFlags,
+        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _output_kind: crate::output_kind::OutputKind,
     ) {
+        if flags.needs_plt() {
+            // Mach-O stubs are 12 bytes (adrp + ldr + br)
+            mem_sizes.increment(crate::part_id::PLT_GOT, 12);
+            // Each stub needs a GOT entry (8 bytes) for the dyld bind target
+            mem_sizes.increment(crate::part_id::GOT, 8);
+        }
+        // For same-image symbols, GOT_LOAD is relaxed to ADRP+ADD (no GOT needed)
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -1178,13 +1296,26 @@ impl platform::Platform for MachO {
         flags: crate::value_flags::ValueFlags,
         raw_value: u64,
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
-        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
+        let mut got_address = None;
+        let mut plt_address = None;
+
+        if flags.needs_plt() {
+            let got_addr = *memory_offsets.get(crate::part_id::GOT);
+            *memory_offsets.get_mut(crate::part_id::GOT) += 8;
+            got_address = Some(got_addr);
+
+            let plt_addr = *memory_offsets.get(crate::part_id::PLT_GOT);
+            *memory_offsets.get_mut(crate::part_id::PLT_GOT) += 12;
+            plt_address = Some(plt_addr);
+        }
+
         crate::layout::Resolution {
             raw_value,
             dynamic_symbol_index,
             flags,
-            format_specific: (),
+            format_specific: MachOResolutionExt { got_address, plt_address },
         }
     }
 
@@ -1201,7 +1332,7 @@ impl platform::Platform for MachO {
     }
 
     fn build_output_order_and_program_segments<'data>(
-        _custom: &crate::output_section_id::CustomSectionIds,
+        custom: &crate::output_section_id::CustomSectionIds,
         output_kind: OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<
@@ -1211,11 +1342,32 @@ impl platform::Platform for MachO {
         crate::output_section_id::OutputOrder,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
-        let builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
+        use crate::output_section_id;
+        let mut builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
             output_kind,
             output_sections,
             secondary,
         );
+
+        // __TEXT segment (r-x): headers, code, read-only data, stubs
+        builder.add_section(output_section_id::FILE_HEADER);
+        builder.add_section(output_section_id::RODATA);
+        builder.add_sections(&custom.ro);
+        builder.add_section(output_section_id::TEXT);
+        builder.add_sections(&custom.exec);
+        builder.add_section(output_section_id::PLT_GOT); // __stubs (call trampolines)
+        builder.add_section(output_section_id::GCC_EXCEPT_TABLE);
+        builder.add_section(output_section_id::EH_FRAME);
+
+        // __DATA segment (rw-): writable data, GOT, BSS
+        builder.add_section(output_section_id::DATA);
+        builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::GOT);
+        builder.add_section(output_section_id::TDATA);
+        builder.add_section(output_section_id::TBSS);
+        builder.add_section(output_section_id::BSS);
+        builder.add_sections(&custom.bss);
+
         builder.build()
     }
 }
@@ -1227,7 +1379,11 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__text", output_section_id::TEXT),
         SectionRule::exact_section(b"__stubs", output_section_id::TEXT),
         SectionRule::exact_section(b"__stub_helper", output_section_id::TEXT),
-        SectionRule::exact_section(b"__const", output_section_id::RODATA),
+        // Sections like __const, __cstring, __literal* can appear in both __TEXT and
+        // __DATA segments. The pipeline groups by name, so both variants merge into one
+        // output section. Placing them all in DATA ensures pointers get rebase fixups.
+        SectionRule::exact_section(b"__const", output_section_id::DATA),
+        // __cstring and __literal* are truly read-only (no pointers). Keep in RODATA.
         SectionRule::exact_section(b"__cstring", output_section_id::RODATA),
         SectionRule::exact_section(b"__literal4", output_section_id::RODATA),
         SectionRule::exact_section(b"__literal8", output_section_id::RODATA),
@@ -1236,6 +1392,13 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__la_symbol_ptr", output_section_id::DATA),
         SectionRule::exact_section(b"__nl_symbol_ptr", output_section_id::DATA),
         SectionRule::exact_section(b"__got", output_section_id::DATA),
+        // TLS descriptors go in TDATA (after GOT), init data follows.
+        // This separates TLS bind fixups from GOT bind fixups in the chain.
+        // __thread_vars (descriptors) goes in GOT section to separate from __thread_data.
+        // Both are in the DATA segment but must not overlap.
+        SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
+        SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
+        SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
         SectionRule::exact_section(b"__bss", output_section_id::BSS),
         SectionRule::exact_section(b"__common", output_section_id::BSS),
         SectionRule::exact_section(b"__unwind_info", output_section_id::RODATA),
@@ -1245,7 +1408,7 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
 };
 
 /// Trim trailing NUL bytes from a fixed-size Mach-O name field.
-fn trim_nul(name: &[u8; 16]) -> &[u8] {
+pub(crate) fn trim_nul(name: &[u8; 16]) -> &[u8] {
     let end = name.iter().position(|&b| b == 0).unwrap_or(16);
     // Safety: end <= 16, and the array has 16 elements
     &name.as_slice()[..end]

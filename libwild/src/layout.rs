@@ -571,6 +571,12 @@ pub(crate) struct SymbolResolutions<P: Platform> {
     resolutions: Vec<Option<Resolution<P>>>,
 }
 
+impl<P: Platform> SymbolResolutions<P> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Option<Resolution<P>>> {
+        self.resolutions.iter()
+    }
+}
+
 pub(crate) enum FileLayout<'data, P: Platform> {
     Prelude(PreludeLayout<'data, P>),
     Object(ObjectLayout<'data, P>),
@@ -1641,8 +1647,8 @@ fn compute_segment_layout<P: Platform>(
             let r = &complete[id.as_usize()];
 
             let sizes = OutputRecordLayout {
-                file_size: r.file_end - r.file_start,
-                mem_size: r.mem_end - r.mem_start,
+                file_size: r.file_end.saturating_sub(r.file_start),
+                mem_size: r.mem_end.saturating_sub(r.mem_start),
                 alignment: r.alignment,
                 file_offset: r.file_start,
                 mem_offset: r.mem_start,
@@ -3819,7 +3825,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = local_symbol.value();
+                let input_offset = self.object.symbol_value_in_section(local_symbol, section_index)?;
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,
@@ -4511,6 +4517,9 @@ fn layout_section_parts<P: Platform>(
                         file_offset =
                             segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
                     } else {
+                        // Page-align file_offset at segment boundary.
+                        // This ensures segments don't share pages in the output file.
+                        file_offset = segment_alignment.align_up(file_offset as u64) as usize;
                         mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
                     }
                 }
