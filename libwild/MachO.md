@@ -95,7 +95,7 @@ Import { library: "/usr/lib/libSystem.B.dylib", name: "dyld_stub_binder" }
 
 ## - `__compact_unwind` format
 
-- very good article: https://faultlore.com/blah/compact-unwinding/ with [Rust implementation](https://docs.rs/symbolic/8.2.0/symbolic/debuginfo/macho/compact/index.html) of the built `__compact_unwind` in a final bianry:
+- very good article: https://faultlore.com/blah/compact-unwinding/ with [Rust implementation](https://docs.rs/symbolic/8.2.0/symbolic/debuginfo/macho/compact/index.html) of the built `__compact_unwind` in a final binary:
 
 - similar to `.eh_frame` on Linux, but easier as the object files contain separate entries:
 
@@ -127,7 +127,7 @@ Contents of __compact_unwind section:
     compact encoding:     0x04000000
 ```
 
-The final format is a 2-level page table structure as decribed here:
+The final format is a 2-level page table structure as described here:
 https://faultlore.com/blah/compact-unwinding/#layout-of-the-page-table
 
 ```
@@ -188,7 +188,7 @@ at the very end of `__LINKEDIT` segment.
 
 ## `LC_DYLD_EXPORTS_TRIE` command
 
-An equivant of the ELF's `.dynsym` + `.gnu.hash`. It'a a smart trie data structure that implements fast symbol name look up.
+An equivalent of the ELF's `.dynsym` + `.gnu.hash`. It'a a smart trie data structure that implements fast symbol name look up.
 Well documented here: https://github.com/qyang-nj/llios/blob/main/exported_symbol/README.md#export-trie
 
 Pretty straightforward to implement, replaces a legacy `LC_DYLD_INFO(_ONLY)` commands.
@@ -201,7 +201,7 @@ Good documentation here: https://github.com/qyang-nj/llios/blob/main/dynamic_lin
 
 ## benchmarks: LLD vs. system linker
 
-Runnning on MacMini M4:
+Running on MacMini M4:
 
 ### duckDB:
 
