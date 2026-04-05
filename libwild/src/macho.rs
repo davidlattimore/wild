@@ -38,6 +38,7 @@ use object::macho::N_PEXT;
 use object::macho::N_TYPE;
 use object::macho::N_WEAK_DEF;
 use object::macho::SEG_DATA;
+use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
 use object::macho::Section64;
@@ -688,6 +689,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
                 output_section_id::PAGEZERO_SEGMENT
                 | output_section_id::TEXT_SEGMENT
                 | output_section_id::DATA_SEGMENT
+                | output_section_id::LINK_EDIT_SEGMENT
                 | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
                 output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
                 output_section_id::DATA => SegmentType::Data,
@@ -1111,6 +1113,10 @@ impl platform::Platform for MachO {
                     * count_sections_for_segment_type(output_sections, SegmentType::Data))
                 as u64,
         );
+        sizes.increment(
+            part_id::LINK_EDIT_SEGMENT,
+            size_of::<SegmentCommand>() as u64,
+        );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
     }
 
@@ -1217,6 +1223,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::TEXT_SEGMENT);
         builder.add_section(output_section_id::DATA_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
+        builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
@@ -1256,6 +1263,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
         section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_WRITE),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
+        target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {

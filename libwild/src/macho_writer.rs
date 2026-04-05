@@ -49,6 +49,7 @@ use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
 use object::macho::SEG_DATA;
+use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
@@ -120,6 +121,12 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid PAGEZERO segment allocation"))?
             .0;
     write_pagezero_command::<A>(pagezero_command);
+
+    let linkedit_command: &mut SegmentCommand =
+        from_bytes_mut(buffers.get_mut(part_id::LINK_EDIT_SEGMENT))
+            .map_err(|_| error!("Invalid LINKEDIT segment allocation"))?
+            .0;
+    write_linkedit_command::<A>(linkedit_command);
     write_segment_commands::<A>(layout, buffers)?;
 
     let entry_point_command: &mut EntryPointCommand =
@@ -154,6 +161,20 @@ fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentComman
     command.segname[..SEG_PAGEZERO.len()].copy_from_slice(SEG_PAGEZERO.as_bytes());
     command.vmaddr.set(LE, 0);
     command.vmsize.set(LE, MACHO_START_MEM_ADDRESS);
+    command.fileoff.set(LE, 0);
+    command.filesize.set(LE, 0);
+    command.maxprot.set(LE, 0);
+    command.initprot.set(LE, 0);
+    command.nsects.set(LE, 0);
+    command.flags.set(LE, 0);
+}
+
+fn write_linkedit_command<A: Arch<Platform = MachO>>(command: &mut SegmentCommand) {
+    command.cmd.set(LE, LC_SEGMENT_64);
+    command.cmdsize.set(LE, size_of::<SegmentCommand>() as u32);
+    command.segname[..SEG_LINKEDIT.len()].copy_from_slice(SEG_LINKEDIT.as_bytes());
+    command.vmaddr.set(LE, 0);
+    command.vmsize.set(LE, 0);
     command.fileoff.set(LE, 0);
     command.filesize.set(LE, 0);
     command.maxprot.set(LE, 0);

@@ -101,6 +101,8 @@ pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.o
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
 pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
 pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
+pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
+    part_id::LINK_EDIT_SEGMENT.output_section_id();
 
 // Regular sections copied from the input objects.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
