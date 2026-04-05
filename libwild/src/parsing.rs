@@ -54,6 +54,7 @@ pub(crate) struct ProcessedLinkerScript<'data> {
     /// Raw bytes of the linker script file. Used to compute line numbers from
     /// `AssertCommand::remainder` when reporting errors.
     pub(crate) file_bytes: &'data [u8],
+    pub(crate) memory_regions: Vec<crate::linker_script::MemoryRegion<'data>>,
 }
 
 #[derive(Debug)]
