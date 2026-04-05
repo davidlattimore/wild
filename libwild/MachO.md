@@ -180,6 +180,7 @@ Contents of __unwind_info section:
 ## `LC_CODE_SIGNATURE` command
 
 Code signature is mandatory and cannot run a final binary without it. Can be manually creates for a produced binary: `codesign -s - -f a.out`.
+A linker can skip emission the signature by using: `-Wl,-no_adhoc_codesign`.
 It's basically an array of SHA-256 hashes, one for each page of the file - similar to how we emit build-id. There's existing LLVM implementation
 of the format we can use: https://github.com/llvm/llvm-project/blob/36e495dd903cea000f6c4f51954554c22f39d7da/lld/MachO/SyntheticSections.cpp#L1622-L1662
 
