@@ -292,16 +292,11 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
 /// Returns the name to use when writing a symbol into .symtab's string table.
-/// For .symtab, version suffixes are kept (e.g. `foo@VER_1.0`, `bar@@VER_1.0`),
-/// but a bare trailing `@` with no version name (e.g. `remain_unversioned@`) means
-/// "explicitly unversioned" and is stripped to just the base name, matching GNU ld.
-fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
-    let parsed = RawSymbolName::parse(raw_name);
-    if parsed.version_name == Some(b"") {
-        parsed.name
-    } else {
-        raw_name
-    }
+/// Unlike .dynsym (which encodes version info separately in .gnu.version), .symtab has no
+/// .gnu.version section, so version suffixes must be embedded in the name itself
+/// (e.g. `foo@VER_1.0`, `bar@@VER_1.0`, `remain_unversioned@`), matching GNU ld behaviour.
+pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
+    raw_name
 }
 
 impl platform::Platform for Elf {
@@ -1484,9 +1479,6 @@ impl platform::Platform for Elf {
                 } else {
                     num_globals += 1;
                 }
-                // For .symtab, keep the version suffix in the name (GNU ld behaviour), except
-                // a bare trailing '@' with no version name means "explicitly unversioned" and
-                // must be stripped (e.g. `remain_unversioned@` → `remain_unversioned`).
                 strings_size += symtab_name_for_strtab(info.name).len() + 1;
             } else if symbol_db.args.should_output_partial_object
                 && sym.is_undefined()
