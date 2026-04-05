@@ -12,6 +12,28 @@ Specification:
 
  ![layout](./mach64_structure.png)
 
+- Basic set of commands present in a trivial binary:
+```
+cmd LC_SEGMENT_64
+cmd LC_DYLD_CHAINED_FIXUPS
+cmd LC_DYLD_EXPORTS_TRIE
+cmd LC_SYMTAB
+cmd LC_DYSYMTAB
+cmd LC_LOAD_DYLINKER
+cmd LC_UUID
+cmd LC_BUILD_VERSION
+cmd LC_SOURCE_VERSION
+cmd LC_MAIN
+cmd LC_LOAD_DYLIB
+cmd LC_FUNCTION_STARTS
+cmd LC_DATA_IN_CODE
+cmd LC_CODE_SIGNATURE
+```
+
+- 5 used segments: `__PAGEZERO`, `__TEXT`, `__DATA`, `__DATA_CONST` and `__LINKEDIT`
+
+- Segments are page aligned both in the file and in the VM memory (16KiB pages) with the exception of the last segment (`__LINKEDIT`)
+
 - Section name is limited to 16 characters -> `-ffunction-sections -fdata-sections` are implemented with `MH_SUBSECTIONS_VIA_SYMBOLS` - each symbol can be treaded as a separate section
   for purpose of GC.
 
@@ -68,6 +90,8 @@ Import { library: "/usr/lib/libSystem.B.dylib", name: "dyld_stub_binder" }
 4: Symbol { name: "__tlv_bootstrap", address: 0, size: 0, kind: Unknown, section: Undefined, scope: Unknown, weak: false, flags: MachO { n_desc: 100 } }
 ...
 ```
+
+- generally speaking the mach-O format is pretty close to the ELF container
 
 ## - `__compact_unwind` format
 
@@ -153,7 +177,14 @@ Contents of __unwind_info section:
       [9]: function offset=0x00000be4, encoding[1]=0x02001000
 ```
 
-- generally speaking the mach-O format is pretty close to the ELF container
+## `LC_CODE_SIGNATURE` command
+
+Code signature is mandatory and cannot run a final binary without it. Can be manually creates for a produced binary: `codesign -s - -f a.out`.
+It's basically an array of SHA-256 hashes, one for each page of the file - similar to how we emit build-id. There's existing LLVM implementation
+of the format we can use: https://github.com/llvm/llvm-project/blob/36e495dd903cea000f6c4f51954554c22f39d7da/lld/MachO/SyntheticSections.cpp#L1622-L1662
+
+We need to allocate 256 bits (32B) for each 16 KiB page of the final binary. The hashes cover the entire file, except the LC_CODE_SIGNATURE data storage
+at the very end of `__LINKEDIT` segment.
 
 ## benchmarks: LLD vs. system linker
 
