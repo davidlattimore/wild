@@ -2388,10 +2388,21 @@ fn get_resolution<'data, R: Relocation>(
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
     let resolution = layout
         .merged_symbol_resolution(local_symbol_id)
-        // TODO: the fallback should be likely only used for the debug relocations
         .or_else(|| {
             section_index.and_then(|section_index| {
-                object_layout.section_resolutions[section_index.0].full_resolution()
+                let section_address =
+                    object_layout.section_resolutions[section_index.0].address()?;
+                let output_offset = opt_input_to_output(
+                    object_layout.section_relax_deltas.get(section_index.0),
+                    crate::platform::Symbol::value(sym),
+                );
+
+                Some(Resolution {
+                    raw_value: section_address + output_offset,
+                    dynamic_symbol_index: None,
+                    flags: ValueFlags::empty(),
+                    format_specific: Default::default(),
+                })
             })
         })
         .with_context(|| {
