@@ -186,6 +186,19 @@ of the format we can use: https://github.com/llvm/llvm-project/blob/36e495dd903c
 We need to allocate 256 bits (32B) for each 16 KiB page of the final binary. The hashes cover the entire file, except the LC_CODE_SIGNATURE data storage
 at the very end of `__LINKEDIT` segment.
 
+## `LC_DYLD_EXPORTS_TRIE` command
+
+An equivant of the ELF's `.dynsym` + `.gnu.hash`. It'a a smart trie data structure that implements fast symbol name look up.
+Well documented here: https://github.com/qyang-nj/llios/blob/main/exported_symbol/README.md#export-trie
+
+Pretty straightforward to implement, replaces a legacy `LC_DYLD_INFO(_ONLY)` commands.
+
+## `LC_DYLD_CHAINED_FIXUPS` command
+
+TODO: explain better
+
+Good documentation here: https://github.com/qyang-nj/llios/blob/main/dynamic_linking/chained_fixups.md.
+
 ## benchmarks: LLD vs. system linker
 
 Runnning on MacMini M4:
