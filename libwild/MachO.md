@@ -10,7 +10,7 @@ Specification:
 
 - File format layout:
 
- ![layout](./mach64_structure.png)
+ ![layout](https://alexdremov.me/content/images/2022/10/6XLCD.gif)
 
 - Basic set of commands present in a trivial binary:
 ```
