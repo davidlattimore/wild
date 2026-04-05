@@ -154,13 +154,12 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
-/// - Functions: SIZEOF, ALIGNOF, ADDR, LOADADDR, ALIGN, MIN, MAX
+/// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
 /// Not yet supported (can be added when needed):
 /// - Ternary operator (? :)
-/// - Additional functions (LENGTH, ORIGIN)
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
