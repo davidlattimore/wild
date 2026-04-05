@@ -291,6 +291,14 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 /// Threshold size for using parallel copy for section data copying.
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
+/// Returns the name to use when writing a symbol into .symtab's string table.
+/// Unlike .dynsym (which encodes version info separately in .gnu.version), .symtab has no
+/// .gnu.version section, so version suffixes must be embedded in the name itself
+/// (e.g. `foo@VER_1.0`, `bar@@VER_1.0`, `remain_unversioned@`), matching GNU ld behaviour.
+pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
+    raw_name
+}
+
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
     type SymtabEntry = SymtabEntry;
@@ -1472,17 +1480,15 @@ impl platform::Platform for Elf {
                 } else {
                     num_globals += 1;
                 }
-                let name = RawSymbolName::parse(info.name).name();
-                strings_size += name.len() + 1;
+                strings_size += symtab_name_for_strtab(info.name).len() + 1;
             } else if symbol_db.args.should_output_partial_object
                 && sym.is_undefined()
                 && symbol_db.is_canonical(symbol_id)
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()
             {
-                let name = RawSymbolName::parse(name).name();
                 num_globals += 1;
-                strings_size += name.len() + 1;
+                strings_size += symtab_name_for_strtab(name).len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;

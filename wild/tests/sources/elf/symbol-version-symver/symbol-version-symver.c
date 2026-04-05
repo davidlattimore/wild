@@ -4,6 +4,12 @@
 //#CompArgs:-fPIC
 //#RunEnabled:false
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map -z now
+//#ExpectDynSym:foo section=".text"
+//#ExpectDynSym:bar section=".text"
+//#ExpectDynSym:remain_unversioned section=".text"
+//#ExpectSym:foo@VER_1.0 section=".text"
+//#ExpectSym:bar@@VER_1.0 section=".text"
+//#ExpectSym:remain_unversioned@ section=".text"
 
 __asm__(".symver foo_impl,foo@VER_1.0");
 __asm__(".symver bar_impl,bar@@VER_1.0");
