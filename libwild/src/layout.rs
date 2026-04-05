@@ -1732,7 +1732,11 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
         .expect("we should have computed header info by now")
         .num_output_sections_with_content;
 
-    compute_shndx_section(group_states, &mut total_sizes, num_sections);
+    if P::requires_symtab_shndx(num_sections as usize) {
+        group_states.iter_mut().for_each(|s| {
+            P::compute_symtab_shndx_section_size(&mut s.common.mem_sizes, &mut total_sizes);
+        });
+    }
 
     Ok(total_sizes)
 }
@@ -3011,7 +3015,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         }
 
         let mut num_sections = keep_sections.values_iter().filter(|p| **p).count();
-        if num_sections >= object::elf::SHN_LORESERVE as usize {
+        if P::requires_symtab_shndx(num_sections) {
             *keep_sections.get_mut(output_section_id::SYMTAB_SHNDX_LOCAL) = true;
             num_sections += 1;
         }
@@ -5147,33 +5151,4 @@ impl OutputRecordLayout {
 // the type parameter P, allowing deferred dropping to occur.
 impl<'data, P: Platform> Drop for Layout<'data, P> {
     fn drop(&mut self) {}
-}
-
-fn compute_shndx_section<'data, P: Platform>(
-    group_states: &mut [GroupState<'data, P>],
-    total_sizes: &mut OutputSectionPartMap<u64>,
-    num_sections: u32,
-) {
-    if num_sections < u32::from(object::elf::SHN_LORESERVE) {
-        return;
-    }
-    let symtab_entry_size = size_of::<P::SymtabEntry>() as u64;
-    let symtab_shndx_entry_size = size_of::<P::SymtabShndxEntry>() as u64;
-    group_states.iter_mut().for_each(|s| {
-        let locals = s.common.mem_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
-        let globals = s.common.mem_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
-
-        let mut extra_sizes = OutputSectionPartMap::with_size(s.common.mem_sizes.num_parts());
-        extra_sizes.increment(
-            part_id::SYMTAB_SHNDX_LOCAL,
-            locals * symtab_shndx_entry_size,
-        );
-        extra_sizes.increment(
-            part_id::SYMTAB_SHNDX_GLOBAL,
-            globals * symtab_shndx_entry_size,
-        );
-
-        s.common.mem_sizes.merge(&extra_sizes);
-        total_sizes.merge(&extra_sizes);
-    });
 }

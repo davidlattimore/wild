@@ -1896,6 +1896,33 @@ impl platform::Platform for Elf {
             crate::elf::NON_PIE_START_MEM_ADDRESS
         }
     }
+
+    fn requires_symtab_shndx(num_sections: usize) -> bool {
+        num_sections >= object::elf::SHN_LORESERVE as usize
+    }
+
+    fn compute_symtab_shndx_section_size(
+        group_sizes: &mut OutputSectionPartMap<u64>,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+    ) {
+        let symtab_entry_size = size_of::<Self::SymtabEntry>() as u64;
+        let symtab_shndx_entry_size = size_of::<Self::SymtabShndxEntry>() as u64;
+        let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
+        let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
+
+        let mut extra_sizes = OutputSectionPartMap::with_size(group_sizes.num_parts());
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_LOCAL,
+            locals * symtab_shndx_entry_size,
+        );
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_GLOBAL,
+            globals * symtab_shndx_entry_size,
+        );
+
+        group_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {

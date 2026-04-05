@@ -628,6 +628,16 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     /// Return a starting address in memory.
     fn start_memory_address(output_kind: OutputKind) -> u64;
+
+    fn requires_symtab_shndx(_num_sections: usize) -> bool {
+        false
+    }
+
+    fn compute_symtab_shndx_section_size(
+        _group_sizes: &mut OutputSectionPartMap<u64>,
+        _total_sizes: &mut OutputSectionPartMap<u64>,
+    ) {
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.
