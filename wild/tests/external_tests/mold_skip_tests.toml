@@ -186,8 +186,6 @@ tests = [
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
   "exception-multiple-ehframe.sh",  # Support handling multiple .eh_frame sections.
-  "many-input-sections2.sh",        # Support > 65536 sections and symbol shndx overflow with SHT_SYMTAB_SHNDX.
-  "relocatable-many-sections.sh",   # Support > 65536 sections and symbol shndx overflow with SHT_SYMTAB_SHNDX.
 ]
 
 [skipped_groups.uncommon]

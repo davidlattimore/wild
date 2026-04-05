@@ -96,6 +96,10 @@ pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.o
 pub(crate) const RELR_DYN: OutputSectionId = part_id::RELR_DYN.output_section_id();
 pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
 pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_section_id();
+pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
+    part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
+pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
+    part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
 // Mach-O specific sections
 pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
@@ -132,7 +136,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     // sections have content, which we don't know until half way through the layout phase.
     /// Mapping from internal section IDs to output section indexes. None, if the section isn't
     /// being output.
-    pub(crate) output_section_indexes: Vec<Option<u16>>,
+    pub(crate) output_section_indexes: Vec<Option<u32>>,
 
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
 
@@ -716,7 +720,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns the output index of the built-in-section `id` or None if the section isn't being
     /// output.
-    pub(crate) fn output_index_of_section(&self, id: OutputSectionId) -> Option<u16> {
+    pub(crate) fn output_index_of_section(&self, id: OutputSectionId) -> Option<u32> {
         self.output_section_indexes
             .get(id.as_usize())
             .copied()

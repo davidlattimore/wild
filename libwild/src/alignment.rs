@@ -25,6 +25,9 @@ pub(crate) const MAX: Alignment = Alignment {
 /// Alignment for entries in the symbol table.
 pub(crate) const SYMTAB_ENTRY: Alignment = Alignment { exponent: 3 };
 
+/// Aligmnent for entries in the .symtab.shndx section.
+pub(crate) const SYMTAB_SHNDX_ENTRY: Alignment = Alignment { exponent: 2 };
+
 /// Alignment for entries in the global offset table.
 pub(crate) const GOT_ENTRY: Alignment = Alignment { exponent: 3 };
 

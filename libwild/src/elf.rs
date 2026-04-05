@@ -326,6 +326,7 @@ impl platform::Platform for Elf {
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
+    type SymtabShndxEntry = SymtabShndxEntry;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -1815,6 +1816,7 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SHSTRTAB);
         builder.add_section(output_section_id::SYMTAB_LOCAL);
+        builder.add_section(output_section_id::SYMTAB_SHNDX_LOCAL);
         builder.add_section(output_section_id::STRTAB);
 
         builder.build()
@@ -1870,6 +1872,7 @@ impl platform::Platform for Elf {
             secnames::STRTAB_SECTION_NAME
             | secnames::SYMTAB_SECTION_NAME
             | secnames::SHSTRTAB_SECTION_NAME
+            | secnames::SYMTAB_SHNDX_SECTION_NAME
             | secnames::GROUP_SECTION_NAME => {
                 return SectionRuleOutcome::Discard;
             }
@@ -1892,6 +1895,33 @@ impl platform::Platform for Elf {
         } else {
             crate::elf::NON_PIE_START_MEM_ADDRESS
         }
+    }
+
+    fn requires_symtab_shndx(num_sections: usize) -> bool {
+        num_sections >= object::elf::SHN_LORESERVE as usize
+    }
+
+    fn compute_symtab_shndx_section_size(
+        group_sizes: &mut OutputSectionPartMap<u64>,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+    ) {
+        let symtab_entry_size = size_of::<Self::SymtabEntry>() as u64;
+        let symtab_shndx_entry_size = size_of::<Self::SymtabShndxEntry>() as u64;
+        let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
+        let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
+
+        let mut extra_sizes = OutputSectionPartMap::with_size(group_sizes.num_parts());
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_LOCAL,
+            locals * symtab_shndx_entry_size,
+        );
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_GLOBAL,
+            globals * symtab_shndx_entry_size,
+        );
+
+        group_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
     }
 }
 
@@ -2925,6 +2955,7 @@ pub(crate) const RELA_ENTRY_SIZE: u64 = size_of::<Rela>() as u64;
 pub(crate) const RELR_ENTRY_SIZE: u64 = size_of::<Relr>() as u64;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
+pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = size_of::<SymtabShndxEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
 
 const _ASSERTS: () = {
@@ -4498,6 +4529,18 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         is_relro: true,
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SYMTAB_SHNDX_SECTION_NAME)),
+        ty: sht::SYMTAB_SHNDX,
+        element_size: SYMTAB_SHNDX_ENTRY_SIZE,
+        min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
+        link: &[output_section_id::SYMTAB_LOCAL],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
+        ..DEFAULT_DEFS
+    };
     // Start of regular sections
     defs[output_section_id::RODATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
@@ -4832,6 +4875,11 @@ pub(crate) struct ResolutionExt {
     pub(crate) plt_address: Option<NonZeroU64>,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SymtabShndxEntry {
+    pub(crate) _shndx: u32,
+}
+
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
     memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
@@ -5000,6 +5048,10 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(
         secnames::RISCV_ATTRIBUTES_SECTION_NAME,
         SectionRuleOutcome::RiscVAttribute,
+    ),
+    SectionRule::exact(
+        secnames::SYMTAB_SHNDX_SECTION_NAME,
+        SectionRuleOutcome::Discard,
     ),
     SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];
