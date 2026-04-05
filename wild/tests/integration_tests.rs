@@ -180,7 +180,6 @@
 //! STB_GLOBAL or STB_WEAK).
 
 mod external_tests;
-mod tidy;
 
 use itertools::Itertools;
 use libloading::Library;
@@ -232,28 +231,9 @@ fn main() -> Result<std::process::ExitCode> {
     let args = libtest_mimic::Arguments::from_args();
     let filter = Filter::new(&args);
     let mut tests = Vec::new();
-    collect_non_dynamic(&mut tests, &filter);
     collect_tests(&mut tests, &filter)?;
     external_tests::collect_tests(&mut tests, &filter)?;
     Ok(libtest_mimic::run(&args, tests).exit_code())
-}
-
-fn collect_non_dynamic(tests: &mut Vec<Trial>, filter: &Filter) {
-    if filter.excludes("check") {
-        return;
-    }
-
-    // These tests could be #[test] style tests if we were using the standard test harness, but
-    // there's only a small number of them, so we just register them explicitly to avoid having to
-    // have a separate integration test binary.
-    tests.push(Trial::ignorable_test(
-        "check_sources_format",
-        crate::tidy::check_sources_format,
-    ));
-    tests.push(Trial::test(
-        "check_text_files",
-        crate::tidy::check_text_files,
-    ));
 }
 
 fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {

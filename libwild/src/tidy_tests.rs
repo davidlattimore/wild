@@ -1,16 +1,18 @@
-use libtest_mimic::Failed;
-use libwild::error::Context as _;
+//! Tests that assert properties of our source files, such as formatting.
+
+use crate::bail;
+use crate::error::Context as _;
+use crate::error::Result;
 use std::env;
 use std::fs::read_dir;
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
 
-pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed> {
+#[test]
+fn check_sources_format() -> Result {
     if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
-        return Ok(libtest_mimic::Completion::ignored_with(
-            "disabled via env var",
-        ));
+        return Ok(());
     }
 
     fn collect_files(dir: &Path, extensions: &[&str]) -> Vec<std::path::PathBuf> {
@@ -36,7 +38,15 @@ pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed
     }
 
     let extensions = ["c", "cc", "h"];
-    let sources_path = format!("{}/tests/sources", env!("CARGO_MANIFEST_DIR"));
+    let sources_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("wild")
+        .join("tests")
+        .join("sources");
+
+    assert!(sources_path.is_dir());
+
     let source_files = collect_files(Path::new(&sources_path), &extensions);
 
     let clang_format_out = Command::new("clang-format")
@@ -70,16 +80,19 @@ pub(super) fn check_sources_format() -> Result<libtest_mimic::Completion, Failed
             .expect("Failed to spawn `clang-format --version`");
         let clang_version = String::from_utf8_lossy(&clang_out.stdout);
         let version_no_endline = clang_version.trim_end_matches('\n');
-        return Err(Failed::from(format!(
-            "clang-format ({version_no_endline}) check failed:\n{out}\nRun `clang-format -i {sources_path}/*/*/*.{{{extensions_str}}}` to fix it.",
+        bail!(
+            "clang-format ({version_no_endline}) check failed:\n{out}\n\
+            Run `clang-format -i {sources_path}/*/*/*.{{{extensions_str}}}` to fix it.",
+            sources_path = sources_path.display(),
             extensions_str = extensions.join(",")
-        )));
+        );
     }
 
-    Ok(libtest_mimic::Completion::Completed)
+    Ok(())
 }
 
-pub(super) fn check_text_files() -> Result<(), Failed> {
+#[test]
+fn check_text_files() -> Result {
     const EXCLUDE_DIR: &[&str] = &[
         "target",
         "build",
@@ -88,7 +101,7 @@ pub(super) fn check_text_files() -> Result<(), Failed> {
         "fakes",
     ];
 
-    fn verify_path(path: &Path, problems: &mut Vec<String>) -> libwild::error::Result {
+    fn verify_path(path: &Path, problems: &mut Vec<String>) -> crate::error::Result {
         if EXCLUDE_DIR.iter().any(|e| path.ends_with(e)) {
             return Ok(());
         }
@@ -144,10 +157,10 @@ pub(super) fn check_text_files() -> Result<(), Failed> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
 
     let mut problems = Vec::new();
-    verify_path(root, &mut problems).map_err(|e| Failed::from(e.to_string()))?;
+    verify_path(root, &mut problems)?;
 
     if !problems.is_empty() {
-        return Err(Failed::from(problems.join("\n")));
+        bail!("{}\n", problems.join("\n"));
     }
 
     Ok(())

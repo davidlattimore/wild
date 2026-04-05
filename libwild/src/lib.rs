@@ -67,6 +67,8 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tidy_tests;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
