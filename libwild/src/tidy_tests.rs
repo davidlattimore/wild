@@ -165,3 +165,47 @@ fn check_text_files() -> Result {
 
     Ok(())
 }
+
+/// Checks that we don't put ELF-specific code in files where it shouldn't be.
+#[test]
+fn check_elf_specific_code() -> Result {
+    let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+
+    // Files where we don't allow ELF-specific code.
+    const DISALLOWED: &[&str] = &[
+        "layout.rs",
+        "symbol_db.rs",
+        "resolution.rs",
+        "input_data.rs",
+    ];
+
+    // Patterns that we still allow. These should probably be dealt with, either by renaming these
+    // types if we conclude that they're not really ELF-specific, or by removing references to them.
+    const EXEMPTIONS: &[&str] = &["linker_utils::elf::RelocationKind"];
+
+    for name in DISALLOWED {
+        let path = src_dir.join(name);
+        let contents = std::fs::read_to_string(&path)?;
+        let mut skip = false;
+        for (i, line) in contents.lines().enumerate() {
+            if line.starts_with("#[test]") {
+                skip = true;
+            } else if line.starts_with("}") {
+                skip = false;
+            } else if skip {
+                continue;
+            }
+
+            if line.contains("::elf") && !EXEMPTIONS.iter().any(|e| line.contains(e)) {
+                bail!(
+                    "{path}:{line} contains ELF-specific code. \
+                    Please move code, likely by extending Platform trait",
+                    path = path.display(),
+                    line = i + 1,
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
