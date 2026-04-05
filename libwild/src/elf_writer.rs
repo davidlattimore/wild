@@ -1313,8 +1313,17 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         };
         let e = LittleEndian;
 
-        // Always save the name without the symbol version (e.g. foo@@VER_1).
-        let name = RawSymbolName::parse(name).name;
+        // For .dynsym, strip the version suffix from the name (e.g. foo@@VER_1 → foo) because
+        // the version is encoded separately in the .gnu.version section. For .symtab, the version
+        // suffix must be included in the name itself (GNU ld behaviour).
+        // A bare trailing '@' with no version (e.g. `remain_unversioned@`) means "explicitly
+        // unversioned" — GNU ld strips it to just the base name in both tables.
+        let parsed = RawSymbolName::parse(name);
+        let name = if self.is_dynamic || parsed.version_name == Some(b"") {
+            parsed.name
+        } else {
+            name
+        };
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
         entry.st_info = 0;

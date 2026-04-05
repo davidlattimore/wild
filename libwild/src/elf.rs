@@ -291,6 +291,19 @@ const _: () = assert!(!core::mem::needs_drop::<File>());
 /// Threshold size for using parallel copy for section data copying.
 const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
 
+/// Returns the name to use when writing a symbol into .symtab's string table.
+/// For .symtab, version suffixes are kept (e.g. `foo@VER_1.0`, `bar@@VER_1.0`),
+/// but a bare trailing `@` with no version name (e.g. `remain_unversioned@`) means
+/// "explicitly unversioned" and is stripped to just the base name, matching GNU ld.
+fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
+    let parsed = RawSymbolName::parse(raw_name);
+    if parsed.version_name == Some(b"") {
+        parsed.name
+    } else {
+        raw_name
+    }
+}
+
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
     type SymtabEntry = SymtabEntry;
@@ -1471,17 +1484,18 @@ impl platform::Platform for Elf {
                 } else {
                     num_globals += 1;
                 }
-                let name = RawSymbolName::parse(info.name).name();
-                strings_size += name.len() + 1;
+                // For .symtab, keep the version suffix in the name (GNU ld behaviour), except
+                // a bare trailing '@' with no version name means "explicitly unversioned" and
+                // must be stripped (e.g. `remain_unversioned@` → `remain_unversioned`).
+                strings_size += symtab_name_for_strtab(info.name).len() + 1;
             } else if symbol_db.args.should_output_partial_object
                 && sym.is_undefined()
                 && symbol_db.is_canonical(symbol_id)
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()
             {
-                let name = RawSymbolName::parse(name).name();
                 num_globals += 1;
-                strings_size += name.len() + 1;
+                strings_size += symtab_name_for_strtab(name).len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
