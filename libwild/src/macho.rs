@@ -948,7 +948,9 @@ impl platform::Platform for MachO {
             crate::layout::OutputRecordLayout,
         >,
     ) -> crate::error::Result<u32> {
-        Ok(0)
+        // Mach-O doesn't use dynsym indices. Return 1 to satisfy NonZeroU32.
+        // The value is unused in the Mach-O writer.
+        Ok(1)
     }
 
     fn compute_object_addresses<'data>(
@@ -1011,10 +1013,15 @@ impl platform::Platform for MachO {
     }
 
     fn create_dynamic_symbol_definition<'data>(
-        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        _symbol_id: crate::symbol_db::SymbolId,
+        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        Err(error!("Dynamic symbols not yet supported for Mach-O"))
+        let name = symbol_db.symbol_name(symbol_id)?.bytes();
+        Ok(crate::layout::DynamicSymbolDefinition {
+            symbol_id,
+            name,
+            format_specific: (),
+        })
     }
 
     fn update_segment_keep_list(
@@ -1399,6 +1406,7 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
         SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
         SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
+        SectionRule::exact_section(b".rustc", output_section_id::DATA),
         SectionRule::exact_section(b"__bss", output_section_id::BSS),
         SectionRule::exact_section(b"__common", output_section_id::BSS),
         SectionRule::exact_section(b"__unwind_info", output_section_id::RODATA),

@@ -171,10 +171,11 @@ fn write_macho<A: Arch<Platform = MachO>>(
         mappings[1].file_offset as usize + (mappings[1].vm_end - mappings[1].vm_start) as usize
     } else { 0 };
 
+    let image_base = if layout.symbol_db.args.is_dylib { 0u64 } else { PAGEZERO_SIZE };
     let mut all_data_fixups: Vec<(usize, u64)> = Vec::new();
     for f in &rebase_fixups {
         if f.file_offset < data_seg_start || f.file_offset >= data_seg_end { continue; }
-        let target_offset = f.target.wrapping_sub(PAGEZERO_SIZE);
+        let target_offset = f.target.wrapping_sub(image_base);
         all_data_fixups.push((f.file_offset, target_offset & 0xF_FFFF_FFFF));
     }
     for f in &bind_fixups {
@@ -217,7 +218,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
 
     // Compute chained fixups data size
     let has_data = mappings.len() > 1 && (mappings[1].vm_end > mappings[1].vm_start);
-    let seg_count = if has_data { 4u32 } else { 3u32 };
+    let is_dylib = layout.symbol_db.args.is_dylib;
+    let base_segs = if is_dylib { 2u32 } else { 3u32 }; // TEXT+LINKEDIT or PAGEZERO+TEXT+LINKEDIT
+    let seg_count = if has_data { base_segs + 1 } else { base_segs };
     let starts_in_image_size = 4 + 4 * seg_count;
     let page_count = if has_fixups && has_data {
         let data_mem_size = mappings[1].vm_end - mappings[1].vm_start;
@@ -256,6 +259,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
             write_chained_fixups_header(
                 out, cf_off as usize, &all_data_fixups, n_imports,
                 &import_name_offsets, &symbols_pool, mappings,
+                layout.symbol_db.args.is_dylib,
             )?;
             cf_off as usize + cf_data_size as usize
         }
@@ -263,7 +267,215 @@ fn write_macho<A: Arch<Platform = MachO>>(
         out.len()
     };
 
+    // For dylibs: write symbol table with exported symbols
+    let final_size = if layout.symbol_db.args.is_dylib {
+        write_dylib_symtab(out, final_size, layout, mappings)?
+    } else {
+        final_size
+    };
+
     Ok(final_size)
+}
+
+/// Write a minimal symbol table for dylib exports.
+fn write_dylib_symtab(
+    out: &mut [u8],
+    start: usize,
+    layout: &Layout<'_, MachO>,
+    mappings: &[SegmentMapping],
+) -> Result<usize> {
+
+    // Collect exported symbols from dynamic_symbol_definitions
+    let mut entries: Vec<(Vec<u8>, u64)> = Vec::new();
+    for def in &layout.dynamic_symbol_definitions {
+        let sym_id = def.symbol_id;
+        if let Some(res) = layout.symbol_resolutions.iter().nth(sym_id.as_usize()).and_then(|r| r.as_ref()) {
+            entries.push((def.name.to_vec(), res.raw_value));
+        }
+    }
+
+    if entries.is_empty() {
+        return Ok(start);
+    }
+
+    // Build string table: starts with \0
+    let mut strtab = vec![0u8];
+    let mut str_offsets = Vec::new();
+    for (name, _) in &entries {
+        str_offsets.push(strtab.len() as u32);
+        strtab.extend_from_slice(name);
+        strtab.push(0);
+    }
+
+    // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
+    let symoff = (start + 7) & !7; // align to 8
+    let nsyms = entries.len();
+    let mut pos = symoff;
+    for (i, (_, value)) in entries.iter().enumerate() {
+        if pos + 16 > out.len() { break; }
+        // nlist64: n_strx (4), n_type (1), n_sect (1), n_desc (2), n_value (8)
+        out[pos..pos+4].copy_from_slice(&str_offsets[i].to_le_bytes());
+        out[pos+4] = 0x0F; // N_SECT | N_EXT
+        out[pos+5] = 1; // n_sect: section 1 (__text)
+        out[pos+6..pos+8].copy_from_slice(&0u16.to_le_bytes()); // n_desc
+        out[pos+8..pos+16].copy_from_slice(&value.to_le_bytes());
+        pos += 16;
+    }
+
+    // Write string table
+    let stroff = pos;
+    if stroff + strtab.len() <= out.len() {
+        out[stroff..stroff + strtab.len()].copy_from_slice(&strtab);
+    }
+    pos = stroff + strtab.len();
+
+    // Patch LC_SYMTAB in the header
+    // Find LC_SYMTAB command and update it
+    let mut off = 32u32; // after header
+    let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap());
+    for _ in 0..ncmds {
+        let cmd = u32::from_le_bytes(out[off as usize..off as usize+4].try_into().unwrap());
+        let cmdsize = u32::from_le_bytes(out[off as usize+4..off as usize+8].try_into().unwrap());
+        if cmd == LC_SYMTAB {
+            out[off as usize+8..off as usize+12].copy_from_slice(&(symoff as u32).to_le_bytes());
+            out[off as usize+12..off as usize+16].copy_from_slice(&(nsyms as u32).to_le_bytes());
+            out[off as usize+16..off as usize+20].copy_from_slice(&(stroff as u32).to_le_bytes());
+            out[off as usize+20..off as usize+24].copy_from_slice(&(strtab.len() as u32).to_le_bytes());
+            break;
+        }
+        off += cmdsize;
+    }
+
+    // Build export trie for dlsym (must be aligned)
+    let trie_off = (pos + 7) & !7;
+    let trie = build_export_trie(&entries);
+    if trie_off + trie.len() <= out.len() {
+        out[trie_off..trie_off + trie.len()].copy_from_slice(&trie);
+    }
+    pos = trie_off + trie.len();
+
+    // Patch LC_SYMTAB and LC_DYLD_EXPORTS_TRIE in headers
+    off = 32;
+    for _ in 0..ncmds {
+        let cmd = u32::from_le_bytes(out[off as usize..off as usize+4].try_into().unwrap());
+        let cmdsize = u32::from_le_bytes(out[off as usize+4..off as usize+8].try_into().unwrap());
+        match cmd {
+            0x19 => { // LC_SEGMENT_64
+                let segname = &out[off as usize+8..off as usize+24];
+                if segname.starts_with(b"__LINKEDIT") {
+                    let linkedit_fileoff = u64::from_le_bytes(
+                        out[off as usize+40..off as usize+48].try_into().unwrap());
+                    let new_filesize = pos as u64 - linkedit_fileoff;
+                    out[off as usize+48..off as usize+56].copy_from_slice(&new_filesize.to_le_bytes());
+                }
+            }
+            LC_DYSYMTAB => {
+                // DYSYMTAB: ilocalsym nlocalsym iextdefsym nextdefsym iundefsym nundefsym
+                let o = off as usize + 8;
+                out[o..o+4].copy_from_slice(&0u32.to_le_bytes()); // ilocalsym
+                out[o+4..o+8].copy_from_slice(&0u32.to_le_bytes()); // nlocalsym
+                out[o+8..o+12].copy_from_slice(&0u32.to_le_bytes()); // iextdefsym
+                out[o+12..o+16].copy_from_slice(&(nsyms as u32).to_le_bytes()); // nextdefsym
+                out[o+16..o+20].copy_from_slice(&(nsyms as u32).to_le_bytes()); // iundefsym
+                out[o+20..o+24].copy_from_slice(&0u32.to_le_bytes()); // nundefsym
+            }
+            0x8000_0033 => { // LC_DYLD_EXPORTS_TRIE
+                out[off as usize+8..off as usize+12].copy_from_slice(&(trie_off as u32).to_le_bytes());
+                out[off as usize+12..off as usize+16].copy_from_slice(&(trie.len() as u32).to_le_bytes());
+            }
+            _ => {}
+        }
+        off += cmdsize;
+    }
+
+    Ok(pos)
+}
+
+/// Build a Mach-O export trie for the given symbols.
+fn build_export_trie(entries: &[(Vec<u8>, u64)]) -> Vec<u8> {
+    if entries.is_empty() { return vec![0, 0]; } // empty root
+
+    // Build child nodes first to know their sizes
+    let mut children: Vec<Vec<u8>> = Vec::new();
+    for (_, addr) in entries {
+        let mut node = Vec::new();
+        let mut info = Vec::new();
+        uleb128_encode(&mut info, 0); // flags: regular
+        uleb128_encode(&mut info, *addr);
+        uleb128_encode(&mut node, info.len() as u64); // terminal size
+        node.extend_from_slice(&info);
+        node.push(0); // 0 child edges
+        children.push(node);
+    }
+
+    // Build edge labels (symbol name bytes + NUL)
+    let mut labels: Vec<Vec<u8>> = Vec::new();
+    for (name, _) in entries {
+        let mut label = Vec::new();
+        label.extend_from_slice(name);
+        label.push(0);
+        labels.push(label);
+    }
+
+    // Compute root node size to determine child offsets.
+    // Root = terminal_size(1) + edge_count(1) + edges
+    // Each edge = label + ULEB128(child_offset)
+    // We need to know root size to compute offsets, but offsets depend on their ULEB encoding size.
+    // Use two passes: estimate then fix.
+    let n = entries.len();
+    // Estimate: each offset ULEB is ~2 bytes for typical small tries
+    let mut root_size_estimate = 2usize; // terminal_size(0) + edge_count
+    for label in &labels {
+        root_size_estimate += label.len() + 3; // label + ~3 byte offset
+    }
+
+    // Compute exact child offsets from root_size_estimate
+    let mut child_offsets = Vec::new();
+    let mut off = root_size_estimate;
+    for child in &children {
+        child_offsets.push(off);
+        off += child.len();
+    }
+
+    // Now build root with exact offsets
+    let mut root = Vec::new();
+    root.push(0); // not terminal
+    root.push(n as u8); // edge count
+    for (i, label) in labels.iter().enumerate() {
+        root.extend_from_slice(label);
+        uleb128_encode(&mut root, child_offsets[i] as u64);
+    }
+
+    // Check if root size matches estimate; if not, recompute
+    if root.len() != root_size_estimate {
+        let actual_root_size = root.len();
+        let delta = actual_root_size as isize - root_size_estimate as isize;
+        // Recompute with corrected offsets
+        root.clear();
+        root.push(0);
+        root.push(n as u8);
+        for (i, label) in labels.iter().enumerate() {
+            root.extend_from_slice(label);
+            uleb128_encode(&mut root, (child_offsets[i] as isize + delta) as u64);
+        }
+    }
+
+    // Assemble trie
+    let mut trie = root;
+    for child in &children {
+        trie.extend_from_slice(child);
+    }
+    trie
+}
+
+fn uleb128_encode(buf: &mut Vec<u8>, mut val: u64) {
+    loop {
+        let mut byte = (val & 0x7F) as u8;
+        val >>= 7;
+        if val != 0 { byte |= 0x80; }
+        buf.push(byte);
+        if val == 0 { break; }
+    }
 }
 
 /// Write PLT stubs and GOT bind entries for imported symbols.
@@ -504,7 +716,9 @@ fn apply_relocations(
                                 tls_init_start = tdata.mem_offset + tdata.mem_size;
                             }
                             let tls_offset = if in_tbss {
-                                tls_init_size + target_addr.saturating_sub(tbss.mem_offset)
+                                // Align init_size to BSS alignment (8 bytes)
+                                let aligned_init = (tls_init_size + 7) & !7;
+                                aligned_init + target_addr.saturating_sub(tbss.mem_offset)
                             } else {
                                 target_addr.saturating_sub(tls_init_start)
                             };
@@ -533,10 +747,12 @@ fn write_chained_fixups_header(
     import_name_offsets: &[u32],
     symbols_pool: &[u8],
     mappings: &[SegmentMapping],
+    is_dylib: bool,
 ) -> Result {
     let has_data = mappings.len() > 1 && (mappings[1].vm_end > mappings[1].vm_start);
-    let seg_count = if has_data { 4u32 } else { 3u32 };
-    let data_seg_idx: usize = 2;
+    let base_segs = if is_dylib { 2u32 } else { 3u32 };
+    let seg_count = if has_data { base_segs + 1 } else { base_segs };
+    let data_seg_idx: usize = if is_dylib { 1 } else { 2 };
     let starts_offset: u32 = 32;
     let starts_in_image_size = 4 + 4 * seg_count as usize;
 
@@ -576,7 +792,8 @@ fn write_chained_fixups_header(
     w[ss..ss+4].copy_from_slice(&(seg_starts_size as u32).to_le_bytes());
     w[ss+4..ss+6].copy_from_slice(&(PAGE_SIZE as u16).to_le_bytes());
     w[ss+6..ss+8].copy_from_slice(&6u16.to_le_bytes());
-    let seg_offset_val: u64 = if mappings.len() > 1 { mappings[1].vm_start - PAGEZERO_SIZE } else { 0 };
+    let image_base = if mappings.first().map_or(false, |m| m.vm_start >= PAGEZERO_SIZE) { PAGEZERO_SIZE } else { 0 };
+    let seg_offset_val: u64 = if mappings.len() > 1 { mappings[1].vm_start.wrapping_sub(image_base) } else { 0 };
     w[ss+8..ss+16].copy_from_slice(&seg_offset_val.to_le_bytes());
     w[ss+16..ss+20].copy_from_slice(&0u32.to_le_bytes());
     w[ss+20..ss+22].copy_from_slice(&page_count.to_le_bytes());
@@ -670,49 +887,101 @@ fn write_headers(
     let data_layout = layout.section_layouts.get(output_section_id::DATA);
     let has_tvars = has_tlv;
 
+    // Scan for .rustc section (proc-macro metadata) before computing cmd sizes
+    let mut rustc_addr = 0u64;
+    let mut rustc_size = 0u64;
+    {
+        use object::read::macho::Section as _;
+        let le = object::Endianness::Little;
+        for group in &layout.group_layouts {
+            for file_layout in &group.files {
+                if let FileLayout::Object(obj) = file_layout {
+                    for (sec_idx, _) in obj.sections.iter().enumerate() {
+                        if let Some(s) = obj.object.sections.get(sec_idx) {
+                            let name = crate::macho::trim_nul(s.sectname());
+                            if name == b".rustc" {
+                                if let Some(addr) = obj.section_resolutions[sec_idx].address() {
+                                    if rustc_addr == 0 || addr < rustc_addr { rustc_addr = addr; }
+                                    rustc_size += s.size(le);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let has_rustc = rustc_addr > 0 && rustc_size > 0;
+
     let mut w = Writer { buf: out, pos: offset };
     let dylinker_cmd_size = align8((12 + DYLD_PATH.len() + 1) as u32);
     let dylib_cmd_size = align8((24 + LIBSYSTEM_PATH.len() + 1) as u32);
 
+    let is_dylib = layout.symbol_db.args.is_dylib;
+    let install_name = if is_dylib {
+        layout.symbol_db.args.output().to_string_lossy().into_owned()
+    } else { String::new() };
+    let id_dylib_cmd_size = if is_dylib { align8((24 + install_name.len() as u32 + 1)) } else { 0 };
+
     let mut ncmds = 0u32;
     let mut cmdsize = 0u32;
     let add_cmd = |n: &mut u32, s: &mut u32, size: u32| { *n += 1; *s += size; };
-    add_cmd(&mut ncmds, &mut cmdsize, 72);
-    add_cmd(&mut ncmds, &mut cmdsize, 72 + 80);
+    if !is_dylib { add_cmd(&mut ncmds, &mut cmdsize, 72); } // PAGEZERO (exe only)
+    let rustc_in_text = has_rustc && rustc_addr < text_vm_start + text_filesize;
+    let text_nsects = 1 + if rustc_in_text { 1u32 } else { 0 };
+    add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
     if has_data {
-        let data_nsects = if has_tvars { 2u32 } else { 0 };
+        let mut data_nsects = if has_tvars { 2u32 } else { 0 };
+        if has_rustc { data_nsects += 1; }
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
     }
-    add_cmd(&mut ncmds, &mut cmdsize, 72);
-    add_cmd(&mut ncmds, &mut cmdsize, 24);
-    add_cmd(&mut ncmds, &mut cmdsize, dylinker_cmd_size);
+    add_cmd(&mut ncmds, &mut cmdsize, 72); // LINKEDIT
+    if is_dylib {
+        add_cmd(&mut ncmds, &mut cmdsize, id_dylib_cmd_size); // LC_ID_DYLIB
+        add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_UUID
+    } else {
+        add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_MAIN
+    }
+    if !is_dylib { add_cmd(&mut ncmds, &mut cmdsize, dylinker_cmd_size); }
     add_cmd(&mut ncmds, &mut cmdsize, dylib_cmd_size);
-    add_cmd(&mut ncmds, &mut cmdsize, 24);
-    add_cmd(&mut ncmds, &mut cmdsize, 80);
+    add_cmd(&mut ncmds, &mut cmdsize, 24); // SYMTAB
+    add_cmd(&mut ncmds, &mut cmdsize, 80); // DYSYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 32);
     add_cmd(&mut ncmds, &mut cmdsize, 16);
     add_cmd(&mut ncmds, &mut cmdsize, 16);
 
+    let filetype = if is_dylib { 6u32 } else { MH_EXECUTE }; // MH_DYLIB = 6
     w.u32(MH_MAGIC_64); w.u32(CPU_TYPE_ARM64); w.u32(CPU_SUBTYPE_ARM64_ALL);
-    w.u32(MH_EXECUTE); w.u32(ncmds); w.u32(cmdsize);
+    w.u32(filetype); w.u32(ncmds); w.u32(cmdsize);
     let mut flags = MH_PIE | MH_TWOLEVEL | MH_DYLDLINK;
     if has_tlv { flags |= 0x0080_0000; } // MH_HAS_TLV_DESCRIPTORS
     w.u32(flags); w.u32(0);
 
-    w.segment(b"__PAGEZERO", 0, PAGEZERO_SIZE, 0, 0, 0, 0, 0);
+    if !is_dylib {
+        w.segment(b"__PAGEZERO", 0, PAGEZERO_SIZE, 0, 0, 0, 0, 0);
+    }
 
-    // __TEXT
-    w.u32(LC_SEGMENT_64); w.u32(72 + 80); w.name16(b"__TEXT");
+    // __TEXT — include .rustc section if it falls in TEXT range
+    w.u32(LC_SEGMENT_64); w.u32(72 + 80 * text_nsects); w.name16(b"__TEXT");
     w.u64(text_vm_start); w.u64(text_filesize); w.u64(0); w.u64(text_filesize);
     w.u32(VM_PROT_READ | VM_PROT_EXECUTE); w.u32(VM_PROT_READ | VM_PROT_EXECUTE);
-    w.u32(1); w.u32(0);
+    w.u32(text_nsects); w.u32(0);
     w.name16(b"__text"); w.name16(b"__TEXT");
     w.u64(text_layout.mem_offset); w.u64(text_layout.mem_size);
     w.u32(text_layout.file_offset as u32); w.u32(2);
     w.u32(0); w.u32(0); w.u32(0x80000400); w.u32(0); w.u32(0); w.u32(0);
+    if rustc_in_text {
+        let rustc_foff = vm_addr_to_file_offset(rustc_addr, mappings)
+            .unwrap_or(0) as u32;
+        w.name16(b".rustc"); w.name16(b"__TEXT");
+        w.u64(rustc_addr); w.u64(rustc_size);
+        w.u32(rustc_foff); w.u32(0);
+        w.u32(0); w.u32(0); w.u32(0); w.u32(0); w.u32(0); w.u32(0);
+    }
 
     if has_data {
-        let nsects = if has_tvars { 2u32 } else { 0 };
+        let mut nsects = if has_tvars { 2u32 } else { 0 };
+        if has_rustc { nsects += 1; }
         let data_cmd_size = 72 + 80 * nsects;
         w.u32(LC_SEGMENT_64); w.u32(data_cmd_size); w.name16(b"__DATA");
         w.u64(data_vmaddr); w.u64(data_vmsize); w.u64(data_fileoff); w.u64(data_filesize);
@@ -765,7 +1034,7 @@ fn write_headers(
 
             // __thread_data: init template. Size includes TBSS for dyld.
             let tdata_init_addr = tdata_addr;
-            let tdata_init_size = tdata_size + tbss_layout.mem_size;
+            let tdata_init_size = ((tdata_size + 7) & !7) + tbss_layout.mem_size;
             let tdata_init_foff = vm_addr_to_file_offset(tdata_init_addr, mappings)
                 .unwrap_or(data_fileoff as usize) as u32;
             w.name16(b"__thread_data"); w.name16(b"__DATA");
@@ -774,6 +1043,18 @@ fn write_headers(
             w.u32(0); w.u32(0);
             w.u32(0x11); // S_THREAD_LOCAL_REGULAR
             w.u32(0); w.u32(0); w.u32(0);
+        }
+        if has_rustc {
+            // Always emit .rustc in __DATA for rustc to find metadata.
+            let rc_addr = if rustc_in_text { data_vmaddr } else { rustc_addr.max(data_vmaddr) };
+            let rc_foff = if rustc_in_text { data_fileoff as u32 } else {
+                vm_addr_to_file_offset(rustc_addr, mappings).unwrap_or(data_fileoff as usize) as u32
+            };
+            w.name16(b".rustc"); w.name16(b"__DATA");
+            w.u64(rc_addr); w.u64(rustc_size);
+            w.u32(rc_foff); w.u32(0);
+            w.u32(0); w.u32(0);
+            w.u32(0); w.u32(0); w.u32(0); w.u32(0);
         }
     }
 
@@ -787,10 +1068,32 @@ fn write_headers(
 
     w.segment(b"__LINKEDIT", linkedit_vm, PAGE_SIZE, last_file_end, cf_size, VM_PROT_READ, VM_PROT_READ, 0);
 
-    w.u32(LC_MAIN); w.u32(24); w.u64(entry_offset as u64); w.u64(0);
+    if is_dylib {
+        // LC_ID_DYLIB = 0x0D
+        w.u32(0x0D); w.u32(id_dylib_cmd_size); w.u32(24); w.u32(2);
+        w.u32(0x01_0000); w.u32(0x01_0000);
+        w.bytes(install_name.as_bytes()); w.u8(0); w.pad8();
+        // LC_UUID = 0x1B (required for dlopen)
+        w.u32(0x1B); w.u32(24);
+        // Generate a deterministic UUID from the output path
+        let uuid_bytes: [u8; 16] = {
+            let mut h = [0u8; 16];
+            for (i, b) in install_name.bytes().enumerate() {
+                h[i % 16] ^= b;
+            }
+            h[6] = (h[6] & 0x0F) | 0x40; // version 4
+            h[8] = (h[8] & 0x3F) | 0x80; // variant 1
+            h
+        };
+        w.bytes(&uuid_bytes);
+    } else {
+        w.u32(LC_MAIN); w.u32(24); w.u64(entry_offset as u64); w.u64(0);
+    }
 
-    w.u32(LC_LOAD_DYLINKER); w.u32(dylinker_cmd_size); w.u32(12);
-    w.bytes(DYLD_PATH); w.u8(0); w.pad8();
+    if !is_dylib {
+        w.u32(LC_LOAD_DYLINKER); w.u32(dylinker_cmd_size); w.u32(12);
+        w.bytes(DYLD_PATH); w.u8(0); w.pad8();
+    }
 
     w.u32(LC_LOAD_DYLIB); w.u32(dylib_cmd_size); w.u32(24); w.u32(2);
     w.u32(0x01_0000); w.u32(0x01_0000); w.bytes(LIBSYSTEM_PATH); w.u8(0); w.pad8();

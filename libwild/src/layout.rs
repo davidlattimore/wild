@@ -426,10 +426,10 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
     };
 
     for (index, sym) in resources.dynamic_symbol_definitions.iter().enumerate() {
-        let dynamic_symbol_index = NonZeroU32::try_from(epilogue.dynsym_start_index + index as u32)
-            .expect("Dynamic symbol definitions should start > 0");
-        if let Some(res) = &mut resolutions[sym.symbol_id.as_usize()] {
-            res.dynamic_symbol_index = Some(dynamic_symbol_index);
+        if let Some(dynamic_symbol_index) = NonZeroU32::new(epilogue.dynsym_start_index + index as u32) {
+            if let Some(res) = &mut resolutions[sym.symbol_id.as_usize()] {
+                res.dynamic_symbol_index = Some(dynamic_symbol_index);
+            }
         }
     }
 }

@@ -19,6 +19,8 @@ pub struct MachOArgs {
     pub(crate) lib_search_paths: Vec<Box<Path>>,
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
+    pub(crate) is_dylib: bool,
+    pub(crate) install_name: Option<Vec<u8>>,
 }
 
 impl MachOArgs {
@@ -39,6 +41,8 @@ impl Default for MachOArgs {
             lib_search_paths: Vec::new(),
             syslibroot: None,
             entry_symbol: Some(b"_main".to_vec()),
+            is_dylib: false,
+            install_name: None,
         }
     }
 }
@@ -76,7 +80,11 @@ impl platform::Args for MachOArgs {
     }
 
     fn base_address(&self, _output_kind: crate::output_kind::OutputKind) -> u64 {
-        0x1_0000_0000 // PAGEZERO size -- Mach-O addresses start after 4GB null page
+        if self.is_dylib {
+            0 // dylibs have no PAGEZERO
+        } else {
+            0x1_0000_0000 // PAGEZERO size
+        }
     }
 
     fn should_merge_sections(&self) -> bool { false }
@@ -85,7 +93,7 @@ impl platform::Args for MachOArgs {
         self.relocation_model
     }
 
-    fn should_output_executable(&self) -> bool { true }
+    fn should_output_executable(&self) -> bool { !self.is_dylib }
 }
 
 /// Parse macOS linker arguments. Handles the ld64-compatible flags that clang passes.
@@ -174,7 +182,12 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-mark_dead_strippable_dylib" | "-ObjC" | "-all_load"
         | "-no_implicit_dylibs" | "-search_paths_first" | "-two_levelnamespace"
         | "-flat_namespace" | "-bind_at_load"
-        | "-pie" | "-no_pie" | "-execute" | "-dylib" | "-bundle" => {
+        | "-pie" | "-no_pie" | "-execute" | "-bundle" => {
+            return Ok(());
+        }
+        "-dylib" | "-dynamiclib" => {
+            args.is_dylib = true;
+            args.entry_symbol = None; // dylibs have no entry point
             return Ok(());
         }
         _ => {}

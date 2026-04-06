@@ -346,6 +346,47 @@ else
     echo "  SKIP: rust-hello-world (rustc not available or link failed)"
 fi
 
+# --- Test 4p: Rust proc-macro (requires dylib .rustc section) ---
+echo "Test 4p: Rust proc-macro crate"
+PROC_DIR="$TMPDIR/procmacro"
+mkdir -p "$PROC_DIR/my_macro/src" "$PROC_DIR/my_app/src"
+cat > "$PROC_DIR/Cargo.toml" << 'EOF'
+[workspace]
+members = ["my_macro", "my_app"]
+resolver = "2"
+EOF
+cat > "$PROC_DIR/my_macro/Cargo.toml" << 'EOF'
+[package]
+name = "my_macro"
+version = "0.1.0"
+edition = "2021"
+[lib]
+proc-macro = true
+EOF
+cat > "$PROC_DIR/my_macro/src/lib.rs" << 'EOF'
+extern crate proc_macro;
+use proc_macro::TokenStream;
+#[proc_macro]
+pub fn answer(_input: TokenStream) -> TokenStream { "42i32".parse().unwrap() }
+EOF
+cat > "$PROC_DIR/my_app/Cargo.toml" << 'EOF'
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+my_macro = { path = "../my_macro" }
+EOF
+cat > "$PROC_DIR/my_app/src/main.rs" << 'EOF'
+fn main() { let v: i32 = my_macro::answer!(); std::process::exit(v); }
+EOF
+if cd "$PROC_DIR" && RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=$WILD" cargo build 2>/dev/null; then
+    check_exit "$PROC_DIR/target/debug/my_app" 42 "rust-proc-macro"
+else
+    fail "rust-proc-macro"
+fi
+cd "$TMPDIR"
+
 # --- Test 5: Output flag ---
 echo "Test 5: -o flag"
 clang -c "$TMPDIR/t1.c" -o "$TMPDIR/t5.o"
