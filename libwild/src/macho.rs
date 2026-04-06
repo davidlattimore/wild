@@ -26,7 +26,9 @@ use crate::part_id;
 use crate::platform;
 use crate::symbol_db::Visibility;
 use linker_utils::elf::secnames;
+use object::Endian;
 use object::Endianness;
+use object::U32;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -55,6 +57,9 @@ pub(crate) const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
 
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &str = "/usr/lib/dyld";
+pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 3;
+pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
+    (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -68,6 +73,45 @@ pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
 pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
 pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
+pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
+pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
+
+// TODO: move to object crate
+
+// values for dyld_chained_fixups_header.imports_format
+#[repr(C)]
+enum DyldChainedFixupsImporstFormat {
+    DYLD_CHAINED_IMPORT = 1,
+    DYLD_CHAINED_IMPORT_ADDEND = 2,
+    DYLD_CHAINED_IMPORT_ADDEND64 = 3,
+}
+
+// header of the LC_DYLD_CHAINED_FIXUPS payload
+#[repr(C)]
+pub(crate) struct DyldChainedFixupsHeader<E: Endian> {
+    // 0
+    fixups_version: U32<E>,
+    // offset of dyld_chained_starts_in_image in chain_data
+    starts_offset: U32<E>,
+    // offset of imports table in chain_data
+    imports_offset: U32<E>,
+    // offset of symbol strings in chain_data
+    symbols_offset: U32<E>,
+    // number of imported symbol names
+    imports_count: U32<E>,
+    // DYLD_CHAINED_IMPORT*
+    imports_format: U32<E>,
+    // 0 => uncompressed, 1 => zlib compressed
+    symbols_format: U32<E>,
+}
+
+// This struct is embedded in LC_DYLD_CHAINED_FIXUPS payload
+// struct dyld_chained_starts_in_image
+// {
+//     uint32_t    seg_count;
+//     uint32_t    seg_info_offset[1];  // each entry is offset into this struct for that segment
+//     // followed by pool of dyld_chain_starts_in_segment data
+// };
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -676,10 +720,13 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::DATA_SEGMENT
             | output_section_id::LINK_EDIT_SEGMENT
             | output_section_id::ENTRY_POINT
-            | output_section_id::DYLINKER => SegmentType::LoadCommands,
+            | output_section_id::DYLINKER
+            | output_section_id::DYLD_CHAINED_FIXUPS => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
-            output_section_id::STRTAB => SegmentType::LinkeditSections,
+            output_section_id::CHAINED_FIXUP_TABLE | output_section_id::STRTAB => {
+                SegmentType::LinkeditSections
+            }
             _ => SegmentType::Unused,
         };
 
@@ -1122,6 +1169,10 @@ impl platform::Platform for MachO {
             part_id::DYLINKER,
             ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u64,
         );
+        sizes.increment(
+            part_id::DYLD_CHAINED_FIXUPS,
+            size_of::<DyldChainedFixupsCommand>() as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1176,9 +1227,13 @@ impl platform::Platform for MachO {
         common: &mut crate::layout::CommonGroupState<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
+        common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
         // Mach-O string tables start with an empty string at index 0.
         // TODO: Just a filler for now.
-        common.allocate(part_id::STRTAB, MACHO_PAGE_ALIGNMENT.value());
+        common.allocate(
+            part_id::STRTAB,
+            MACHO_PAGE_ALIGNMENT.value() - CHAINED_FIXUP_TABLE_SIZE,
+        );
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1231,12 +1286,14 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::DYLINKER);
+        builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::STRTAB);
+        builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
 
         builder.build()
     }
@@ -1312,6 +1369,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::DYLINKER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
         target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYLD_CHAINED_FIXUPS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_DYLD_CHAINED_FIXUPS")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__chain_table")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {

@@ -19,6 +19,7 @@ use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Section;
 use crate::macho::DYLINKER_PATH;
+use crate::macho::DyldChainedFixupsCommand;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
@@ -44,11 +45,13 @@ use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::BigEndian;
+use object::Endian;
 use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
@@ -66,6 +69,7 @@ use tracing::debug_span;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
+const DYLD_CHAINED_IMPORT: u32 = 1;
 
 type MachOLayout<'data> = Layout<'data, MachO>;
 
@@ -140,6 +144,14 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         from_bytes_mut(buffers.get_mut(part_id::DYLINKER))
             .map_err(|_| error!("Invalid DYLINKER command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
+
+    let chained_fixups_command: &mut DyldChainedFixupsCommand =
+        from_bytes_mut(buffers.get_mut(part_id::DYLD_CHAINED_FIXUPS))
+            .map_err(|_| error!("Invalid DYLD_CHAINED_FIXUPS command allocation"))?
+            .0;
+    write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
+
+    write_chained_fixup_table::<A>(buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
 
     // TODO: remove
     buffers.get_mut(part_id::STRTAB).write_all(b"x")?;
@@ -386,4 +398,49 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
     path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH.as_bytes());
     // The string size is always a multiple of 8B.
     path_buffer[DYLINKER_PATH.len()..].zero();
+}
+
+fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut DyldChainedFixupsCommand,
+) {
+    let chained_fixup_table = layout
+        .section_layouts
+        .get(output_section_id::CHAINED_FIXUP_TABLE);
+
+    command.cmd.set(LE, LC_DYLD_CHAINED_FIXUPS);
+    command
+        .cmdsize
+        .set(LE, size_of::<DyldChainedFixupsCommand>() as u32);
+    command
+        .dataoff
+        .set(LE, chained_fixup_table.file_offset as u32);
+    command
+        .datasize
+        .set(LE, chained_fixup_table.file_size as u32);
+}
+
+fn write_chained_fixup_table<A: Arch<Platform = MachO>>(out: &mut [u8]) -> Result {
+    // TODO: check length
+
+    out.fill(0);
+    put_u32(out, 0x00, 0);
+    put_u32(out, 0x04, 32);
+    put_u32(out, 0x08, 48);
+    put_u32(out, 0x0c, 48);
+    put_u32(out, 0x10, 0);
+    put_u32(out, 0x14, DYLD_CHAINED_IMPORT);
+    put_u32(out, 0x18, 0);
+    put_u32(out, 0x1c, 0);
+
+    put_u32(out, 0x20, 3);
+    put_u32(out, 0x24, 0);
+    put_u32(out, 0x28, 0);
+    put_u32(out, 0x2c, 0);
+
+    Ok(())
+}
+
+fn put_u32(out: &mut [u8], offset: usize, value: u32) {
+    out[offset..offset + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
 }
