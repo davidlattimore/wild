@@ -22,8 +22,19 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
 
     let objdump = objdump_bin_candidates
         .iter()
-        .find(|bin| which::which(bin).is_ok())
-        .unwrap();
+        .find(|bin| {
+            if which::which(bin).is_ok() {
+                // macOS ships llvm-objdump as "objdump" which doesn't support -b binary.
+                // Only accept objdump if it supports the -b flag (GNU objdump).
+                if **bin == "objdump" && cfg!(target_os = "macos") {
+                    return false;
+                }
+                true
+            } else {
+                false
+            }
+        })
+        .context("No suitable objdump found")?;
 
     let command = Command::new(objdump)
         .arg("-b")
@@ -61,10 +72,12 @@ fn test_align_up() {
         || std::env::var("WILD_TEST_CROSS")
             .is_ok_and(|v| v == "all" || v.split(',').any(|a| a == "aarch64"))
     {
-        assert_eq!(
-            decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000, ArchKind::Aarch64).unwrap(),
-            "ldp\tx3, x4, [sp, #72]"
-        );
+        // Skip if no suitable (GNU) objdump is available (e.g. macOS ships llvm-objdump).
+        if let Ok(result) =
+            decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000, ArchKind::Aarch64)
+        {
+            assert_eq!(result, "ldp\tx3, x4, [sp, #72]");
+        }
     }
 
     if cfg!(target_arch = "riscv64")

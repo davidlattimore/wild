@@ -18,6 +18,7 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    FatBinary,
     Archive,
     ThinArchive,
     Text,
@@ -72,6 +73,13 @@ impl FileKind {
                 "Expected object file"
             );
             Ok(FileKind::MachOObject)
+        } else if bytes.len() >= 8
+            && (bytes.starts_with(&macho::FAT_MAGIC.to_be_bytes())
+                || bytes.starts_with(&macho::FAT_MAGIC_64.to_be_bytes()))
+        {
+            // Mach-O universal (fat) binary. Currently not fully supported.
+            // TODO: extract the arm64 slice and process it.
+            Ok(FileKind::FatBinary)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
@@ -119,6 +127,7 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "MachO object",
+            FileKind::FatBinary => "fat binary",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

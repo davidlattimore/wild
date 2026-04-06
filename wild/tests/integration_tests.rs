@@ -3912,6 +3912,14 @@ fn run_integration_test(
     mut config: Config,
     test_config: &TestConfig,
 ) -> Result<libtest_mimic::Completion> {
+    // ELF tests require a Linux toolchain (GNU ld, ELF-compatible compiler).
+    // On macOS, the system linker is ld64 which doesn't support ELF flags.
+    if cfg!(target_os = "macos") && config.platform == PlatformKind::Elf {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "ELF tests require Linux toolchain",
+        ));
+    }
+
     setup_symlink();
 
     let linkers = available_linkers()?;

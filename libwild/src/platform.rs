@@ -715,6 +715,16 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         index: object::SymbolIndex,
     ) -> Result<Option<object::SectionIndex>>;
 
+    /// Returns the symbol's offset within its section. For ELF, st_value is already
+    /// section-relative. For Mach-O, n_value is absolute so we subtract the section base.
+    fn symbol_value_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
+
     fn symbol_versions(&self) -> &[<Self::Platform as Platform>::SymbolVersionIndex];
 
     fn dynamic_symbol_used(
@@ -787,6 +797,15 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String>;
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
+
+    /// Returns true if the given symbol is in a common/tentative section (e.g.
+    /// Mach-O `__common`). Default returns false; Mach-O overrides this.
+    fn is_symbol_in_common_section(
+        &self,
+        _symbol: &<Self::Platform as Platform>::SymtabEntry,
+    ) -> bool {
+        false
+    }
 
     fn dynamic_tag_values(&self) -> Option<<Self::Platform as Platform>::DynamicTagValues<'data>>;
 

@@ -1,66 +1,32 @@
-// TODO
-#![allow(unused_variables)]
-#![allow(unused)]
+// Mach-O platform support for wild linker.
+#![allow(unused_variables, dead_code)]
 
 use crate::OutputKind;
-use crate::alignment;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
-use crate::error::Result;
-use crate::file_writer::copy_section_data;
-use crate::layout::Layout;
-use crate::layout::OutputRecordLayout;
-use crate::layout_rules::SectionKind;
-use crate::layout_rules::SectionRule;
-use crate::macho_writer;
-use crate::output_section_id;
-use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
-use crate::output_section_id::OrderEvent;
-use crate::output_section_id::OutputOrderBuilder;
-use crate::output_section_id::SectionName;
-use crate::output_section_id::SectionOutputInfo;
-use crate::part_id;
 use crate::platform;
-use crate::symbol_db::Visibility;
-use linker_utils::elf::secnames;
+use crate::platform::SectionAttributes as _;
 use object::Endianness;
 use object::macho;
-use object::macho::N_ABS;
-use object::macho::N_EXT;
-use object::macho::N_PEXT;
-use object::macho::N_TYPE;
-use object::macho::N_WEAK_DEF;
-use object::macho::SEG_DATA;
-use object::macho::SEG_LINKEDIT;
-use object::macho::SEG_PAGEZERO;
-use object::macho::SEG_TEXT;
-use object::macho::Section64;
 use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
-use object::read::macho::Section;
-use object::read::macho::Segment;
-use std::borrow::Cow;
+use object::read::macho::Section as MachOSectionTrait;
+use object::read::macho::Segment as MachOSegmentTrait;
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct MachO;
 
 const LE: Endianness = Endianness::Little;
 
-/// Mach-O uses a zero page for all 32bit addresses and thus we begin the memory
-/// offsets right after that (1GiB).
-pub const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
-
-type SectionHeader = Section64<crate::macho::Endianness>;
-type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
+type SectionTable<'data> = &'data [macho::Section64<Endianness>];
 type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
-type SymtabEntry = object::macho::Nlist64<Endianness>;
-type Relocation = object::macho::Relocation<Endianness>;
+pub(crate) type SymtabEntry = macho::Nlist64<Endianness>;
 
-pub(crate) type FileHeader = object::macho::MachHeader64<Endianness>;
-pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
-pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
-pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
+/// Wraps a Mach-O Section64 so we can implement platform traits on it.
+#[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct SectionHeader(pub(crate) macho::Section64<Endianness>);
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -77,7 +43,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = MachO;
 
     fn parse_bytes(input: &'data [u8], is_dynamic: bool) -> crate::error::Result<Self> {
-        let header = macho::MachHeader64::<object::Endianness>::parse(input, 0)?;
+        let header = macho::MachHeader64::<Endianness>::parse(input, 0)?;
         let mut commands = header.load_commands(LE, input, 0)?;
 
         let mut symbols = None;
@@ -88,16 +54,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 ensure!(symbols.is_none(), "At most one symtab command expected");
                 symbols = Some(symtab_command.symbols::<macho::MachHeader64<_>, _>(LE, input)?);
             } else if let Some((segment_command, segment_data)) = command.segment_64()? {
-                ensure!(sections.is_none(), "At most one segment command expected");
-                let section_list = segment_command.sections(LE, segment_data)?;
-                sections = Some(section_list);
+                // Mach-O object files have a single unnamed segment containing all sections.
+                if sections.is_none() {
+                    sections = Some(segment_command.sections(LE, segment_data)?);
+                }
             }
         }
 
         Ok(File {
             data: input,
             symbols: symbols.ok_or("Missing symbol table")?,
-            sections: sections.ok_or("Missing segment command")?,
+            sections: sections.unwrap_or(&[]),
             flags: header.flags(LE),
         })
     }
@@ -106,12 +73,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         input: &crate::input_data::InputBytes<'data>,
         args: &<Self::Platform as platform::Platform>::Args,
     ) -> crate::error::Result<Self> {
-        // TODO
         Self::parse_bytes(input.data, false)
     }
 
     fn is_dynamic(&self) -> bool {
-        // TODO
         false
     }
 
@@ -120,281 +85,339 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
-        for s in self.symbols.iter() {
-            let name = s.name(LE, self.symbols.strings()).unwrap();
-            // TODO: remove
-            // dbg!(String::from_utf8_lossy(name));
-        }
-
         self.symbols.iter()
     }
 
-    fn symbol(
-        &self,
-        index: object::SymbolIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SymtabEntry> {
-        Ok(self.symbols.symbol(index)?)
+    fn symbol(&self, index: object::SymbolIndex) -> crate::error::Result<&'data SymtabEntry> {
+        self.symbols
+            .symbol(index)
+            .map_err(|e| error!("Symbol index {} out of range: {e}", index.0))
     }
 
-    fn section_size(
-        &self,
-        header: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<u64> {
-        Ok(header.size.get(LE))
+    fn section_size(&self, header: &SectionHeader) -> crate::error::Result<u64> {
+        Ok(header.0.size(LE))
     }
 
-    fn symbol_name(
-        &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-    ) -> crate::error::Result<&'data [u8]> {
-        Ok(symbol.name(LE, self.symbols.strings())?)
+    fn symbol_name(&self, symbol: &SymtabEntry) -> crate::error::Result<&'data [u8]> {
+        symbol
+            .name(LE, self.symbols.strings())
+            .map_err(|e| error!("Failed to read symbol name: {e}"))
     }
 
     fn num_sections(&self) -> usize {
         self.sections.len()
     }
 
-    fn section_iter(&self) -> <Self::Platform as platform::Platform>::SectionIterator<'data> {
-        self.sections.iter()
+    fn section_iter(&self) -> <MachO as platform::Platform>::SectionIterator<'data> {
+        MachOSectionIter {
+            inner: self.sections.iter(),
+        }
     }
 
     fn enumerate_sections(
         &self,
-    ) -> impl Iterator<
-        Item = (
-            object::SectionIndex,
-            &'data <Self::Platform as platform::Platform>::SectionHeader,
-        ),
-    > {
-        self.sections
-            .iter()
-            .enumerate()
-            .map(|(i, section)| (object::SectionIndex(i), section))
+    ) -> impl Iterator<Item = (object::SectionIndex, &'data SectionHeader)> {
+        self.sections.iter().enumerate().map(|(i, section)| {
+            // Safety: SectionHeader is #[repr(transparent)] over Section64<Endianness>
+            let header: &'data SectionHeader = unsafe {
+                &*(section as *const macho::Section64<Endianness> as *const SectionHeader)
+            };
+            (object::SectionIndex(i), header)
+        })
     }
 
-    fn section(
-        &self,
-        index: object::SectionIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SectionHeader> {
-        self.sections
+    fn section(&self, index: object::SectionIndex) -> crate::error::Result<&'data SectionHeader> {
+        let section = self
+            .sections
             .get(index.0)
-            .ok_or(error!("section index out of range"))
+            .ok_or_else(|| error!("Section index {} out of range", index.0))?;
+        Ok(unsafe { &*(section as *const macho::Section64<Endianness> as *const SectionHeader) })
     }
 
-    fn section_by_name(
-        &self,
-        name: &str,
-    ) -> Option<(
-        object::SectionIndex,
-        &'data <Self::Platform as platform::Platform>::SectionHeader,
-    )> {
-        todo!()
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+        for (i, section) in self.sections.iter().enumerate() {
+            let sectname = trim_nul(section.sectname());
+            if sectname == name.as_bytes() {
+                let header: &'data SectionHeader = unsafe {
+                    &*(section as *const macho::Section64<Endianness> as *const SectionHeader)
+                };
+                return Some((object::SectionIndex(i), header));
+            }
+        }
+        None
     }
 
     fn symbol_section(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        symbol: &SymtabEntry,
         index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
-        todo!()
+        let n_type = symbol.n_type() & macho::N_TYPE;
+        if n_type == macho::N_SECT {
+            // n_sect is 1-based in Mach-O
+            let sect = symbol.n_sect();
+            if sect == 0 {
+                return Ok(None);
+            }
+            Ok(Some(object::SectionIndex(sect as usize - 1)))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
-        todo!()
+    fn symbol_value_in_section(
+        &self,
+        symbol: &SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> crate::error::Result<u64> {
+        let section = &self.sections[section_index.0];
+        let section_addr = section.addr.get(LE);
+        let sym_value = symbol.n_value(LE);
+        Ok(sym_value.wrapping_sub(section_addr))
+    }
+
+    fn symbol_versions(&self) -> &[()] {
+        // Mach-O doesn't have symbol versioning
+        &[]
     }
 
     fn dynamic_symbol_used(
         &self,
-        symbol_index: object::SymbolIndex,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _symbol_index: object::SymbolIndex,
+        _state: &mut (),
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn finalise_sizes_dynamic(
         &self,
-        lib_name: &[u8],
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _lib_name: &[u8],
+        _state: &mut (),
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn apply_non_addressable_indexes_dynamic(
         &self,
-        indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
-        counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _indexes: &mut NonAddressableIndexes,
+        _counts: &mut (),
+        _state: &mut (),
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
-        Ok(section_header.name())
+    fn section_name(&self, section_header: &SectionHeader) -> crate::error::Result<&'data [u8]> {
+        for s in self.sections {
+            if std::ptr::eq(
+                s as *const macho::Section64<Endianness>,
+                &section_header.0 as *const macho::Section64<Endianness>,
+            ) {
+                return Ok(trim_nul(s.sectname()));
+            }
+        }
+        Err(error!("Section header not found in file's section table"))
     }
 
-    fn raw_section_data(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
-        todo!()
+    fn raw_section_data(&self, section: &SectionHeader) -> crate::error::Result<&'data [u8]> {
+        let offset = section.0.offset(LE) as usize;
+        let size = section.0.size(LE) as usize;
+        if size == 0 {
+            return Ok(&[]);
+        }
+        self.data
+            .get(offset..offset + size)
+            .ok_or_else(|| error!("Section data out of range"))
     }
 
     fn section_data(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-        member: &bumpalo_herd::Member<'data>,
-        loaded_metrics: &crate::resolution::LoadedMetrics,
+        section: &SectionHeader,
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &crate::resolution::LoadedMetrics,
     ) -> crate::error::Result<&'data [u8]> {
-        todo!()
+        // Mach-O sections are never compressed
+        self.raw_section_data(section)
     }
 
-    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
-        let data = section
-            .data(LE, self.data)
-            .map_err(|_e| error!("cannot get section data"))?;
-        copy_section_data(data, out);
-
+    fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> crate::error::Result {
+        let data = self.raw_section_data(section)?;
+        out[..data.len()].copy_from_slice(data);
         Ok(())
     }
 
     fn section_data_cow(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
+        section: &SectionHeader,
     ) -> crate::error::Result<std::borrow::Cow<'data, [u8]>> {
-        todo!()
+        Ok(std::borrow::Cow::Borrowed(self.raw_section_data(section)?))
     }
 
-    fn section_alignment(
-        &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<u64> {
-        Ok(2u64.pow(section.align(LE)))
+    fn section_alignment(&self, section: &SectionHeader) -> crate::error::Result<u64> {
+        // Mach-O stores alignment as a power of 2
+        Ok(1u64 << section.0.align(LE))
     }
 
     fn relocations(
         &self,
         index: object::SectionIndex,
-        relocations: &<Self::Platform as platform::Platform>::RelocationSections,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
+        _relocations: &(),
+    ) -> crate::error::Result<RelocationList<'data>> {
+        let section = self
+            .sections
+            .get(index.0)
+            .ok_or_else(|| error!("Section index {} out of range for relocations", index.0))?;
+        let relocs = section
+            .relocations(LE, self.data)
+            .map_err(|e| error!("Failed to read relocations: {e}"))?;
         Ok(RelocationList {
-            relocations: self
-                .sections
-                .get(index.0)
-                .ok_or(error!("section index out of range"))?
-                .relocations(LE, self.data)?,
+            relocations: relocs,
         })
     }
 
-    fn parse_relocations(
-        &self,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationSections> {
+    fn parse_relocations(&self) -> crate::error::Result<()> {
+        // Mach-O relocations are stored per-section, accessed via `relocations` method
         Ok(())
     }
 
-    fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
-        todo!()
-    }
-
-    fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
-    }
-
-    fn dynamic_tag_values(
-        &self,
-    ) -> Option<<Self::Platform as platform::Platform>::DynamicTagValues<'data>> {
+    fn symbol_version_debug(&self, _symbol_index: object::SymbolIndex) -> Option<String> {
         None
     }
 
-    fn get_version_names(
-        &self,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::VersionNames<'data>> {
-        todo!()
+    fn section_display_name(&self, index: object::SectionIndex) -> std::borrow::Cow<'data, str> {
+        if let Some(section) = self.sections.get(index.0) {
+            let segname = String::from_utf8_lossy(trim_nul(section.segname()));
+            let sectname = String::from_utf8_lossy(trim_nul(section.sectname()));
+            std::borrow::Cow::Owned(format!("{segname},{sectname}"))
+        } else {
+            std::borrow::Cow::Borrowed("<unknown>")
+        }
+    }
+
+    fn is_symbol_in_common_section(&self, symbol: &SymtabEntry) -> bool {
+        let n_type = symbol.n_type() & macho::N_TYPE;
+        if n_type != macho::N_SECT {
+            return false;
+        }
+        let sect = symbol.n_sect();
+        if sect == 0 {
+            return false;
+        }
+        if let Some(section) = self.sections.get(sect as usize - 1) {
+            trim_nul(section.sectname()) == b"__common"
+        } else {
+            false
+        }
+    }
+
+    fn dynamic_tag_values(&self) -> Option<DynamicTagValues<'data>> {
+        None
+    }
+
+    fn get_version_names(&self) -> crate::error::Result<()> {
+        Ok(())
     }
 
     fn get_symbol_name_and_version(
         &self,
-        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        local_index: usize,
-        version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::RawSymbolName<'data>> {
-        todo!()
+        symbol: &SymtabEntry,
+        _local_index: usize,
+        _version_names: &(),
+    ) -> crate::error::Result<RawSymbolName<'data>> {
+        let name = symbol
+            .name(LE, self.symbols.strings())
+            .map_err(|e| error!("Failed to read symbol name: {e}"))?;
+        Ok(RawSymbolName { name })
     }
 
     fn should_enforce_undefined(
         &self,
-        resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
+        _resources: &crate::layout::GraphResources<'data, '_, MachO>,
     ) -> bool {
-        todo!()
+        false
     }
 
-    fn verneed_table(
-        &self,
-    ) -> crate::error::Result<<Self::Platform as platform::Platform>::VerneedTable<'data>> {
+    fn verneed_table(&self) -> crate::error::Result<VerneedTable<'data>> {
         Ok(VerneedTable { _phantom: &[] })
     }
 
     fn process_gnu_note_section(
         &self,
-        state: &mut <Self::Platform as platform::Platform>::ObjectLayoutStateExt<'data>,
-        section_index: object::SectionIndex,
+        _state: &mut (),
+        _section_index: object::SectionIndex,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
-    fn dynamic_tags(
-        &self,
-    ) -> crate::error::Result<&'data [<Self::Platform as platform::Platform>::DynamicEntry]> {
-        todo!()
+    fn dynamic_tags(&self) -> crate::error::Result<&'data [()]> {
+        Ok(&[])
     }
 }
 
+// -- SectionHeader trait impls --
+
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        todo!()
+        // In Mach-O, all sections in loadable segments are "allocated"
+        true
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        // Check segment name: __DATA and __DATA_CONST segments are writable
+        let segname = trim_nul(self.0.segname());
+        segname.starts_with(b"__DATA")
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        let flags = self.0.flags(LE);
+        (flags & macho::S_ATTR_PURE_INSTRUCTIONS) != 0
+            || (flags & macho::S_ATTR_SOME_INSTRUCTIONS) != 0
     }
 
     fn is_tls(&self) -> bool {
-        todo!()
+        let sectname = trim_nul(self.0.sectname());
+        sectname == b"__thread_vars" || sectname == b"__thread_data" || sectname == b"__thread_bss"
     }
 
     fn is_merge_section(&self) -> bool {
-        // TODO
-        false
+        let flags = self.0.flags(LE) & macho::SECTION_TYPE;
+        flags == macho::S_CSTRING_LITERALS || flags == macho::S_LITERAL_POINTERS
     }
 
     fn is_strings(&self) -> bool {
-        todo!()
+        let flags = self.0.flags(LE) & macho::SECTION_TYPE;
+        flags == macho::S_CSTRING_LITERALS
     }
 
     fn should_retain(&self) -> bool {
-        // TODO
-        false
+        let sec_type = self.0.flags(LE) & macho::SECTION_TYPE;
+        // __mod_init_func / __mod_term_func must always be retained —
+        // they contain constructor/destructor pointers called by dyld.
+        sec_type == macho::S_MOD_INIT_FUNC_POINTERS || sec_type == macho::S_MOD_TERM_FUNC_POINTERS
     }
 
     fn should_exclude(&self) -> bool {
-        // TODO
+        let segname = trim_nul(self.0.segname());
+        let sectname = trim_nul(self.0.sectname());
+        // Debug sections in __DWARF segment are not loaded
+        if segname == b"__DWARF" {
+            return true;
+        }
+        // __LD segment contains linker-private data (e.g. __compact_unwind)
+        // that must be consumed by the linker, not emitted to output.
+        if segname == b"__LD" {
+            return true;
+        }
+        // __eh_frame has SUBTRACTOR relocation pairs we don't process yet;
+        // exclude until we generate proper __unwind_info.
+        if sectname == b"__eh_frame" {
+            return true;
+        }
         false
     }
 
     fn is_group(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_note(&self) -> bool {
@@ -402,32 +425,34 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_prog_bits(&self) -> bool {
-        todo!()
+        let section_type = self.0.flags(LE) & macho::SECTION_TYPE;
+        section_type == macho::S_REGULAR || section_type == macho::S_CSTRING_LITERALS
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        let section_type = self.0.flags(LE) & macho::SECTION_TYPE;
+        section_type == macho::S_ZEROFILL || section_type == macho::S_GB_ZEROFILL
     }
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionType {}
+pub(crate) struct SectionType(u32);
 
 impl platform::SectionType for SectionType {
     fn is_rela(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_rel(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_symtab(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_strtab(&self) -> bool {
-        todo!()
+        false
     }
 }
 
@@ -435,91 +460,121 @@ impl platform::SectionType for SectionType {
 pub(crate) struct SectionFlags(u32);
 
 impl SectionFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> SectionFlags {
-        SectionFlags(raw)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
+    pub(crate) fn from_header(header: &SectionHeader) -> Self {
+        SectionFlags(header.0.flags(LE))
     }
 }
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
+        // All Mach-O sections are allocated
         true
     }
 }
 
-// Documentation link for Nlist64 type: https://leopard-adc.pepas.com/documentation/DeveloperTools/Conceptual/MachORuntime/Reference/reference.html
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<platform::CommonSymbol> {
-        todo!()
+        // In Mach-O, common symbols are N_UNDF | N_EXT with n_value > 0
+        let n_type = self.n_type();
+        if (n_type & macho::N_TYPE) == macho::N_UNDF
+            && (n_type & macho::N_EXT) != 0
+            && self.n_value(LE) > 0
+        {
+            let alignment_val = u64::from(self.n_desc(LE));
+            let alignment = crate::alignment::Alignment::new(if alignment_val > 0 {
+                1u64 << alignment_val
+            } else {
+                1
+            })
+            .unwrap_or(crate::alignment::MIN);
+            let size = alignment.align_up(self.n_value(LE));
+            let output_section_id = crate::output_section_id::BSS;
+            let part_id = output_section_id.part_id_with_alignment(alignment);
+            Some(platform::CommonSymbol { size, part_id })
+        } else {
+            None
+        }
     }
 
     fn is_undefined(&self) -> bool {
-        Nlist::is_undefined(self)
+        let n_type = self.n_type();
+        // Not a stab, and type is N_UNDF
+        (n_type & macho::N_STAB) == 0 && (n_type & macho::N_TYPE) == macho::N_UNDF
     }
 
     fn is_local(&self) -> bool {
-        self.n_type & N_EXT == 0
+        let n_type = self.n_type();
+        // Not external and not a stab entry
+        (n_type & macho::N_STAB) == 0 && (n_type & macho::N_EXT) == 0
     }
 
     fn is_absolute(&self) -> bool {
-        self.n_type & N_TYPE == N_ABS
+        (self.n_type() & macho::N_TYPE) == macho::N_ABS
     }
 
     fn is_weak(&self) -> bool {
-        self.n_desc.get(LE) & N_WEAK_DEF != 0
+        (self.n_desc(LE) & (macho::N_WEAK_DEF | macho::N_WEAK_REF)) != 0
     }
 
     fn visibility(&self) -> crate::symbol_db::Visibility {
-        if self.n_type & N_PEXT != 0 {
-            Visibility::Hidden
+        let n_type = self.n_type();
+        if (n_type & macho::N_PEXT) != 0 {
+            crate::symbol_db::Visibility::Hidden
+        } else if (n_type & macho::N_EXT) != 0 {
+            crate::symbol_db::Visibility::Default
         } else {
-            Visibility::Default
+            crate::symbol_db::Visibility::Hidden
         }
     }
 
     fn value(&self) -> u64 {
-        self.n_value.get(LE)
+        self.n_value(LE)
     }
 
     fn size(&self) -> u64 {
-        // TODO
+        // Mach-O symbols don't have a size field
         0
     }
 
     fn section_index(&self) -> object::SectionIndex {
-        object::SectionIndex(usize::from(self.n_sect))
+        let n_type = self.n_type() & macho::N_TYPE;
+        if n_type == macho::N_SECT {
+            // n_sect is 1-based in Mach-O
+            let sect = self.n_sect();
+            if sect > 0 {
+                return object::SectionIndex(sect as usize - 1);
+            }
+        }
+        object::SectionIndex(0)
     }
 
     fn has_name(&self) -> bool {
-        self.n_strx.get(LE) != 0
+        self.n_strx(LE) != 0
     }
 
     fn debug_string(&self) -> String {
-        // TODO
-        String::new()
+        format!(
+            "Nlist64 {{ n_type: 0x{:02x}, n_sect: {}, n_desc: 0x{:04x}, n_value: 0x{:x} }}",
+            self.n_type(),
+            self.n_sect(),
+            self.n_desc(LE),
+            self.n_value(LE),
+        )
     }
 
     fn is_tls(&self) -> bool {
-        // TODO: derive from section name
+        // In Mach-O, TLS symbols reference __thread_vars section
         false
     }
 
     fn is_interposable(&self) -> bool {
+        // Mach-O two-level namespace means symbols are generally not interposable
         false
     }
 
     fn is_func(&self) -> bool {
-        // TODO: derive from section name
+        // Mach-O doesn't have an explicit function type in nlist.
+        // We'd need to check the section type, but for now return false.
         false
     }
 
@@ -528,7 +583,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_hidden(&self) -> bool {
-        self.visibility() == Visibility::Hidden
+        (self.n_type() & macho::N_PEXT) != 0
     }
 
     fn is_gnu_unique(&self) -> bool {
@@ -536,22 +591,25 @@ impl platform::Symbol for SymtabEntry {
     }
 }
 
+// -- SectionAttributes --
+
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct SectionAttributes {
-    pub(crate) flags: SectionFlags,
+    flags: u32,
+    segname: [u8; 16],
 }
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = MachO;
 
     fn merge(&mut self, rhs: Self) {
-        self.flags = SectionFlags::from_u32(self.flags.raw() | rhs.flags.raw());
+        self.flags |= rhs.flags;
     }
 
     fn apply(
         &self,
-        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
+        _output_sections: &mut crate::output_section_id::OutputSections<MachO>,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) {
     }
 
@@ -560,11 +618,12 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_alloc(&self) -> bool {
-        false
+        true
     }
 
     fn is_executable(&self) -> bool {
-        false
+        (self.flags & macho::S_ATTR_PURE_INSTRUCTIONS) != 0
+            || (self.flags & macho::S_ATTR_SOME_INSTRUCTIONS) != 0
     }
 
     fn is_tls(&self) -> bool {
@@ -572,57 +631,69 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_writable(&self) -> bool {
-        false
+        self.segname.starts_with(b"__DATA")
     }
 
     fn is_no_bits(&self) -> bool {
-        false
+        let section_type = self.flags & macho::SECTION_TYPE;
+        section_type == macho::S_ZEROFILL || section_type == macho::S_GB_ZEROFILL
     }
 
-    fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
-        self.flags
+    fn flags(&self) -> SectionFlags {
+        SectionFlags(self.flags)
     }
 
-    fn ty(&self) -> <Self::Platform as platform::Platform>::SectionType {
-        SectionType {}
+    fn ty(&self) -> SectionType {
+        SectionType(self.flags & macho::SECTION_TYPE)
     }
 
-    fn set_to_default_type(&mut self) {}
+    fn set_to_default_type(&mut self) {
+        self.flags = (self.flags & !macho::SECTION_TYPE) | macho::S_REGULAR;
+    }
 }
+
+// -- Other platform type stubs --
 
 pub(crate) struct NonAddressableIndexes {}
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
-    fn new<P: platform::Platform>(symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
+    fn new<P: platform::Platform>(_symbol_db: &crate::symbol_db::SymbolDb<P>) -> Self {
         NonAddressableIndexes {}
     }
 }
 
-#[derive(Debug, Copy, Clone, Default, PartialEq)]
-pub(crate) enum SegmentType {
-    Header,
-    // All load commands are grouped into the segment.
-    LoadCommands,
-    // Sections belonging to __TEXT segment.
-    Text,
-    // Sections belonging to __DATA segment.
-    Data,
-    // Sections belonging to __DATA_CONST segment.
-    DataConst,
-    #[default]
-    Misc,
-}
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct SegmentType {}
 
 impl platform::SegmentType for SegmentType {}
 
-#[derive(Debug, Copy, Clone, Default, PartialEq)]
+#[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct ProgramSegmentDef {
-    pub(crate) segment_type: SegmentType,
+    pub(crate) writable: bool,
+    pub(crate) executable: bool,
 }
+
+/// __TEXT segment: r-x, contains headers + code + read-only data
+const TEXT_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    writable: false,
+    executable: true,
+};
+
+/// __DATA segment: rw-, contains writable data + GOT + BSS
+const DATA_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
+    writable: true,
+    executable: false,
+};
+
+const MACHO_SEGMENT_DEFS: &[ProgramSegmentDef] = &[TEXT_SEGMENT_DEF, DATA_SEGMENT_DEF];
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.segment_type)
+        if self.executable {
+            write!(f, "__TEXT")
+        } else {
+            write!(f, "__DATA")
+        }
     }
 }
 
@@ -630,19 +701,19 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     type Platform = MachO;
 
     fn is_writable(self) -> bool {
-        false
+        self.writable
     }
 
     fn is_executable(self) -> bool {
-        false
+        self.executable
     }
 
     fn always_keep(self) -> bool {
-        true
+        true // Both __TEXT and __DATA are always emitted
     }
 
     fn is_loadable(self) -> bool {
-        false
+        true // Both are loadable
     }
 
     fn is_stack(self) -> bool {
@@ -654,51 +725,47 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn order_key(self) -> usize {
-        self.segment_type as usize
+        if self.executable { 0 } else { 1 }
     }
 
     fn should_include_section(
         self,
-        section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
+        section_info: &crate::output_section_id::SectionOutputInfo<MachO>,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        self.segment_type
-            == match section_id {
-                output_section_id::FILE_HEADER => SegmentType::Header,
-                output_section_id::PAGEZERO_SEGMENT
-                | output_section_id::TEXT_SEGMENT
-                | output_section_id::DATA_SEGMENT
-                | output_section_id::LINK_EDIT_SEGMENT
-                | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
-                output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
-                output_section_id::DATA => SegmentType::Data,
-                _ => SegmentType::Misc,
-            }
+        let attrs = &section_info.section_attributes;
+        if !attrs.is_alloc() {
+            return false;
+        }
+        if self.writable {
+            attrs.is_writable()
+        } else {
+            !attrs.is_writable()
+        }
     }
 }
 
-pub(crate) struct BuiltInSectionDetails {
-    pub(crate) kind: SectionKind<'static>,
-    pub(crate) section_flags: SectionFlags,
-    pub(crate) target_segment_type: Option<SegmentType>,
-}
+pub(crate) struct BuiltInSectionDetails {}
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
-const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    kind: SectionKind::Primary(SectionName(&[])),
-    section_flags: SectionFlags::empty(),
-    target_segment_type: None,
-};
+/// Mach-O specific resolution data attached to each resolved symbol.
+#[derive(Debug, Copy, Clone, Default)]
+pub(crate) struct MachOResolutionExt {
+    /// GOT entry address (if the symbol needs a GOT slot).
+    pub(crate) got_address: Option<u64>,
+    /// PLT stub address (if the symbol needs a dynamic call stub).
+    pub(crate) plt_address: Option<u64>,
+}
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
-    phantom: &'data [u8],
+    _phantom: &'data [u8],
 }
 
 #[derive(Debug)]
 pub(crate) struct RelocationList<'data> {
-    relocations: &'data [Relocation],
+    pub(crate) relocations: &'data [macho::Relocation<Endianness>],
 }
 
 impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
@@ -708,8 +775,8 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 }
 
 impl<'data> platform::DynamicTagValues<'data> for DynamicTagValues<'data> {
-    fn lib_name(&self, input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
-        todo!()
+    fn lib_name(&self, _input: &crate::input_data::InputRef<'data>) -> &'data [u8] {
+        b""
     }
 }
 
@@ -720,7 +787,7 @@ pub(crate) struct RawSymbolName<'data> {
 
 impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     fn parse(bytes: &'data [u8]) -> Self {
-        Self { name: bytes }
+        RawSymbolName { name: bytes }
     }
 
     fn name(&self) -> &'data [u8] {
@@ -732,24 +799,38 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     }
 
     fn is_default(&self) -> bool {
-        false
+        true
     }
 }
 
 impl std::fmt::Display for RawSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        write!(f, "{}", String::from_utf8_lossy(self.name))
     }
 }
 
 pub(crate) struct VerneedTable<'data> {
-    // TODO
     _phantom: &'data [u8],
 }
 
 impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
-    fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
-        todo!()
+    fn version_name(&self, _local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
+        None
+    }
+}
+
+/// Iterator adapter to cast Section64 refs to SectionHeader refs.
+pub(crate) struct MachOSectionIter<'data> {
+    inner: core::slice::Iter<'data, macho::Section64<Endianness>>,
+}
+
+impl<'data> Iterator for MachOSectionIter<'data> {
+    type Item = &'data SectionHeader;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|s| unsafe {
+            &*(s as *const macho::Section64<Endianness> as *const SectionHeader)
+        })
     }
 }
 
@@ -773,11 +854,10 @@ impl platform::Platform for MachO {
     type CommonGroupStateExt = ();
     type ArchIdentifier = ();
     type Args = MachOArgs;
-    type ResolutionExt = ();
-    type SymtabShndxEntry = ();
+    type ResolutionExt = MachOResolutionExt;
     type SymbolVersionIndex = ();
     type LayoutExt = ();
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'data> = MachOSectionIter<'data>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
@@ -789,6 +869,7 @@ impl platform::Platform for MachO {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
+    type SymtabShndxEntry = u32;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -801,119 +882,175 @@ impl platform::Platform for MachO {
         output: &crate::file_writer::Output,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
-        output.write(layout, macho_writer::write::<A>)
+        // Mach-O writer bypasses SizedOutput but we still need to go through
+        // Output::write to satisfy the file creation lifecycle.
+        output.write(layout, |_sized_output, lay| {
+            crate::macho_writer::write_direct::<A>(lay)
+        })
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
-        Self::SectionAttributes {
-            ..Default::default()
+        SectionAttributes {
+            flags: header.0.flags(LE),
+            segname: *header.0.segname(),
         }
     }
 
     fn apply_force_keep_sections(
         keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        args: &Self::Args,
+        _args: &Self::Args,
     ) {
+        // Constructor/destructor function pointer arrays must always be kept.
+        *keep_sections.get_mut(crate::output_section_id::INIT_ARRAY) = true;
+        *keep_sections.get_mut(crate::output_section_id::FINI_ARRAY) = true;
     }
 
     fn is_zero_sized_section_content(
-        section_id: crate::output_section_id::OutputSectionId,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        todo!()
+        false
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
-        &SECTION_DEFINITIONS
+        &[]
     }
 
     fn finalise_group_layout(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> Self::GroupLayoutExt {
     }
 
     fn frame_data_base_address(
-        memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> u64 {
-        todo!()
+        0
     }
 
-    fn finalise_find_required_sections(groups: &[crate::layout::GroupState<Self>]) {}
+    fn start_memory_address(output_kind: crate::output_kind::OutputKind) -> u64 {
+        if output_kind == crate::output_kind::OutputKind::SharedObject {
+            0 // dylibs have no PAGEZERO
+        } else {
+            0x1_0000_0000 // PAGEZERO size for executables
+        }
+    }
+
+    fn finalise_find_required_sections(_groups: &[crate::layout::GroupState<Self>]) {}
 
     fn activate_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
-        todo!()
     }
 
     fn pre_finalise_sizes_prelude<'scope, 'data>(
-        prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        resources: &crate::layout::GraphResources<'data, 'scope, Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _resources: &crate::layout::GraphResources<'data, 'scope, Self>,
     ) {
     }
 
     fn finalise_sizes_dynamic<'data>(
-        object: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn finalise_object_sizes<'data>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
     ) {
     }
 
     fn finalise_object_layout<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
     }
 
     fn finalise_layout_dynamic<'data>(
-        state: &mut crate::layout::DynamicLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
-        resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
+        _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _resolutions_out: &mut crate::layout::ResolutionWriter<Self>,
     ) -> crate::error::Result<Self::DynamicLayoutExt<'data>> {
-        todo!()
+        Ok(())
     }
 
     fn take_dynsym_index(
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        section_layouts: &crate::output_section_map::OutputSectionMap<
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _section_layouts: &crate::output_section_map::OutputSectionMap<
             crate::layout::OutputRecordLayout,
         >,
     ) -> crate::error::Result<u32> {
-        todo!()
+        // Mach-O doesn't use dynsym indices. Return 1 to satisfy NonZeroU32.
+        // The value is unused in the Mach-O writer.
+        Ok(1)
     }
 
     fn compute_object_addresses<'data>(
-        object: &crate::layout::ObjectLayoutState<'data, Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _object: &crate::layout::ObjectLayoutState<'data, Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
-        todo!()
     }
 
     fn layout_resources_ext<'data>(
-        groups: &[crate::grouping::Group<'data, Self>],
+        _groups: &[crate::grouping::Group<'data, Self>],
     ) -> Self::LayoutResourcesExt<'data> {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
         state: &crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
         queue: &mut crate::layout::LocalWorkQueue,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         section: crate::layout::Section,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        // TODO
-        // for rel in state.relocations(section.index)?.relocations {
-        //     dbg!(rel.info(LE));
-        // }
+        // Scan relocations to discover referenced symbols and trigger loading
+        // of their containing sections.
+        let le = object::Endianness::Little;
+        let input_section = state
+            .object
+            .sections
+            .get(section.index.0)
+            .ok_or_else(|| crate::error!("Section index out of range"))?;
+        let relocs = match input_section.relocations(le, state.object.data) {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        for reloc_raw in relocs {
+            let reloc = reloc_raw.info(le);
+            if !reloc.r_extern {
+                continue;
+            }
+            // Skip ADDEND (type 10) and SUBTRACTOR (type 1)
+            if reloc.r_type == 10 || reloc.r_type == 1 {
+                continue;
+            }
+
+            let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+            let local_symbol_id = state.symbol_id_range.input_to_id(sym_idx);
+            let symbol_id = resources.symbol_db.definition(local_symbol_id);
+
+            // Set resolution flags based on relocation type
+            let is_undef = resources.symbol_db.is_undefined(symbol_id);
+            let flags_to_add = match reloc.r_type {
+                5 | 6 => crate::value_flags::ValueFlags::GOT, // GOT_LOAD
+                2 if is_undef => {
+                    // BRANCH26 to undefined symbol needs a stub (PLT) + GOT entry
+                    crate::value_flags::ValueFlags::PLT | crate::value_flags::ValueFlags::GOT
+                }
+                _ => crate::value_flags::ValueFlags::DIRECT,
+            };
+            let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+            let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+            // Request this symbol to be loaded (which loads its section)
+            if !previous_flags.has_resolution() {
+                queue.send_symbol_request::<A>(symbol_id, resources, scope);
+            }
+        }
         Ok(())
     }
 
@@ -921,18 +1058,25 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::error::Result<crate::layout::DynamicSymbolDefinition<'data, Self>> {
-        todo!()
+        let name = symbol_db.symbol_name(symbol_id)?.bytes();
+        Ok(crate::layout::DynamicSymbolDefinition {
+            symbol_id,
+            name,
+            format_specific: (),
+        })
     }
 
     fn update_segment_keep_list(
-        program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
-        keep_segments: &mut [bool],
-        args: &Self::Args,
+        _program_segments: &crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
+        _keep_segments: &mut [bool],
+        _args: &Self::Args,
     ) {
+        // Default keep logic is sufficient -- segments with sections are kept automatically.
+        // The pipeline sets keep_segments[0] = true for the first segment (__TEXT).
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        PROGRAM_SEGMENT_DEFS
+        MACHO_SEGMENT_DEFS
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -940,32 +1084,96 @@ impl platform::Platform for MachO {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder,
-        output_kind: crate::output_kind::OutputKind,
-        args: &Self::Args,
+        _symbols: &mut crate::parsing::InternalSymbolsBuilder,
+        _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
     }
 
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>> {
-        SECTION_DEFINITIONS
-            .iter()
-            .map(|d| SectionOutputInfo {
-                section_attributes: SectionAttributes {
-                    flags: d.section_flags,
-                },
-                kind: d.kind,
-                min_alignment: alignment::MIN,
+        use crate::layout_rules::SectionKind;
+        use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
+        use crate::output_section_id::SectionName;
+        use crate::output_section_id::SectionOutputInfo;
+
+        let mut infos: Vec<SectionOutputInfo<'data, Self>> =
+            Vec::with_capacity(NUM_BUILT_IN_SECTIONS);
+        for _ in 0..NUM_BUILT_IN_SECTIONS {
+            infos.push(SectionOutputInfo {
+                kind: SectionKind::Primary(SectionName(b"")),
+                section_attributes: SectionAttributes::default(),
+                min_alignment: crate::alignment::MIN,
                 location: None,
                 secondary_order: None,
-            })
-            .collect()
+            });
+        }
+
+        // Provide names/attributes for the regular sections we care about
+        infos[crate::output_section_id::TEXT.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__text")),
+            section_attributes: SectionAttributes {
+                flags: macho::S_REGULAR | macho::S_ATTR_PURE_INSTRUCTIONS,
+                segname: *b"__TEXT\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::MIN,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::RODATA.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__rodata")),
+            section_attributes: SectionAttributes::default(),
+            min_alignment: crate::alignment::MIN,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::DATA.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__data")),
+            section_attributes: SectionAttributes {
+                flags: macho::S_REGULAR,
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::MIN,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::GOT.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__got")),
+            section_attributes: SectionAttributes {
+                flags: 0x06, // S_NON_LAZY_SYMBOL_POINTERS
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::GOT_ENTRY,
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::TDATA.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__thread_data")),
+            section_attributes: SectionAttributes {
+                flags: macho::S_THREAD_LOCAL_REGULAR,
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::Alignment { exponent: 3 }, // 8-byte align
+            location: None,
+            secondary_order: None,
+        };
+        infos[crate::output_section_id::BSS.as_usize()] = SectionOutputInfo {
+            kind: SectionKind::Primary(SectionName(b"__bss")),
+            section_attributes: SectionAttributes {
+                flags: macho::S_ZEROFILL,
+                segname: *b"__DATA\0\0\0\0\0\0\0\0\0\0",
+            },
+            min_alignment: crate::alignment::MIN,
+            location: None,
+            secondary_order: None,
+        };
+        infos
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
-        args: &Self::Args,
-        objects: impl Iterator<Item = &'files Self::File<'data>>,
-        states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
+        _args: &Self::Args,
+        _objects: impl Iterator<Item = &'files Self::File<'data>>,
+        _states: impl Iterator<Item = &'states Self::ObjectLayoutStateExt<'data>> + Clone,
     ) -> crate::error::Result<Self::LayoutExt>
     where
         'data: 'files,
@@ -975,136 +1183,116 @@ impl platform::Platform for MachO {
     }
 
     fn load_exception_frame_data<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        eh_frame_section_index: object::SectionIndex,
-        resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _eh_frame_section_index: object::SectionIndex,
+        _resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn non_empty_section_loaded<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        object: &mut crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        queue: &mut crate::layout::LocalWorkQueue,
-        unloaded: crate::resolution::UnloadedSection,
-        resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
-        scope: &rayon::Scope<'scope>,
+        _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _queue: &mut crate::layout::LocalWorkQueue,
+        _unloaded: crate::resolution::UnloadedSection,
+        _resources: &'scope crate::layout::GraphResources<'data, 'scope, Self>,
+        _scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         Ok(())
     }
 
     fn new_epilogue_layout(
-        args: &Self::Args,
-        output_kind: crate::output_kind::OutputKind,
-        dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
+        _args: &Self::Args,
+        _output_kind: crate::output_kind::OutputKind,
+        _dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
     ) -> Self::EpilogueLayoutExt {
     }
 
     fn apply_non_addressable_indexes_epilogue(
-        counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
+        _counts: &mut Self::NonAddressableCounts,
+        _state: &mut Self::EpilogueLayoutExt,
     ) {
     }
 
     fn apply_non_addressable_indexes<'data, 'groups>(
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        counts: &Self::NonAddressableCounts,
-        mem_sizes_iter: impl Iterator<
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _counts: &Self::NonAddressableCounts,
+        _mem_sizes_iter: impl Iterator<
             Item = &'groups mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         >,
     ) {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
-        properties: &Self::LayoutExt,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _state: &mut Self::EpilogueLayoutExt,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
+        _properties: &Self::LayoutExt,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
     }
 
     fn finalise_sizes_all<'data>(
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
-        current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
-        extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
-        args: &Self::Args,
+        _state: &mut Self::EpilogueLayoutExt,
+        _current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _args: &Self::Args,
     ) -> crate::error::Result {
         Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        common_state: &Self::LayoutExt,
-        dynsym_start_index: u32,
-        dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        _epilogue_state: &mut Self::EpilogueLayoutExt,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _common_state: &Self::LayoutExt,
+        _dynsym_start_index: u32,
+        _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
     ) -> crate::error::Result {
         Ok(())
     }
 
     fn is_symbol_non_interposable<'data>(
-        object: &Self::File<'data>,
-        args: &Self::Args,
-        sym: &Self::SymtabEntry,
-        output_kind: crate::output_kind::OutputKind,
-        export_list: Option<&crate::export_list::ExportList>,
-        lib_name: &[u8],
-        archive_semantics: bool,
-        is_undefined: bool,
+        _object: &Self::File<'data>,
+        _args: &Self::Args,
+        _sym: &Self::SymtabEntry,
+        _output_kind: crate::output_kind::OutputKind,
+        _export_list: Option<&crate::export_list::ExportList>,
+        _lib_name: &[u8],
+        _archive_semantics: bool,
+        _is_undefined: bool,
     ) -> bool {
-        // TODO
+        // Mach-O two-level namespace: symbols are generally non-interposable
         true
     }
 
     fn allocate_header_sizes(
-        prelude: &mut crate::layout::PreludeLayoutState<Self>,
+        _prelude: &mut crate::layout::PreludeLayoutState<Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        header_info: &crate::layout::HeaderInfo,
-        output_sections: &crate::output_section_id::OutputSections<Self>,
+        _header_info: &crate::layout::HeaderInfo,
+        _output_sections: &crate::output_section_id::OutputSections<Self>,
     ) {
-        sizes.increment(part_id::FILE_HEADER, size_of::<FileHeader>() as u64);
-        sizes.increment(
-            part_id::PAGEZERO_SEGMENT,
-            size_of::<SegmentCommand>() as u64,
-        );
-        sizes.increment(
-            part_id::TEXT_SEGMENT,
-            (size_of::<SegmentCommand>()
-                + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Text))
-                as u64,
-        );
-        sizes.increment(
-            part_id::DATA_SEGMENT,
-            (size_of::<SegmentCommand>()
-                + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Data))
-                as u64,
-        );
-        sizes.increment(
-            part_id::LINK_EDIT_SEGMENT,
-            size_of::<SegmentCommand>() as u64,
-        );
-        sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
+        // Reserve a full page for headers. Mach-O __TEXT segment starts at page 0 and
+        // includes the headers. Sections start after the headers, page-aligned.
+        // A full page (16KB) is more than enough for headers + load commands.
+        sizes.increment(crate::part_id::FILE_HEADER, 0x4000); // 16KB page
     }
 
     fn finalise_sizes_for_symbol<'data>(
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        symbol_id: crate::symbol_db::SymbolId,
-        flags: crate::value_flags::ValueFlags,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _flags: crate::value_flags::ValueFlags,
     ) -> crate::error::Result {
         Ok(())
     }
@@ -1112,53 +1300,46 @@ impl platform::Platform for MachO {
     fn allocate_resolution(
         flags: crate::value_flags::ValueFlags,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        output_kind: crate::output_kind::OutputKind,
+        _output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
+        if flags.needs_plt() {
+            // Mach-O stubs are 12 bytes (adrp + ldr + br)
+            mem_sizes.increment(crate::part_id::PLT_GOT, 12);
+            // Each stub needs a GOT entry (8 bytes) for the dyld bind target
+            mem_sizes.increment(crate::part_id::GOT, 8);
+        }
+        // For same-image symbols, GOT_LOAD is relaxed to ADRP+ADD (no GOT needed)
     }
 
     fn allocate_object_symtab_space<'data>(
-        state: &crate::layout::ObjectLayoutState<'data, Self>,
-        common: &mut crate::layout::CommonGroupState<'data, Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
-        per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
-    ) -> Result {
-        // TODO
-        // let mut num_globals = 0;
-        // let mut strings_size = 0;
-        // for symbol in state.object.symbols_iter() {
-        //     // TODO: very basic
-        //     num_globals += 1;
-        //     strings_size += state.object.symbol_name(symbol)?.len() + 1;
-        // }
-        // let entry_size = size_of::<SymtabEntry>() as u64;
-        //
-        // common.allocate(part_id::SYMTAB_GLOBAL, dbg!(num_globals * entry_size));
-        // common.allocate(part_id::STRTAB, dbg!(strings_size as u64));
-
+        _state: &crate::layout::ObjectLayoutState<'data, Self>,
+        _common: &mut crate::layout::CommonGroupState<'data, Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
+        _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
+    ) -> crate::error::Result {
         Ok(())
     }
 
     fn allocate_internal_symbol(
-        symbol_id: crate::symbol_db::SymbolId,
-        def_info: &crate::parsing::InternalSymDefInfo,
-        sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _symbol_id: crate::symbol_db::SymbolId,
+        _def_info: &crate::parsing::InternalSymDefInfo,
+        _sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn allocate_prelude(
-        common: &mut crate::layout::CommonGroupState<Self>,
-        symbol_db: &crate::symbol_db::SymbolDb<Self>,
+        _common: &mut crate::layout::CommonGroupState<Self>,
+        _symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
-        // TODO
     }
 
     fn finalise_prelude_layout<'data>(
-        prelude: &crate::layout::PreludeLayoutState<Self>,
-        memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
-        resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
+        _prelude: &crate::layout::PreludeLayoutState<Self>,
+        _memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _resources: &crate::layout::FinaliseLayoutResources<'_, 'data, Self>,
     ) -> crate::error::Result<Self::PreludeLayoutExt> {
         Ok(())
     }
@@ -1169,7 +1350,28 @@ impl platform::Platform for MachO {
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
-        todo!()
+        let mut got_address = None;
+        let mut plt_address = None;
+
+        if flags.needs_plt() {
+            let got_addr = *memory_offsets.get(crate::part_id::GOT);
+            *memory_offsets.get_mut(crate::part_id::GOT) += 8;
+            got_address = Some(got_addr);
+
+            let plt_addr = *memory_offsets.get(crate::part_id::PLT_GOT);
+            *memory_offsets.get_mut(crate::part_id::PLT_GOT) += 12;
+            plt_address = Some(plt_addr);
+        }
+
+        crate::layout::Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            flags,
+            format_specific: MachOResolutionExt {
+                got_address,
+                plt_address,
+            },
+        }
     }
 
     fn raw_symbol_name<'data>(
@@ -1181,7 +1383,7 @@ impl platform::Platform for MachO {
     }
 
     fn default_layout_rules() -> &'static [crate::layout_rules::SectionRule<'static>] {
-        DEFAULT_SECTION_RULES
+        MACHO_SECTION_RULES
     }
 
     fn build_output_order_and_program_segments<'data>(
@@ -1195,188 +1397,82 @@ impl platform::Platform for MachO {
         crate::output_section_id::OutputOrder,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
-        let mut builder = OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary);
+        use crate::output_section_id;
+        let mut builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
+            output_kind,
+            output_sections,
+            secondary,
+        );
 
-        // File header and all load commands.
+        // __TEXT segment (r-x): headers, code, read-only data, stubs
         builder.add_section(output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::PAGEZERO_SEGMENT);
-        builder.add_section(output_section_id::TEXT_SEGMENT);
-        builder.add_section(output_section_id::DATA_SEGMENT);
-        builder.add_section(output_section_id::ENTRY_POINT);
-        builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
-        // Content of the sections (e.g. __text, __data).
+        builder.add_section(output_section_id::RODATA);
+        builder.add_sections(&custom.ro);
         builder.add_section(output_section_id::TEXT);
-        builder.add_section(output_section_id::CSTRING);
+        builder.add_sections(&custom.exec);
+        builder.add_section(output_section_id::PLT_GOT); // __stubs (call trampolines)
+        builder.add_section(output_section_id::GCC_EXCEPT_TABLE);
+        builder.add_section(output_section_id::EH_FRAME);
+
+        // __DATA segment (rw-): writable data, GOT, BSS
         builder.add_section(output_section_id::DATA);
-        // The rest (e.g. symbol table, string table).
+        builder.add_section(output_section_id::INIT_ARRAY); // __mod_init_func
+        builder.add_section(output_section_id::FINI_ARRAY); // __mod_term_func
+        builder.add_sections(&custom.data);
+        builder.add_section(output_section_id::GOT);
+        builder.add_section(output_section_id::TDATA);
+        builder.add_section(output_section_id::TBSS);
+        builder.add_section(output_section_id::BSS);
+        builder.add_sections(&custom.bss);
 
         builder.build()
     }
-
-    fn start_memory_address(output_kind: OutputKind) -> u64 {
-        MACHO_START_MEM_ADDRESS
-    }
 }
 
-const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
-    let mut defs: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] =
-        [DEFAULT_DEFS; NUM_BUILT_IN_SECTIONS];
-
-    defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
-        target_segment_type: Some(SegmentType::Header),
-        ..DEFAULT_DEFS
-    };
-    // Load commands
-    defs[output_section_id::PAGEZERO_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_PAGEZERO.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_EXECUTE),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_WRITE),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
-        target_segment_type: Some(SegmentType::LoadCommands),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"LC_MAIN")),
-        target_segment_type: Some(SegmentType::LoadCommands),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
-        ..DEFAULT_DEFS
-    };
-    // Multi-part generated sections
-    defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
-        ..DEFAULT_DEFS
-    };
-    // Start of regular sections
-    defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__text")),
-        section_flags: SectionFlags::from_u32(
-            macho::S_REGULAR | macho::S_ATTR_PURE_INSTRUCTIONS | macho::S_ATTR_SOME_INSTRUCTIONS,
-        ),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__cstring")),
-        section_flags: SectionFlags::from_u32(macho::S_CSTRING_LITERALS),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__data")),
-        section_flags: SectionFlags::from_u32(macho::S_REGULAR),
-        ..DEFAULT_DEFS
-    };
-
-    defs
+const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
+    use crate::layout_rules::SectionRule;
+    use crate::output_section_id;
+    &[
+        SectionRule::exact_section(b"__text", output_section_id::TEXT),
+        SectionRule::exact_section(b"__stubs", output_section_id::TEXT),
+        SectionRule::exact_section(b"__stub_helper", output_section_id::TEXT),
+        // Sections like __const, __cstring, __literal* can appear in both __TEXT and
+        // __DATA segments. The pipeline groups by name, so both variants merge into one
+        // output section. Placing them all in DATA ensures pointers get rebase fixups.
+        SectionRule::exact_section(b"__const", output_section_id::DATA),
+        // __cstring and __literal* are truly read-only (no pointers). Keep in RODATA.
+        SectionRule::exact_section(b"__cstring", output_section_id::RODATA),
+        SectionRule::exact_section(b"__literal4", output_section_id::RODATA),
+        SectionRule::exact_section(b"__literal8", output_section_id::RODATA),
+        SectionRule::exact_section(b"__literal16", output_section_id::RODATA),
+        SectionRule::exact_section(b"__data", output_section_id::DATA),
+        SectionRule::exact_section(b"__la_symbol_ptr", output_section_id::DATA),
+        SectionRule::exact_section(b"__nl_symbol_ptr", output_section_id::DATA),
+        SectionRule::exact_section(b"__got", output_section_id::DATA),
+        // TLS descriptors go in TDATA (after GOT), init data follows.
+        // This separates TLS bind fixups from GOT bind fixups in the chain.
+        // __thread_vars (descriptors) goes in GOT section to separate from __thread_data.
+        // Both are in the DATA segment but must not overlap.
+        SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
+        SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
+        SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
+        // Constructor/destructor function pointer arrays (Mach-O equivalent of
+        // .init_array/.fini_array)
+        SectionRule::exact_section(b"__mod_init_func", output_section_id::INIT_ARRAY),
+        SectionRule::exact_section(b"__mod_term_func", output_section_id::FINI_ARRAY),
+        SectionRule::exact_section(b"__gcc_except_tab", output_section_id::GCC_EXCEPT_TABLE),
+        SectionRule::exact_section(b".rustc", output_section_id::DATA),
+        SectionRule::exact_section(b"__bss", output_section_id::BSS),
+        SectionRule::exact_section(b"__common", output_section_id::BSS),
+        SectionRule::exact_section(b"__unwind_info", output_section_id::RODATA),
+        SectionRule::exact_section(b"__eh_frame", output_section_id::RODATA),
+        SectionRule::exact_section(b"__compact_unwind", output_section_id::RODATA),
+    ]
 };
 
-// TODO: sort properly
-const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
-    SectionRule::exact_section_keep(b"__text", crate::output_section_id::TEXT),
-    SectionRule::exact_section_keep(b"__cstring", crate::output_section_id::CSTRING),
-    SectionRule::exact_section_keep(b"__data", crate::output_section_id::DATA),
-    // SectionRule::exact_section_keep(b"__compact_unwind", crate::output_section_id::EH_FRAME),
-];
-
-const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
-    ProgramSegmentDef {
-        segment_type: SegmentType::Header,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::LoadCommands,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::Text,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::Data,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::DataConst,
-    },
-    ProgramSegmentDef {
-        segment_type: SegmentType::Misc,
-    },
-];
-
-fn count_sections_for_segment_type(
-    output_sections: &crate::output_section_id::OutputSections<MachO>,
-    segment_type: SegmentType,
-) -> usize {
-    let segment_def = ProgramSegmentDef { segment_type };
-    output_sections
-        .ids_with_info()
-        .filter(|(section_id, _)| {
-            output_sections.should_include_in_segment(*section_id, segment_def)
-        })
-        .count()
-}
-
-pub(crate) struct SegmentSectionsInfo<'data> {
-    pub(crate) segment_size: OutputRecordLayout,
-    pub(crate) segment_sections:
-        Vec<(OutputRecordLayout, Option<SectionName<'data>>, SectionFlags)>,
-}
-
-pub(crate) fn get_segment_sections<'data>(
-    layout: &Layout<'data, MachO>,
-    segment_type: SegmentType,
-) -> SegmentSectionsInfo<'data> {
-    let mut in_matching_segment = false;
-    let mut sections = Vec::new();
-    let mut segment_id = None;
-
-    for event in &layout.output_order {
-        match event {
-            OrderEvent::SegmentStart(seg_id)
-                if layout.program_segments.segment_def(seg_id).segment_type == segment_type =>
-            {
-                segment_id = Some(seg_id);
-                in_matching_segment = true;
-            }
-            OrderEvent::SegmentEnd(seg_id)
-                if layout.program_segments.segment_def(seg_id).segment_type == segment_type
-                    && in_matching_segment =>
-            {
-                break;
-            }
-            OrderEvent::Section(section_id) if in_matching_segment => {
-                let sizes = *layout.section_layouts.get(section_id);
-                sections.push((
-                    sizes,
-                    layout.output_sections.name(section_id),
-                    layout.output_sections.section_flags(section_id),
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    let segment_id = segment_id.expect("must be visited in the output order");
-    SegmentSectionsInfo {
-        segment_sections: sections,
-        segment_size: layout
-            .segment_layouts
-            .segments
-            .iter()
-            .find(|seg| seg.id == segment_id)
-            .unwrap()
-            .sizes,
-    }
+/// Trim trailing NUL bytes from a fixed-size Mach-O name field.
+pub(crate) fn trim_nul(name: &[u8; 16]) -> &[u8] {
+    let end = name.iter().position(|&b| b == 0).unwrap_or(16);
+    // Safety: end <= 16, and the array has 16 elements
+    &name.as_slice()[..end]
 }
