@@ -88,10 +88,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.symbols.iter()
     }
 
-    fn symbol(
-        &self,
-        index: object::SymbolIndex,
-    ) -> crate::error::Result<&'data SymtabEntry> {
+    fn symbol(&self, index: object::SymbolIndex) -> crate::error::Result<&'data SymtabEntry> {
         self.symbols
             .symbol(index)
             .map_err(|e| error!("Symbol index {} out of range: {e}", index.0))
@@ -119,42 +116,31 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn enumerate_sections(
         &self,
-    ) -> impl Iterator<
-        Item = (
-            object::SectionIndex,
-            &'data SectionHeader,
-        ),
-    > {
-        self.sections
-            .iter()
-            .enumerate()
-            .map(|(i, section)| {
-                // Safety: SectionHeader is #[repr(transparent)] over Section64<Endianness>
-                let header: &'data SectionHeader =
-                    unsafe { &*(section as *const macho::Section64<Endianness> as *const SectionHeader) };
-                (object::SectionIndex(i), header)
-            })
+    ) -> impl Iterator<Item = (object::SectionIndex, &'data SectionHeader)> {
+        self.sections.iter().enumerate().map(|(i, section)| {
+            // Safety: SectionHeader is #[repr(transparent)] over Section64<Endianness>
+            let header: &'data SectionHeader = unsafe {
+                &*(section as *const macho::Section64<Endianness> as *const SectionHeader)
+            };
+            (object::SectionIndex(i), header)
+        })
     }
 
-    fn section(
-        &self,
-        index: object::SectionIndex,
-    ) -> crate::error::Result<&'data SectionHeader> {
-        let section = self.sections.get(index.0).ok_or_else(|| {
-            error!("Section index {} out of range", index.0)
-        })?;
+    fn section(&self, index: object::SectionIndex) -> crate::error::Result<&'data SectionHeader> {
+        let section = self
+            .sections
+            .get(index.0)
+            .ok_or_else(|| error!("Section index {} out of range", index.0))?;
         Ok(unsafe { &*(section as *const macho::Section64<Endianness> as *const SectionHeader) })
     }
 
-    fn section_by_name(
-        &self,
-        name: &str,
-    ) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
         for (i, section) in self.sections.iter().enumerate() {
             let sectname = trim_nul(section.sectname());
             if sectname == name.as_bytes() {
-                let header: &'data SectionHeader =
-                    unsafe { &*(section as *const macho::Section64<Endianness> as *const SectionHeader) };
+                let header: &'data SectionHeader = unsafe {
+                    &*(section as *const macho::Section64<Endianness> as *const SectionHeader)
+                };
                 return Some((object::SectionIndex(i), header));
             }
         }
@@ -190,7 +176,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(sym_value.wrapping_sub(section_addr))
     }
 
-    fn symbol_versions(&self) -> &[()]{
+    fn symbol_versions(&self) -> &[()] {
         // Mach-O doesn't have symbol versioning
         &[]
     }
@@ -277,13 +263,16 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         index: object::SectionIndex,
         _relocations: &(),
     ) -> crate::error::Result<RelocationList<'data>> {
-        let section = self.sections.get(index.0).ok_or_else(|| {
-            error!("Section index {} out of range for relocations", index.0)
-        })?;
+        let section = self
+            .sections
+            .get(index.0)
+            .ok_or_else(|| error!("Section index {} out of range for relocations", index.0))?;
         let relocs = section
             .relocations(LE, self.data)
             .map_err(|e| error!("Failed to read relocations: {e}"))?;
-        Ok(RelocationList { relocations: relocs })
+        Ok(RelocationList {
+            relocations: relocs,
+        })
     }
 
     fn parse_relocations(&self) -> crate::error::Result<()> {
@@ -349,9 +338,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn verneed_table(&self) -> crate::error::Result<VerneedTable<'data>> {
-        Ok(VerneedTable {
-            _phantom: &[],
-        })
+        Ok(VerneedTable { _phantom: &[] })
     }
 
     fn process_gnu_note_section(
@@ -389,9 +376,7 @@ impl platform::SectionHeader for SectionHeader {
 
     fn is_tls(&self) -> bool {
         let sectname = trim_nul(self.0.sectname());
-        sectname == b"__thread_vars"
-            || sectname == b"__thread_data"
-            || sectname == b"__thread_bss"
+        sectname == b"__thread_vars" || sectname == b"__thread_data" || sectname == b"__thread_bss"
     }
 
     fn is_merge_section(&self) -> bool {
@@ -496,9 +481,12 @@ impl platform::Symbol for SymtabEntry {
             && self.n_value(LE) > 0
         {
             let alignment_val = u64::from(self.n_desc(LE));
-            let alignment =
-                crate::alignment::Alignment::new(if alignment_val > 0 { 1u64 << alignment_val } else { 1 })
-                    .unwrap_or(crate::alignment::MIN);
+            let alignment = crate::alignment::Alignment::new(if alignment_val > 0 {
+                1u64 << alignment_val
+            } else {
+                1
+            })
+            .unwrap_or(crate::alignment::MIN);
             let size = alignment.align_up(self.n_value(LE));
             let output_section_id = crate::output_section_id::BSS;
             let part_id = output_section_id.part_id_with_alignment(alignment);
@@ -840,8 +828,8 @@ impl<'data> Iterator for MachOSectionIter<'data> {
     type Item = &'data SectionHeader;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|s| {
-            unsafe { &*(s as *const macho::Section64<Endianness> as *const SectionHeader) }
+        self.inner.next().map(|s| unsafe {
+            &*(s as *const macho::Section64<Endianness> as *const SectionHeader)
         })
     }
 }
@@ -946,8 +934,7 @@ impl platform::Platform for MachO {
         }
     }
 
-    fn finalise_find_required_sections(_groups: &[crate::layout::GroupState<Self>]) {
-    }
+    fn finalise_find_required_sections(_groups: &[crate::layout::GroupState<Self>]) {}
 
     fn activate_dynamic<'data>(
         _state: &mut crate::layout::DynamicLayoutState<'data, Self>,
@@ -1023,7 +1010,10 @@ impl platform::Platform for MachO {
         // Scan relocations to discover referenced symbols and trigger loading
         // of their containing sections.
         let le = object::Endianness::Little;
-        let input_section = state.object.sections.get(section.index.0)
+        let input_section = state
+            .object
+            .sections
+            .get(section.index.0)
             .ok_or_else(|| crate::error!("Section index out of range"))?;
         let relocs = match input_section.relocations(le, state.object.data) {
             Ok(r) => r,
@@ -1031,9 +1021,13 @@ impl platform::Platform for MachO {
         };
         for reloc_raw in relocs {
             let reloc = reloc_raw.info(le);
-            if !reloc.r_extern { continue; }
+            if !reloc.r_extern {
+                continue;
+            }
             // Skip ADDEND (type 10) and SUBTRACTOR (type 1)
-            if reloc.r_type == 10 || reloc.r_type == 1 { continue; }
+            if reloc.r_type == 10 || reloc.r_type == 1 {
+                continue;
+            }
 
             let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
             let local_symbol_id = state.symbol_id_range.input_to_id(sym_idx);
@@ -1103,7 +1097,8 @@ impl platform::Platform for MachO {
         use crate::output_section_id::SectionName;
         use crate::output_section_id::SectionOutputInfo;
 
-        let mut infos: Vec<SectionOutputInfo<'data, Self>> = Vec::with_capacity(NUM_BUILT_IN_SECTIONS);
+        let mut infos: Vec<SectionOutputInfo<'data, Self>> =
+            Vec::with_capacity(NUM_BUILT_IN_SECTIONS);
         for _ in 0..NUM_BUILT_IN_SECTIONS {
             infos.push(SectionOutputInfo {
                 kind: SectionKind::Primary(SectionName(b"")),
@@ -1372,7 +1367,10 @@ impl platform::Platform for MachO {
             raw_value,
             dynamic_symbol_index,
             flags,
-            format_specific: MachOResolutionExt { got_address, plt_address },
+            format_specific: MachOResolutionExt {
+                got_address,
+                plt_address,
+            },
         }
     }
 
@@ -1458,7 +1456,8 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
         SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
         SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
-        // Constructor/destructor function pointer arrays (Mach-O equivalent of .init_array/.fini_array)
+        // Constructor/destructor function pointer arrays (Mach-O equivalent of
+        // .init_array/.fini_array)
         SectionRule::exact_section(b"__mod_init_func", output_section_id::INIT_ARRAY),
         SectionRule::exact_section(b"__mod_term_func", output_section_id::FINI_ARRAY),
         SectionRule::exact_section(b"__gcc_except_tab", output_section_id::GCC_EXCEPT_TABLE),

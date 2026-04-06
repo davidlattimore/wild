@@ -60,8 +60,12 @@ impl platform::Args for MachOArgs {
         parse(self, input)
     }
 
-    fn should_strip_debug(&self) -> bool { false }
-    fn should_strip_all(&self) -> bool { false }
+    fn should_strip_debug(&self) -> bool {
+        false
+    }
+    fn should_strip_all(&self) -> bool {
+        false
+    }
 
     fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
         linker_script_entry
@@ -73,23 +77,37 @@ impl platform::Args for MachOArgs {
         &self.lib_search_paths
     }
 
-    fn output(&self) -> &std::sync::Arc<std::path::Path> { &self.output }
-    fn common(&self) -> &crate::args::CommonArgs { &self.common }
-    fn common_mut(&mut self) -> &mut crate::args::CommonArgs { &mut self.common }
-    fn should_export_all_dynamic_symbols(&self) -> bool { false }
-    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool { false }
+    fn output(&self) -> &std::sync::Arc<std::path::Path> {
+        &self.output
+    }
+    fn common(&self) -> &crate::args::CommonArgs {
+        &self.common
+    }
+    fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
+        &mut self.common
+    }
+    fn should_export_all_dynamic_symbols(&self) -> bool {
+        false
+    }
+    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
+        false
+    }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
         crate::alignment::Alignment { exponent: 14 } // 16KB pages
     }
 
-    fn should_merge_sections(&self) -> bool { false }
+    fn should_merge_sections(&self) -> bool {
+        false
+    }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
         self.relocation_model
     }
 
-    fn should_output_executable(&self) -> bool { !self.is_dylib }
+    fn should_output_executable(&self) -> bool {
+        !self.is_dylib
+    }
 }
 
 /// Parse macOS linker arguments. Handles the ld64-compatible flags that clang passes.
@@ -137,7 +155,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.common.time_phase_options = Some(Vec::new());
             return Ok(());
         }
-        "-arch" => { input.next(); return Ok(()); } // consume and ignore
+        "-arch" => {
+            input.next();
+            return Ok(());
+        } // consume and ignore
         "-syslibroot" => {
             if let Some(val) = input.next() {
                 args.syslibroot = Some(Box::from(Path::new(val.as_ref())));
@@ -151,13 +172,28 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         // Flags that take 1 argument, ignored
-        "-lto_library" | "-mllvm" | "-headerpad" | "-install_name"
-        | "-compatibility_version" | "-current_version" | "-rpath"
-        | "-object_path_lto" | "-order_file" | "-exported_symbols_list"
-        | "-unexported_symbols_list" | "-filelist" | "-sectcreate"
-        | "-framework" | "-weak_framework" | "-weak_library"
-        | "-reexport_library" | "-umbrella" | "-allowable_client"
-        | "-client_name" | "-sub_library" | "-sub_umbrella"
+        "-lto_library"
+        | "-mllvm"
+        | "-headerpad"
+        | "-install_name"
+        | "-compatibility_version"
+        | "-current_version"
+        | "-rpath"
+        | "-object_path_lto"
+        | "-order_file"
+        | "-exported_symbols_list"
+        | "-unexported_symbols_list"
+        | "-filelist"
+        | "-sectcreate"
+        | "-framework"
+        | "-weak_framework"
+        | "-weak_library"
+        | "-reexport_library"
+        | "-umbrella"
+        | "-allowable_client"
+        | "-client_name"
+        | "-sub_library"
+        | "-sub_umbrella"
         | "-objc_abi_version" => {
             input.next(); // consume the argument
             return Ok(());
@@ -170,19 +206,34 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         // Flags that take 1 argument, ignored (group 2)
-        "-undefined" | "-multiply_defined" | "-force_load" | "-weak-l"
-        | "-needed-l" | "-reexport-l" | "-upward-l" | "-alignment" => {
+        "-undefined" | "-multiply_defined" | "-force_load" | "-weak-l" | "-needed-l"
+        | "-reexport-l" | "-upward-l" | "-alignment" => {
             input.next();
             return Ok(());
         }
         // No-argument flags, ignored
-        "-demangle" | "-dynamic" | "-no_deduplicate" | "-no_compact_unwind"
-        | "-dead_strip" | "-dead_strip_dylibs" | "-headerpad_max_install_names"
-        | "-export_dynamic" | "-application_extension" | "-no_objc_category_merging"
-        | "-mark_dead_strippable_dylib" | "-ObjC" | "-all_load"
-        | "-no_implicit_dylibs" | "-search_paths_first" | "-two_levelnamespace"
-        | "-flat_namespace" | "-bind_at_load"
-        | "-pie" | "-no_pie" | "-execute" | "-bundle" => {
+        "-demangle"
+        | "-dynamic"
+        | "-no_deduplicate"
+        | "-no_compact_unwind"
+        | "-dead_strip"
+        | "-dead_strip_dylibs"
+        | "-headerpad_max_install_names"
+        | "-export_dynamic"
+        | "-application_extension"
+        | "-no_objc_category_merging"
+        | "-mark_dead_strippable_dylib"
+        | "-ObjC"
+        | "-all_load"
+        | "-no_implicit_dylibs"
+        | "-search_paths_first"
+        | "-two_levelnamespace"
+        | "-flat_namespace"
+        | "-bind_at_load"
+        | "-pie"
+        | "-no_pie"
+        | "-execute"
+        | "-bundle" => {
             return Ok(());
         }
         "-dylib" | "-dynamiclib" => {
@@ -203,7 +254,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     if let Some(path) = arg.strip_prefix("-L") {
         if path.is_empty() {
             if let Some(val) = input.next() {
-                args.lib_search_paths.push(Box::from(Path::new(val.as_ref())));
+                args.lib_search_paths
+                    .push(Box::from(Path::new(val.as_ref())));
             }
         } else {
             args.lib_search_paths.push(Box::from(Path::new(path)));
@@ -252,7 +304,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         break;
                     }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
             // If not found, warn but don't error (might be a system dylib we handle implicitly)
             if !found {

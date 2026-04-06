@@ -150,9 +150,7 @@ impl crate::platform::Arch for MachOAArch64 {
         // Mach-O doesn't use ELF-style arch identifiers
     }
 
-    fn get_dynamic_relocation_type(
-        _relocation: linker_utils::elf::DynamicRelocationKind,
-    ) -> u32 {
+    fn get_dynamic_relocation_type(_relocation: linker_utils::elf::DynamicRelocationKind) -> u32 {
         0
     }
 

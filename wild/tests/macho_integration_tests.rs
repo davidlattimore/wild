@@ -13,7 +13,8 @@
 //! Contains:{string}        Output binary must contain this string.
 //! DoesNotContain:{string}  Output binary must NOT contain this string.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,10 +58,9 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) -> Result<(), Box<dyn st
 
         let ignored = config.ignore_reason.is_some();
         tests.push(
-            libtest_mimic::Trial::test(
-                format!("macho::{test_name}"),
-                move || run_test(&wild, &dir, &test_name, &primary, &config).map_err(Into::into),
-            )
+            libtest_mimic::Trial::test(format!("macho::{test_name}"), move || {
+                run_test(&wild, &dir, &test_name, &primary, &config).map_err(Into::into)
+            })
             .with_ignored_flag(ignored),
         );
     }
@@ -94,10 +94,7 @@ struct TestConfig {
     ignore_reason: Option<String>,
 }
 
-fn parse_config(
-    test_dir: &Path,
-    primary: &Path,
-) -> Result<TestConfig, Box<dyn std::error::Error>> {
+fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn std::error::Error>> {
     let mut cfg = TestConfig {
         run_enabled: true,
         ..Default::default()
@@ -209,7 +206,9 @@ fn run_test(
     // Check for expected errors.
     if let Some(ref pattern) = config.expect_error {
         if link_result.status.success() {
-            return Err(format!("Expected link failure matching '{pattern}', but link succeeded"));
+            return Err(format!(
+                "Expected link failure matching '{pattern}', but link succeeded"
+            ));
         }
         let stderr = String::from_utf8_lossy(&link_result.stderr);
         if !stderr.contains(pattern) {
@@ -270,7 +269,10 @@ fn compile_source(
     let result = cmd.output().map_err(|e| format!("{compiler}: {e}"))?;
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Compilation of {} failed:\n{stderr}", src.display()));
+        return Err(format!(
+            "Compilation of {} failed:\n{stderr}",
+            src.display()
+        ));
     }
     Ok(())
 }

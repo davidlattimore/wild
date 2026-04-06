@@ -426,7 +426,9 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
     };
 
     for (index, sym) in resources.dynamic_symbol_definitions.iter().enumerate() {
-        if let Some(dynamic_symbol_index) = NonZeroU32::new(epilogue.dynsym_start_index + index as u32) {
+        if let Some(dynamic_symbol_index) =
+            NonZeroU32::new(epilogue.dynsym_start_index + index as u32)
+        {
             if let Some(res) = &mut resolutions[sym.symbol_id.as_usize()] {
                 res.dynamic_symbol_index = Some(dynamic_symbol_index);
             }
@@ -3909,7 +3911,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = self.object.symbol_value_in_section(local_symbol, section_index)?;
+                let input_offset = self
+                    .object
+                    .symbol_value_in_section(local_symbol, section_index)?;
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,
