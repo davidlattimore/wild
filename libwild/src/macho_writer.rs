@@ -252,10 +252,15 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         // TODO: write comments
         let segment_sections = get_segment_sections(layout, segment_sections_type).segment_sections;
         let segment_size = get_segment_sections(layout, segment_type).segment_size;
-        let (segment_cmd, sections) =
-            split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
-        debug_assert_eq!(sections.len(), segment_sections.len());
+        let section_count = if segment_sections_type == SegmentType::LinkeditSections {
+            0
+        } else {
+            segment_sections.len()
+        };
+        let (segment_cmd, sections) =
+            split_segment_command_buffer(buffers.get_mut(part_id), section_count)?;
+
         let prot_flags = layout
             .output_sections
             .section_flags(part_id.output_section_id())
@@ -264,8 +269,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.cmd.set(LE, LC_SEGMENT_64);
         segment_cmd.cmdsize.set(
             LE,
-            (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * segment_sections.len())
-                as u32,
+            (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * section_count) as u32,
         );
         segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         segment_cmd.segname[seg_name.len()..].zero();
@@ -289,28 +293,33 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 
-        for (section, (size, section_name, section_flags)) in
-            sections.iter_mut().zip(segment_sections)
-        {
-            let section_name = section_name
-                .ok_or_else(|| error!("section name must be known"))?
-                .0;
+        if segment_sections_type == SegmentType::LinkeditSections {
+            segment_cmd.nsects.set(LE, 0);
+        } else {
+            segment_cmd.nsects.set(LE, segment_sections.len() as u32);
+            for (section, (size, section_name, section_flags)) in
+                sections.iter_mut().zip(segment_sections)
+            {
+                let section_name = section_name
+                    .ok_or_else(|| error!("section name must be known"))?
+                    .0;
 
-            section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-            section.segname[seg_name.len()..].zero();
-            section.sectname[..section_name.len()].copy_from_slice(section_name);
-            section.sectname[section_name.len()..].zero();
-            section.addr.set(LE, size.mem_offset);
-            section.size.set(LE, size.mem_size);
-            section.offset.set(LE, size.file_offset as u32);
-            // TODO
-            section.align.set(LE, 0);
-            section.reloff.set(LE, 0);
-            section.nreloc.set(LE, 0);
-            section.flags.set(LE, section_flags.raw());
-            section.reserved1.set(LE, 0);
-            section.reserved2.set(LE, 0);
-            section.reserved3.set(LE, 0);
+                section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+                section.segname[seg_name.len()..].zero();
+                section.sectname[..section_name.len()].copy_from_slice(section_name);
+                section.sectname[section_name.len()..].zero();
+                section.addr.set(LE, size.mem_offset);
+                section.size.set(LE, size.mem_size);
+                section.offset.set(LE, size.file_offset as u32);
+                // TODO
+                section.align.set(LE, 0);
+                section.reloff.set(LE, 0);
+                section.nreloc.set(LE, 0);
+                section.flags.set(LE, section_flags.raw());
+                section.reserved1.set(LE, 0);
+                section.reserved2.set(LE, 0);
+                section.reserved3.set(LE, 0);
+            }
         }
     }
     Ok(())

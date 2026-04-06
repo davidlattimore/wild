@@ -57,7 +57,7 @@ pub(crate) const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
 
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &str = "/usr/lib/dyld";
-pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 3;
+pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
 pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
     (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
 
@@ -1163,12 +1163,7 @@ impl platform::Platform for MachO {
         );
         sizes.increment(
             part_id::LINK_EDIT_SEGMENT,
-            (size_of::<SegmentCommand>()
-                + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(
-                        output_sections,
-                        SegmentType::LinkeditSections,
-                    )) as u64,
+            size_of::<SegmentCommand>() as u64,
         );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
         sizes.increment(
