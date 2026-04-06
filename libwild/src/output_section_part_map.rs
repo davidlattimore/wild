@@ -256,6 +256,10 @@ fn test_merge_parts() {
         output_section_id::CSTRING,
         output_section_id::ENTRY_POINT,
         output_section_id::LINK_EDIT_SEGMENT,
+        output_section_id::ENTRY_POINT,
+        output_section_id::DYLINKER,
+        output_section_id::DYLD_CHAINED_FIXUPS,
+        output_section_id::CHAINED_FIXUP_TABLE,
     ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
