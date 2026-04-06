@@ -40,8 +40,7 @@ const PLATFORM_MACOS: u32 = 1;
 const DYLD_PATH: &[u8] = b"/usr/lib/dyld";
 const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
 
-pub(crate) fn write<A: Arch<Platform = MachO>>(
-    _output: &crate::file_writer::Output,
+pub(crate) fn write_direct<A: Arch<Platform = MachO>>(
     layout: &Layout<'_, MachO>,
 ) -> Result {
     let (mappings, alloc_size) = build_mappings_and_size(layout);
@@ -116,7 +115,9 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, 
     } else {
         text_filesize
     };
-    let total = linkedit_offset as usize + 8192;
+    let n_exports = layout.dynamic_symbol_definitions.len();
+    let linkedit_estimate = 8192 + n_exports * 256;
+    let total = linkedit_offset as usize + linkedit_estimate.max(8192);
     (mappings, total)
 }
 
@@ -160,7 +161,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
     write_stubs_and_got::<A>(out, layout, mappings, &mut bind_fixups, &mut import_names)?;
 
     // Populate GOT entries for non-import symbols
-    write_got_entries(out, layout, mappings)?;
+    write_got_entries(out, layout, mappings, &mut rebase_fixups)?;
 
     // Build chained fixup data: merge rebase + bind, encode per-page chains
     rebase_fixups.sort_by_key(|f| f.file_offset);
@@ -367,6 +368,8 @@ fn write_dylib_symtab(
                         out[off as usize+40..off as usize+48].try_into().unwrap());
                     let new_filesize = pos as u64 - linkedit_fileoff;
                     out[off as usize+48..off as usize+56].copy_from_slice(&new_filesize.to_le_bytes());
+                    let new_vmsize = align_to(new_filesize, PAGE_SIZE);
+                    out[off as usize+32..off as usize+40].copy_from_slice(&new_vmsize.to_le_bytes());
                 }
             }
             LC_DYSYMTAB => {
@@ -518,6 +521,7 @@ fn write_got_entries(
     out: &mut [u8],
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
+    rebase_fixups: &mut Vec<RebaseFixup>,
 ) -> Result {
     for res in layout.symbol_resolutions.iter().flatten() {
         if res.format_specific.plt_address.is_some() { continue; } // handled by stubs
@@ -525,6 +529,9 @@ fn write_got_entries(
             if let Some(file_off) = vm_addr_to_file_offset(got_vm_addr, mappings) {
                 if file_off + 8 <= out.len() {
                     out[file_off..file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
+                }
+                if res.raw_value != 0 {
+                    rebase_fixups.push(RebaseFixup { file_offset: file_off, target: res.raw_value });
                 }
             }
         }
@@ -692,31 +699,12 @@ fn apply_relocations(
                             && target_addr >= tbss.mem_offset
                             && target_addr < tbss.mem_offset + tbss.mem_size;
                         if in_tdata || in_tbss {
-                            // TLS offset relative to the init template start.
-                            // Template = init data in TDATA (after descriptors) + TBSS.
-                            // Compute descriptor size by scanning for type 0x13 sections in this object.
-                            // Find the init data template start: minimum address of
-                            // type 0x11 (S_THREAD_LOCAL_REGULAR) sections in this object.
-                            let mut tls_init_start = u64::MAX;
-                            let mut tls_init_size = 0u64;
-                            for (si, _) in obj.sections.iter().enumerate() {
-                                if let Some(s) = obj.object.sections.get(si) {
-                                    use object::read::macho::Section as _;
-                                    let stype = s.flags(le) & 0xFF;
-                                    if stype == 0x11 { // S_THREAD_LOCAL_REGULAR
-                                        if let Some(addr) = obj.section_resolutions[si].address() {
-                                            tls_init_start = tls_init_start.min(addr);
-                                            tls_init_size += s.size(le);
-                                        }
-                                    }
-                                }
-                            }
-                            // If no init data sections, use TDATA end as base
-                            if tls_init_start == u64::MAX {
-                                tls_init_start = tdata.mem_offset + tdata.mem_size;
-                            }
+                            // TLS offset relative to the GLOBAL TLS template start.
+                            // The template is the TDATA section content (init data for
+                            // all TLS variables across all objects) followed by TBSS.
+                            let tls_init_start = tdata.mem_offset;
+                            let tls_init_size = tdata.mem_size;
                             let tls_offset = if in_tbss {
-                                // Align init_size to BSS alignment (8 bytes)
                                 let aligned_init = (tls_init_size + 7) & !7;
                                 aligned_init + target_addr.saturating_sub(tbss.mem_offset)
                             } else {
@@ -729,6 +717,19 @@ fn apply_relocations(
                                 file_offset: patch_file_offset, target: target_addr,
                             });
                         }
+                    }
+                }
+            }
+            7 if reloc.r_length == 2 && reloc.r_pcrel => { // ARM64_RELOC_POINTER_TO_GOT
+                if let Some(got) = got_addr {
+                    let delta = (got as i64 - pc_addr as i64) as i32;
+                    if patch_file_offset + 4 <= out.len() {
+                        out[patch_file_offset..patch_file_offset + 4].copy_from_slice(&delta.to_le_bytes());
+                    }
+                } else {
+                    let delta = (target_addr as i64 - pc_addr as i64) as i32;
+                    if patch_file_offset + 4 <= out.len() {
+                        out[patch_file_offset..patch_file_offset + 4].copy_from_slice(&delta.to_le_bytes());
                     }
                 }
             }
@@ -913,6 +914,7 @@ fn write_headers(
     }
     let has_rustc = rustc_addr > 0 && rustc_size > 0;
 
+    let buf_len = out.len();
     let mut w = Writer { buf: out, pos: offset };
     let dylinker_cmd_size = align8((12 + DYLD_PATH.len() + 1) as u32);
     let dylib_cmd_size = align8((24 + LIBSYSTEM_PATH.len() + 1) as u32);
@@ -1066,7 +1068,8 @@ fn write_headers(
     let cf_offset = last_file_end;
     let cf_size = chained_fixups_data_size as u64;
 
-    w.segment(b"__LINKEDIT", linkedit_vm, PAGE_SIZE, last_file_end, cf_size, VM_PROT_READ, VM_PROT_READ, 0);
+    let linkedit_vmsize = align_to((buf_len as u64).saturating_sub(last_file_end).max(PAGE_SIZE), PAGE_SIZE);
+    w.segment(b"__LINKEDIT", linkedit_vm, linkedit_vmsize, last_file_end, cf_size, VM_PROT_READ, VM_PROT_READ, 0);
 
     if is_dylib {
         // LC_ID_DYLIB = 0x0D

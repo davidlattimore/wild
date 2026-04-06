@@ -849,6 +849,7 @@ impl platform::Platform for MachO {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
+    type SymtabShndxEntry = u32;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -861,7 +862,11 @@ impl platform::Platform for MachO {
         output: &crate::file_writer::Output,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
-        crate::macho_writer::write::<A>(output, layout)
+        // Mach-O writer bypasses SizedOutput but we still need to go through
+        // Output::write to satisfy the file creation lifecycle.
+        output.write(layout, |_sized_output, lay| {
+            crate::macho_writer::write_direct::<A>(lay)
+        })
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
@@ -896,6 +901,14 @@ impl platform::Platform for MachO {
         _memory_offsets: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> u64 {
         0
+    }
+
+    fn start_memory_address(output_kind: crate::output_kind::OutputKind) -> u64 {
+        if output_kind == crate::output_kind::OutputKind::SharedObject {
+            0 // dylibs have no PAGEZERO
+        } else {
+            0x1_0000_0000 // PAGEZERO size for executables
+        }
     }
 
     fn finalise_find_required_sections(_groups: &[crate::layout::GroupState<Self>]) {
@@ -1258,6 +1271,7 @@ impl platform::Platform for MachO {
         flags: crate::value_flags::ValueFlags,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _output_kind: crate::output_kind::OutputKind,
+        _args: &Self::Args,
     ) {
         if flags.needs_plt() {
             // Mach-O stubs are 12 bytes (adrp + ldr + br)
@@ -1273,7 +1287,8 @@ impl platform::Platform for MachO {
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
         _symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         _per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
-    ) {
+    ) -> crate::error::Result {
+        Ok(())
     }
 
     fn allocate_internal_symbol(
