@@ -1168,7 +1168,7 @@ impl platform::Platform for MachO {
     ) {
         // Mach-O string tables start with an empty string at index 0.
         // TODO: Just a filler for now.
-        common.allocate(part_id::STRTAB, 1);
+        common.allocate(part_id::STRTAB, MACHO_PAGE_ALIGNMENT.value());
     }
 
     fn finalise_prelude_layout<'data>(
