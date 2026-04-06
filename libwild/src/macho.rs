@@ -1293,6 +1293,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
+        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
