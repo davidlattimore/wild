@@ -154,13 +154,12 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
-/// - Functions: SIZEOF, ALIGNOF, ADDR, LOADADDR, ALIGN, MIN, MAX
+/// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
 /// Not yet supported (can be added when needed):
 /// - Ternary operator (? :)
-/// - Additional functions (LENGTH, ORIGIN)
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum Expression<'a> {
     /// A numeric literal (e.g., 0x1000, 42)
@@ -901,7 +900,7 @@ fn parse_section_command<'input>(
 
     let mut alignment = None;
 
-    while !input.starts_with("{".as_bytes()) {
+    while !input.starts_with(b"{") {
         alignment = Some(parse_alignment.parse_next(input)?);
     }
 
@@ -1025,7 +1024,7 @@ fn foreach_input(
     for command in commands {
         match command {
             Command::Arg(arg) => {
-                let spec = if let Some(lib_name) = arg.strip_prefix("-l".as_bytes()) {
+                let spec = if let Some(lib_name) = arg.strip_prefix(b"-l") {
                     InputSpec::Lib(Box::from(to_str(lib_name)?))
                 } else {
                     InputSpec::File(Box::from(Path::new(to_str(arg)?)))
@@ -1214,17 +1213,17 @@ mod tests {
         check_section_command(
             ".text : { *(.text .text2) *(.text3) }",
             &SectionCommand::Section(Section {
-                output_section_name: ".text".as_bytes(),
+                output_section_name: b".text",
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
+                        input_section_name_patterns: vec![b".text", b".text2"],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![".text3".as_bytes()],
+                        input_section_name_patterns: vec![b".text3"],
                     }),
                 ],
                 alignment: None,
@@ -1256,25 +1255,25 @@ mod tests {
         ",
             &LinkerScript {
                 commands: vec![
-                    Command::Entry("_start".as_bytes()),
+                    Command::Entry(b"_start"),
                     Command::Sections(Sections {
                         commands: vec![
                             SectionCommand::SetLocation(Location { address: 0x1000000 }),
                             SectionCommand::Align(Alignment::new(16).unwrap()),
                             SectionCommand::Section(Section {
-                                output_section_name: ".foo".as_bytes(),
+                                output_section_name: b".foo",
                                 commands: vec![
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                        name: "start_foo".as_bytes(),
+                                        name: b"start_foo",
                                     }),
                                     ContentsCommand::Matcher(Matcher {
                                         must_keep: true,
                                         input_file_pattern: None,
-                                        input_section_name_patterns: vec![".rodata.foo".as_bytes()],
+                                        input_section_name_patterns: vec![b".rodata.foo"],
                                     }),
                                     ContentsCommand::Align(Alignment::new(32).unwrap()),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                        name: "end_foo".as_bytes(),
+                                        name: b"end_foo",
                                     }),
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
@@ -1399,17 +1398,17 @@ mod tests {
         check_section_command(
             ".text : { foo.o(.text .text2) *(.text3) }",
             &SectionCommand::Section(Section {
-                output_section_name: ".text".as_bytes(),
+                output_section_name: b".text",
                 commands: vec![
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
-                        input_file_pattern: Some("foo.o".as_bytes()),
-                        input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
+                        input_file_pattern: Some(b"foo.o"),
+                        input_section_name_patterns: vec![b".text", b".text2"],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![".text3".as_bytes()],
+                        input_section_name_patterns: vec![b".text3"],
                     }),
                 ],
                 alignment: None,
@@ -1422,11 +1421,11 @@ mod tests {
         check_section_command(
             ".ctors : { *crtbegin*.o(.ctors) }",
             &SectionCommand::Section(Section {
-                output_section_name: ".ctors".as_bytes(),
+                output_section_name: b".ctors",
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
-                    input_file_pattern: Some("*crtbegin*.o".as_bytes()),
-                    input_section_name_patterns: vec![".ctors".as_bytes()],
+                    input_file_pattern: Some(b"*crtbegin*.o"),
+                    input_section_name_patterns: vec![b".ctors"],
                 })],
                 alignment: None,
             }),
@@ -1438,11 +1437,11 @@ mod tests {
         check_section_command(
             ".init : { KEEP(crti.o(.init)) }",
             &SectionCommand::Section(Section {
-                output_section_name: ".init".as_bytes(),
+                output_section_name: b".init",
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: true,
-                    input_file_pattern: Some("crti.o".as_bytes()),
-                    input_section_name_patterns: vec![".init".as_bytes()],
+                    input_file_pattern: Some(b"crti.o"),
+                    input_section_name_patterns: vec![b".init"],
                 })],
                 alignment: None,
             }),
@@ -1462,11 +1461,11 @@ mod tests {
                 commands: vec![
                     Command::Sections(Sections {
                         commands: vec![SectionCommand::Section(Section {
-                            output_section_name: ".text".as_bytes(),
+                            output_section_name: b".text",
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![".text".as_bytes()],
+                                input_section_name_patterns: vec![b".text"],
                             })],
                             alignment: None,
                         })],
@@ -1476,7 +1475,7 @@ mod tests {
                             Box::new(Expression::LocationCounter),
                             Box::new(Expression::Number(0x10000)),
                         ),
-                        message: "Output too large".as_bytes(),
+                        message: b"Output too large",
                         remainder: b"",
                     }),
                 ],
@@ -1497,20 +1496,20 @@ mod tests {
                 commands: vec![Command::Sections(Sections {
                     commands: vec![
                         SectionCommand::Section(Section {
-                            output_section_name: ".text".as_bytes(),
+                            output_section_name: b".text",
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![".text".as_bytes()],
+                                input_section_name_patterns: vec![b".text"],
                             })],
                             alignment: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
                             expression: Expression::LessThan(
-                                Box::new(Expression::Sizeof(".text".as_bytes())),
+                                Box::new(Expression::Sizeof(b".text")),
                                 Box::new(Expression::Number(0x1000)),
                             ),
-                            message: "Text section too large".as_bytes(),
+                            message: b"Text section too large",
                             remainder: b"",
                         }),
                     ],
@@ -1531,13 +1530,13 @@ mod tests {
                     assert_cmd.expression,
                     Expression::LessEqual(
                         Box::new(Expression::Subtract(
-                            Box::new(Expression::Symbol("__bss_end".as_bytes())),
-                            Box::new(Expression::Symbol("__bss_start".as_bytes())),
+                            Box::new(Expression::Symbol(b"__bss_end")),
+                            Box::new(Expression::Symbol(b"__bss_start")),
                         )),
                         Box::new(Expression::Number(0x1000)),
                     )
                 );
-                assert_eq!(assert_cmd.message, "BSS too large".as_bytes());
+                assert_eq!(assert_cmd.message, b"BSS too large");
             }
             _ => panic!("Expected Assert command"),
         }
@@ -1586,7 +1585,7 @@ mod tests {
                     // The left side should be a MIN expression with two SIZEOF calls
                     assert!(matches!(**left, Expression::Min(_, _)));
                 }
-                assert_eq!(assert_cmd.message, "Section too large".as_bytes());
+                assert_eq!(assert_cmd.message, b"Section too large");
             }
             _ => panic!("Expected Assert command"),
         }
@@ -1753,7 +1752,7 @@ mod tests {
                 assert_eq!(
                     assert_cmd.expression,
                     Expression::Equal(
-                        Box::new(Expression::Alignof(".text".as_bytes())),
+                        Box::new(Expression::Alignof(b".text")),
                         Box::new(Expression::Number(8)),
                     )
                 );
@@ -1770,7 +1769,7 @@ mod tests {
                 assert_eq!(
                     assert_cmd.expression,
                     Expression::Equal(
-                        Box::new(Expression::Loadaddr(".text".as_bytes())),
+                        Box::new(Expression::Loadaddr(b".text")),
                         Box::new(Expression::Number(8)),
                     )
                 );

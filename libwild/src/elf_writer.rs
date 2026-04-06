@@ -1340,8 +1340,12 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         };
         let e = LittleEndian;
 
-        // Always save the name without the symbol version (e.g. foo@@VER_1).
-        let name = RawSymbolName::parse(name).name;
+        let name = if self.is_dynamic {
+            // .dynsym encodes version info separately in .gnu.version, so strip it from the name.
+            crate::elf::RawSymbolName::parse(name).name
+        } else {
+            crate::elf::symtab_name_for_strtab(name)
+        };
         let string_offset = self.strtab_writer.write_str(name);
 
         let shndx = if shndx < u32::from(object::elf::SHN_LORESERVE)
