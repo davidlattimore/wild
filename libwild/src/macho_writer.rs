@@ -18,8 +18,11 @@ use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Section;
+use crate::macho::ChainedFixupsHeader;
+use crate::macho::DEFAULT_SEGMENT_COUNT;
 use crate::macho::DYLINKER_PATH;
 use crate::macho::DyldChainedFixupsCommand;
+use crate::macho::DyldChainedFixupsImporstFormat;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
@@ -69,8 +72,6 @@ use tracing::debug_span;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
-const DYLD_CHAINED_IMPORT: u32 = 1;
-
 type MachOLayout<'data> = Layout<'data, MachO>;
 
 pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
@@ -151,7 +152,24 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .0;
     write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
 
-    write_chained_fixup_table::<A>(buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
+    let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
+    chained_fixup_table.fill(0);
+    let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
+    let min_len = size_of::<ChainedFixupsHeader>() + starts_len;
+    if chained_fixup_table.len() < min_len {
+        bail!(
+            "CHAINED_FIXUP_TABLE allocation too small. Need at least {} bytes, got {}",
+            min_len,
+            chained_fixup_table.len()
+        );
+    }
+    let (chained_fixups_header, rest): (&mut ChainedFixupsHeader, &mut [u8]) =
+        from_bytes_mut(chained_fixup_table)
+            .map_err(|_| error!("Invalid chained fixups header allocation"))?;
+    let (starts_in_image, _) =
+        slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
+            .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
+    write_chained_fixup_table::<A>(chained_fixups_header, starts_in_image)?;
 
     // TODO: remove
     buffers.get_mut(part_id::STRTAB).write_all(b"x")?;
@@ -420,27 +438,38 @@ fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
         .set(LE, chained_fixup_table.file_size as u32);
 }
 
-fn write_chained_fixup_table<A: Arch<Platform = MachO>>(out: &mut [u8]) -> Result {
-    // TODO: check length
+fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
+    header: &mut ChainedFixupsHeader,
+    starts_in_image: &mut [U32<Endianness>],
+) -> Result {
+    let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
+    if starts_in_image.len() != DEFAULT_SEGMENT_COUNT + 1 {
+        bail!(
+            "Invalid chained fixups starts allocation. Expected {} entries, got {}",
+            DEFAULT_SEGMENT_COUNT + 1,
+            starts_in_image.len()
+        );
+    }
 
-    out.fill(0);
-    put_u32(out, 0x00, 0);
-    put_u32(out, 0x04, 32);
-    put_u32(out, 0x08, 48);
-    put_u32(out, 0x0c, 48);
-    put_u32(out, 0x10, 0);
-    put_u32(out, 0x14, DYLD_CHAINED_IMPORT);
-    put_u32(out, 0x18, 0);
-    put_u32(out, 0x1c, 0);
+    header.fixups_version.set(LE, 0);
+    header
+        .starts_offset
+        .set(LE, size_of::<ChainedFixupsHeader>() as u32);
+    header
+        .imports_offset
+        .set(LE, (size_of::<ChainedFixupsHeader>() + starts_len) as u32);
+    header
+        .symbols_offset
+        .set(LE, (size_of::<ChainedFixupsHeader>() + starts_len) as u32);
+    header.imports_count.set(LE, 0);
+    header.imports_format.set(
+        LE,
+        DyldChainedFixupsImporstFormat::DYLD_CHAINED_IMPORT as u32,
+    );
+    header.symbols_format.set(LE, 0);
 
-    put_u32(out, 0x20, 3);
-    put_u32(out, 0x24, 0);
-    put_u32(out, 0x28, 0);
-    put_u32(out, 0x2c, 0);
+    starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
+    starts_in_image[1..].fill(U32::new(LE, 0));
 
     Ok(())
-}
-
-fn put_u32(out: &mut [u8], offset: usize, value: u32) {
-    out[offset..offset + size_of::<u32>()].copy_from_slice(&value.to_le_bytes());
 }

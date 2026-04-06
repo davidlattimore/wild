@@ -79,31 +79,37 @@ pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
 // TODO: move to object crate
 
 // values for dyld_chained_fixups_header.imports_format
-#[repr(C)]
-enum DyldChainedFixupsImporstFormat {
+#[allow(non_camel_case_types)]
+#[repr(u32)]
+pub(crate) enum DyldChainedFixupsImporstFormat {
     DYLD_CHAINED_IMPORT = 1,
     DYLD_CHAINED_IMPORT_ADDEND = 2,
     DYLD_CHAINED_IMPORT_ADDEND64 = 3,
 }
 
 // header of the LC_DYLD_CHAINED_FIXUPS payload
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub(crate) struct DyldChainedFixupsHeader<E: Endian> {
     // 0
-    fixups_version: U32<E>,
+    pub(crate) fixups_version: U32<E>,
     // offset of dyld_chained_starts_in_image in chain_data
-    starts_offset: U32<E>,
+    pub(crate) starts_offset: U32<E>,
     // offset of imports table in chain_data
-    imports_offset: U32<E>,
+    pub(crate) imports_offset: U32<E>,
     // offset of symbol strings in chain_data
-    symbols_offset: U32<E>,
+    pub(crate) symbols_offset: U32<E>,
     // number of imported symbol names
-    imports_count: U32<E>,
+    pub(crate) imports_count: U32<E>,
     // DYLD_CHAINED_IMPORT*
-    imports_format: U32<E>,
+    pub(crate) imports_format: U32<E>,
     // 0 => uncompressed, 1 => zlib compressed
-    symbols_format: U32<E>,
+    pub(crate) symbols_format: U32<E>,
 }
+
+// Safety:
+// `DyldChainedFixupsHeader` is repr(C), contains only `U32<E>` fields, and has no padding.
+unsafe impl<E: Endian + 'static> object::Pod for DyldChainedFixupsHeader<E> {}
 
 // This struct is embedded in LC_DYLD_CHAINED_FIXUPS payload
 // struct dyld_chained_starts_in_image
