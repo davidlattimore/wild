@@ -31,6 +31,7 @@ dhat = { workspace = true, optional = true }
 ar = { workspace = true }
 itertools = { workspace = true }
 foldhash = { workspace = true }
+hex = { workspace = true }
 linker-diff = { path = "../linker-diff" }
 libloading = { workspace = true }
 libtest-mimic =  { workspace = true }

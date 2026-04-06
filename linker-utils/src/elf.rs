@@ -128,6 +128,7 @@ elf_constant_newtype!(
     SYMTAB,
     STRTAB,
     RELA,
+    RELR,
     HASH,
     DYNAMIC,
     NOTE,
@@ -754,6 +755,8 @@ pub mod secnames {
     pub const DYNSTR_SECTION_NAME: &[u8] = DYNSTR_SECTION_NAME_STR.as_bytes();
     pub const RELA_DYN_SECTION_NAME_STR: &str = ".rela.dyn";
     pub const RELA_DYN_SECTION_NAME: &[u8] = RELA_DYN_SECTION_NAME_STR.as_bytes();
+    pub const RELR_DYN_SECTION_NAME_STR: &str = ".relr.dyn";
+    pub const RELR_DYN_SECTION_NAME: &[u8] = RELR_DYN_SECTION_NAME_STR.as_bytes();
     pub const GCC_EXCEPT_TABLE_SECTION_NAME_STR: &str = ".gcc_except_table";
     pub const GCC_EXCEPT_TABLE_SECTION_NAME: &[u8] = GCC_EXCEPT_TABLE_SECTION_NAME_STR.as_bytes();
     pub const INTERP_SECTION_NAME_STR: &str = ".interp";
@@ -802,6 +805,8 @@ pub mod secnames {
     pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
     pub const RELRO_PADDING_SECTION_NAME_STR: &str = ".relro_padding";
     pub const RELRO_PADDING_SECTION_NAME: &[u8] = RELRO_PADDING_SECTION_NAME_STR.as_bytes();
+    pub const SYMTAB_SHNDX_SECTION_NAME_STR: &str = ".symtab_shndx";
+    pub const SYMTAB_SHNDX_SECTION_NAME: &[u8] = SYMTAB_SHNDX_SECTION_NAME_STR.as_bytes();
 
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }

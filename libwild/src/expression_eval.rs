@@ -11,6 +11,7 @@ use crate::error::Warning;
 use crate::grouping::Group;
 use crate::layout::OutputRecordLayout;
 use crate::linker_script::Expression;
+use crate::linker_script::MemoryRegion;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
@@ -44,6 +45,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
                     section_layouts,
                     output_sections,
                     warning_callback,
+                    &parsed.memory_regions,
                 )
                 .with_context(|| format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line))?;
 
@@ -62,10 +64,17 @@ fn evaluate_expression<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     warning_callback: &WarningCallback,
+    memory_regions: &[MemoryRegion<'data>],
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
-            evaluate_expression($e, section_layouts, output_sections, warning_callback)
+            evaluate_expression(
+                $e,
+                section_layouts,
+                output_sections,
+                warning_callback,
+                memory_regions,
+            )
         };
     }
 
@@ -139,7 +148,31 @@ fn evaluate_expression<'data, P: Platform>(
         Expression::LogicalNot(e) => Ok(u64::from(eval!(e)? == 0)),
         Expression::BitwiseNot(e) => Ok(!eval!(e)?),
         Expression::Negate(e) => Ok(eval!(e)?.wrapping_neg()),
-        Expression::Origin(_) | Expression::Length(_) => todo!(),
+
+        Expression::Origin(name) => {
+            let region = memory_regions
+                .iter()
+                .find(|r| r.name == *name)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "ORIGIN: memory region '{}' not found",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+            eval!(&region.origin)
+        }
+        Expression::Length(name) => {
+            let region = memory_regions
+                .iter()
+                .find(|r| r.name == *name)
+                .ok_or_else(|| {
+                    crate::error!(
+                        "LENGTH: memory region '{}' not found",
+                        String::from_utf8_lossy(name)
+                    )
+                })?;
+            eval!(&region.length)
+        }
     }
 }
 
@@ -208,7 +241,7 @@ mod tests {
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
         let (layouts, sections) = dummy_context();
-        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {})
+        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &[])
     }
 
     #[test]
@@ -527,6 +560,7 @@ mod tests {
                 symbol_defs: Vec::new(),
                 assertions,
                 file_bytes: b"",
+                memory_regions: Vec::new(),
             },
             symbol_id_range: SymbolIdRange::empty(),
             file_id: FileId::new(0, 0),
@@ -558,5 +592,36 @@ mod tests {
         }]);
         let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).unwrap_err();
         assert!(err.to_string().contains("intentional failure"));
+    }
+
+    #[test]
+    fn test_memory_functions_evaluation() {
+        let (layouts, sections) = dummy_context();
+        let regions = [
+            MemoryRegion {
+                name: b"rom",
+                origin: Expression::Number(0x08000000),
+                length: Expression::Number(0x100000),
+            },
+            MemoryRegion {
+                name: b"ram",
+                origin: Expression::Number(0x20000000),
+                length: Expression::Number(0x40000),
+            },
+        ];
+        let eval = |expr: &Expression| {
+            evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &regions)
+        };
+        assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);
+        assert_eq!(eval(&Expression::Length(b"rom")).unwrap(), 0x100000);
+        assert_eq!(eval(&Expression::Origin(b"ram")).unwrap(), 0x20000000);
+        assert_eq!(eval(&Expression::Length(b"ram")).unwrap(), 0x40000);
+        // end of rom = origin + length
+        let end = Expression::Add(
+            Box::new(Expression::Origin(b"rom")),
+            Box::new(Expression::Length(b"rom")),
+        );
+        assert_eq!(eval(&end).unwrap(), 0x08100000);
+        assert!(eval(&Expression::Origin(b"flash")).is_err());
     }
 }

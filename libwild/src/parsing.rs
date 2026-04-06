@@ -54,6 +54,7 @@ pub(crate) struct ProcessedLinkerScript<'data> {
     /// Raw bytes of the linker script file. Used to compute line numbers from
     /// `AssertCommand::remainder` when reporting errors.
     pub(crate) file_bytes: &'data [u8],
+    pub(crate) memory_regions: Vec<crate::linker_script::MemoryRegion<'data>>,
 }
 
 #[derive(Debug)]
@@ -100,6 +101,9 @@ pub(crate) enum SymbolPlacement<'data> {
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
+
+    /// A dynamic symbol that will be loaded even if unused.
+    ImportDynamicSymbol,
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".

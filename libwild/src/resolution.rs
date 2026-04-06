@@ -1092,7 +1092,7 @@ fn resolve_sections_for_object<'data, P: Platform>(
 #[inline(always)]
 fn resolve_section<'data, P: Platform>(
     input_section_index: SectionIndex,
-    input_section: &P::SectionHeader,
+    input_section: &'data P::SectionHeader,
     obj: &mut ResolvedObject<'data, P>,
     args: &P::Args,
     allocator: &bumpalo_herd::Member<'data>,

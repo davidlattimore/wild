@@ -56,7 +56,8 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
-// Both ld and lld complain about a duplicate eh_frame info (loongarch64).
+// riscv64: lld-linked binary crashes with SIGSEGV under QEMU.
+// loongarch64: wild produces output that differs from both ld and lld (#1702).
 //#SkipArch: loongarch64,riscv64
 
 //#Config:clang-initial-exec:shared
@@ -108,6 +109,34 @@
 //#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
+
+//#Config:gcc-relr:shared
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
+//#CompSoArgs:-g -fPIC
+//#LinkerDriver:gcc
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,-z,pack-relative-relocs
+// Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol
+// dependency.
+//#SkipLinker:ld
+//#ExpectDynSym:GLIBC_ABI_DT_RELR
+//#RequiresGlibc:true
+//#Contains:.relr.dyn
+
+//#Config:gcc-pack-dyn-relocs-relr:shared
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
+//#CompSoArgs:-g -fPIC
+//#LinkerDriver:gcc
+//#LinkArgs:-pie -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now,--pack-dyn-relocs=relr
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#NoSym:GLIBC_ABI_DT_RELR
+//#Contains:.relr.dyn
+//#DiffIgnore:section.gnu.version_r.alignment
+//#DiffIgnore:section.got.plt.entsize
+//#DiffIgnore:rel.missing-opt.*
+// Glibc refuses to run binaries with RELR unless `GLIBC_ABI_DT_RELR` version is
+// imported.
+//#RunEnabled:false
 
 #include <pthread.h>
 #include <stdlib.h>

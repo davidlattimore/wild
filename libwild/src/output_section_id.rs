@@ -88,16 +88,27 @@ pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
     part_id::NOTE_GNU_PROPERTY.output_section_id();
 pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
     part_id::NOTE_GNU_BUILD_ID.output_section_id();
-
 pub(crate) const SYMTAB_LOCAL: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
-#[allow(dead_code)]
 pub(crate) const SYMTAB_GLOBAL: OutputSectionId = part_id::SYMTAB_GLOBAL.output_section_id();
 pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
     part_id::RELA_DYN_RELATIVE.output_section_id();
 pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.output_section_id();
+pub(crate) const RELR_DYN: OutputSectionId = part_id::RELR_DYN.output_section_id();
 pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
 pub(crate) const RELRO_PADDING: OutputSectionId = part_id::RELRO_PADDING.output_section_id();
+pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
+    part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
+pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
+    part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
+// Mach-O specific sections
+pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
+pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
+pub(crate) const DATA_SEGMENT: OutputSectionId = part_id::DATA_SEGMENT.output_section_id();
+pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
+pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
+    part_id::LINK_EDIT_SEGMENT.output_section_id();
 
+// Regular sections copied from the input objects.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
 pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
 pub(crate) const FINI_ARRAY: OutputSectionId = OutputSectionId::regular(2);
@@ -113,8 +124,10 @@ pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
 pub(crate) const NOTE_ABI_TAG: OutputSectionId = OutputSectionId::regular(13);
 pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
+// Mach-O specific sections
+pub(crate) const CSTRING: OutputSectionId = OutputSectionId::regular(15);
 
-pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 15;
+pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 16;
 
 #[derive(Debug)]
 pub(crate) struct OutputSections<'data, P: Platform> {
@@ -126,7 +139,7 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     // sections have content, which we don't know until half way through the layout phase.
     /// Mapping from internal section IDs to output section indexes. None, if the section isn't
     /// being output.
-    pub(crate) output_section_indexes: Vec<Option<u16>>,
+    pub(crate) output_section_indexes: Vec<Option<u32>>,
 
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
 
@@ -411,7 +424,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns whether we should include the specified section in a program segment with the
     /// supplied properties.
-    fn should_include_in_segment(
+    pub(crate) fn should_include_in_segment(
         &self,
         section_id: OutputSectionId,
         segment_def: P::ProgramSegmentDef,
@@ -710,7 +723,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
 
     /// Returns the output index of the built-in-section `id` or None if the section isn't being
     /// output.
-    pub(crate) fn output_index_of_section(&self, id: OutputSectionId) -> Option<u16> {
+    pub(crate) fn output_index_of_section(&self, id: OutputSectionId) -> Option<u32> {
         self.output_section_indexes
             .get(id.as_usize())
             .copied()
@@ -820,10 +833,6 @@ impl<'a> IntoIterator for &'a OutputOrder {
 }
 
 impl OutputOrder {
-    pub(crate) fn len(&self) -> usize {
-        self.events.len()
-    }
-
     pub(crate) fn display<'a, 'data, P: Platform>(
         &'a self,
         sections: &'a OutputSections<'data, P>,

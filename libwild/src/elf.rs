@@ -14,6 +14,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::file_writer::copy_section_data;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
@@ -151,6 +152,7 @@ pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
 pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
+pub(crate) type Relr = object::elf::Relr64<LittleEndian>;
 pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 pub(crate) type Verdef = object::elf::Verdef<LittleEndian>;
 pub(crate) type Verdaux = object::elf::Verdaux<LittleEndian>;
@@ -287,8 +289,13 @@ impl<'data> RelocationSequence<'data> for Vec<Crel> {
 // its contents.
 const _: () = assert!(!core::mem::needs_drop::<File>());
 
-/// Threshold size for using parallel copy for section data copying.
-const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+/// Returns the name to use when writing a symbol into .symtab's string table.
+/// Unlike .dynsym (which encodes version info separately in .gnu.version), .symtab has no
+/// .gnu.version section, so version suffixes must be embedded in the name itself
+/// (e.g. `foo@VER_1.0`, `bar@@VER_1.0`, `remain_unversioned@`), matching GNU ld behaviour.
+pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
+    raw_name
+}
 
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
@@ -325,6 +332,7 @@ impl platform::Platform for Elf {
     type LayoutResourcesExt<'data> = LayoutResourcesExt<'data>;
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
+    type SymtabShndxEntry = SymtabShndxEntry;
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -549,7 +557,7 @@ impl platform::Platform for Elf {
     ) -> Result<Self::DynamicLayoutExt<'data>> {
         let mut is_last_verneed = false;
 
-        if let Some(v) = state.format_specific_state.verneed_info.as_ref()
+        if let Some(v) = &state.format_specific_state.verneed_info
             && v.version_count > 0
         {
             memory_offsets.increment(
@@ -764,6 +772,7 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         mem_sizes: &OutputSectionPartMap<u64>,
         resolution: &layout::Resolution<Elf>,
+        args: &ElfArgs,
     ) -> Result {
         crate::elf_writer::verify_resolution_allocation(
             output_sections,
@@ -771,6 +780,7 @@ impl platform::Platform for Elf {
             output_kind,
             mem_sizes,
             resolution,
+            args,
         )
     }
 
@@ -908,6 +918,15 @@ impl platform::Platform for Elf {
             elf_symbol_type: stt::TLS,
             is_hidden: false,
         });
+
+        // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
+        // defined.
+        if args.z_pack_relative_relocs {
+            symbols.add_symbol(InternalSymDefInfo::new(
+                SymbolPlacement::ImportDynamicSymbol,
+                b"GLIBC_ABI_DT_RELR",
+            ));
+        }
     }
 
     fn built_in_section_infos<'data>()
@@ -1369,6 +1388,7 @@ impl platform::Platform for Elf {
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
+        args: &Self::Args,
     ) {
         let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
 
@@ -1382,14 +1402,22 @@ impl platform::Platform for Elf {
             } else if flags.is_interposable() && has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                if args.is_relr_enabled() {
+                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             }
         }
 
         if flags.needs_ifunc_got_for_address() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
             if output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                if args.is_relr_enabled() {
+                    mem_sizes.increment(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             }
         }
 
@@ -1423,7 +1451,7 @@ impl platform::Platform for Elf {
         common: &mut CommonGroupState<'data, Elf>,
         symbol_db: &SymbolDb<'data, Elf>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    ) {
+    ) -> Result {
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
@@ -1450,23 +1478,22 @@ impl platform::Platform for Elf {
                 } else {
                     num_globals += 1;
                 }
-                let name = RawSymbolName::parse(info.name).name();
-                strings_size += name.len() + 1;
+                strings_size += symtab_name_for_strtab(info.name).len() + 1;
             } else if symbol_db.args.should_output_partial_object
                 && sym.is_undefined()
                 && symbol_db.is_canonical(symbol_id)
                 && let Ok(name) = state.object.symbol_name(sym)
                 && !name.is_empty()
             {
-                let name = RawSymbolName::parse(name).name();
                 num_globals += 1;
-                strings_size += name.len() + 1;
+                strings_size += symtab_name_for_strtab(name).len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
         common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
+        Ok(())
     }
 
     fn allocate_internal_symbol(
@@ -1757,6 +1784,7 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::GNU_VERSION_D);
         builder.add_section(output_section_id::GNU_VERSION_R);
         builder.add_section(output_section_id::RELA_DYN_RELATIVE);
+        builder.add_section(output_section_id::RELR_DYN);
         builder.add_section(output_section_id::RELA_PLT);
         builder.add_section(output_section_id::RODATA);
         builder.add_section(output_section_id::EH_FRAME_HDR);
@@ -1792,6 +1820,7 @@ impl platform::Platform for Elf {
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SHSTRTAB);
         builder.add_section(output_section_id::SYMTAB_LOCAL);
+        builder.add_section(output_section_id::SYMTAB_SHNDX_LOCAL);
         builder.add_section(output_section_id::STRTAB);
 
         builder.build()
@@ -1847,6 +1876,7 @@ impl platform::Platform for Elf {
             secnames::STRTAB_SECTION_NAME
             | secnames::SYMTAB_SECTION_NAME
             | secnames::SHSTRTAB_SECTION_NAME
+            | secnames::SYMTAB_SHNDX_SECTION_NAME
             | secnames::GROUP_SECTION_NAME => {
                 return SectionRuleOutcome::Discard;
             }
@@ -1861,6 +1891,41 @@ impl platform::Platform for Elf {
         }
 
         SectionRuleOutcome::Custom
+    }
+
+    fn start_memory_address(output_kind: OutputKind) -> u64 {
+        if output_kind.is_relocatable() {
+            0
+        } else {
+            crate::elf::NON_PIE_START_MEM_ADDRESS
+        }
+    }
+
+    fn requires_symtab_shndx(num_sections: usize) -> bool {
+        num_sections >= object::elf::SHN_LORESERVE as usize
+    }
+
+    fn compute_symtab_shndx_section_size(
+        group_sizes: &mut OutputSectionPartMap<u64>,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+    ) {
+        let symtab_entry_size = size_of::<Self::SymtabEntry>() as u64;
+        let symtab_shndx_entry_size = size_of::<Self::SymtabShndxEntry>() as u64;
+        let locals = group_sizes.get(part_id::SYMTAB_LOCAL) / symtab_entry_size;
+        let globals = group_sizes.get(part_id::SYMTAB_GLOBAL) / symtab_entry_size;
+
+        let mut extra_sizes = OutputSectionPartMap::with_size(group_sizes.num_parts());
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_LOCAL,
+            locals * symtab_shndx_entry_size,
+        );
+        extra_sizes.increment(
+            part_id::SYMTAB_SHNDX_GLOBAL,
+            globals * symtab_shndx_entry_size,
+        );
+
+        group_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
     }
 }
 
@@ -1946,7 +2011,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, section: &'data SectionHeader) -> Result<&'data [u8]> {
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
@@ -1997,15 +2062,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
             out.fill(0);
-        } else if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
-            let threads = rayon::current_num_threads();
-            let chunk_size = (data.len() / threads).max(1);
-
-            data.par_chunks(chunk_size)
-                .zip(out.par_chunks_mut(chunk_size))
-                .for_each(|(src, dst)| dst.copy_from_slice(src));
         } else {
-            out.copy_from_slice(data);
+            copy_section_data(data, out);
         }
         Ok(())
     }
@@ -2890,9 +2948,11 @@ pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 // TODO: Right now, both x86_64 and AArch64 have 16 byte long entries, but
 // the size should be generic over A: Arch.
 pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
-pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
+pub(crate) const RELA_ENTRY_SIZE: u64 = size_of::<Rela>() as u64;
+pub(crate) const RELR_ENTRY_SIZE: u64 = size_of::<Relr>() as u64;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
+pub(crate) const SYMTAB_SHNDX_ENTRY_SIZE: u64 = size_of::<SymtabShndxEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
 
 const _ASSERTS: () = {
@@ -4445,6 +4505,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Secondary(output_section_id::RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::RELR_DYN.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RELR_DYN_SECTION_NAME)),
+        ty: sht::RELR,
+        section_flags: shf::ALLOC,
+        element_size: RELR_ENTRY_SIZE,
+        min_alignment: alignment::RELR_ENTRY,
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::RISCV_ATTRIBUTES.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
         ty: sht::RISCV_ATTRIBUTES,
@@ -4456,6 +4524,18 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         is_relro: true,
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SYMTAB_SHNDX_LOCAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SYMTAB_SHNDX_SECTION_NAME)),
+        ty: sht::SYMTAB_SHNDX,
+        element_size: SYMTAB_SHNDX_ENTRY_SIZE,
+        min_alignment: alignment::SYMTAB_SHNDX_ENTRY,
+        link: &[output_section_id::SYMTAB_LOCAL],
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
         ..DEFAULT_DEFS
     };
     // Start of regular sections
@@ -4705,7 +4785,12 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             && flags.is_address()
         {
             if section_is_writable {
-                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                // Odd offsets mean bitmaps in RELR, so we need to fall back to RELA for them.
+                if resources.symbol_db.args.is_relr_enabled() && rel.offset().is_multiple_of(2) {
+                    common.allocate(part_id::RELR_DYN, elf::RELR_ENTRY_SIZE);
+                } else {
+                    common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+                }
             } else if !is_debug_section {
                 bail!(
                     "Cannot apply relocation {} to read-only section. \
@@ -4785,6 +4870,11 @@ pub(crate) struct ResolutionExt {
     /// offset within module).
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SymtabShndxEntry {
+    pub(crate) _shndx: u32,
 }
 
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
@@ -4955,6 +5045,10 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(
         secnames::RISCV_ATTRIBUTES_SECTION_NAME,
         SectionRuleOutcome::RiscVAttribute,
+    ),
+    SectionRule::exact(
+        secnames::SYMTAB_SHNDX_SECTION_NAME,
+        SectionRuleOutcome::Discard,
     ),
     SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];

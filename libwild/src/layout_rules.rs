@@ -134,6 +134,7 @@ impl<'data> LayoutRulesBuilder<'data> {
     ) -> Result<ProcessedLinkerScript<'data>> {
         let mut symbol_defs = Vec::new();
         let mut assertions = Vec::new();
+        let mut memory_regions = Vec::new();
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
@@ -245,6 +246,8 @@ impl<'data> LayoutRulesBuilder<'data> {
                 }
             } else if let linker_script::Command::Assert(assert_cmd) = cmd {
                 assertions.push(assert_cmd.clone());
+            } else if let linker_script::Command::Memory(regions) = cmd {
+                memory_regions = regions.clone();
             }
         }
 
@@ -256,6 +259,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 entry: None,
             },
             file_bytes: input.script_bytes,
+            memory_regions,
         })
     }
 

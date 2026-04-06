@@ -67,6 +67,8 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tidy_tests;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod value_flags;
@@ -104,10 +106,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(mut args: Args) -> error::Result {
-    // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
-    // initialise the timing module before the worker threads are started, otherwise the threads
-    // won't contribute to counters such as --time=cycles,instructions etc.
-    setup_tracing(&args)?;
     let thread_pool = args.common_mut().activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args, &thread_pool)?;
@@ -265,7 +263,8 @@ impl Linker {
 
         let mut output = file_writer::Output::new(args, output_kind);
 
-        let mut output_sections = OutputSections::with_base_address(args.base_address(output_kind));
+        let mut output_sections =
+            OutputSections::with_base_address(P::start_memory_address(output_kind));
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 

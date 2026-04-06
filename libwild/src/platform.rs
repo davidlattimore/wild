@@ -192,6 +192,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     type ArchIdentifier: Send + Sync + 'static;
     type Args: Args;
     type ResolutionExt: Default + std::fmt::Debug + Copy + Send + Sync + 'static;
+    type SymtabShndxEntry: std::fmt::Debug + Default + Send + Sync + 'static;
 
     /// An index into the local object's symbol versions.
     type SymbolVersionIndex: Send + Sync + Copy;
@@ -377,6 +378,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         _output_kind: OutputKind,
         _mem_sizes: &OutputSectionPartMap<u64>,
         _resolution: &layout::Resolution<Self>,
+        _args: &Self::Args,
     ) -> Result {
         Ok(())
     }
@@ -529,6 +531,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         flags: ValueFlags,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         output_kind: OutputKind,
+        args: &Self::Args,
     );
 
     fn allocate_object_symtab_space<'data>(
@@ -536,7 +539,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         common: &mut CommonGroupState<'data, Self>,
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
-    );
+    ) -> Result;
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
@@ -621,6 +624,19 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         _section: &Self::SectionHeader,
     ) -> SectionRuleOutcome {
         SectionRuleOutcome::Custom
+    }
+
+    /// Return a starting address in memory.
+    fn start_memory_address(output_kind: OutputKind) -> u64;
+
+    fn requires_symtab_shndx(_num_sections: usize) -> bool {
+        false
+    }
+
+    fn compute_symtab_shndx_section_size(
+        _group_sizes: &mut OutputSectionPartMap<u64>,
+        _total_sizes: &mut OutputSectionPartMap<u64>,
+    ) {
     }
 }
 
@@ -733,7 +749,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn section_name(
         &self,
-        section_header: &<Self::Platform as Platform>::SectionHeader,
+        section_header: &'data <Self::Platform as Platform>::SectionHeader,
     ) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.
@@ -1174,12 +1190,6 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     }
 
     fn loadable_segment_alignment(&self) -> Alignment;
-
-    /// The base VM address for the output binary. Sections start at this address.
-    /// For ELF: 0x400000. For Mach-O: 0x100000000 (PAGEZERO size).
-    fn base_address(&self, output_kind: crate::output_kind::OutputKind) -> u64 {
-        output_kind.base_address()
-    }
 
     fn should_merge_sections(&self) -> bool;
 

@@ -79,14 +79,6 @@ impl platform::Args for MachOArgs {
         crate::alignment::Alignment { exponent: 14 } // 16KB pages
     }
 
-    fn base_address(&self, _output_kind: crate::output_kind::OutputKind) -> u64 {
-        if self.is_dylib {
-            0 // dylibs have no PAGEZERO
-        } else {
-            0x1_0000_0000 // PAGEZERO size
-        }
-    }
-
     fn should_merge_sections(&self) -> bool { false }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
@@ -135,6 +127,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             if let Some(val) = input.next() {
                 args.output = Arc::from(Path::new(val.as_ref()));
             }
+            return Ok(());
+        }
+        "--time" => {
+            args.common.time_phase_options = Some(Vec::new());
             return Ok(());
         }
         "-arch" => { input.next(); return Ok(()); } // consume and ignore
@@ -191,6 +187,12 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         _ => {}
+    }
+
+    // Handle --time=<value> form
+    if let Some(val) = arg.strip_prefix("--time=") {
+        args.common.time_phase_options = Some(super::parse_time_phase_options(val)?);
+        return Ok(());
     }
 
     // -L<path> (library search path)

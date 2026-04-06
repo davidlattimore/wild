@@ -82,14 +82,6 @@ impl OutputKind {
         )
     }
 
-    pub(crate) fn base_address(self) -> u64 {
-        if self.is_relocatable() {
-            0
-        } else {
-            crate::elf::NON_PIE_START_MEM_ADDRESS
-        }
-    }
-
     pub(crate) fn should_output_symbol_versions(self) -> bool {
         matches!(
             self,

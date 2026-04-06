@@ -103,6 +103,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::EH_FRAME_HDR,
         part_id::RELA_DYN_GENERAL,
         part_id::RELA_DYN_RELATIVE,
+        part_id::RELR_DYN,
         part_id::GNU_VERSION,
         part_id::GNU_HASH,
         part_id::DYNAMIC,
@@ -111,6 +112,11 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::PROGRAM_HEADERS,
         part_id::SECTION_HEADERS,
         part_id::SHSTRTAB,
+        part_id::TEXT_SEGMENT,
+        part_id::DATA_SEGMENT,
+        part_id::PAGEZERO_SEGMENT,
+        part_id::LINK_EDIT_SEGMENT,
+        part_id::ENTRY_POINT,
     ];
 
     for part_id in IGNORED {

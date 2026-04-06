@@ -9,5 +9,6 @@
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:section.gnu.version_r.alignment
 //#DiffIgnore:section.rodata
+//#DiffIgnore:eh_frame
 
 int main() { return 42; }

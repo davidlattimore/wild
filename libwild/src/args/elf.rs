@@ -111,8 +111,10 @@ pub struct ElfArgs {
     pub(crate) z_interpose: bool,
     pub(crate) z_isa: Option<NonZeroU32>,
     pub(crate) z_stack_size: Option<NonZeroU64>,
+    pub(crate) z_pack_relative_relocs: bool,
     pub(crate) max_page_size: Option<Alignment>,
     pub(crate) trace: bool,
+    pack_dyn_relocs: PackDynRelocs,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -149,6 +151,12 @@ pub(crate) enum ExcludeLibs {
     None,
     All,
     Some(HashSet<Box<str>>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackDynRelocs {
+    None,
+    Relr,
 }
 
 impl ExcludeLibs {
@@ -283,6 +291,7 @@ impl Default for ElfArgs {
             relax: true,
             hash_style: HashStyle::Both,
             trace: false,
+            pack_dyn_relocs: PackDynRelocs::None,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -290,6 +299,7 @@ impl Default for ElfArgs {
             z_interpose: false,
             z_stack_size: None,
             z_isa: None,
+            z_pack_relative_relocs: false,
             max_page_size: None,
             auxiliary: Vec::new(),
             rpath_set: Default::default(),
@@ -329,6 +339,10 @@ impl ElfArgs {
             common: CommonArgs::from_env()?,
             ..Default::default()
         })
+    }
+
+    pub(crate) fn is_relr_enabled(&self) -> bool {
+        self.z_pack_relative_relocs || self.pack_dyn_relocs == PackDynRelocs::Relr
     }
 }
 
@@ -598,6 +612,22 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             },
         )
         .sub_option(
+            "pack-relative-relocs",
+            "Pack relative relocations into SHT_RELR",
+            |args, _| {
+                args.z_pack_relative_relocs = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "nopack-relative-relocs",
+            "Do not pack relative relocations into SHT_RELR (default)",
+            |args, _| {
+                args.z_pack_relative_relocs = false;
+                Ok(())
+            },
+        )
+        .sub_option(
             "x86-64-baseline",
             "Mark x86-64-baseline ISA as needed",
             |args, _| {
@@ -777,8 +807,12 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .long("pack-dyn-relocs")
         .help("Specify dynamic relocation packing format")
         .execute(|args, _modifier_stack, value| {
-            if value != "none" {
-                args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
+            match value {
+                "none" => args.pack_dyn_relocs = PackDynRelocs::None,
+                "relr" => args.pack_dyn_relocs = PackDynRelocs::Relr,
+                value => {
+                    args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
+                }
             }
             Ok(())
         });
