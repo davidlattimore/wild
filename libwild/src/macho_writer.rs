@@ -47,6 +47,7 @@ use object::BigEndian;
 use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
+use object::macho;
 use object::macho::CPU_TYPE_ARM64;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
@@ -159,7 +160,10 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     header.filetype = U32::new(LE, MH_EXECUTE);
     header.ncmds = U32::new(LE, load_commands_info.segment_sections.len() as u32);
     header.sizeofcmds = U32::new(LE, load_commands_info.segment_size.file_size as u32);
-    header.flags = U32::new(LE, 0);
+    header.flags = U32::new(
+        LE,
+        macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL,
+    );
     header.reserved = U32::new(LE, 0);
 }
 
