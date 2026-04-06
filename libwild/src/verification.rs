@@ -117,6 +117,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::PAGEZERO_SEGMENT,
         part_id::LINK_EDIT_SEGMENT,
         part_id::ENTRY_POINT,
+        part_id::DYLINKER,
     ];
 
     for part_id in IGNORED {

@@ -18,6 +18,8 @@ use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Section;
+use crate::macho::DYLINKER_PATH;
+use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
 use crate::macho::MACHO_START_MEM_ADDRESS;
@@ -46,6 +48,7 @@ use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
@@ -131,6 +134,11 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
             .0;
     write_entry_point_command::<A>(layout, entry_point_command);
+
+    let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
+        from_bytes_mut(buffers.get_mut(part_id::DYLINKER))
+            .map_err(|_| error!("Invalid DYLINKER command allocation"))?;
+    write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
     // TODO: remove
     buffers.get_mut(part_id::STRTAB).write_all(b"x")?;
@@ -353,4 +361,25 @@ fn write_entry_point_command<A: Arch<Platform = MachO>>(
         .set(LE, size_of::<EntryPointCommand>() as u32);
     command.entryoff.set(LE, segment_size.file_offset as u64);
     command.stacksize.set(LE, 0);
+}
+
+fn write_dylinker_command<A: Arch<Platform = MachO>>(
+    command: &mut DylinkerCommand,
+    path_buffer: &mut [u8],
+) {
+    command.cmd.set(LE, LC_LOAD_DYLINKER);
+    command.cmdsize.set(
+        LE,
+        (size_of::<DylinkerCommand>() + DYLINKER_PATH.len().next_multiple_of(4)) as u32,
+    );
+    command
+        .name
+        .offset
+        .set(LE, size_of::<DylinkerCommand>() as u32);
+
+    let path_buffer_len = DYLINKER_PATH.len() + 1;
+
+    path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH.as_bytes());
+    // The string size is always a multiple of 4B.
+    path_buffer[DYLINKER_PATH.len()..].zero();
 }

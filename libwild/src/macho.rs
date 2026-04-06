@@ -51,7 +51,10 @@ const LE: Endianness = Endianness::Little;
 
 /// Mach-O uses a zero page for all 32bit addresses and thus we begin the memory
 /// offsets right after that (1GiB).
-pub const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
+pub(crate) const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
+
+/// A path to the default dynamic linker.
+pub(crate) const DYLINKER_PATH: &str = "/usr/lib/dyld";
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -63,6 +66,7 @@ pub(crate) type FileHeader = object::macho::MachHeader64<Endianness>;
 pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
 pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
+pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -670,7 +674,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::TEXT_SEGMENT
             | output_section_id::DATA_SEGMENT
             | output_section_id::LINK_EDIT_SEGMENT
-            | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
+            | output_section_id::ENTRY_POINT
+            | output_section_id::DYLINKER => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
             output_section_id::STRTAB => SegmentType::LinkeditSections,
@@ -1112,6 +1117,10 @@ impl platform::Platform for MachO {
                     )) as u64,
         );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
+        sizes.increment(
+            part_id::DYLINKER,
+            (size_of::<DylinkerCommand>() + (DYLINKER_PATH.len()).next_multiple_of(4)) as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1220,6 +1229,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::DATA_SEGMENT);
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
+        builder.add_section(output_section_id::DYLINKER);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
@@ -1287,6 +1297,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_MAIN")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYLINKER.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
