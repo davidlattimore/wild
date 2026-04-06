@@ -609,8 +609,10 @@ pub(crate) enum SegmentType {
     TextSections,
     DataSections,
     DataConstSections,
+    LinkeditSections,
+    // The other ELF-specific (or unused) parts/sections will be collected here.
     #[default]
-    Misc,
+    Unused,
 }
 
 impl platform::SegmentType for SegmentType {}
@@ -671,7 +673,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
-            _ => SegmentType::Misc,
+            output_section_id::STRTAB => SegmentType::LinkeditSections,
+            _ => SegmentType::Unused,
         };
 
         match (self.segment_type, mapped_segment) {
@@ -1101,7 +1104,12 @@ impl platform::Platform for MachO {
         );
         sizes.increment(
             part_id::LINK_EDIT_SEGMENT,
-            size_of::<SegmentCommand>() as u64,
+            (size_of::<SegmentCommand>()
+                + size_of::<SectionEntry>()
+                    * count_sections_for_segment_type(
+                        output_sections,
+                        SegmentType::LinkeditSections,
+                    )) as u64,
         );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
     }
@@ -1158,7 +1166,9 @@ impl platform::Platform for MachO {
         common: &mut crate::layout::CommonGroupState<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
-        // TODO
+        // Mach-O string tables start with an empty string at index 0.
+        // TODO: Just a filler for now.
+        common.allocate(part_id::STRTAB, 1);
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1208,13 +1218,14 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::PAGEZERO_SEGMENT);
         builder.add_section(output_section_id::TEXT_SEGMENT);
         builder.add_section(output_section_id::DATA_SEGMENT);
-        builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
+        builder.add_section(output_section_id::ENTRY_POINT);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
+        builder.add_section(output_section_id::STRTAB);
 
         builder.build()
     }
@@ -1231,7 +1242,10 @@ impl platform::Platform for MachO {
     ) {
         if matches!(
             segment_def.segment_type,
-            SegmentType::Text | SegmentType::DataSections | SegmentType::DataConstSections
+            SegmentType::Text
+                | SegmentType::DataSections
+                | SegmentType::DataConstSections
+                | SegmentType::LinkeditSections
         ) {
             *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
             *mem_offset = segment_alignment.align_up(*mem_offset);
@@ -1278,6 +1292,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
+        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     // Multi-part generated sections
@@ -1332,7 +1347,7 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_type: SegmentType::DataConstSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Misc,
+        segment_type: SegmentType::LinkeditSections,
     },
 ];
 
