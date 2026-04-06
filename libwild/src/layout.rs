@@ -4595,7 +4595,13 @@ fn layout_section_parts<P: Platform>(
                         file_offset =
                             segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
                     } else {
-                        mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+                        let segment_def = *program_segments.segment_def(segment_id);
+                        P::align_load_segment_start(
+                            segment_def,
+                            segment_alignment,
+                            &mut file_offset,
+                            &mut mem_offset,
+                        );
                     }
                 }
             }

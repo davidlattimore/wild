@@ -290,6 +290,15 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// Resolves a reference to the frame data section.
     fn frame_data_base_address(memory_offsets: &OutputSectionPartMap<u64>) -> u64;
 
+    /// Aligns the start of a load segment. Platforms may override this to coordinate file and
+    /// memory offsets when a segment boundary is introduced.
+    fn align_load_segment_start(
+        _segment_def: Self::ProgramSegmentDef,
+        segment_alignment: Alignment,
+        file_offset: &mut usize,
+        mem_offset: &mut u64,
+    );
+
     /// Called after GC phase has completed. Mostly useful for platform-specific logging.
     fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
 

@@ -1222,6 +1222,21 @@ impl platform::Platform for MachO {
     fn start_memory_address(output_kind: OutputKind) -> u64 {
         MACHO_START_MEM_ADDRESS
     }
+
+    fn align_load_segment_start(
+        segment_def: ProgramSegmentDef,
+        segment_alignment: Alignment,
+        file_offset: &mut usize,
+        mem_offset: &mut u64,
+    ) {
+        if matches!(
+            segment_def.segment_type,
+            SegmentType::Text | SegmentType::DataSections | SegmentType::DataConstSections
+        ) {
+            *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
+            *mem_offset = segment_alignment.align_up(*mem_offset);
+        }
+    }
 }
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
@@ -1286,7 +1301,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__data")),
         section_flags: SectionFlags::from_u32(macho::S_REGULAR),
-        min_alignment: MACHO_PAGE_ALIGNMENT,
         ..DEFAULT_DEFS
     };
 
