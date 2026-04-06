@@ -196,9 +196,17 @@ Pretty straightforward to implement, replaces a legacy `LC_DYLD_INFO(_ONLY)` com
 
 ## `LC_DYLD_CHAINED_FIXUPS` command
 
-TODO: explain better
+This is roughly analogous to dynamic relocations in ELF. The format is made up of three parts:
 
-Good documentation here: https://github.com/qyang-nj/llios/blob/main/dynamic_linking/chained_fixups.md.
+- a table of imported symbols, including the symbol name and the referenced dylib
+- a string table used by the import table
+- a per-segment chain of fixups, where each entry records the location to patch and an index into the import table that identifies the target
+
+Good documentation is available here: https://github.com/qyang-nj/llios/blob/main/dynamic_linking/chained_fixups.md.
+The relevant data structures are also defined in Apple's `mach-o/fixup-chains.h` header
+and mirrored here: https://github.com/qyang-nj/llios/blob/d204d56ff0533c1fae115b77e7554d2e6f4bc4aa/apple_open_source/dyld/include/mach-o/fixup-chains.h.
+
+Ideally, support for these structures should be added to the `object` crate.
 
 ## benchmarks: LLD vs. system linker
 
