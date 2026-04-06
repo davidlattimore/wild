@@ -22,15 +22,9 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
-use crate::platform::ObjectFile;
-use crate::platform::ProgramSegmentDef as _;
-use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
-use itertools::Itertools;
 use linker_utils::elf::secnames;
-use object::Endian;
 use object::Endianness;
-use object::LittleEndian;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -47,8 +41,6 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
-use std::default;
-use winnow::combinator::todo;
 
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct MachO;
