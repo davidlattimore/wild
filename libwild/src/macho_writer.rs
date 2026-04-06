@@ -238,11 +238,9 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
         segment_cmd.filesize.set(
             LE,
-            dbg!(
-                segment_size
-                    .file_size
-                    .next_multiple_of(MACHO_PAGE_ALIGNMENT.value() as usize) as u64
-            ),
+            segment_size
+                .file_size
+                .next_multiple_of(MACHO_PAGE_ALIGNMENT.value() as usize) as u64,
         );
         segment_cmd.maxprot.set(LE, prot_flags);
         segment_cmd.initprot.set(LE, prot_flags);
@@ -346,7 +344,8 @@ fn write_entry_point_command<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     command: &mut EntryPointCommand,
 ) {
-    let SegmentSectionsInfo { segment_size, .. } = get_segment_sections(layout, SegmentType::Text);
+    let SegmentSectionsInfo { segment_size, .. } =
+        get_segment_sections(layout, SegmentType::TextSections);
 
     command.cmd.set(LE, LC_MAIN);
     command
