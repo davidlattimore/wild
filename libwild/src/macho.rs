@@ -1317,8 +1317,8 @@ impl platform::Platform for MachO {
                 *mem_offset = segment_alignment.align_up(*mem_offset);
             }
             SegmentType::TextSections => {
-                // We allocate a placeholder space for the LinkeditDataCommand command (added by
-                // codesign tool) in order to preserve the offsets into __text and
+                // TODO: A placeholder space for the LinkeditDataCommand command is allocated
+                // (added by codesign tool) in order to preserve the offsets into __text and
                 // other sections in the __TEXT segment.
                 *file_offset += size_of::<CodeSignatureCommand>();
                 *mem_offset += size_of::<CodeSignatureCommand>() as u64;
