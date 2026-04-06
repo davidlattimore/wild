@@ -25,7 +25,6 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::symbol_db::Visibility;
-use linker_utils::elf::secnames;
 use object::Endian;
 use object::Endianness;
 use object::U32;
@@ -1229,8 +1228,8 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
-        // Mach-O string tables start with an empty string at index 0.
-        // TODO: Just a filler for now.
+        // TODO: Just a filler for now that will ensure the __LINKEDIT takes 16KiB - find a better
+        // solution.
         common.allocate(
             part_id::STRTAB,
             MACHO_PAGE_ALIGNMENT.value() - CHAINED_FIXUP_TABLE_SIZE,
@@ -1378,12 +1377,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__chain_table")),
+        kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
         target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionName(b"STRING_TABLE")),
         target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };

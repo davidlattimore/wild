@@ -292,6 +292,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 
+        // The sections in __LINKEDIT are actually hidden and must be hidden (not exposed in the
+        // SEGMENT).
         if segment_sections_type == SegmentType::LinkeditSections {
             segment_cmd.nsects.set(LE, 0);
         } else {
