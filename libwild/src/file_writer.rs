@@ -17,6 +17,10 @@ use crate::timing_phase;
 use crate::verbose_timing_phase;
 use anyhow::anyhow;
 use memmap2::MmapOptions;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSlice;
+use rayon::slice::ParallelSliceMut;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::ops::Deref;
@@ -433,4 +437,24 @@ fn write_layout_to<'data, P: Platform>(layout: &Layout<'data, P>, path: &Path) -
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
+}
+
+/// Copies section bytes from `data` into `out`.
+///
+/// Small sections are copied with a single `copy_from_slice` call. Large sections may be split
+/// into chunks and copied in parallel on multiple threads.
+pub(crate) fn copy_section_data(data: &[u8], out: &mut [u8]) {
+    /// Threshold size for using parallel copy for section data copying.
+    pub(crate) const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+
+    if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
+        let threads = rayon::current_num_threads();
+        let chunk_size = (data.len() / threads).max(1);
+
+        data.par_chunks(chunk_size)
+            .zip(out.par_chunks_mut(chunk_size))
+            .for_each(|(src, dst)| dst.copy_from_slice(src));
+    } else {
+        out.copy_from_slice(data);
+    }
 }

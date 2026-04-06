@@ -8,6 +8,7 @@ use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::file_writer::copy_section_data;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
@@ -23,7 +24,6 @@ use crate::part_id;
 use crate::platform;
 use crate::platform::ObjectFile;
 use crate::platform::ProgramSegmentDef as _;
-use crate::platform::SECTION_PAR_COPY_SIZE_THRESHOLD;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::Visibility;
 use itertools::Itertools;
@@ -46,10 +46,6 @@ use object::read::macho::MachHeader;
 use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
-use rayon::iter::IndexedParallelIterator;
-use rayon::iter::ParallelIterator;
-use rayon::slice::ParallelSlice;
-use rayon::slice::ParallelSliceMut;
 use std::borrow::Cow;
 use std::default;
 use winnow::combinator::todo;
@@ -268,17 +264,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let data = section
             .data(LE, self.data)
             .map_err(|_e| error!("cannot get section data"))?;
+        copy_section_data(data, out);
 
-        if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
-            let threads = rayon::current_num_threads();
-            let chunk_size = (data.len() / threads).max(1);
-
-            data.par_chunks(chunk_size)
-                .zip(out.par_chunks_mut(chunk_size))
-                .for_each(|(src, dst)| dst.copy_from_slice(src));
-        } else {
-            out.copy_from_slice(data);
-        }
         Ok(())
     }
 

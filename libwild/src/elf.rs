@@ -14,6 +14,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::file_writer::copy_section_data;
 use crate::grouping::Group;
 use crate::input_data::InputBytes;
 use crate::input_data::InputRef;
@@ -56,7 +57,6 @@ use crate::platform::RawSymbolName as _;
 use crate::platform::Relaxation as _;
 use crate::platform::Relocation;
 use crate::platform::RelocationSequence;
-use crate::platform::SECTION_PAR_COPY_SIZE_THRESHOLD;
 use crate::platform::SectionAttributes as _;
 use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
@@ -2056,15 +2056,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
             out.fill(0);
-        } else if data.len() >= SECTION_PAR_COPY_SIZE_THRESHOLD {
-            let threads = rayon::current_num_threads();
-            let chunk_size = (data.len() / threads).max(1);
-
-            data.par_chunks(chunk_size)
-                .zip(out.par_chunks_mut(chunk_size))
-                .for_each(|(src, dst)| dst.copy_from_slice(src));
         } else {
-            out.copy_from_slice(data);
+            copy_section_data(data, out);
         }
         Ok(())
     }
