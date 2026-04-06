@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 #![allow(unused)]
 
+use crate::bail;
 use crate::error;
 use crate::error::Context;
 use crate::error::Result;
@@ -12,8 +13,11 @@ use crate::file_writer::split_output_into_sections;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::Layout;
+use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::Section;
+use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
@@ -30,6 +34,9 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::platform::Arch;
+use crate::platform::Args;
+use crate::platform::ObjectFile;
+use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::BigEndian;
@@ -37,15 +44,18 @@ use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
 use object::macho::SEG_DATA;
+use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_PAGEZERO;
 use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use tracing::debug_span;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
@@ -84,8 +94,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            // TODO
-            // write_object::<A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
+            write_object::<A>(s, buffers, layout)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
         _ => {
@@ -113,7 +122,18 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .0;
     write_pagezero_command::<A>(pagezero_command);
 
+    let linkedit_command: &mut SegmentCommand =
+        from_bytes_mut(buffers.get_mut(part_id::LINK_EDIT_SEGMENT))
+            .map_err(|_| error!("Invalid LINKEDIT segment allocation"))?
+            .0;
+    write_linkedit_command::<A>(linkedit_command);
     write_segment_commands::<A>(layout, buffers)?;
+
+    let entry_point_command: &mut EntryPointCommand =
+        from_bytes_mut(buffers.get_mut(part_id::ENTRY_POINT))
+            .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
+            .0;
+    write_entry_point_command::<A>(layout, entry_point_command);
 
     Ok(())
 }
@@ -141,6 +161,20 @@ fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentComman
     command.segname[..SEG_PAGEZERO.len()].copy_from_slice(SEG_PAGEZERO.as_bytes());
     command.vmaddr.set(LE, 0);
     command.vmsize.set(LE, MACHO_START_MEM_ADDRESS);
+    command.fileoff.set(LE, 0);
+    command.filesize.set(LE, 0);
+    command.maxprot.set(LE, 0);
+    command.initprot.set(LE, 0);
+    command.nsects.set(LE, 0);
+    command.flags.set(LE, 0);
+}
+
+fn write_linkedit_command<A: Arch<Platform = MachO>>(command: &mut SegmentCommand) {
+    command.cmd.set(LE, LC_SEGMENT_64);
+    command.cmdsize.set(LE, size_of::<SegmentCommand>() as u32);
+    command.segname[..SEG_LINKEDIT.len()].copy_from_slice(SEG_LINKEDIT.as_bytes());
+    command.vmaddr.set(LE, 0);
+    command.vmsize.set(LE, 0);
     command.fileoff.set(LE, 0);
     command.filesize.set(LE, 0);
     command.maxprot.set(LE, 0);
@@ -179,6 +213,10 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
         debug_assert_eq!(sections.len(), segment_sections.len());
+        let prot_flags = layout
+            .output_sections
+            .section_flags(part_id.output_section_id())
+            .raw();
 
         segment_cmd.cmd.set(LE, LC_SEGMENT_64);
         segment_cmd.cmdsize.set(
@@ -188,18 +226,19 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         );
         segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         segment_cmd.segname[seg_name.len()..].zero();
-        // TODO: segment OutputRecordLayout
         segment_cmd.vmaddr.set(LE, segment_size.mem_offset);
         segment_cmd.vmsize.set(LE, segment_size.mem_size);
         // TODO: should be likely offset relative to the place after the commands
         segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
         segment_cmd.filesize.set(LE, segment_size.file_size as u64);
-        segment_cmd.maxprot.set(LE, 0);
-        segment_cmd.initprot.set(LE, 0);
+        segment_cmd.maxprot.set(LE, prot_flags);
+        segment_cmd.initprot.set(LE, prot_flags);
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 
-        for (section, (size, section_name)) in sections.iter_mut().zip(segment_sections) {
+        for (section, (size, section_name, section_flags)) in
+            sections.iter_mut().zip(segment_sections)
+        {
             let section_name = section_name
                 .ok_or_else(|| error!("section name must be known"))?
                 .0;
@@ -215,11 +254,91 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             section.align.set(LE, 0);
             section.reloff.set(LE, 0);
             section.nreloc.set(LE, 0);
-            section.flags.set(LE, 0);
+            section.flags.set(LE, section_flags.raw());
             section.reserved1.set(LE, 0);
             section.reserved2.set(LE, 0);
             section.reserved3.set(LE, 0);
         }
     }
     Ok(())
+}
+
+fn write_object<'data, A: Arch<Platform = MachO>>(
+    object: &ObjectLayout<'data, MachO>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &MachOLayout<'data>,
+) -> Result {
+    verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
+
+    let _span = debug_span!("write_file", filename = %object.input).entered();
+    let _file_span = layout.args().common().trace_span_for_file(object.file_id);
+    for sec in &object.sections {
+        match sec {
+            SectionSlot::Loaded(sec) => {
+                write_object_section::<A>(object, layout, sec, buffers)?;
+            }
+            _ => (),
+        }
+    }
+
+    Ok(())
+}
+
+fn write_object_section<'data, A: Arch<Platform = MachO>>(
+    object: &ObjectLayout<'data, MachO>,
+    layout: &MachOLayout<'data>,
+    section: &Section,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    write_section_raw(object, layout, section, buffers)?;
+    Ok(())
+
+    // TODO: process relocations
+}
+
+fn write_section_raw<'out, 'data>(
+    object: &ObjectLayout<'data, MachO>,
+    layout: &MachOLayout,
+    sec: &Section,
+    buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+) -> Result<&'out mut [u8]> {
+    if layout
+        .output_sections
+        .has_data_in_file(sec.output_section_id())
+    {
+        let section_buffer = buffers.get_mut(sec.output_part_id());
+        let allocation_size = sec.capacity(&layout.output_sections) as usize;
+        if section_buffer.len() < allocation_size {
+            bail!(
+                "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+                object.object.section_display_name(sec.index),
+                allocation_size,
+                section_buffer.len()
+            );
+        }
+        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
+        let object_section = object.object.section(sec.index)?;
+
+        let section_size = object.object.section_size(object_section)?;
+        let (out, padding) = out.split_at_mut(section_size as usize);
+        object.object.copy_section_data(object_section, out)?;
+        padding.fill(0);
+        Ok(out)
+    } else {
+        Ok(&mut [])
+    }
+}
+
+fn write_entry_point_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut EntryPointCommand,
+) {
+    let SegmentSectionsInfo { segment_size, .. } = get_segment_sections(layout, SegmentType::Text);
+
+    command.cmd.set(LE, LC_MAIN);
+    command
+        .cmdsize
+        .set(LE, size_of::<EntryPointCommand>() as u32);
+    command.entryoff.set(LE, segment_size.file_offset as u64);
+    command.stacksize.set(LE, 0);
 }

@@ -51,8 +51,10 @@ pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(30);
 pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(31);
 pub(crate) const TEXT_SEGMENT: PartId = PartId(32);
 pub(crate) const DATA_SEGMENT: PartId = PartId(33);
+pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(34);
+pub(crate) const ENTRY_POINT: PartId = PartId(35);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 34;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 36;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize
