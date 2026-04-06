@@ -280,7 +280,6 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
                 .mem_size
                 .next_multiple_of(MACHO_PAGE_ALIGNMENT.value()),
         );
-        // TODO: should be likely offset relative to the place after the commands
         segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
         segment_cmd.filesize.set(
             LE,
