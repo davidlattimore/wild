@@ -4,6 +4,8 @@
 
 use crate::OutputKind;
 use crate::alignment;
+use crate::alignment::Alignment;
+use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
@@ -598,17 +600,15 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
     }
 }
 
+// TODO: update comment
+
 #[derive(Debug, Copy, Clone, Default, PartialEq)]
 pub(crate) enum SegmentType {
-    Header,
-    // All load commands are grouped into the segment.
-    LoadCommands,
-    // Sections belonging to __TEXT segment.
     Text,
-    // Sections belonging to __DATA segment.
-    Data,
-    // Sections belonging to __DATA_CONST segment.
-    DataConst,
+    LoadCommands,
+    TextSections,
+    DataSections,
+    DataConstSections,
     #[default]
     Misc,
 }
@@ -642,7 +642,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn is_loadable(self) -> bool {
-        false
+        true
     }
 
     fn is_stack(self) -> bool {
@@ -662,24 +662,29 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        self.segment_type
-            == match section_id {
-                output_section_id::FILE_HEADER => SegmentType::Header,
-                output_section_id::PAGEZERO_SEGMENT
-                | output_section_id::TEXT_SEGMENT
-                | output_section_id::DATA_SEGMENT
-                | output_section_id::LINK_EDIT_SEGMENT
-                | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
-                output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
-                output_section_id::DATA => SegmentType::Data,
-                _ => SegmentType::Misc,
-            }
+        let mapped_segment = match section_id {
+            output_section_id::FILE_HEADER => SegmentType::Text,
+            output_section_id::PAGEZERO_SEGMENT
+            | output_section_id::TEXT_SEGMENT
+            | output_section_id::DATA_SEGMENT
+            | output_section_id::LINK_EDIT_SEGMENT
+            | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
+            output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
+            output_section_id::DATA => SegmentType::DataSections,
+            _ => SegmentType::Misc,
+        };
+
+        match (self.segment_type, mapped_segment) {
+            (SegmentType::Text, SegmentType::LoadCommands | SegmentType::TextSections) => true,
+            _ => self.segment_type == mapped_segment,
+        }
     }
 }
 
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
+    pub(crate) min_alignment: Alignment,
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
@@ -688,6 +693,7 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
     section_flags: SectionFlags::empty(),
+    min_alignment: alignment::MIN,
     target_segment_type: None,
 };
 
@@ -955,7 +961,7 @@ impl platform::Platform for MachO {
                     flags: d.section_flags,
                 },
                 kind: d.kind,
-                min_alignment: alignment::MIN,
+                min_alignment: d.min_alignment,
                 location: None,
                 secondary_order: None,
             })
@@ -1083,14 +1089,14 @@ impl platform::Platform for MachO {
             part_id::TEXT_SEGMENT,
             (size_of::<SegmentCommand>()
                 + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Text))
+                    * count_sections_for_segment_type(output_sections, SegmentType::TextSections))
                 as u64,
         );
         sizes.increment(
             part_id::DATA_SEGMENT,
             (size_of::<SegmentCommand>()
                 + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Data))
+                    * count_sections_for_segment_type(output_sections, SegmentType::DataSections))
                 as u64,
         );
         sizes.increment(
@@ -1224,7 +1230,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
-        target_segment_type: Some(SegmentType::Header),
+        target_segment_type: Some(SegmentType::Text),
         ..DEFAULT_DEFS
     };
     // Load commands
@@ -1280,6 +1286,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__data")),
         section_flags: SectionFlags::from_u32(macho::S_REGULAR),
+        min_alignment: MACHO_PAGE_ALIGNMENT,
         ..DEFAULT_DEFS
     };
 
@@ -1296,19 +1303,19 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
 
 const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
-        segment_type: SegmentType::Header,
+        segment_type: SegmentType::Text,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::LoadCommands,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Text,
+        segment_type: SegmentType::TextSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Data,
+        segment_type: SegmentType::DataSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::DataConst,
+        segment_type: SegmentType::DataConstSections,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::Misc,

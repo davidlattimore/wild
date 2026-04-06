@@ -62,6 +62,9 @@ pub(crate) const NOTE_GNU_BUILD_ID: Alignment = Alignment { exponent: 2 };
 // GNU_STACK.alignment
 pub(crate) const STACK_ALIGNMENT: Alignment = Alignment { exponent: 4 };
 
+// Mach-O specific
+pub(crate) const MACHO_PAGE_ALIGNMENT: Alignment = Alignment { exponent: 14 };
+
 impl Alignment {
     pub(crate) fn new(raw: u64) -> Result<Self> {
         if !raw.is_power_of_two() {

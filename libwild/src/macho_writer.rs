@@ -201,14 +201,23 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    for (part_id, seg_name, segment_type) in [
-        (part_id::TEXT_SEGMENT, SEG_TEXT, SegmentType::Text),
-        (part_id::DATA_SEGMENT, SEG_DATA, SegmentType::Data),
+    for (part_id, seg_name, segment_type, segment_sections_type) in [
+        (
+            part_id::TEXT_SEGMENT,
+            SEG_TEXT,
+            SegmentType::Text,
+            SegmentType::TextSections,
+        ),
+        (
+            part_id::DATA_SEGMENT,
+            SEG_DATA,
+            SegmentType::DataSections,
+            SegmentType::DataSections,
+        ),
     ] {
-        let SegmentSectionsInfo {
-            segment_size,
-            segment_sections,
-        } = get_segment_sections(layout, segment_type);
+        // TODO: write comments
+        let segment_sections = get_segment_sections(layout, segment_sections_type).segment_sections;
+        let segment_size = get_segment_sections(layout, segment_type).segment_size;
         let (segment_cmd, sections) =
             split_segment_command_buffer(buffers.get_mut(part_id), segment_sections.len())?;
 
