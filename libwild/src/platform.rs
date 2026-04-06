@@ -798,6 +798,15 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str>;
 
+    /// Returns true if the given symbol is in a common/tentative section (e.g.
+    /// Mach-O `__common`). Default returns false; Mach-O overrides this.
+    fn is_symbol_in_common_section(
+        &self,
+        _symbol: &<Self::Platform as Platform>::SymtabEntry,
+    ) -> bool {
+        false
+    }
+
     fn dynamic_tag_values(&self) -> Option<<Self::Platform as Platform>::DynamicTagValues<'data>>;
 
     fn get_version_names(&self) -> Result<<Self::Platform as Platform>::VersionNames<'data>>;

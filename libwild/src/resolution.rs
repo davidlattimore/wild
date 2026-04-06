@@ -1006,9 +1006,14 @@ impl<'data, P: Platform> ResolvedCommon<'data, P> {
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = symbol_id.to_input(self.symbol_id_range);
         let Ok(obj_symbol) = self.object.symbol(local_index) else {
-            // Errors from this function should have been reported elsewhere.
             return SymbolStrength::Undefined;
         };
+        // Mach-O __common section symbols are tentative definitions (like ELF
+        // SHN_COMMON) but appear as N_SECT in the nlist. Check the section
+        // name to classify them correctly.
+        if self.object.is_symbol_in_common_section(obj_symbol) {
+            return SymbolStrength::Common(obj_symbol.size());
+        }
         SymbolStrength::of(obj_symbol)
     }
 }

@@ -20,7 +20,10 @@ pub struct MachOArgs {
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
     pub(crate) is_dylib: bool,
+    #[allow(dead_code)]
     pub(crate) install_name: Option<Vec<u8>>,
+    /// Additional dylibs to emit LC_LOAD_DYLIB for (from -l flags resolving to .tbd stubs).
+    pub(crate) extra_dylibs: Vec<Vec<u8>>,
 }
 
 impl MachOArgs {
@@ -43,6 +46,7 @@ impl Default for MachOArgs {
             entry_symbol: Some(b"_main".to_vec()),
             is_dylib: false,
             install_name: None,
+            extra_dylibs: Vec::new(),
         }
     }
 }
@@ -228,8 +232,14 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 for dir in &search_paths {
                     let path = dir.join(&filename);
                     if path.exists() {
-                        // For .tbd files, skip (text-based stubs, dylib references)
+                        // .tbd files are text-based dylib stubs. Parse the
+                        // install-name so we can emit LC_LOAD_DYLIB for it.
                         if *ext == ".tbd" {
+                            if let Some(dylib_path) = parse_tbd_install_name(&path) {
+                                if !args.extra_dylibs.contains(&dylib_path) {
+                                    args.extra_dylibs.push(dylib_path);
+                                }
+                            }
                             found = true;
                             break;
                         }
@@ -267,4 +277,19 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     });
 
     Ok(())
+}
+
+/// Extract `install-name` from a .tbd (text-based dylib stub) file.
+fn parse_tbd_install_name(path: &Path) -> Option<Vec<u8>> {
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("install-name:") {
+            let name = rest.trim().trim_matches('\'').trim_matches('"');
+            if !name.is_empty() {
+                return Some(name.as_bytes().to_vec());
+            }
+        }
+    }
+    None
 }

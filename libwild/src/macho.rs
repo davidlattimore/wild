@@ -305,6 +305,22 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         }
     }
 
+    fn is_symbol_in_common_section(&self, symbol: &SymtabEntry) -> bool {
+        let n_type = symbol.n_type() & macho::N_TYPE;
+        if n_type != macho::N_SECT {
+            return false;
+        }
+        let sect = symbol.n_sect();
+        if sect == 0 {
+            return false;
+        }
+        if let Some(section) = self.sections.get(sect as usize - 1) {
+            trim_nul(section.sectname()) == b"__common"
+        } else {
+            false
+        }
+    }
+
     fn dynamic_tag_values(&self) -> Option<DynamicTagValues<'data>> {
         None
     }
@@ -389,14 +405,30 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn should_retain(&self) -> bool {
-        false
+        let sec_type = self.0.flags(LE) & macho::SECTION_TYPE;
+        // __mod_init_func / __mod_term_func must always be retained —
+        // they contain constructor/destructor pointers called by dyld.
+        sec_type == macho::S_MOD_INIT_FUNC_POINTERS || sec_type == macho::S_MOD_TERM_FUNC_POINTERS
     }
 
     fn should_exclude(&self) -> bool {
+        let segname = trim_nul(self.0.segname());
         let sectname = trim_nul(self.0.sectname());
         // Debug sections in __DWARF segment are not loaded
-        let segname = trim_nul(self.0.segname());
-        segname == b"__DWARF"
+        if segname == b"__DWARF" {
+            return true;
+        }
+        // __LD segment contains linker-private data (e.g. __compact_unwind)
+        // that must be consumed by the linker, not emitted to output.
+        if segname == b"__LD" {
+            return true;
+        }
+        // __eh_frame has SUBTRACTOR relocation pairs we don't process yet;
+        // exclude until we generate proper __unwind_info.
+        if sectname == b"__eh_frame" {
+            return true;
+        }
+        false
     }
 
     fn is_group(&self) -> bool {
@@ -877,9 +909,12 @@ impl platform::Platform for MachO {
     }
 
     fn apply_force_keep_sections(
-        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
+        keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
         _args: &Self::Args,
     ) {
+        // Constructor/destructor function pointer arrays must always be kept.
+        *keep_sections.get_mut(crate::output_section_id::INIT_ARRAY) = true;
+        *keep_sections.get_mut(crate::output_section_id::FINI_ARRAY) = true;
     }
 
     fn is_zero_sized_section_content(
@@ -1383,6 +1418,8 @@ impl platform::Platform for MachO {
 
         // __DATA segment (rw-): writable data, GOT, BSS
         builder.add_section(output_section_id::DATA);
+        builder.add_section(output_section_id::INIT_ARRAY); // __mod_init_func
+        builder.add_section(output_section_id::FINI_ARRAY); // __mod_term_func
         builder.add_sections(&custom.data);
         builder.add_section(output_section_id::GOT);
         builder.add_section(output_section_id::TDATA);
@@ -1421,6 +1458,10 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
         SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
         SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
+        // Constructor/destructor function pointer arrays (Mach-O equivalent of .init_array/.fini_array)
+        SectionRule::exact_section(b"__mod_init_func", output_section_id::INIT_ARRAY),
+        SectionRule::exact_section(b"__mod_term_func", output_section_id::FINI_ARRAY),
+        SectionRule::exact_section(b"__gcc_except_tab", output_section_id::GCC_EXCEPT_TABLE),
         SectionRule::exact_section(b".rustc", output_section_id::DATA),
         SectionRule::exact_section(b"__bss", output_section_id::BSS),
         SectionRule::exact_section(b"__common", output_section_id::BSS),

@@ -115,6 +115,8 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, 
     } else {
         text_filesize
     };
+    // Estimate LINKEDIT size: chained fixups + symtab + strtab + exports trie.
+    // For dylibs with many exports, 8KB is not enough.
     let n_exports = layout.dynamic_symbol_definitions.len();
     let linkedit_estimate = 8192 + n_exports * 256;
     let total = linkedit_offset as usize + linkedit_estimate.max(8192);
@@ -133,6 +135,20 @@ struct BindFixup {
     import_index: u32,
 }
 
+/// An imported symbol name and its dylib ordinal.
+struct ImportEntry {
+    name: Vec<u8>,
+    /// 1 = libSystem, 2+ = extra dylibs, 0xFE = flat lookup (search all dylibs).
+    lib_ordinal: u8,
+}
+
+/// Determine the lib ordinal for a symbol name.
+/// If there are extra dylibs (beyond libSystem), we use flat lookup (0xFE)
+/// since we don't yet track which dylib exports which symbol.
+fn lib_ordinal_for_symbol(has_extra_dylibs: bool) -> u8 {
+    if has_extra_dylibs { 0xFE } else { 1 }
+}
+
 /// Returns the actual final file size.
 fn write_macho<A: Arch<Platform = MachO>>(
     out: &mut [u8],
@@ -145,20 +161,21 @@ fn write_macho<A: Arch<Platform = MachO>>(
     // Collect fixups during section writing and stub generation
     let mut rebase_fixups: Vec<RebaseFixup> = Vec::new();
     let mut bind_fixups: Vec<BindFixup> = Vec::new();
-    let mut import_names: Vec<Vec<u8>> = Vec::new();
+    let mut imports: Vec<ImportEntry> = Vec::new();
+    let has_extra_dylibs = !layout.symbol_db.args.extra_dylibs.is_empty();
 
     // Copy section data and apply relocations
     for group in &layout.group_layouts {
         for file_layout in &group.files {
             if let FileLayout::Object(obj) = file_layout {
                 write_object_sections(out, obj, layout, mappings, le,
-                    &mut rebase_fixups, &mut bind_fixups, &mut import_names)?;
+                    &mut rebase_fixups, &mut bind_fixups, &mut imports, has_extra_dylibs)?;
             }
         }
     }
 
     // Write PLT stubs and collect bind fixups for imported symbols
-    write_stubs_and_got::<A>(out, layout, mappings, &mut bind_fixups, &mut import_names)?;
+    write_stubs_and_got::<A>(out, layout, mappings, &mut bind_fixups, &mut imports, has_extra_dylibs)?;
 
     // Populate GOT entries for non-import symbols
     write_got_entries(out, layout, mappings, &mut rebase_fixups)?;
@@ -206,14 +223,14 @@ fn write_macho<A: Arch<Platform = MachO>>(
     }
 
     let has_fixups = !all_data_fixups.is_empty();
-    let n_imports = import_names.len() as u32;
+    let n_imports = imports.len() as u32;
 
     // Build symbol name pool for imports
     let mut symbols_pool = vec![0u8];
     let mut import_name_offsets: Vec<u32> = Vec::new();
-    for name in &import_names {
+    for entry in &imports {
         import_name_offsets.push(symbols_pool.len() as u32);
-        symbols_pool.extend_from_slice(name);
+        symbols_pool.extend_from_slice(&entry.name);
         symbols_pool.push(0);
     }
 
@@ -257,9 +274,10 @@ fn write_macho<A: Arch<Platform = MachO>>(
             }
             cf + cf_data_size as usize
         } else {
+            let ordinals: Vec<u8> = imports.iter().map(|e| e.lib_ordinal).collect();
             write_chained_fixups_header(
                 out, cf_off as usize, &all_data_fixups, n_imports,
-                &import_name_offsets, &symbols_pool, mappings,
+                &import_name_offsets, &ordinals, &symbols_pool, mappings,
                 layout.symbol_db.args.is_dylib,
             )?;
             cf_off as usize + cf_data_size as usize
@@ -283,7 +301,7 @@ fn write_dylib_symtab(
     out: &mut [u8],
     start: usize,
     layout: &Layout<'_, MachO>,
-    mappings: &[SegmentMapping],
+    _mappings: &[SegmentMapping],
 ) -> Result<usize> {
 
     // Collect exported symbols from dynamic_symbol_definitions
@@ -368,6 +386,7 @@ fn write_dylib_symtab(
                         out[off as usize+40..off as usize+48].try_into().unwrap());
                     let new_filesize = pos as u64 - linkedit_fileoff;
                     out[off as usize+48..off as usize+56].copy_from_slice(&new_filesize.to_le_bytes());
+                    // Update vmsize to cover the content
                     let new_vmsize = align_to(new_filesize, PAGE_SIZE);
                     out[off as usize+32..off as usize+40].copy_from_slice(&new_vmsize.to_le_bytes());
                 }
@@ -487,7 +506,8 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
     bind_fixups: &mut Vec<BindFixup>,
-    import_names: &mut Vec<Vec<u8>>,
+    imports: &mut Vec<ImportEntry>,
+    has_extra_dylibs: bool,
 ) -> Result {
     use crate::symbol_db::SymbolId;
 
@@ -503,13 +523,16 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
         }
 
         if let Some(got_file_off) = vm_addr_to_file_offset(got_addr, mappings) {
-            let import_index = import_names.len() as u32;
+            let import_index = imports.len() as u32;
             let symbol_id = SymbolId::from_usize(sym_idx);
             let name = match layout.symbol_db.symbol_name(symbol_id) {
                 Ok(n) => n.bytes().to_vec(),
                 Err(_) => b"<unknown>".to_vec(),
             };
-            import_names.push(name);
+            imports.push(ImportEntry {
+                name,
+                lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
+            });
             bind_fixups.push(BindFixup { file_offset: got_file_off, import_index });
         }
     }
@@ -517,6 +540,7 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
 }
 
 /// Fill GOT entries with target symbol addresses (for non-import symbols).
+/// Also registers rebase fixups so dyld can adjust for ASLR.
 fn write_got_entries(
     out: &mut [u8],
     layout: &Layout<'_, MachO>,
@@ -529,6 +553,13 @@ fn write_got_entries(
             if let Some(file_off) = vm_addr_to_file_offset(got_vm_addr, mappings) {
                 if file_off + 8 <= out.len() {
                     out[file_off..file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
+                    // Register a rebase fixup so dyld adjusts for ASLR
+                    if res.raw_value != 0 {
+                        rebase_fixups.push(RebaseFixup {
+                            file_offset: file_off,
+                            target: res.raw_value,
+                        });
+                    }
                 }
                 if res.raw_value != 0 {
                     rebase_fixups.push(RebaseFixup { file_offset: file_off, target: res.raw_value });
@@ -548,7 +579,8 @@ fn write_object_sections(
     le: object::Endianness,
     rebase_fixups: &mut Vec<RebaseFixup>,
     bind_fixups: &mut Vec<BindFixup>,
-    import_names: &mut Vec<Vec<u8>>,
+    imports: &mut Vec<ImportEntry>,
+    has_extra_dylibs: bool,
 ) -> Result {
     use object::read::macho::Section as MachOSection;
 
@@ -580,7 +612,7 @@ fn write_object_sections(
 
         if let Ok(relocs) = input_section.relocations(le, obj.object.data) {
             apply_relocations(out, file_offset, output_addr, relocs, obj, layout, le,
-                rebase_fixups, bind_fixups, import_names)?;
+                rebase_fixups, bind_fixups, imports, has_extra_dylibs)?;
         }
     }
     Ok(())
@@ -597,7 +629,8 @@ fn apply_relocations(
     le: object::Endianness,
     rebase_fixups: &mut Vec<RebaseFixup>,
     bind_fixups: &mut Vec<BindFixup>,
-    import_names: &mut Vec<Vec<u8>>,
+    imports: &mut Vec<ImportEntry>,
+    has_extra_dylibs: bool,
 ) -> Result {
     let mut pending_addend: i64 = 0;
 
@@ -685,8 +718,11 @@ fn apply_relocations(
                             Ok(n) => n.bytes().to_vec(),
                             Err(_) => b"<unknown>".to_vec(),
                         };
-                        let import_index = import_names.len() as u32;
-                        import_names.push(name);
+                        let import_index = imports.len() as u32;
+                        imports.push(ImportEntry {
+                            name,
+                            lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
+                        });
                         bind_fixups.push(BindFixup { file_offset: patch_file_offset, import_index });
                     } else {
                         // Check if target is in TLS data — write offset, not rebase
@@ -746,6 +782,7 @@ fn write_chained_fixups_header(
     all_fixups: &[(usize, u64)],
     n_imports: u32,
     import_name_offsets: &[u32],
+    import_ordinals: &[u8],
     symbols_pool: &[u8],
     mappings: &[SegmentMapping],
     is_dylib: bool,
@@ -815,7 +852,8 @@ fn write_chained_fixups_header(
 
     let it = imports_table_offset as usize;
     for (i, &name_off) in import_name_offsets.iter().enumerate() {
-        let import_val: u32 = 1u32 | ((name_off & 0x7F_FFFF) << 9); // lib_ordinal=1
+        let ordinal = import_ordinals[i] as u32;
+        let import_val: u32 = ordinal | ((name_off & 0x7F_FFFF) << 9);
         w[it + i * 4..it + i * 4 + 4].copy_from_slice(&import_val.to_le_bytes());
     }
 
@@ -885,7 +923,6 @@ fn write_headers(
     let tdata_layout = layout.section_layouts.get(output_section_id::TDATA);
     let tbss_layout = layout.section_layouts.get(output_section_id::TBSS);
     let has_tlv = tdata_layout.mem_size > 0 || tbss_layout.mem_size > 0;
-    let data_layout = layout.section_layouts.get(output_section_id::DATA);
     let has_tvars = has_tlv;
 
     // Scan for .rustc section (proc-macro metadata) before computing cmd sizes
@@ -923,7 +960,7 @@ fn write_headers(
     let install_name = if is_dylib {
         layout.symbol_db.args.output().to_string_lossy().into_owned()
     } else { String::new() };
-    let id_dylib_cmd_size = if is_dylib { align8((24 + install_name.len() as u32 + 1)) } else { 0 };
+    let id_dylib_cmd_size = if is_dylib { align8(24 + install_name.len() as u32 + 1) } else { 0 };
 
     let mut ncmds = 0u32;
     let mut cmdsize = 0u32;
@@ -932,9 +969,12 @@ fn write_headers(
     let rustc_in_text = has_rustc && rustc_addr < text_vm_start + text_filesize;
     let text_nsects = 1 + if rustc_in_text { 1u32 } else { 0 };
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
+    let init_array_layout = layout.section_layouts.get(output_section_id::INIT_ARRAY);
+    let has_init_array = init_array_layout.mem_size > 0;
     if has_data {
         let mut data_nsects = if has_tvars { 2u32 } else { 0 };
         if has_rustc { data_nsects += 1; }
+        if has_init_array { data_nsects += 1; }
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
     }
     add_cmd(&mut ncmds, &mut cmdsize, 72); // LINKEDIT
@@ -945,7 +985,15 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_MAIN
     }
     if !is_dylib { add_cmd(&mut ncmds, &mut cmdsize, dylinker_cmd_size); }
-    add_cmd(&mut ncmds, &mut cmdsize, dylib_cmd_size);
+    add_cmd(&mut ncmds, &mut cmdsize, dylib_cmd_size); // libSystem
+    let extra_dylibs = &layout.symbol_db.args.extra_dylibs;
+    let extra_dylib_sizes: Vec<u32> = extra_dylibs
+        .iter()
+        .map(|p| align8(24 + p.len() as u32 + 1))
+        .collect();
+    for &sz in &extra_dylib_sizes {
+        add_cmd(&mut ncmds, &mut cmdsize, sz);
+    }
     add_cmd(&mut ncmds, &mut cmdsize, 24); // SYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 80); // DYSYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 32);
@@ -984,6 +1032,7 @@ fn write_headers(
     if has_data {
         let mut nsects = if has_tvars { 2u32 } else { 0 };
         if has_rustc { nsects += 1; }
+        if has_init_array { nsects += 1; }
         let data_cmd_size = 72 + 80 * nsects;
         w.u32(LC_SEGMENT_64); w.u32(data_cmd_size); w.name16(b"__DATA");
         w.u64(data_vmaddr); w.u64(data_vmsize); w.u64(data_fileoff); w.u64(data_filesize);
@@ -1058,6 +1107,16 @@ fn write_headers(
             w.u32(0); w.u32(0);
             w.u32(0); w.u32(0); w.u32(0); w.u32(0);
         }
+        if has_init_array {
+            let ia_foff = vm_addr_to_file_offset(init_array_layout.mem_offset, mappings)
+                .unwrap_or(data_fileoff as usize) as u32;
+            w.name16(b"__mod_init_func"); w.name16(b"__DATA");
+            w.u64(init_array_layout.mem_offset); w.u64(init_array_layout.mem_size);
+            w.u32(ia_foff); w.u32(3); // align 2^3 = 8
+            w.u32(0); w.u32(0);
+            w.u32(0x09); // S_MOD_INIT_FUNC_POINTERS
+            w.u32(0); w.u32(0); w.u32(0);
+        }
     }
 
     let (last_file_end, linkedit_vm) = if has_data {
@@ -1068,6 +1127,7 @@ fn write_headers(
     let cf_offset = last_file_end;
     let cf_size = chained_fixups_data_size as u64;
 
+    // LINKEDIT vmsize must cover the full content (fixups + symtab + exports).
     let linkedit_vmsize = align_to((buf_len as u64).saturating_sub(last_file_end).max(PAGE_SIZE), PAGE_SIZE);
     w.segment(b"__LINKEDIT", linkedit_vm, linkedit_vmsize, last_file_end, cf_size, VM_PROT_READ, VM_PROT_READ, 0);
 
@@ -1100,6 +1160,11 @@ fn write_headers(
 
     w.u32(LC_LOAD_DYLIB); w.u32(dylib_cmd_size); w.u32(24); w.u32(2);
     w.u32(0x01_0000); w.u32(0x01_0000); w.bytes(LIBSYSTEM_PATH); w.u8(0); w.pad8();
+
+    for (i, dylib_path) in extra_dylibs.iter().enumerate() {
+        w.u32(LC_LOAD_DYLIB); w.u32(extra_dylib_sizes[i]); w.u32(24); w.u32(2);
+        w.u32(0x01_0000); w.u32(0x01_0000); w.bytes(dylib_path); w.u8(0); w.pad8();
+    }
 
     w.u32(LC_SYMTAB); w.u32(24); w.u32(0); w.u32(0); w.u32(0); w.u32(0);
     w.u32(LC_DYSYMTAB); w.u32(80); for _ in 0..18 { w.u32(0); }

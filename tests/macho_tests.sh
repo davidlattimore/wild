@@ -346,6 +346,42 @@ else
     echo "  SKIP: rust-hello-world (rustc not available or link failed)"
 fi
 
+# --- Test 4o2: Rust dylib with complex std (HashMap, Vec, format) ---
+echo "Test 4o2: Rust dylib with complex std usage"
+cat > "$TMPDIR/t4o2.rs" << 'EOF'
+use std::collections::HashMap;
+#[no_mangle]
+pub extern "C" fn complex_test() -> i32 {
+    let mut map = HashMap::new();
+    map.insert("hello".to_string(), 10);
+    map.insert("world".to_string(), 32);
+    let sum: i32 = map.values().sum();
+    let msg = format!("sum={}", sum);
+    if msg.contains("42") { sum } else { -1 }
+}
+EOF
+if rustc "$TMPDIR/t4o2.rs" --crate-type dylib -Clinker=clang "-Clink-arg=-fuse-ld=$WILD" -o "$TMPDIR/t4o2.dylib" 2>/dev/null; then
+    # Test via dlopen
+    cat > "$TMPDIR/t4o2_test.c" << 'LOADEOF'
+#include <dlfcn.h>
+#include <stdio.h>
+int main() {
+    void *h = dlopen("DYLIB_PATH", RTLD_NOW);
+    if (!h) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 1; }
+    int (*fn)(void) = dlsym(h, "complex_test");
+    if (!fn) { fprintf(stderr, "dlsym: %s\n", dlerror()); dlclose(h); return 1; }
+    int r = fn();
+    dlclose(h);
+    return r == 42 ? 42 : 1;
+}
+LOADEOF
+    sed -i '' "s|DYLIB_PATH|$TMPDIR/t4o2.dylib|" "$TMPDIR/t4o2_test.c"
+    clang "$TMPDIR/t4o2_test.c" -o "$TMPDIR/t4o2_test"
+    check_exit "$TMPDIR/t4o2_test" 42 "rust-dylib-complex-std"
+else
+    echo "  SKIP: rust-dylib-complex-std (rustc not available or link failed)"
+fi
+
 # --- Test 4p: Rust proc-macro (requires dylib .rustc section) ---
 echo "Test 4p: Rust proc-macro crate"
 PROC_DIR="$TMPDIR/procmacro"
