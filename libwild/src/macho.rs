@@ -1119,7 +1119,7 @@ impl platform::Platform for MachO {
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
         sizes.increment(
             part_id::DYLINKER,
-            (size_of::<DylinkerCommand>() + (DYLINKER_PATH.len()).next_multiple_of(4)) as u64,
+            ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u64,
         );
     }
 
