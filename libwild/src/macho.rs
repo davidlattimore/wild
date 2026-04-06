@@ -67,6 +67,7 @@ pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
 pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
 pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
+pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -1250,15 +1251,22 @@ impl platform::Platform for MachO {
         file_offset: &mut usize,
         mem_offset: &mut u64,
     ) {
-        if matches!(
-            segment_def.segment_type,
+        match segment_def.segment_type {
             SegmentType::Text
-                | SegmentType::DataSections
-                | SegmentType::DataConstSections
-                | SegmentType::LinkeditSections
-        ) {
-            *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
-            *mem_offset = segment_alignment.align_up(*mem_offset);
+            | SegmentType::DataSections
+            | SegmentType::DataConstSections
+            | SegmentType::LinkeditSections => {
+                *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
+                *mem_offset = segment_alignment.align_up(*mem_offset);
+            }
+            SegmentType::TextSections => {
+                // We allocate a placeholder space for the LinkeditDataCommand command (added by
+                // codesign tool) in order to preserve the offsets into __text and
+                // other sections in the __TEXT segment.
+                *file_offset += size_of::<CodeSignatureCommand>();
+                *mem_offset += size_of::<CodeSignatureCommand>() as u64;
+            }
+            _ => {}
         }
     }
 }
