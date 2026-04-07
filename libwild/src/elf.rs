@@ -1889,7 +1889,7 @@ impl platform::Platform for Elf {
             }
             _ => {}
         }
-        if let Some(_) = section_name.strip_prefix(b".debug_") {
+        if section_name.strip_prefix(b".debug_").is_some() {
             return SectionRuleOutcome::Debug;
         }
         SectionRuleOutcome::Custom
