@@ -142,8 +142,8 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     write_entry_point_command::<A>(layout, entry_point_command);
 
     let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
-        from_bytes_mut(buffers.get_mut(part_id::DYLINKER))
-            .map_err(|_| error!("Invalid DYLINKER command allocation"))?;
+        from_bytes_mut(buffers.get_mut(part_id::INTERP))
+            .map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
 
     let chained_fixups_command: &mut DyldChainedFixupsCommand =

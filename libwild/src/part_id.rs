@@ -53,11 +53,10 @@ pub(crate) const TEXT_SEGMENT: PartId = PartId(32);
 pub(crate) const DATA_SEGMENT: PartId = PartId(33);
 pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(34);
 pub(crate) const ENTRY_POINT: PartId = PartId(35);
-pub(crate) const DYLINKER: PartId = PartId(36);
-pub(crate) const DYLD_CHAINED_FIXUPS: PartId = PartId(37);
-pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(38);
+pub(crate) const DYLD_CHAINED_FIXUPS: PartId = PartId(36);
+pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(37);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 39;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 38;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

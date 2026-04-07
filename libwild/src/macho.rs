@@ -725,7 +725,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::DATA_SEGMENT
             | output_section_id::LINK_EDIT_SEGMENT
             | output_section_id::ENTRY_POINT
-            | output_section_id::DYLINKER
+            | output_section_id::INTERP
             | output_section_id::DYLD_CHAINED_FIXUPS => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
@@ -1166,7 +1166,7 @@ impl platform::Platform for MachO {
         );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
         sizes.increment(
-            part_id::DYLINKER,
+            part_id::INTERP,
             ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u64,
         );
         sizes.increment(
@@ -1285,7 +1285,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::DATA_SEGMENT);
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
-        builder.add_section(output_section_id::DYLINKER);
+        builder.add_section(output_section_id::INTERP); // DYLINKER
         builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
@@ -1366,7 +1366,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
-    defs[output_section_id::DYLINKER.as_usize()] = BuiltInSectionDetails {
+    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
