@@ -4591,6 +4591,7 @@ fn layout_section_parts<P: Platform>(
                         .copied()
                         .unwrap_or_else(|| args.loadable_segment_alignment());
                     if let Some(location) = pending_location.take() {
+                        // The OrderEvent::SetLocation is ELF-specific only.
                         mem_offset = location.address;
                         file_offset =
                             segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
