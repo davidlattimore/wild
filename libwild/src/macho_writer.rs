@@ -128,11 +128,6 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         .0;
     populate_file_header::<A>(layout, &prelude.header_info, header);
 
-    let pagezero_command: &mut SegmentCommand =
-        from_bytes_mut(buffers.get_mut(part_id::PAGEZERO_SEGMENT))
-            .map_err(|_| error!("Invalid PAGEZERO segment allocation"))?
-            .0;
-    write_pagezero_command::<A>(pagezero_command);
     write_segment_commands::<A>(layout, buffers)?;
 
     let entry_point_command: &mut EntryPointCommand =
@@ -194,20 +189,6 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     header.reserved = U32::new(LE, 0);
 }
 
-fn write_pagezero_command<A: Arch<Platform = MachO>>(command: &mut SegmentCommand) {
-    command.cmd.set(LE, LC_SEGMENT_64);
-    command.cmdsize.set(LE, size_of::<SegmentCommand>() as u32);
-    command.segname[..SEG_PAGEZERO.len()].copy_from_slice(SEG_PAGEZERO.as_bytes());
-    command.vmaddr.set(LE, 0);
-    command.vmsize.set(LE, MACHO_START_MEM_ADDRESS);
-    command.fileoff.set(LE, 0);
-    command.filesize.set(LE, 0);
-    command.maxprot.set(LE, 0);
-    command.initprot.set(LE, 0);
-    command.nsects.set(LE, 0);
-    command.flags.set(LE, 0);
-}
-
 fn split_segment_command_buffer(
     bytes: &mut [u8],
     section_count: usize,
@@ -226,107 +207,150 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    for (part_id, seg_name, segment_type, segment_sections_type) in [
-        (
-            part_id::TEXT_SEGMENT,
-            SEG_TEXT,
-            SegmentType::Text,
-            SegmentType::TextSections,
-        ),
-        (
-            part_id::DATA_SEGMENT,
-            SEG_DATA,
-            SegmentType::DataSections,
-            SegmentType::DataSections,
-        ),
-        (
-            part_id::LINK_EDIT_SEGMENT,
-            SEG_LINKEDIT,
-            SegmentType::LinkeditSections,
-            SegmentType::LinkeditSections,
-        ),
-    ] {
-        // TODO: write comments
-        let segment_sections = get_segment_sections(layout, segment_sections_type).segment_sections;
-        let segment_size = get_segment_sections(layout, segment_type).segment_size;
+    let (pagezero_segment, pagezero_sections) =
+        split_segment_command_buffer(buffers.get_mut(part_id::PAGEZERO_SEGMENT), 0)?;
+    write_segment(
+        layout,
+        part_id::PAGEZERO_SEGMENT,
+        SEG_PAGEZERO,
+        pagezero_segment,
+        0,
+        0,
+        0,
+        MACHO_START_MEM_ADDRESS,
+        pagezero_sections.len(),
+    );
 
-        let section_count = if segment_sections_type == SegmentType::LinkeditSections {
-            0
-        } else {
-            segment_sections.len()
-        };
-        let (segment_cmd, sections) =
-            split_segment_command_buffer(buffers.get_mut(part_id), section_count)?;
+    let text_segment_sections =
+        get_segment_sections(layout, SegmentType::TextSections).segment_sections;
+    // The __TEXT segment in the layout includes also all the commands!
+    let text_segment_size = get_segment_sections(layout, SegmentType::Text).segment_size;
+    let (text_segment, text_sections) = split_segment_command_buffer(
+        buffers.get_mut(part_id::TEXT_SEGMENT),
+        text_segment_sections.len(),
+    )?;
+    write_segment(
+        layout,
+        part_id::TEXT_SEGMENT,
+        SEG_TEXT,
+        text_segment,
+        text_segment_size.file_offset as u64,
+        text_segment_size.file_size as u64,
+        text_segment_size.mem_offset,
+        text_segment_size.mem_size,
+        text_segment_sections.len(),
+    );
+    write_sections(SEG_TEXT, text_sections, &text_segment_sections)?;
 
-        let prot_flags = layout
-            .output_sections
-            .section_flags(part_id.output_section_id())
-            .raw();
+    let data_segment_sections =
+        get_segment_sections(layout, SegmentType::DataSections).segment_sections;
+    let data_segment_size = get_segment_sections(layout, SegmentType::DataSections).segment_size;
+    let (data_segment, data_sections) = split_segment_command_buffer(
+        buffers.get_mut(part_id::DATA_SEGMENT),
+        data_segment_sections.len(),
+    )?;
+    write_segment(
+        layout,
+        part_id::DATA_SEGMENT,
+        SEG_DATA,
+        data_segment,
+        data_segment_size.file_offset as u64,
+        data_segment_size.file_size as u64,
+        data_segment_size.mem_offset,
+        data_segment_size.mem_size,
+        data_segment_sections.len(),
+    );
+    write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
 
-        segment_cmd.cmd.set(LE, LC_SEGMENT_64);
-        segment_cmd.cmdsize.set(
-            LE,
-            (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * section_count) as u32,
-        );
-        segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-        segment_cmd.segname[seg_name.len()..].zero();
-        segment_cmd.vmaddr.set(LE, segment_size.mem_offset);
-        segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
+    let linkedit_segment_size =
+        get_segment_sections(layout, SegmentType::LinkeditSections).segment_size;
+    let (linkedit_segment, linkedit_sections) =
+        split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?;
+    write_segment(
+        layout,
+        part_id::LINK_EDIT_SEGMENT,
+        SEG_LINKEDIT,
+        linkedit_segment,
+        linkedit_segment_size.file_offset as u64,
+        linkedit_segment_size.file_size as u64,
+        linkedit_segment_size.mem_offset,
+        linkedit_segment_size.mem_size,
+        // The sections in the __LINKEDIT are "hidden".
+        0,
+    );
 
-        if segment_sections_type == SegmentType::LinkeditSections {
-            // The last segment's (__LINKEDIT) size does not have to be exactly page aligned.
-            segment_cmd.vmsize.set(LE, segment_size.mem_size);
-            segment_cmd.filesize.set(LE, segment_size.file_size as u64);
-        } else {
-            segment_cmd.vmsize.set(
-                LE,
-                segment_size
-                    .mem_size
-                    .next_multiple_of(MACHO_PAGE_ALIGNMENT.value()),
-            );
-            segment_cmd.filesize.set(
-                LE,
-                segment_size
-                    .file_size
-                    .next_multiple_of(MACHO_PAGE_ALIGNMENT.value() as usize) as u64,
-            );
-        }
-        segment_cmd.maxprot.set(LE, prot_flags);
-        segment_cmd.initprot.set(LE, prot_flags);
-        segment_cmd.nsects.set(LE, segment_sections.len() as u32);
-        segment_cmd.flags.set(LE, 0);
+    Ok(())
+}
 
-        // The sections in __LINKEDIT are actually hidden and must be hidden
-        // (not exposed in the SEGMENT).
-        if segment_sections_type == SegmentType::LinkeditSections {
-            segment_cmd.nsects.set(LE, 0);
-        } else {
-            segment_cmd.nsects.set(LE, segment_sections.len() as u32);
-            for (section, (size, section_name, section_flags)) in
-                sections.iter_mut().zip(segment_sections)
-            {
-                let section_name = section_name
-                    .ok_or_else(|| error!("section name must be known"))?
-                    .0;
+fn write_segment(
+    layout: &MachOLayout,
+    part_id: part_id::PartId,
+    seg_name: &str,
+    segment_cmd: &mut SegmentCommand,
+    file_offset: u64,
+    file_size: u64,
+    mem_offset: u64,
+    mem_size: u64,
+    section_count: usize,
+) {
+    let prot_flags = layout
+        .output_sections
+        .section_flags(part_id.output_section_id())
+        .raw();
 
-                section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
-                section.segname[seg_name.len()..].zero();
-                section.sectname[..section_name.len()].copy_from_slice(section_name);
-                section.sectname[section_name.len()..].zero();
-                section.addr.set(LE, size.mem_offset);
-                section.size.set(LE, size.mem_size);
-                section.offset.set(LE, size.file_offset as u32);
-                // TODO
-                section.align.set(LE, 0);
-                section.reloff.set(LE, 0);
-                section.nreloc.set(LE, 0);
-                section.flags.set(LE, section_flags.raw());
-                section.reserved1.set(LE, 0);
-                section.reserved2.set(LE, 0);
-                section.reserved3.set(LE, 0);
-            }
-        }
+    segment_cmd.cmd.set(LE, LC_SEGMENT_64);
+    segment_cmd.cmdsize.set(
+        LE,
+        (size_of::<SegmentCommand>() + size_of::<SectionEntry>() * section_count) as u32,
+    );
+    segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+    segment_cmd.segname[seg_name.len()..].zero();
+    segment_cmd.fileoff.set(LE, file_offset);
+    segment_cmd.filesize.set(LE, file_size);
+    segment_cmd.vmaddr.set(LE, mem_offset);
+    segment_cmd.vmsize.set(LE, mem_size);
+    segment_cmd.maxprot.set(LE, prot_flags);
+    segment_cmd.initprot.set(LE, prot_flags);
+    segment_cmd.nsects.set(LE, section_count as u32);
+    segment_cmd.flags.set(LE, 0);
+}
+
+fn write_sections(
+    seg_name: &str,
+    sections: &mut [SectionEntry],
+    segment_sections: &[(
+        OutputRecordLayout,
+        Option<SectionName<'_>>,
+        crate::macho::SectionFlags,
+    )],
+) -> Result {
+    if sections.is_empty() {
+        return Ok(());
     }
+
+    for (section, (size, section_name, section_flags)) in sections.iter_mut().zip(segment_sections)
+    {
+        let section_name = section_name
+            .ok_or_else(|| error!("section name must be known"))?
+            .0;
+
+        section.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
+        section.segname[seg_name.len()..].zero();
+        section.sectname[..section_name.len()].copy_from_slice(section_name);
+        section.sectname[section_name.len()..].zero();
+        section.addr.set(LE, size.mem_offset);
+        section.size.set(LE, size.mem_size);
+        section.offset.set(LE, size.file_offset as u32);
+        // TODO
+        section.align.set(LE, 0);
+        section.reloff.set(LE, 0);
+        section.nreloc.set(LE, 0);
+        section.flags.set(LE, section_flags.raw());
+        section.reserved1.set(LE, 0);
+        section.reserved2.set(LE, 0);
+        section.reserved3.set(LE, 0);
+    }
+
     Ok(())
 }
 
