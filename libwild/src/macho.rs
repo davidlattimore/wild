@@ -334,7 +334,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         _resources: &crate::layout::GraphResources<'data, '_, MachO>,
     ) -> bool {
-        false
+        true
     }
 
     fn verneed_table(&self) -> crate::error::Result<VerneedTable<'data>> {
@@ -417,7 +417,6 @@ impl platform::SectionHeader for SectionHeader {
         if segname == b"__LD" {
             return true;
         }
-        // __eh_frame is included — SUBTRACTOR relocation pairs are now handled.
         false
     }
 
@@ -1026,13 +1025,17 @@ impl platform::Platform for MachO {
             Ok(r) => r,
             Err(_) => return Ok(()),
         };
+        let mut after_subtractor = false;
         for reloc_raw in relocs {
             let reloc = reloc_raw.info(le);
             if !reloc.r_extern {
                 continue;
             }
-            // Skip ADDEND (type 10) and SUBTRACTOR (type 1)
-            if reloc.r_type == 10 || reloc.r_type == 1 {
+            if reloc.r_type == 10 { // ADDEND
+                continue;
+            }
+            if reloc.r_type == 1 { // SUBTRACTOR
+                after_subtractor = true;
                 continue;
             }
 
@@ -1040,16 +1043,19 @@ impl platform::Platform for MachO {
             let local_symbol_id = state.symbol_id_range.input_to_id(sym_idx);
             let symbol_id = resources.symbol_db.definition(local_symbol_id);
 
-            // Set resolution flags based on relocation type
-            let is_undef = resources.symbol_db.is_undefined(symbol_id);
+            let is_def_undef = resources.symbol_db.is_undefined(symbol_id);
+            let is_ref_undef = resources.symbol_db.is_undefined(local_symbol_id);
             let flags_to_add = match reloc.r_type {
-                5 | 6 => crate::value_flags::ValueFlags::GOT, // GOT_LOAD
-                2 if is_undef => {
-                    // BRANCH26 to undefined symbol needs a stub (PLT) + GOT entry
+                5 | 6 | 7 => crate::value_flags::ValueFlags::GOT, // GOT_LOAD / POINTER_TO_GOT
+                2 if is_def_undef => {
                     crate::value_flags::ValueFlags::PLT | crate::value_flags::ValueFlags::GOT
                 }
+                // UNSIGNED after SUBTRACTOR: personality pointers in __eh_frame CIE
+                // entries need GOT if the referenced symbol is undefined (from a dylib).
+                0 if after_subtractor && is_ref_undef => crate::value_flags::ValueFlags::GOT,
                 _ => crate::value_flags::ValueFlags::DIRECT,
             };
+            after_subtractor = false;
             let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
             let previous_flags = atomic_flags.fetch_or(flags_to_add);
 
@@ -1315,8 +1321,9 @@ impl platform::Platform for MachO {
             mem_sizes.increment(crate::part_id::PLT_GOT, 12);
             // Each stub needs a GOT entry (8 bytes) for the dyld bind target
             mem_sizes.increment(crate::part_id::GOT, 8);
+        } else if flags.needs_got() {
+            mem_sizes.increment(crate::part_id::GOT, 8);
         }
-        // For same-image symbols, GOT_LOAD is relaxed to ADRP+ADD (no GOT needed)
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -1368,6 +1375,10 @@ impl platform::Platform for MachO {
             let plt_addr = *memory_offsets.get(crate::part_id::PLT_GOT);
             *memory_offsets.get_mut(crate::part_id::PLT_GOT) += 12;
             plt_address = Some(plt_addr);
+        } else if flags.needs_got() {
+            let got_addr = *memory_offsets.get(crate::part_id::GOT);
+            *memory_offsets.get_mut(crate::part_id::GOT) += 8;
+            got_address = Some(got_addr);
         }
 
         crate::layout::Resolution {
@@ -1458,9 +1469,9 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__got", output_section_id::DATA),
         // TLS descriptors go in TDATA (after GOT), init data follows.
         // This separates TLS bind fixups from GOT bind fixups in the chain.
-        // __thread_vars (descriptors) goes in GOT section to separate from __thread_data.
-        // Both are in the DATA segment but must not overlap.
-        SectionRule::exact_section(b"__thread_vars", output_section_id::GOT),
+        // __thread_vars must NOT share the GOT output section — GOT-only entries
+        // (e.g. for __eh_frame personality pointers) would overlap with TLV descriptors.
+        SectionRule::exact_section(b"__thread_vars", output_section_id::DATA),
         SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
         SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
         // Constructor/destructor function pointer arrays (Mach-O equivalent of

@@ -160,6 +160,8 @@ struct ImportEntry {
     name: Vec<u8>,
     /// 1 = libSystem, 2+ = extra dylibs, 0xFE = flat lookup (search all dylibs).
     lib_ordinal: u8,
+    /// If true, dyld won't error if this symbol isn't found (weak import).
+    weak_import: bool,
 }
 
 /// Determine the lib ordinal for a symbol name.
@@ -214,7 +216,8 @@ fn write_macho<A: Arch<Platform = MachO>>(
     )?;
 
     // Populate GOT entries for non-import symbols
-    write_got_entries(out, layout, mappings, &mut rebase_fixups)?;
+    write_got_entries(out, layout, mappings, &mut rebase_fixups,
+        &mut bind_fixups, &mut imports, has_extra_dylibs)?;
 
     // Build chained fixup data: merge rebase + bind, encode per-page chains
     rebase_fixups.sort_by_key(|f| f.file_offset);
@@ -630,9 +633,13 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
                 Ok(n) => n.bytes().to_vec(),
                 Err(_) => b"<unknown>".to_vec(),
             };
+            // TODO: detect weak imports (N_WEAK_REF) and set weak_import=true
+            // so dyld doesn't error when the symbol isn't found at runtime.
+            let weak = false;
             imports.push(ImportEntry {
                 name,
                 lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
+                weak_import: weak,
             });
             bind_fixups.push(BindFixup {
                 file_offset: got_file_off,
@@ -650,27 +657,46 @@ fn write_got_entries(
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
     rebase_fixups: &mut Vec<RebaseFixup>,
+    bind_fixups: &mut Vec<BindFixup>,
+    imports: &mut Vec<ImportEntry>,
+    has_extra_dylibs: bool,
 ) -> Result {
-    for res in layout.symbol_resolutions.iter().flatten() {
+    use crate::symbol_db::SymbolId;
+
+    for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
+        let Some(res) = res else { continue };
         if res.format_specific.plt_address.is_some() {
             continue;
         } // handled by stubs
         if let Some(got_vm_addr) = res.format_specific.got_address {
             if let Some(file_off) = vm_addr_to_file_offset(got_vm_addr, mappings) {
-                if file_off + 8 <= out.len() {
-                    out[file_off..file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
-                    // Register a rebase fixup so dyld adjusts for ASLR
-                    if res.raw_value != 0 {
-                        rebase_fixups.push(RebaseFixup {
-                            file_offset: file_off,
-                            target: res.raw_value,
-                        });
-                    }
+                if file_off + 8 > out.len() {
+                    continue;
                 }
                 if res.raw_value != 0 {
+                    // Defined symbol: write value and create rebase fixup for ASLR.
+                    out[file_off..file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
                     rebase_fixups.push(RebaseFixup {
                         file_offset: file_off,
                         target: res.raw_value,
+                    });
+                } else {
+                    // Undefined symbol with GOT entry (e.g. personality pointer
+                    // from __eh_frame): create a bind fixup so dyld fills the GOT.
+                    let symbol_id = SymbolId::from_usize(sym_idx);
+                    let name = match layout.symbol_db.symbol_name(symbol_id) {
+                        Ok(n) => n.bytes().to_vec(),
+                        Err(_) => continue,
+                    };
+                    let import_index = imports.len() as u32;
+                    imports.push(ImportEntry {
+                        name,
+                        lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
+                        weak_import: false,
+                    });
+                    bind_fixups.push(BindFixup {
+                        file_offset: file_off,
+                        import_index,
                     });
                 }
             }
@@ -680,6 +706,197 @@ fn write_got_entries(
 }
 
 /// Copy an object's section data to the output and apply relocations.
+/// Write __eh_frame data with FDE filtering: only include FDEs whose target
+/// function is in a loaded section.
+fn write_filtered_eh_frame(
+    out: &mut [u8],
+    file_offset: usize,
+    output_addr: u64,
+    input_data: &[u8],
+    input_section: &object::macho::Section64<object::Endianness>,
+    obj: &ObjectLayout<'_, MachO>,
+    layout: &Layout<'_, MachO>,
+    le: object::Endianness,
+    rebase_fixups: &mut Vec<RebaseFixup>,
+    bind_fixups: &mut Vec<BindFixup>,
+    imports: &mut Vec<ImportEntry>,
+    has_extra_dylibs: bool,
+) -> Result {
+    use crate::eh_frame::EhFrameEntryPrefix;
+    use object::read::macho::Nlist as _;
+    use object::read::macho::Section as MachOSection;
+    use std::mem::size_of;
+    use std::mem::size_of_val;
+    use zerocopy::FromBytes;
+
+    let relocs = input_section.relocations(le, obj.object.data).unwrap_or(&[]);
+
+    const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
+    let mut input_pos = 0;
+    let mut output_pos = 0;
+    let mut cie_offset_map = std::collections::HashMap::new();
+
+    // First pass: determine which entries to keep and build a compacted copy.
+    while input_pos + PREFIX_LEN <= input_data.len() {
+        let prefix = EhFrameEntryPrefix::read_from_bytes(
+            &input_data[input_pos..input_pos + PREFIX_LEN],
+        )
+        .unwrap();
+        let size = size_of_val(&prefix.length) + prefix.length as usize;
+        let next_input = input_pos + size;
+        if next_input > input_data.len() {
+            break;
+        }
+
+        let keep = if prefix.cie_id == 0 {
+            // CIE: always keep
+            cie_offset_map.insert(input_pos as u32, output_pos as u32);
+            true
+        } else {
+            // FDE: check if target function section is loaded
+            let mut loaded = false;
+            for reloc_raw in relocs {
+                let reloc = reloc_raw.info(le);
+                let r_off = reloc.r_address as usize;
+                if r_off >= input_pos && r_off < next_input {
+                    let is_pc_begin = (r_off - input_pos) == crate::eh_frame::FDE_PC_BEGIN_OFFSET;
+                    if is_pc_begin && reloc.r_extern {
+                        let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+                        if let Ok(sym) = obj.object.symbols.symbol(sym_idx) {
+                            let n_sect = sym.n_sect();
+                            if n_sect > 0 {
+                                let sec_idx = n_sect as usize - 1;
+                                loaded = obj.section_resolutions.get(sec_idx)
+                                    .and_then(|r| r.address())
+                                    .is_some();
+                            }
+                        }
+                    }
+                }
+            }
+            loaded
+        };
+
+        if keep {
+            let dest = file_offset + output_pos;
+            if dest + size <= out.len() {
+                out[dest..dest + size].copy_from_slice(&input_data[input_pos..next_input]);
+
+                // Rewrite CIE pointer in FDEs
+                if prefix.cie_id != 0 {
+                    let cie_ptr_input = input_pos as u32 + 4;
+                    let input_cie = cie_ptr_input.wrapping_sub(prefix.cie_id);
+                    if let Some(&output_cie) = cie_offset_map.get(&input_cie) {
+                        let new_ptr = output_pos as u32 + 4 - output_cie;
+                        let p = dest + 4;
+                        if p + 4 <= out.len() {
+                            out[p..p + 4].copy_from_slice(&new_ptr.to_le_bytes());
+                        }
+                    }
+                }
+            }
+            output_pos += size;
+        }
+        input_pos = next_input;
+    }
+
+    // Zero remaining space
+    let remaining = file_offset + output_pos;
+    let end = file_offset + input_data.len();
+    if remaining < end && end <= out.len() {
+        out[remaining..end].fill(0);
+    }
+
+    // Second pass: apply relocations to the compacted data.
+    // Build a mapping from input reloc offsets to output offsets.
+    // For simplicity, re-scan entries and apply relocs for kept entries.
+    input_pos = 0;
+    output_pos = 0;
+    let mut cie_map2 = std::collections::HashMap::new();
+
+    while input_pos + PREFIX_LEN <= input_data.len() {
+        let prefix = EhFrameEntryPrefix::read_from_bytes(
+            &input_data[input_pos..input_pos + PREFIX_LEN],
+        )
+        .unwrap();
+        let size = size_of_val(&prefix.length) + prefix.length as usize;
+        let next_input = input_pos + size;
+        if next_input > input_data.len() {
+            break;
+        }
+
+        let keep = if prefix.cie_id == 0 {
+            cie_map2.insert(input_pos as u32, output_pos as u32);
+            true
+        } else {
+            let mut loaded = false;
+            for reloc_raw in relocs {
+                let reloc = reloc_raw.info(le);
+                let r_off = reloc.r_address as usize;
+                if r_off >= input_pos && r_off < next_input {
+                    let is_pc = (r_off - input_pos) == crate::eh_frame::FDE_PC_BEGIN_OFFSET;
+                    if is_pc && reloc.r_extern {
+                        let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+                        if let Ok(sym) = obj.object.symbols.symbol(sym_idx) {
+                            let n = sym.n_sect();
+                            if n > 0 {
+                                loaded = obj.section_resolutions.get(n as usize - 1)
+                                    .and_then(|r| r.address()).is_some();
+                            }
+                        }
+                    }
+                }
+            }
+            loaded
+        };
+
+        if keep {
+            // Collect relocs for this entry and apply them at their output positions
+            let entry_relocs: Vec<_> = relocs.iter()
+                .filter(|r| {
+                    let off = r.info(le).r_address as usize;
+                    off >= input_pos && off < next_input
+                })
+                .collect();
+
+            // Create adjusted relocs with output-relative addresses
+            let adjusted: Vec<object::macho::Relocation<object::Endianness>> = entry_relocs.iter()
+                .map(|r| {
+                    let mut copy = **r;
+                    let info = r.info(le);
+                    let new_addr = info.r_address as usize - input_pos + output_pos;
+                    // Reconstruct the raw relocation with adjusted address
+                    // The address is in the first 3 bytes of the first u32
+                    let _r_word0 = copy.r_word0.get(le);
+                    let new_word0 = new_addr as u32;
+                    copy.r_word0.set(le, new_word0);
+                    copy
+                })
+                .collect();
+
+            if !adjusted.is_empty() {
+                apply_relocations(
+                    out,
+                    file_offset,
+                    output_addr,
+                    &adjusted,
+                    obj,
+                    layout,
+                    le,
+                    rebase_fixups,
+                    bind_fixups,
+                    imports,
+                    has_extra_dylibs,
+                )?;
+            }
+            output_pos += size;
+        }
+        input_pos = next_input;
+    }
+
+    Ok(())
+}
+
 fn write_object_sections(
     out: &mut [u8],
     obj: &ObjectLayout<'_, MachO>,
@@ -722,6 +939,17 @@ fn write_object_sections(
             Some(d) => d,
             None => continue,
         };
+
+        // For __eh_frame: filter FDEs, only keeping those for loaded sections.
+        let sectname = crate::macho::trim_nul(input_section.sectname());
+        if sectname == b"__eh_frame" {
+            write_filtered_eh_frame(
+                out, file_offset, output_addr, input_data,
+                input_section, obj, layout, le,
+                rebase_fixups, bind_fixups, imports, has_extra_dylibs,
+            )?;
+            continue;
+        }
 
         if file_offset + input_size <= out.len() {
             out[file_offset..file_offset + input_size].copy_from_slice(input_data);
@@ -775,9 +1003,26 @@ fn apply_relocations(
             let sub_addr = if reloc.r_extern {
                 let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
                 let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
-                layout.merged_symbol_resolution(sym_id)
-                    .map(|r| r.raw_value)
-                    .unwrap_or(0)
+                match layout.merged_symbol_resolution(sym_id) {
+                    Some(r) if r.raw_value != 0 => r.raw_value,
+                    _ => {
+                        // Local temp label without a global resolution.
+                        // Compute from section base + symbol offset.
+                        use object::read::macho::Nlist as _;
+                        let sym = obj.object.symbols.symbol(sym_idx).ok();
+                        if let Some(sym) = sym {
+                            let n_sect = sym.n_sect();
+                            if n_sect > 0 {
+                                let sec_idx = n_sect as usize - 1;
+                                let sec_out = obj.section_resolutions.get(sec_idx)
+                                    .and_then(|r| r.address()).unwrap_or(0);
+                                let sec_in = obj.object.sections.get(sec_idx)
+                                    .map(|s| s.addr.get(le)).unwrap_or(0);
+                                sec_out + sym.n_value(le).wrapping_sub(sec_in)
+                            } else { 0 }
+                        } else { 0 }
+                    }
+                }
             } else {
                 let sec_ord = reloc.r_symbolnum as usize;
                 if sec_ord > 0 {
@@ -803,12 +1048,35 @@ fn apply_relocations(
             let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
             let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
             match layout.merged_symbol_resolution(sym_id) {
-                Some(res) => (
+                Some(res) if res.raw_value != 0 => (
                     res.raw_value,
                     res.format_specific.got_address,
                     res.format_specific.plt_address,
                 ),
-                None => continue,
+                other => {
+                    // Symbol has no global resolution (or raw_value=0).
+                    // Try computing from section base + symbol offset
+                    // (handles local labels like GCC_except_table*, ltmp*).
+                    use object::read::macho::Nlist as _;
+                    let fallback = obj.object.symbols.symbol(sym_idx).ok().and_then(|sym| {
+                        let n_sect = sym.n_sect();
+                        if n_sect == 0 { return None; }
+                        let sec_idx = n_sect as usize - 1;
+                        let sec_out = obj.section_resolutions.get(sec_idx)?.address()?;
+                        let sec_in = obj.object.sections.get(sec_idx)
+                            .map(|s| s.addr.get(le))?;
+                        Some(sec_out + sym.n_value(le).wrapping_sub(sec_in))
+                    });
+                    if let Some(addr) = fallback {
+                        let got = other.and_then(|r| r.format_specific.got_address);
+                        let plt = other.and_then(|r| r.format_specific.plt_address);
+                        (addr, got, plt)
+                    } else if let Some(res) = other {
+                        (res.raw_value, res.format_specific.got_address, res.format_specific.plt_address)
+                    } else {
+                        continue;
+                    }
+                }
             }
         } else {
             // Non-extern: r_symbolnum is 1-based section ordinal.
@@ -892,11 +1160,14 @@ fn apply_relocations(
                 // ARM64_RELOC_UNSIGNED 64-bit.
                 // If preceded by a SUBTRACTOR, compute difference:
                 //   result = target_addr - subtrahend + existing_content
+                // For GOT-indirect pointers (e.g. __eh_frame personality),
+                // use the GOT entry address instead of the symbol address.
                 if let Some(sub_addr) = pending_subtrahend.take() {
                     if patch_file_offset + 8 <= out.len() {
+                        let effective_target = got_addr.unwrap_or(target_addr);
                         let existing = i64::from_le_bytes(
                             out[patch_file_offset..patch_file_offset + 8].try_into().unwrap());
-                        let val = target_addr as i64 - sub_addr as i64 + existing;
+                        let val = effective_target as i64 - sub_addr as i64 + existing;
                         out[patch_file_offset..patch_file_offset + 8]
                             .copy_from_slice(&val.to_le_bytes());
                     }
@@ -913,6 +1184,7 @@ fn apply_relocations(
                         imports.push(ImportEntry {
                             name,
                             lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
+                            weak_import: false,
                         });
                         bind_fixups.push(BindFixup {
                             file_offset: patch_file_offset,

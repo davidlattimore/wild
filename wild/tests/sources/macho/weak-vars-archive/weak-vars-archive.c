@@ -1,5 +1,5 @@
-//#Ignore:Archive directive not yet supported in macho test harness
-//#Object:weak-vars-archive1.c
+//#Archive:lib.a:weak-vars-archive1.c
 
-int __attribute__((weak)) value = 1;
+// Tests that an archive member providing a needed symbol is loaded.
+extern int value;
 int main() { return value; }

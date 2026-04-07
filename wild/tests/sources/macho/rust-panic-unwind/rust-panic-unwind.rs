@@ -1,4 +1,4 @@
-//#Ignore:__eh_frame SUBTRACTOR relocations need correct FDE computation
+//#Ignore:__eh_frame needs FDE filtering (dead FDEs cause phantom matches)
 
 fn main() {
     let r = std::panic::catch_unwind(|| panic!("test"));

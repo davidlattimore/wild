@@ -24,6 +24,8 @@ pub struct MachOArgs {
     pub(crate) install_name: Option<Vec<u8>>,
     /// Additional dylibs to emit LC_LOAD_DYLIB for (from -l flags resolving to .tbd stubs).
     pub(crate) extra_dylibs: Vec<Vec<u8>>,
+    /// Symbols to force as undefined (-u flag), triggering archive member loading.
+    pub(crate) force_undefined: Vec<String>,
 }
 
 impl MachOArgs {
@@ -47,6 +49,7 @@ impl Default for MachOArgs {
             is_dylib: false,
             install_name: None,
             extra_dylibs: Vec::new(),
+            force_undefined: Vec::new(),
         }
     }
 }
@@ -91,6 +94,10 @@ impl platform::Args for MachOArgs {
     }
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
         false
+    }
+
+    fn force_undefined_symbol_names(&self) -> &[String] {
+        &self.force_undefined
     }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
@@ -171,6 +178,12 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-u" => {
+            if let Some(val) = input.next() {
+                args.force_undefined.push(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
         // Flags that take 1 argument, ignored
         "-lto_library"
         | "-mllvm"
@@ -224,7 +237,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_objc_category_merging"
         | "-mark_dead_strippable_dylib"
         | "-ObjC"
-        | "-all_load"
         | "-no_implicit_dylibs"
         | "-search_paths_first"
         | "-two_levelnamespace"
@@ -234,6 +246,14 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_pie"
         | "-execute"
         | "-bundle" => {
+            return Ok(());
+        }
+        "-all_load" => {
+            modifier_stack.last_mut().unwrap().whole_archive = true;
+            return Ok(());
+        }
+        "-noall_load" => {
+            modifier_stack.last_mut().unwrap().whole_archive = false;
             return Ok(());
         }
         "-dylib" | "-dynamiclib" => {
@@ -291,6 +311,17 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                                 if !args.extra_dylibs.contains(&dylib_path) {
                                     args.extra_dylibs.push(dylib_path);
                                 }
+                            }
+                            found = true;
+                            break;
+                        }
+                        if *ext == ".dylib" {
+                            // For .dylib files found via -l, emit LC_LOAD_DYLIB
+                            // using the file's install name (from LC_ID_DYLIB).
+                            // For simplicity, use the path as the install name.
+                            let install = path.to_string_lossy().as_bytes().to_vec();
+                            if !args.extra_dylibs.contains(&install) {
+                                args.extra_dylibs.push(install);
                             }
                             found = true;
                             break;

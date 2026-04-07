@@ -1,5 +1,6 @@
 //#LinkerDriver:clang
-//#Ignore:Dylib creation and -l linking not yet supported in test harness
+//#Shared:trivial-dynamic1.c
 
+// Tests basic dynamic linking with a shared library.
 extern int dyn_func(void);
 int main() { return dyn_func(); }

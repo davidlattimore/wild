@@ -1,5 +1,4 @@
 //#LinkerDriver:clang
-//#Ignore:constructor priority ordering not yet verified
 
 static int order = 0;
 static int first_val = 0, second_val = 0;

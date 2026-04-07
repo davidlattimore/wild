@@ -1,5 +1,4 @@
 //#Object:visibility-merging1.c
-//#Ignore:dylib creation needed to test dynamic symbol visibility
 
 // Tests that when two objects define the same symbol with different visibility,
 // the more restrictive visibility wins.

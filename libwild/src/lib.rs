@@ -13,6 +13,7 @@ pub(crate) mod elf_loongarch64;
 pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;
 pub(crate) mod elf_x86_64;
+pub(crate) mod eh_frame;
 pub mod error;
 pub(crate) mod export_list;
 pub(crate) mod expression_eval;

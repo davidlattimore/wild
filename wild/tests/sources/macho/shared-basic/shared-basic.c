@@ -1,5 +1,6 @@
 //#LinkerDriver:clang
-//#Ignore:Dylib creation and -l linking not yet supported in test harness
+//#Shared:shared-basic-lib.c
 
+// Tests basic dylib creation and linking.
 extern int get_value(void);
 int main() { return get_value(); }

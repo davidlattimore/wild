@@ -89,6 +89,10 @@ fn identify_primary_source(dir: &Path, test_name: &str) -> Option<PathBuf> {
 #[derive(Default)]
 struct TestConfig {
     extra_objects: Vec<String>,
+    /// Archives to create: (archive_name, vec of source files).
+    archives: Vec<(String, Vec<String>)>,
+    /// Shared libraries to build: source file names.
+    shared_libs: Vec<String>,
     comp_args: Vec<String>,
     link_args: Vec<String>,
     expect_error: Option<String>,
@@ -96,6 +100,8 @@ struct TestConfig {
     use_clang_driver: bool,
     contains: Vec<String>,
     does_not_contain: Vec<String>,
+    expect_syms: Vec<String>,
+    no_syms: Vec<String>,
     ignore_reason: Option<String>,
 }
 
@@ -116,6 +122,20 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
         };
         match key {
             "Object" => cfg.extra_objects.push(value.to_string()),
+            // Archive:libfoo.a:src1.c,src2.c
+            "Archive" => {
+                let parts: Vec<&str> = value.splitn(2, ':').collect();
+                let (name, sources) = if parts.len() == 2 {
+                    (parts[0].to_string(), parts[1].split(',').map(|s| s.trim().to_string()).collect())
+                } else {
+                    // Archive:src.c — auto-name the archive
+                    let src = value.trim().to_string();
+                    let stem = src.strip_suffix(".c").or(src.strip_suffix(".cc")).unwrap_or(&src);
+                    (format!("{stem}.a"), vec![src])
+                };
+                cfg.archives.push((name, sources));
+            }
+            "Shared" => cfg.shared_libs.push(value.trim().to_string()),
             "CompArgs" => cfg.comp_args.extend(shell_words(value)),
             "LinkArgs" => cfg.link_args.extend(shell_words(value)),
             "ExpectError" => cfg.expect_error = Some(value.to_string()),
@@ -123,6 +143,8 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
             "LinkerDriver" if value.trim().starts_with("clang") => cfg.use_clang_driver = true,
             "Contains" => cfg.contains.push(value.to_string()),
             "DoesNotContain" => cfg.does_not_contain.push(value.to_string()),
+            "ExpectSym" => cfg.expect_syms.push(value.split_whitespace().next().unwrap_or(value).to_string()),
+            "NoSym" => cfg.no_syms.push(value.trim().to_string()),
             "Ignore" => cfg.ignore_reason = Some(value.to_string()),
             _ => {} // Ignore unknown directives for forward-compatibility.
         }
@@ -216,6 +238,56 @@ fn run_test(
         objects.push(object_path(&build_dir, &src));
     }
 
+    // Build archives from source files.
+    for (archive_name, sources) in &config.archives {
+        let mut member_objs = Vec::new();
+        for src_name in sources {
+            let src = test_dir.join(src_name);
+            let src_cpp = src.extension().map_or(false, |e| e == "cc");
+            compile_source(&src, &build_dir, &config.comp_args, src_cpp)?;
+            member_objs.push(object_path(&build_dir, &src));
+        }
+        let archive_path = build_dir.join(archive_name);
+        let mut ar_cmd = Command::new("ar");
+        ar_cmd.arg("rcs").arg(&archive_path);
+        for obj in &member_objs {
+            ar_cmd.arg(obj);
+        }
+        let ar_result = ar_cmd.output().map_err(|e| format!("ar: {e}"))?;
+        if !ar_result.status.success() {
+            return Err(format!("ar failed: {}", String::from_utf8_lossy(&ar_result.stderr)));
+        }
+        objects.push(archive_path);
+    }
+
+    // Build shared libraries (dylibs) and add -L/-l flags.
+    let mut extra_link_args: Vec<String> = Vec::new();
+    for lib_src_name in &config.shared_libs {
+        let src = test_dir.join(lib_src_name);
+        let stem = src.file_stem().unwrap().to_string_lossy().to_string();
+        let dylib_path = build_dir.join(format!("lib{stem}.dylib"));
+        let src_cpp = src.extension().map_or(false, |e| e == "cc");
+        let compiler = if src_cpp { "clang++" } else { "clang" };
+        let mut dylib_cmd = Command::new(compiler);
+        dylib_cmd
+            .arg("-dynamiclib")
+            .arg(format!("-fuse-ld={}", wild_bin.display()))
+            .arg(&src)
+            .arg("-o").arg(&dylib_path)
+            .arg(format!("-Wl,-install_name,@rpath/lib{stem}.dylib"));
+        for arg in &config.comp_args {
+            dylib_cmd.arg(arg);
+        }
+        let result = dylib_cmd.output().map_err(|e| format!("dylib build: {e}"))?;
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(format!("Failed to build dylib from {lib_src_name}:\n{stderr}"));
+        }
+        extra_link_args.push(format!("-L{}", build_dir.display()));
+        extra_link_args.push(format!("-l{stem}"));
+        extra_link_args.push(format!("-Wl,-rpath,{}", build_dir.display()));
+    }
+
     // Link with wild.
     let output = build_dir.join(test_name);
     let mut cmd = if config.use_clang_driver {
@@ -230,6 +302,9 @@ fn run_test(
         for arg in &config.link_args {
             c.arg(arg);
         }
+        for arg in &extra_link_args {
+            c.arg(arg);
+        }
         c
     } else {
         let mut c = Command::new(wild_bin);
@@ -238,6 +313,9 @@ fn run_test(
         }
         c.arg("-o").arg(&output);
         for arg in &config.link_args {
+            c.arg(arg);
+        }
+        for arg in &extra_link_args {
             c.arg(arg);
         }
         c
@@ -276,6 +354,32 @@ fn run_test(
     for needle in &config.does_not_contain {
         if binary_contains(&binary, needle.as_bytes()) {
             return Err(format!("Output binary unexpectedly contains '{needle}'"));
+        }
+    }
+
+    // Symbol checks.
+    if !config.expect_syms.is_empty() || !config.no_syms.is_empty() {
+        use object::read::Object as _;
+        use object::read::ObjectSymbol as _;
+        let obj_file = object::File::parse(&*binary)
+            .map_err(|e| format!("Failed to parse output binary: {e}"))?;
+        let sym_names: Vec<&str> = obj_file
+            .symbols()
+            .filter_map(|s| s.name().ok())
+            .collect();
+
+        for expected in &config.expect_syms {
+            // Mach-O adds a leading underscore to C symbols.
+            let with_underscore = format!("_{expected}");
+            if !sym_names.iter().any(|n| *n == expected.as_str() || *n == with_underscore) {
+                return Err(format!("Expected symbol `{expected}` not found in output"));
+            }
+        }
+        for absent in &config.no_syms {
+            let with_underscore = format!("_{absent}");
+            if sym_names.iter().any(|n| *n == absent.as_str() || *n == with_underscore) {
+                return Err(format!("Symbol `{absent}` should not be in output"));
+            }
         }
     }
 

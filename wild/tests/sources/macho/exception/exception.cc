@@ -1,7 +1,7 @@
 //#LinkerDriver:clang++
 //#LinkArgs:-lc++
 //#CompArgs:-std=c++17
-//#Ignore:C++ exceptions need __compact_unwind → __unwind_info conversion
+//#Ignore:__eh_frame needs FDE filtering and C++ needs __compact_unwind support
 
 #include <stdexcept>
 

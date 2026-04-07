@@ -1,5 +1,5 @@
 //#LinkArgs:-e _custom_entry
-//#Ignore:custom entry point via -e not yet verified
 //#RunEnabled:false
 
+// Tests that -e flag sets a custom entry point.
 void custom_entry(void) {}
