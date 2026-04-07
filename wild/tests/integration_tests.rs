@@ -24,6 +24,9 @@
 //!
 //! LinkSoArgs:... Arguments to pass when linking a shared object.
 //!
+//! SoSingleLinker:{linker name} If specified, we will use the named linker for liking shared
+//! objects regardless of the linker under test.
+//!
 //! WildExtraLinkArgs:... Extra linker arguments that should only be passed to the Wild linker.
 //!
 //! CompArgs:... Arguments to be passed to the compiler when building object files.
@@ -257,6 +260,8 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
     let is_nextest = std::env::var("NEXTEST").is_ok();
 
+    let linkers = available_linkers()?;
+
     for entry in dir {
         let entry = entry?;
         let path = entry.path();
@@ -287,6 +292,7 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
                     arch,
                     path.clone(),
                     &test_config,
+                    &linkers,
                 ),
             )?;
 
@@ -651,6 +657,8 @@ struct Config {
     test_update_in_place: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
+    so_single_linker: Option<Linker>,
+    available_linkers: Vec<Linker>,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
@@ -1138,6 +1146,7 @@ impl Config {
         arch: Architecture,
         test_src_dir: PathBuf,
         test_config: &TestConfig,
+        available_linkers: &[Linker],
     ) -> Self {
         Self {
             test_src_dir,
@@ -1181,6 +1190,8 @@ impl Config {
             test_update_in_place: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
+            available_linkers: available_linkers.to_owned(),
+            so_single_linker: None,
         }
     }
 }
@@ -1309,6 +1320,16 @@ fn process_directive(
                 bail!("LinkSoArgs is not used when building Rust code");
             }
             config.linker_so_args = ArgumentSet::parse(arg)?
+        }
+        "SoSingleLinker" => {
+            config.so_single_linker = Some(
+                config
+                    .available_linkers
+                    .iter()
+                    .find(|l| l.name() == arg)
+                    .cloned()
+                    .ok_or_else(|| error!("Unknown linker specified for SoSingleLinker: {arg}"))?,
+            );
         }
         "LinkerDriver" => {
             config.linker_driver = LinkerDriver::parse(arg)?;
@@ -2031,6 +2052,7 @@ fn build_linker_input(
             LinkerInput::new(first_obj_path.clone())
         }
         InputType::SharedObject | InputType::Relocatable => {
+            let linker = config.so_single_linker.as_ref().unwrap_or(linker);
             let (obj_ext, is_shared) = if dep.input_type == InputType::SharedObject {
                 (format!("{linker}.so"), true)
             } else {
@@ -3811,9 +3833,9 @@ fn run_with_config(
     program_inputs: &ProgramInputs,
     config: &Config,
     cross_arch: Option<Architecture>,
-    linkers: &[Linker],
 ) -> Result {
-    let programs = linkers
+    let programs = config
+        .available_linkers
         .iter()
         .filter(|linker| config.is_linker_enabled(linker))
         .map(|linker| {
@@ -3914,8 +3936,6 @@ fn run_integration_test(
 ) -> Result<libtest_mimic::Completion> {
     setup_symlink();
 
-    let linkers = available_linkers()?;
-
     let filename = &program_inputs.source_file;
 
     let host_arch = get_host_architecture();
@@ -3950,7 +3970,7 @@ fn run_integration_test(
         )
     })?;
 
-    run_with_config(program_inputs, &config, cross_arch, &linkers)?;
+    run_with_config(program_inputs, &config, cross_arch)?;
 
     Ok(libtest_mimic::Completion::Completed)
 }

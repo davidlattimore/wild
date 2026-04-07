@@ -859,11 +859,15 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     }
 
     if names.len() > 1 {
+        // We'll stop when we get to the length of the first name. This check is here to avoid
+        // infinitely looping if all the names are equal.
+        let first_len = names.first().map_or(0, |n| n.len());
+
         // This is not quite right, since we might split in the middle of a multibyte character.
         // But this is a dev tool, so we'll punt on that for now.
         let mut iterators = names.iter().map(|n| n.bytes()).collect_vec();
         let mut n = 0;
-        while first_equals_all(iterators.iter_mut().map(Iterator::next)) {
+        while first_equals_all(iterators.iter_mut().map(Iterator::next)) && n < first_len {
             n += 1;
         }
         names = names
