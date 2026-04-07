@@ -729,9 +729,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::DYLD_CHAINED_FIXUPS => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
-            output_section_id::CHAINED_FIXUP_TABLE | output_section_id::STRTAB => {
-                SegmentType::LinkeditSections
-            }
+            output_section_id::CHAINED_FIXUP_TABLE => SegmentType::LinkeditSections,
             _ => SegmentType::Unused,
         };
 
@@ -1228,12 +1226,6 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
-        // TODO: Just a filler for now that will ensure the __LINKEDIT takes 16KiB - find a better
-        // solution.
-        common.allocate(
-            part_id::STRTAB,
-            MACHO_PAGE_ALIGNMENT.value() - CHAINED_FIXUP_TABLE_SIZE,
-        );
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1292,7 +1284,6 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
-        builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
 
         builder.build()
@@ -1378,11 +1369,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"STRING_TABLE")),
         target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };

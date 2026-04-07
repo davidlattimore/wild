@@ -171,9 +171,6 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
     write_chained_fixup_table::<A>(chained_fixups_header, starts_in_image)?;
 
-    // TODO: remove
-    buffers.get_mut(part_id::STRTAB).write_all(b"x")?;
-
     Ok(())
 }
 
@@ -274,26 +271,33 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         segment_cmd.segname[..seg_name.len()].copy_from_slice(seg_name.as_bytes());
         segment_cmd.segname[seg_name.len()..].zero();
         segment_cmd.vmaddr.set(LE, segment_size.mem_offset);
-        segment_cmd.vmsize.set(
-            LE,
-            segment_size
-                .mem_size
-                .next_multiple_of(MACHO_PAGE_ALIGNMENT.value()),
-        );
         segment_cmd.fileoff.set(LE, segment_size.file_offset as u64);
-        segment_cmd.filesize.set(
-            LE,
-            segment_size
-                .file_size
-                .next_multiple_of(MACHO_PAGE_ALIGNMENT.value() as usize) as u64,
-        );
+
+        if segment_sections_type == SegmentType::LinkeditSections {
+            // The last segment's (__LINKEDIT) size does not have to be exactly page aligned.
+            segment_cmd.vmsize.set(LE, segment_size.mem_size);
+            segment_cmd.filesize.set(LE, segment_size.file_size as u64);
+        } else {
+            segment_cmd.vmsize.set(
+                LE,
+                segment_size
+                    .mem_size
+                    .next_multiple_of(MACHO_PAGE_ALIGNMENT.value()),
+            );
+            segment_cmd.filesize.set(
+                LE,
+                segment_size
+                    .file_size
+                    .next_multiple_of(MACHO_PAGE_ALIGNMENT.value() as usize) as u64,
+            );
+        }
         segment_cmd.maxprot.set(LE, prot_flags);
         segment_cmd.initprot.set(LE, prot_flags);
         segment_cmd.nsects.set(LE, segment_sections.len() as u32);
         segment_cmd.flags.set(LE, 0);
 
-        // The sections in __LINKEDIT are actually hidden and must be hidden (not exposed in the
-        // SEGMENT).
+        // The sections in __LINKEDIT are actually hidden and must be hidden
+        // (not exposed in the SEGMENT).
         if segment_sections_type == SegmentType::LinkeditSections {
             segment_cmd.nsects.set(LE, 0);
         } else {
