@@ -1,8 +1,3 @@
-// TODO
-#![allow(unused_variables)]
-#![allow(unused)]
-
-use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::bail;
 use crate::ensure;
 use crate::error;
@@ -35,9 +30,6 @@ use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
 use crate::macho::get_segment_sections;
 use crate::output_section_id;
-use crate::output_section_id::LINK_EDIT_SEGMENT;
-use crate::output_section_id::OrderEvent;
-use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
@@ -49,7 +41,6 @@ use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use object::BigEndian;
-use object::Endian;
 use object::Endianness;
 use object::U32;
 use object::from_bytes_mut;
@@ -68,7 +59,6 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
-use std::io::Write;
 use tracing::debug_span;
 use zerocopy::FromZeros;
 
@@ -103,7 +93,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     file: &FileLayout<'data, MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
-    trace: &TraceOutput,
+    _trace: &TraceOutput,
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
@@ -209,8 +199,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let (pagezero_segment, pagezero_sections) =
-        split_segment_command_buffer(buffers.get_mut(part_id::PAGEZERO_SEGMENT), 0)?;
+    let pagezero_segment =
+        split_segment_command_buffer(buffers.get_mut(part_id::PAGEZERO_SEGMENT), 0)?.0;
     write_segment(
         layout,
         part_id::PAGEZERO_SEGMENT,
@@ -266,8 +256,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
 
     let linkedit_segment_size =
         get_segment_sections(layout, SegmentType::LinkeditSections).segment_size;
-    let (linkedit_segment, linkedit_sections) =
-        split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?;
+    let linkedit_segment =
+        split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?.0;
     write_segment(
         layout,
         part_id::LINK_EDIT_SEGMENT,
@@ -446,8 +436,6 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
         .name
         .offset
         .set(LE, size_of::<DylinkerCommand>() as u32);
-
-    let path_buffer_len = DYLINKER_PATH.len() + 1;
 
     path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH.as_bytes());
     // The string size is always a multiple of 8B.
