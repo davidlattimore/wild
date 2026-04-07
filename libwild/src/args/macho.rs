@@ -2,6 +2,8 @@
 #![allow(unused_variables)]
 #![allow(unused)]
 
+use crate::alignment::Alignment;
+use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
 use crate::args::FILES_PER_GROUP_ENV;
@@ -92,7 +94,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
-        todo!()
+        MACHO_PAGE_ALIGNMENT
     }
 
     fn should_merge_sections(&self) -> bool {

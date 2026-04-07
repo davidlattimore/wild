@@ -1927,6 +1927,15 @@ impl platform::Platform for Elf {
         group_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);
     }
+
+    fn align_load_segment_start(
+        _segment_def: Self::ProgramSegmentDef,
+        segment_alignment: Alignment,
+        file_offset: &mut usize,
+        mem_offset: &mut u64,
+    ) {
+        *mem_offset = segment_alignment.align_modulo(*file_offset as u64, *mem_offset);
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {

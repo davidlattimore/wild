@@ -4,6 +4,8 @@
 
 use crate::OutputKind;
 use crate::alignment;
+use crate::alignment::Alignment;
+use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
@@ -23,8 +25,9 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::symbol_db::Visibility;
-use linker_utils::elf::secnames;
+use object::Endian;
 use object::Endianness;
+use object::U32;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -49,7 +52,13 @@ const LE: Endianness = Endianness::Little;
 
 /// Mach-O uses a zero page for all 32bit addresses and thus we begin the memory
 /// offsets right after that (1GiB).
-pub const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
+pub(crate) const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
+
+/// A path to the default dynamic linker.
+pub(crate) const DYLINKER_PATH: &str = "/usr/lib/dyld";
+pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
+pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
+    (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -61,6 +70,53 @@ pub(crate) type FileHeader = object::macho::MachHeader64<Endianness>;
 pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
 pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
+pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
+pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
+pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
+pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
+
+// TODO: move to object crate
+
+// values for dyld_chained_fixups_header.imports_format
+#[allow(non_camel_case_types)]
+#[repr(u32)]
+pub(crate) enum DyldChainedFixupsImporstFormat {
+    DYLD_CHAINED_IMPORT = 1,
+    DYLD_CHAINED_IMPORT_ADDEND = 2,
+    DYLD_CHAINED_IMPORT_ADDEND64 = 3,
+}
+
+// header of the LC_DYLD_CHAINED_FIXUPS payload
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct DyldChainedFixupsHeader<E: Endian> {
+    // 0
+    pub(crate) fixups_version: U32<E>,
+    // offset of dyld_chained_starts_in_image in chain_data
+    pub(crate) starts_offset: U32<E>,
+    // offset of imports table in chain_data
+    pub(crate) imports_offset: U32<E>,
+    // offset of symbol strings in chain_data
+    pub(crate) symbols_offset: U32<E>,
+    // number of imported symbol names
+    pub(crate) imports_count: U32<E>,
+    // DYLD_CHAINED_IMPORT*
+    pub(crate) imports_format: U32<E>,
+    // 0 => uncompressed, 1 => zlib compressed
+    pub(crate) symbols_format: U32<E>,
+}
+
+// Safety:
+// `DyldChainedFixupsHeader` is repr(C), contains only `U32<E>` fields, and has no padding.
+unsafe impl<E: Endian + 'static> object::Pod for DyldChainedFixupsHeader<E> {}
+
+// This struct is embedded in LC_DYLD_CHAINED_FIXUPS payload
+// struct dyld_chained_starts_in_image
+// {
+//     uint32_t    seg_count;
+//     uint32_t    seg_info_offset[1];  // each entry is offset into this struct for that segment
+//     // followed by pool of dyld_chain_starts_in_segment data
+// };
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -598,19 +654,19 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
     }
 }
 
+// TODO: update comment
+
 #[derive(Debug, Copy, Clone, Default, PartialEq)]
 pub(crate) enum SegmentType {
-    Header,
-    // All load commands are grouped into the segment.
-    LoadCommands,
-    // Sections belonging to __TEXT segment.
     Text,
-    // Sections belonging to __DATA segment.
-    Data,
-    // Sections belonging to __DATA_CONST segment.
-    DataConst,
+    LoadCommands,
+    TextSections,
+    DataSections,
+    DataConstSections,
+    LinkeditSections,
+    // The other ELF-specific (or unused) parts/sections will be collected here.
     #[default]
-    Misc,
+    Unused,
 }
 
 impl platform::SegmentType for SegmentType {}
@@ -642,7 +698,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn is_loadable(self) -> bool {
-        false
+        true
     }
 
     fn is_stack(self) -> bool {
@@ -662,24 +718,34 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        self.segment_type
-            == match section_id {
-                output_section_id::FILE_HEADER => SegmentType::Header,
-                output_section_id::PAGEZERO_SEGMENT
-                | output_section_id::TEXT_SEGMENT
-                | output_section_id::DATA_SEGMENT
-                | output_section_id::LINK_EDIT_SEGMENT
-                | output_section_id::ENTRY_POINT => SegmentType::LoadCommands,
-                output_section_id::TEXT | output_section_id::CSTRING => SegmentType::Text,
-                output_section_id::DATA => SegmentType::Data,
-                _ => SegmentType::Misc,
+        let mapped_segment = match section_id {
+            output_section_id::FILE_HEADER => SegmentType::Text,
+            output_section_id::PAGEZERO_SEGMENT
+            | output_section_id::TEXT_SEGMENT
+            | output_section_id::DATA_SEGMENT
+            | output_section_id::LINK_EDIT_SEGMENT
+            | output_section_id::ENTRY_POINT
+            | output_section_id::INTERP
+            | output_section_id::DYLD_CHAINED_FIXUPS => SegmentType::LoadCommands,
+            output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
+            output_section_id::DATA => SegmentType::DataSections,
+            output_section_id::CHAINED_FIXUP_TABLE | output_section_id::STRTAB => {
+                SegmentType::LinkeditSections
             }
+            _ => SegmentType::Unused,
+        };
+
+        match (self.segment_type, mapped_segment) {
+            (SegmentType::Text, SegmentType::LoadCommands | SegmentType::TextSections) => true,
+            _ => self.segment_type == mapped_segment,
+        }
     }
 }
 
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
+    pub(crate) min_alignment: Alignment,
     pub(crate) target_segment_type: Option<SegmentType>,
 }
 
@@ -688,6 +754,7 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
     section_flags: SectionFlags::empty(),
+    min_alignment: alignment::MIN,
     target_segment_type: None,
 };
 
@@ -955,7 +1022,7 @@ impl platform::Platform for MachO {
                     flags: d.section_flags,
                 },
                 kind: d.kind,
-                min_alignment: alignment::MIN,
+                min_alignment: d.min_alignment,
                 location: None,
                 secondary_order: None,
             })
@@ -1083,14 +1150,14 @@ impl platform::Platform for MachO {
             part_id::TEXT_SEGMENT,
             (size_of::<SegmentCommand>()
                 + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Text))
+                    * count_sections_for_segment_type(output_sections, SegmentType::TextSections))
                 as u64,
         );
         sizes.increment(
             part_id::DATA_SEGMENT,
             (size_of::<SegmentCommand>()
                 + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::Data))
+                    * count_sections_for_segment_type(output_sections, SegmentType::DataSections))
                 as u64,
         );
         sizes.increment(
@@ -1098,6 +1165,14 @@ impl platform::Platform for MachO {
             size_of::<SegmentCommand>() as u64,
         );
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
+        sizes.increment(
+            part_id::INTERP,
+            ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u64,
+        );
+        sizes.increment(
+            part_id::DYLD_CHAINED_FIXUPS,
+            size_of::<DyldChainedFixupsCommand>() as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1152,7 +1227,13 @@ impl platform::Platform for MachO {
         common: &mut crate::layout::CommonGroupState<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
-        // TODO
+        common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
+        // TODO: Just a filler for now that will ensure the __LINKEDIT takes 16KiB - find a better
+        // solution.
+        common.allocate(
+            part_id::STRTAB,
+            MACHO_PAGE_ALIGNMENT.value() - CHAINED_FIXUP_TABLE_SIZE,
+        );
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1202,19 +1283,48 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::PAGEZERO_SEGMENT);
         builder.add_section(output_section_id::TEXT_SEGMENT);
         builder.add_section(output_section_id::DATA_SEGMENT);
-        builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
+        builder.add_section(output_section_id::ENTRY_POINT);
+        builder.add_section(output_section_id::INTERP); // DYLINKER
+        builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
+        builder.add_section(output_section_id::STRTAB);
+        builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
 
         builder.build()
     }
 
     fn start_memory_address(output_kind: OutputKind) -> u64 {
         MACHO_START_MEM_ADDRESS
+    }
+
+    fn align_load_segment_start(
+        segment_def: ProgramSegmentDef,
+        segment_alignment: Alignment,
+        file_offset: &mut usize,
+        mem_offset: &mut u64,
+    ) {
+        match segment_def.segment_type {
+            SegmentType::Text
+            | SegmentType::DataSections
+            | SegmentType::DataConstSections
+            | SegmentType::LinkeditSections => {
+                *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
+                *mem_offset = segment_alignment.align_up(*mem_offset);
+            }
+            SegmentType::TextSections => {
+                // TODO: A placeholder space for the LinkeditDataCommand command is allocated
+                // (added by codesign tool) in order to preserve the offsets into __text and
+                // other sections in the __TEXT segment.
+                *file_offset += size_of::<CodeSignatureCommand>();
+                *mem_offset += size_of::<CodeSignatureCommand>() as u64;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1224,7 +1334,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     defs[output_section_id::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"FILE_HEADER")),
-        target_segment_type: Some(SegmentType::Header),
+        target_segment_type: Some(SegmentType::Text),
         ..DEFAULT_DEFS
     };
     // Load commands
@@ -1248,6 +1358,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
+        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
@@ -1255,8 +1366,24 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::DYLD_CHAINED_FIXUPS.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_DYLD_CHAINED_FIXUPS")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(secnames::STRTAB_SECTION_NAME)),
+        kind: SectionKind::Primary(SectionName(b"STRING_TABLE")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
     // Multi-part generated sections
@@ -1296,22 +1423,22 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
 
 const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
-        segment_type: SegmentType::Header,
+        segment_type: SegmentType::Text,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::LoadCommands,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Text,
+        segment_type: SegmentType::TextSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Data,
+        segment_type: SegmentType::DataSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::DataConst,
+        segment_type: SegmentType::DataConstSections,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Misc,
+        segment_type: SegmentType::LinkeditSections,
     },
 ];
 
