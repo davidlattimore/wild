@@ -1526,6 +1526,7 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                         SectionSlot::Loaded(sec) => Some(sec.output_section_id()),
                         SectionSlot::MergeStrings(sec) => Some(sec.part_id.output_section_id()),
                         SectionSlot::FrameData(..) => Some(crate::output_section_id::EH_FRAME),
+                        SectionSlot::LoadedDebugInfo(sec) => Some(sec.output_section_id()),
                         _ => None,
                     }
                 {
@@ -1958,6 +1959,7 @@ fn write_symbols<'data>(
                         SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
+                        SectionSlot::LoadedDebugInfo(section) => section.output_section_id(),
                         _ => bail!(
                             "Tried to copy a symbol in a section we didn't load. {}",
                             layout.symbol_debug(symbol_id)
@@ -4027,6 +4029,10 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
                             SectionSlot::MergeStrings(section) => {
                                 Some(section.part_id.output_section_id())
                             }
+                            SectionSlot::LoadedDebugInfo(section) => {
+                                Some(section.output_section_id())
+                            }
+
                             _ => None,
                         })
                         .and_then(|output_section_id| {
