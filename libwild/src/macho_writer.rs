@@ -4,6 +4,7 @@
 
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::bail;
+use crate::ensure;
 use crate::error;
 use crate::error::Context;
 use crate::error::Result;
@@ -197,9 +198,10 @@ fn split_segment_command_buffer(
         from_bytes_mut(bytes).map_err(|_| error!("Invalid segment command allocation"))?;
     let (sections, rest) = slice_from_bytes_mut(rest, section_count)
         .map_err(|_| error!("Invalid segment section allocation"))?;
-    if !rest.is_empty() {
-        return Err(error!("Trailing bytes in segment command allocation"));
-    }
+    ensure!(
+        rest.is_empty(),
+        "Trailing bytes in segment command allocation"
+    );
     Ok((command, sections))
 }
 
@@ -218,7 +220,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         0,
         0,
         MACHO_START_MEM_ADDRESS,
-        pagezero_sections.len(),
+        0,
     );
 
     let text_segment_sections =
@@ -324,10 +326,6 @@ fn write_sections(
         crate::macho::SectionFlags,
     )],
 ) -> Result {
-    if sections.is_empty() {
-        return Ok(());
-    }
-
     for (section, (size, section_name, section_flags)) in sections.iter_mut().zip(segment_sections)
     {
         let section_name = section_name
