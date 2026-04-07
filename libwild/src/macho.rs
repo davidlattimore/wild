@@ -391,9 +391,18 @@ impl platform::SectionHeader for SectionHeader {
 
     fn should_retain(&self) -> bool {
         let sec_type = self.0.flags(LE) & macho::SECTION_TYPE;
-        // __mod_init_func / __mod_term_func must always be retained —
-        // they contain constructor/destructor pointers called by dyld.
-        sec_type == macho::S_MOD_INIT_FUNC_POINTERS || sec_type == macho::S_MOD_TERM_FUNC_POINTERS
+        let sectname = trim_nul(self.0.sectname());
+        // Constructor/destructor function pointer arrays.
+        if sec_type == macho::S_MOD_INIT_FUNC_POINTERS
+            || sec_type == macho::S_MOD_TERM_FUNC_POINTERS
+        {
+            return true;
+        }
+        // Exception handling sections needed for unwinding.
+        if sectname == b"__eh_frame" || sectname == b"__gcc_except_tab" {
+            return true;
+        }
+        false
     }
 
     fn should_exclude(&self) -> bool {
@@ -408,11 +417,7 @@ impl platform::SectionHeader for SectionHeader {
         if segname == b"__LD" {
             return true;
         }
-        // __eh_frame has SUBTRACTOR relocation pairs we don't process yet;
-        // exclude until we generate proper __unwind_info.
-        if sectname == b"__eh_frame" {
-            return true;
-        }
+        // __eh_frame is included — SUBTRACTOR relocation pairs are now handled.
         false
     }
 
@@ -900,9 +905,11 @@ impl platform::Platform for MachO {
         keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
         _args: &Self::Args,
     ) {
-        // Constructor/destructor function pointer arrays must always be kept.
         *keep_sections.get_mut(crate::output_section_id::INIT_ARRAY) = true;
         *keep_sections.get_mut(crate::output_section_id::FINI_ARRAY) = true;
+        // Exception handling sections needed for stack unwinding.
+        *keep_sections.get_mut(crate::output_section_id::EH_FRAME) = true;
+        *keep_sections.get_mut(crate::output_section_id::GCC_EXCEPT_TABLE) = true;
     }
 
     fn is_zero_sized_section_content(
@@ -1465,7 +1472,7 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__bss", output_section_id::BSS),
         SectionRule::exact_section(b"__common", output_section_id::BSS),
         SectionRule::exact_section(b"__unwind_info", output_section_id::RODATA),
-        SectionRule::exact_section(b"__eh_frame", output_section_id::RODATA),
+        SectionRule::exact_section(b"__eh_frame", output_section_id::EH_FRAME),
         SectionRule::exact_section(b"__compact_unwind", output_section_id::RODATA),
     ]
 };

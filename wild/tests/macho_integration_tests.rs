@@ -56,9 +56,14 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) -> Result<(), Box<dyn st
         let config = parse_config(&dir, &primary)?;
         let wild = wild_bin.clone();
 
+        let arch = if cfg!(target_arch = "aarch64") {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
         let ignored = config.ignore_reason.is_some();
         tests.push(
-            libtest_mimic::Trial::test(format!("macho::{test_name}"), move || {
+            libtest_mimic::Trial::test(format!("macho/{arch}/{test_name}"), move || {
                 run_test(&wild, &dir, &test_name, &primary, &config).map_err(Into::into)
             })
             .with_ignored_flag(ignored),
@@ -164,11 +169,48 @@ fn run_test(
     let mut objects = Vec::new();
     let is_cpp = primary.extension().map_or(false, |e| e == "cc");
 
+    let is_rust = primary.extension().map_or(false, |e| e == "rs");
+
+    if is_rust {
+        // Rust files: compile + link via rustc with wild as linker.
+        let output = build_dir.join(test_name);
+        let mut cmd = Command::new("rustc");
+        cmd.arg(primary)
+            .arg("-o").arg(&output)
+            .arg("-Clinker=clang")
+            .arg(format!("-Clink-arg=-fuse-ld={}", wild_bin.display()));
+        for arg in &config.link_args {
+            cmd.arg(format!("-Clink-arg={arg}"));
+        }
+        let result = cmd.output().map_err(|e| format!("rustc: {e}"))?;
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            if let Some(ref pattern) = config.expect_error {
+                if stderr.contains(pattern) { return Ok(()); }
+                return Err(format!("Expected error matching '{pattern}', got:\n{stderr}"));
+            }
+            return Err(format!("rustc failed:\n{stderr}"));
+        }
+        if config.run_enabled {
+            let run = Command::new(&output).output().map_err(|e| format!("run: {e}"))?;
+            let code = run.status.code().unwrap_or(-1);
+            if code != 42 {
+                return Err(format!("Expected exit code 42, got {code}"));
+            }
+        }
+        return Ok(());
+    }
+
     compile_source(primary, &build_dir, &config.comp_args, is_cpp)?;
     objects.push(object_path(&build_dir, primary));
 
     for obj_name in &config.extra_objects {
         let src = test_dir.join(obj_name);
+        if !src.exists() {
+            // Non-existent object path — pass directly to linker (for ExpectError tests).
+            objects.push(PathBuf::from(obj_name));
+            continue;
+        }
         let extra_cpp = src.extension().map_or(false, |e| e == "cc");
         compile_source(&src, &build_dir, &config.comp_args, extra_cpp)?;
         objects.push(object_path(&build_dir, &src));

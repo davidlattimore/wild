@@ -761,15 +761,32 @@ fn apply_relocations(
     has_extra_dylibs: bool,
 ) -> Result {
     let mut pending_addend: i64 = 0;
+    let mut pending_subtrahend: Option<u64> = None;
 
     for reloc_raw in relocs {
         let reloc = reloc_raw.info(le);
 
-        if reloc.r_type == 10 {
+        if reloc.r_type == 10 { // ARM64_RELOC_ADDEND
             pending_addend = reloc.r_symbolnum as i64;
             continue;
         }
-        if reloc.r_type == 1 {
+        if reloc.r_type == 1 { // ARM64_RELOC_SUBTRACTOR (part of a pair)
+            // Store the subtrahend symbol address for the next UNSIGNED reloc.
+            let sub_addr = if reloc.r_extern {
+                let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+                let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
+                layout.merged_symbol_resolution(sym_id)
+                    .map(|r| r.raw_value)
+                    .unwrap_or(0)
+            } else {
+                let sec_ord = reloc.r_symbolnum as usize;
+                if sec_ord > 0 {
+                    obj.section_resolutions.get(sec_ord - 1)
+                        .and_then(|r| r.address())
+                        .unwrap_or(0)
+                } else { 0 }
+            };
+            pending_subtrahend = Some(sub_addr);
             continue;
         }
 
@@ -872,8 +889,18 @@ fn apply_relocations(
                 );
             }
             0 if reloc.r_length == 3 => {
-                // ARM64_RELOC_UNSIGNED 64-bit
-                if patch_file_offset + 8 <= out.len() {
+                // ARM64_RELOC_UNSIGNED 64-bit.
+                // If preceded by a SUBTRACTOR, compute difference:
+                //   result = target_addr - subtrahend + existing_content
+                if let Some(sub_addr) = pending_subtrahend.take() {
+                    if patch_file_offset + 8 <= out.len() {
+                        let existing = i64::from_le_bytes(
+                            out[patch_file_offset..patch_file_offset + 8].try_into().unwrap());
+                        let val = target_addr as i64 - sub_addr as i64 + existing;
+                        out[patch_file_offset..patch_file_offset + 8]
+                            .copy_from_slice(&val.to_le_bytes());
+                    }
+                } else if patch_file_offset + 8 <= out.len() {
                     if reloc.r_extern && target_addr == 0 {
                         // Extern undefined symbol (e.g. _tlv_bootstrap): bind fixup
                         let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
@@ -1206,7 +1233,11 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, 72);
     } // PAGEZERO (exe only)
     let rustc_in_text = has_rustc && rustc_addr < text_vm_start + text_filesize;
-    let text_nsects = 1 + if rustc_in_text { 1u32 } else { 0 };
+    let eh_frame_layout = layout.section_layouts.get(output_section_id::EH_FRAME);
+    let has_eh_frame = eh_frame_layout.mem_size > 0;
+    let text_nsects = 1
+        + if rustc_in_text { 1u32 } else { 0 }
+        + if has_eh_frame { 1 } else { 0 };
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
     let init_array_layout = layout.section_layouts.get(output_section_id::INIT_ARRAY);
     let has_init_array = init_array_layout.mem_size > 0;
@@ -1298,6 +1329,22 @@ fn write_headers(
         w.u32(0);
         w.u32(0);
         w.u32(0);
+        w.u32(0);
+        w.u32(0);
+        w.u32(0);
+    }
+    if has_eh_frame {
+        let eh_foff = vm_addr_to_file_offset(eh_frame_layout.mem_offset, mappings)
+            .unwrap_or(0) as u32;
+        w.name16(b"__eh_frame");
+        w.name16(b"__TEXT");
+        w.u64(eh_frame_layout.mem_offset);
+        w.u64(eh_frame_layout.mem_size);
+        w.u32(eh_foff);
+        w.u32(3); // align 2^3 = 8
+        w.u32(0);
+        w.u32(0);
+        w.u32(0x6800_000B); // S_COALESCED | S_ATTR_NO_TOC | S_ATTR_STRIP_STATIC_SYMS | S_ATTR_LIVE_SUPPORT
         w.u32(0);
         w.u32(0);
         w.u32(0);
