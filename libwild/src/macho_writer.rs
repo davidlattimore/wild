@@ -22,6 +22,7 @@ use crate::macho::DyldChainedFixupsImporstFormat;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
+use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
 use crate::macho::SectionEntry;
@@ -430,15 +431,15 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
     command.cmd.set(LE, LC_LOAD_DYLINKER);
     command.cmdsize.set(
         LE,
-        ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u32,
+        ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+            .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u32,
     );
     command
         .name
         .offset
         .set(LE, size_of::<DylinkerCommand>() as u32);
 
-    path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH.as_bytes());
-    // The string size is always a multiple of 8B.
+    path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH);
     path_buffer[DYLINKER_PATH.len()..].zero();
 }
 

@@ -54,8 +54,11 @@ const LE: Endianness = Endianness::Little;
 /// offsets right after that (1GiB).
 pub(crate) const MACHO_START_MEM_ADDRESS: u64 = 0x1_0000_0000;
 
+/// The command alignment is 8B for 64-bit platforms.
+pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
+
 /// A path to the default dynamic linker.
-pub(crate) const DYLINKER_PATH: &str = "/usr/lib/dyld";
+pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
 pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
     (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
@@ -1165,7 +1168,8 @@ impl platform::Platform for MachO {
         sizes.increment(part_id::ENTRY_POINT, size_of::<EntryPointCommand>() as u64);
         sizes.increment(
             part_id::INTERP,
-            ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len()).next_multiple_of(8)) as u64,
+            ((size_of::<DylinkerCommand>() + DYLINKER_PATH.len())
+                .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
         );
         sizes.increment(
             part_id::DYLD_CHAINED_FIXUPS,
