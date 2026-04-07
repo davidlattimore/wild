@@ -1860,6 +1860,7 @@ fn write_symbols<'data>(
                 if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                     match &object.sections[section_index.0] {
                         SectionSlot::Loaded(section) => section.output_section_id(),
+                        SectionSlot::LoadedDebugInfo(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!(
