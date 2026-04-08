@@ -1372,6 +1372,21 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
                     symbol_id: local_symbol_id,
                 });
             }
+
+            if symbol_file_id != file_id {
+                // TODO: this feels out of place, just by a gut feeling `ValueFlags::merge` should
+                // be a right place to handle it, but it doesn't work
+                let flags = resources.per_symbol_flags.get_atomic(symbol_id);
+                if local_symbol_attributes.is_weak {
+                    if !flags.get().contains(ValueFlags::WEAK) {
+                        flags.or_assign(ValueFlags::WEAK);
+                    };
+                } else {
+                    if flags.get().contains(ValueFlags::WEAK) {
+                        flags.remove(ValueFlags::WEAK);
+                    };
+                }
+            }
         }
         None => {
             resources.outputs.undefined_symbols.push(UndefinedSymbol {

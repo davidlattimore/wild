@@ -5120,10 +5120,18 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     .dynsym_writer
                     .define_symbol(false, 0, 0, 0, name)?;
 
+                // TODO: Update this comment
                 // Note, we copy st_info, but not st_other since we don't want to copy the
                 // visibility. We want to emit the symbol with default visibility, otherwise the
                 // runtime loader may ignore dynamic relocations that reference the symbol.
-                entry.st_info = symbol.st_info();
+                let st_bind = if symbol.st_bind() == object::elf::STB_WEAK && !res.flags.is_weak() {
+                    object::elf::STB_GLOBAL
+                } else if res.flags.is_weak() {
+                    object::elf::STB_WEAK
+                } else {
+                    symbol.st_bind()
+                };
+                entry.set_st_info(st_bind, symbol.st_type());
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     copy_symbol_version(

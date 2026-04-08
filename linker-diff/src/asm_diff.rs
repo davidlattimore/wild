@@ -1680,10 +1680,6 @@ impl<R: RType> DynamicRelocation<'_, R> {
             out.r_type = R::from_dynamic_relocation_kind(DynamicRelocationKind::GotEntry);
         }
 
-        // TODO: Remove this. We currently don't propagate symbol visibility correctly when emitting
-        // dynamic symbols.
-        out.entry.is_weak = false;
-
         out
     }
 }

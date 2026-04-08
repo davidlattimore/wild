@@ -99,6 +99,8 @@ bitflags! {
         /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
         /// entry which will be resolved to the actual function address at runtime.
         const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
+
+        const WEAK = 1 << 15;
     }
 }
 
@@ -115,6 +117,12 @@ impl ValueFlags {
         if other.contains(ValueFlags::NON_INTERPOSABLE) {
             *self |= ValueFlags::NON_INTERPOSABLE;
         }
+        // TODO: doesn't have an effect, see the new TODO in resolution.rs
+        // if other.contains(ValueFlags::WEAK) {
+        //     *self |= ValueFlags::WEAK;
+        // } else {
+        //     *self &= !ValueFlags::WEAK;
+        // }
     }
 
     /// Returns the subset of the set flags that relate to resolutions.
@@ -233,6 +241,11 @@ impl ValueFlags {
         self.contains(ValueFlags::GOT_TLS_OFFSET)
             || self.contains(ValueFlags::GOT_TLS_MODULE)
             || self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
+    }
+
+    #[must_use]
+    pub(crate) fn is_weak(self) -> bool {
+        self.contains(ValueFlags::WEAK)
     }
 
     #[must_use]

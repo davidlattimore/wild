@@ -1772,6 +1772,9 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
         if non_interposable {
             flags |= ValueFlags::NON_INTERPOSABLE;
         }
+        if sym.is_weak() {
+            flags |= ValueFlags::WEAK;
+        }
         flags
     }
 
@@ -1811,6 +1814,9 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for DynamicObjectSymbolLoader<'_
         }
         if symbol.is_undefined() {
             flags |= ValueFlags::ABSOLUTE;
+        }
+        if symbol.is_weak() {
+            flags |= ValueFlags::WEAK;
         }
         flags
     }
