@@ -933,8 +933,10 @@ impl platform::Platform for MachO {
     }
 
     fn start_memory_address(output_kind: crate::output_kind::OutputKind) -> u64 {
-        if output_kind == crate::output_kind::OutputKind::SharedObject {
-            0 // dylibs have no PAGEZERO
+        if output_kind == crate::output_kind::OutputKind::SharedObject
+            || output_kind.is_relocatable()
+        {
+            0 // dylibs and relocatables have no PAGEZERO
         } else {
             0x1_0000_0000 // PAGEZERO size for executables
         }
@@ -1065,7 +1067,88 @@ impl platform::Platform for MachO {
             if !previous_flags.has_resolution() {
                 queue.send_symbol_request::<A>(symbol_id, resources, scope);
             }
+
+            // Check for undefined symbol errors: strong references to symbols
+            // not found in any input or linked dylib. Only check when we have
+            // .tbd symbol data (meaning syslibroot was provided and we can
+            // distinguish dylib imports from truly missing symbols).
+            if is_def_undef && !resources.symbol_db.args.dylib_symbols.is_empty() {
+                use object::read::macho::Nlist as _;
+                let local_sym = state.object.symbols.symbol(sym_idx).ok();
+                let is_weak = local_sym.map_or(false, |s| {
+                    (s.n_desc(le) & (macho::N_WEAK_DEF | macho::N_WEAK_REF)) != 0
+                });
+                if !is_weak {
+                    let sym_name = resources.symbol_db.symbol_name(symbol_id).ok();
+                    let in_dylib = sym_name.map_or(false, |n| {
+                        resources.symbol_db.args.dylib_symbols.contains(n.bytes())
+                    });
+                    // If extra dylibs are linked (e.g. user .dylib files we don't
+                    // parse symbols from), assume the symbol might come from them.
+                    let has_unparsed_dylibs = !resources.symbol_db.args.extra_dylibs.is_empty();
+                    if !in_dylib && !has_unparsed_dylibs {
+                        let sym_display = resources.symbol_db.symbol_name_for_display(symbol_id);
+                        resources.report_error(crate::error!(
+                            "Undefined symbol {sym_display}, referenced by {}",
+                            state.input,
+                        ));
+                    }
+                }
+            }
         }
+
+        // Also scan __compact_unwind for personality function references that
+        // need GOT entries. The personality reloc is at offset 16 within each
+        // 32-byte entry. We request GOT for undefined personality symbols so
+        // they get GOT slots allocated during layout.
+        {
+            use object::read::macho::MachHeader as _;
+            use object::read::macho::Segment as _;
+            if let Ok(header) =
+                object::macho::MachHeader64::<object::Endianness>::parse(state.object.data, 0)
+            {
+                if let Ok(mut cmds) = header.load_commands(le, state.object.data, 0) {
+                    while let Ok(Some(cmd)) = cmds.next() {
+                        let Ok(Some((seg, seg_data))) = cmd.segment_64() else {
+                            continue;
+                        };
+                        let Ok(sections) = seg.sections(le, seg_data) else {
+                            continue;
+                        };
+                        for sec in sections {
+                            let sec_segname = crate::macho::trim_nul(&sec.segname);
+                            let sectname = crate::macho::trim_nul(&sec.sectname);
+                            if sec_segname != b"__LD" || sectname != b"__compact_unwind" {
+                                continue;
+                            }
+                            let relocs = match sec.relocations(le, state.object.data) {
+                                Ok(r) => r,
+                                Err(_) => continue,
+                            };
+                            for r in relocs {
+                                let ri = r.info(le);
+                                if !ri.r_extern || ri.r_type != 0 {
+                                    continue;
+                                }
+                                // Personality is at offset 16 within each 32-byte entry.
+                                if ri.r_address as usize % 32 != 16 {
+                                    continue;
+                                }
+                                let sym_idx = object::SymbolIndex(ri.r_symbolnum as usize);
+                                let local_id = state.symbol_id_range.input_to_id(sym_idx);
+                                let sym_id = resources.symbol_db.definition(local_id);
+                                let atomic = &resources.per_symbol_flags.get_atomic(sym_id);
+                                let prev = atomic.fetch_or(crate::value_flags::ValueFlags::GOT);
+                                if !prev.has_resolution() {
+                                    queue.send_symbol_request::<A>(sym_id, resources, scope);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 

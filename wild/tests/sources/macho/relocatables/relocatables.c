@@ -1,6 +1,4 @@
-//#Object:relocatables1.c
-//#Object:relocatables2.c
-//#Ignore:partial linking (-r) not yet implemented for Mach-O
+//#Relocatable:relocatables1.c,relocatables2.c
 
 // Tests -r (partial link / relocatable output).
 // Link relocatables1.c and relocatables2.c into a single .o via -r,

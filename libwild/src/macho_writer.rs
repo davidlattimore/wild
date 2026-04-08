@@ -41,6 +41,10 @@ const DYLD_PATH: &[u8] = b"/usr/lib/dyld";
 const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
 
 pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>) -> Result {
+    if layout.symbol_db.args.is_relocatable {
+        return write_relocatable_object(layout);
+    }
+
     // Collect compact-unwind entries from all input objects.
     let plain_entries = collect_compact_unwind_entries(layout);
 
@@ -63,12 +67,18 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     // file allocation — we can place __unwind_info there without extending
     // TEXT vmsize or shifting DATA vmaddr.
     let text_content_end = {
-        // Find the end of the last TEXT-segment section: EH_FRAME > PLT_GOT > TEXT
+        // Find the end of the last TEXT-segment section:
+        // EH_FRAME > GCC_EXCEPT_TABLE > PLT_GOT > TEXT
         let eh = layout.section_layouts.get(output_section_id::EH_FRAME);
+        let ge = layout
+            .section_layouts
+            .get(output_section_id::GCC_EXCEPT_TABLE);
         let plt = layout.section_layouts.get(output_section_id::PLT_GOT);
         let t = layout.section_layouts.get(output_section_id::TEXT);
         if eh.mem_size > 0 {
             eh.mem_offset + eh.mem_size
+        } else if ge.mem_size > 0 {
+            ge.mem_offset + ge.mem_size
         } else if plt.mem_size > 0 {
             plt.mem_offset + plt.mem_size
         } else {
@@ -475,6 +485,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
             cf + cf_data_size as usize
         } else {
             let ordinals: Vec<u8> = imports.iter().map(|e| e.lib_ordinal).collect();
+            let weak_flags: Vec<bool> = imports.iter().map(|e| e.weak_import).collect();
             write_chained_fixups_header(
                 out,
                 cf_off as usize,
@@ -482,6 +493,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
                 n_imports,
                 &import_name_offsets,
                 &ordinals,
+                &weak_flags,
                 &symbols_pool,
                 mappings,
                 layout.symbol_db.args.is_dylib,
@@ -651,6 +663,7 @@ fn write_exe_symtab(
 
     // Collect all defined symbols with non-zero addresses.
     let mut entries: Vec<(Vec<u8>, u64, u8)> = Vec::new(); // (name, value, n_type)
+    let mut seen_names: std::collections::HashSet<Vec<u8>> = Default::default();
     for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
         let Some(res) = res else { continue };
         if res.raw_value == 0 {
@@ -664,13 +677,50 @@ fn write_exe_symtab(
             Ok(n) => n.bytes().to_vec(),
             Err(_) => continue,
         };
-        // Skip empty or internal names
         if name.is_empty() {
             continue;
         }
-        // N_SECT=0x0e, N_EXT=0x01 for global, N_SECT for local
-        let n_type = 0x0e_u8; // N_SECT (defined in a section)
+        let n_type = if res.flags.contains(crate::value_flags::ValueFlags::ABSOLUTE) {
+            0x02_u8 // N_ABS
+        } else {
+            0x0e_u8 // N_SECT
+        };
+        seen_names.insert(name.clone());
         entries.push((name, res.raw_value, n_type));
+    }
+
+    // Also collect absolute symbols from input objects that may lack resolutions
+    // (e.g. unreferenced .set symbols).
+    {
+        use object::read::macho::Nlist as _;
+        let le = object::Endianness::Little;
+        for group in &layout.group_layouts {
+            for file_layout in &group.files {
+                if let crate::layout::FileLayout::Object(obj) = file_layout {
+                    for sym_idx in 0..obj.object.symbols.len() {
+                        let Ok(sym) = obj.object.symbols.symbol(object::SymbolIndex(sym_idx))
+                        else {
+                            continue;
+                        };
+                        // N_ABS = 0x02, N_EXT = 0x01
+                        let n_type_raw = sym.n_type();
+                        if (n_type_raw & 0x0e) != 0x02 {
+                            continue; // not absolute
+                        }
+                        let val = sym.n_value(le);
+                        if val == 0 {
+                            continue;
+                        }
+                        let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(&[]);
+                        if name.is_empty() || seen_names.contains(name) {
+                            continue;
+                        }
+                        seen_names.insert(name.to_vec());
+                        entries.push((name.to_vec(), val, 0x02)); // N_ABS
+                    }
+                }
+            }
+        }
     }
 
     if entries.is_empty() {
@@ -896,9 +946,7 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
                 Ok(n) => n.bytes().to_vec(),
                 Err(_) => b"<unknown>".to_vec(),
             };
-            // TODO: detect weak imports (N_WEAK_REF) and set weak_import=true
-            // so dyld doesn't error when the symbol isn't found at runtime.
-            let weak = false;
+            let weak = layout.symbol_db.is_weak_ref(symbol_id);
             imports.push(ImportEntry {
                 name,
                 lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs),
@@ -1556,6 +1604,7 @@ fn write_chained_fixups_header(
     n_imports: u32,
     import_name_offsets: &[u32],
     import_ordinals: &[u8],
+    import_weak: &[bool],
     symbols_pool: &[u8],
     mappings: &[SegmentMapping],
     is_dylib: bool,
@@ -1646,7 +1695,12 @@ fn write_chained_fixups_header(
     let it = imports_table_offset as usize;
     for (i, &name_off) in import_name_offsets.iter().enumerate() {
         let ordinal = import_ordinals[i] as u32;
-        let import_val: u32 = ordinal | ((name_off & 0x7F_FFFF) << 9);
+        let weak_bit = if import_weak.get(i).copied().unwrap_or(false) {
+            1u32 << 8
+        } else {
+            0
+        };
+        let import_val: u32 = ordinal | weak_bit | ((name_off & 0x7F_FFFF) << 9);
         w[it + i * 4..it + i * 4 + 4].copy_from_slice(&import_val.to_le_bytes());
     }
 
@@ -1706,6 +1760,10 @@ struct CollectedUnwindEntry {
     func_size: u32,
     /// Compact unwind encoding (ARM64 mode + register mask).
     encoding: u32,
+    /// Personality function GOT address (if any).
+    personality_got: Option<u64>,
+    /// LSDA VM address (if any).
+    lsda_addr: Option<u64>,
 }
 
 /// Scan all input objects for `__LD,__compact_unwind` sections and collect
@@ -1779,16 +1837,23 @@ fn collect_compact_unwind_entries(layout: &Layout<'_, MachO>) -> Vec<CollectedUn
                         if (encoding & 0x0F00_0000) == 0x0300_0000 {
                             continue;
                         }
-                        // Plain frame-pointer / no-unwind entry.
                         let Some(func_addr) =
                             resolve_compact_unwind_addr(obj, layout, le, relocs, base, data)
                         else {
                             continue;
                         };
+                        // Extract personality GOT addr (offset 16) and LSDA addr (offset 24)
+                        let personality_got =
+                            resolve_compact_unwind_got_addr(obj, layout, le, relocs, base + 16);
+                        let lsda_addr =
+                            resolve_compact_unwind_addr(obj, layout, le, relocs, base + 24, data)
+                                .and_then(|addr| if addr != 0 { Some(addr) } else { None });
                         entries.push(CollectedUnwindEntry {
                             func_addr,
                             func_size,
                             encoding,
+                            personality_got,
+                            lsda_addr,
                         });
                     }
                 }
@@ -1864,11 +1929,41 @@ fn resolve_compact_unwind_addr(
     None
 }
 
+/// Like resolve_compact_unwind_addr, but returns the GOT address for the symbol
+/// (needed for personality pointers in __unwind_info).
+fn resolve_compact_unwind_got_addr(
+    obj: &ObjectLayout<'_, MachO>,
+    layout: &Layout<'_, MachO>,
+    le: object::Endianness,
+    relocs: &[object::macho::Relocation<object::Endianness>],
+    field_offset: usize,
+) -> Option<u64> {
+    for r in relocs {
+        let reloc = r.info(le);
+        if reloc.r_address as usize != field_offset {
+            continue;
+        }
+        if reloc.r_extern {
+            let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+            let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
+            if let Some(res) = layout.merged_symbol_resolution(sym_id) {
+                if let Some(got) = res.format_specific.got_address {
+                    return Some(got);
+                }
+                if res.raw_value != 0 {
+                    return Some(res.raw_value);
+                }
+            }
+        }
+        break;
+    }
+    None
+}
+
 /// Build the binary content of the `__unwind_info` section from collected entries.
 /// `text_base` is the VM address of the start of the `__TEXT` segment.
 ///
 /// Produces a version-1 unwind_info with regular second-level pages (kind=2).
-/// Entries with personality/LSDA are not included (use DWARF FDEs for those).
 /// Info extracted from a `__eh_frame` CIE augmentation string.
 #[derive(Default, Clone)]
 struct CieAugInfo {
@@ -2173,7 +2268,18 @@ fn build_unwind_info_section(
         all_entries.push((func_vm, 0u32, enc));
     }
 
+    // Also collect personalities from compact_unwind entries.
+    for e in plain_entries {
+        if let Some(got) = e.personality_got {
+            if !personalities.contains(&got) {
+                personalities.push(got);
+            }
+        }
+    }
+
     let pers_count = all_entries.len();
+    // LSDA descriptors: (func_offset_from_text, lsda_offset_from_text)
+    let mut lsda_descriptors: Vec<(u32, u32)> = Vec::new();
     for e in plain_entries {
         if fde_map
             .get(&e.func_addr)
@@ -2181,8 +2287,22 @@ fn build_unwind_info_section(
         {
             continue;
         }
-        all_entries.push((e.func_addr, e.func_size, e.encoding));
+        let mut enc = e.encoding;
+        // Set personality index in encoding bits [29:28]
+        if let Some(got) = e.personality_got {
+            if let Some(pos) = personalities.iter().position(|&g| g == got) {
+                let pers_idx = (pos + 1) as u32;
+                enc = (enc & !(0x3 << 28)) | ((pers_idx & 3) << 28);
+            }
+        }
+        // Set UNWIND_HAS_LSDA flag and record LSDA descriptor
+        if let Some(lsda) = e.lsda_addr {
+            enc |= 0x4000_0000; // UNWIND_HAS_LSDA
+            lsda_descriptors.push(((e.func_addr - text_base) as u32, (lsda - text_base) as u32));
+        }
+        all_entries.push((e.func_addr, e.func_size, enc));
     }
+    lsda_descriptors.sort_by_key(|d| d.0);
 
     if all_entries.is_empty() {
         return Vec::new();
@@ -2197,8 +2317,14 @@ fn build_unwind_info_section(
     const ENTRIES_PER_PAGE: usize = 500;
     loop {
         let np = all_entries.len().div_ceil(ENTRIES_PER_PAGE);
-        // Estimate: header(28) + pers(n*4) + index((np+1)*12) + SL pages(np*8 + entries*8)
-        let est = 28 + (n_pers as usize) * 4 + (np + 1) * 12 + np * 8 + all_entries.len() * 8;
+        // Estimate: header(28) + pers(n*4) + index((np+1)*12) + LSDA(n*8) + SL pages(np*8 +
+        // entries*8)
+        let est = 28
+            + (n_pers as usize) * 4
+            + (np + 1) * 12
+            + lsda_descriptors.len() * 8
+            + np * 8
+            + all_entries.len() * 8;
         if est as u64 <= max_bytes || all_entries.len() <= pers_count {
             break;
         }
@@ -2231,8 +2357,9 @@ fn build_unwind_info_section(
     let pers_bytes = n_pers * 4;
     let idx_off = pers_off + pers_bytes;
     let idx_bytes = (num_pages as u32 + 1) * 12;
-    let lsda_off = idx_off + idx_bytes; // empty LSDA array starts here
-    let sl_start = lsda_off;
+    let lsda_off = idx_off + idx_bytes;
+    let lsda_bytes = lsda_descriptors.len() as u32 * 8; // 8 bytes each: funcOffset + lsdaOffset
+    let sl_start = lsda_off + lsda_bytes;
 
     let mut sl_offsets = Vec::with_capacity(num_pages);
     let mut cur = sl_start;
@@ -2270,6 +2397,13 @@ fn build_unwind_info_section(
         wu32!(pers_off as usize + i * 4, offset_from_text);
     }
 
+    // LSDA descriptors array (8 bytes each: funcOffset + lsdaOffset)
+    for (i, &(func_off, lsda_off_val)) in lsda_descriptors.iter().enumerate() {
+        let off = lsda_off as usize + i * 8;
+        wu32!(off, func_off);
+        wu32!(off + 4, lsda_off_val);
+    }
+
     // First-level index entries + second-level regular pages
     for page in 0..num_pages {
         let start = page * ENTRIES_PER_PAGE;
@@ -2304,7 +2438,7 @@ fn build_unwind_info_section(
     let sie = idx_off as usize + num_pages * 12;
     wu32!(sie, sentinel_fn_off);
     wu32!(sie + 4, 0u32); // secondLevelPagesSectionOffset = 0 (sentinel)
-    wu32!(sie + 8, lsda_off); // lsdaIndexArraySectionOffset
+    wu32!(sie + 8, lsda_off + lsda_bytes); // lsdaIndexArraySectionOffset (end)
 
     out
 }
@@ -2363,6 +2497,10 @@ fn write_headers(
     let has_stubs = plt_layout.mem_size > 0;
     let got_layout = layout.section_layouts.get(output_section_id::GOT);
     let has_got = got_layout.mem_size > 0;
+    let gcc_except_layout = layout
+        .section_layouts
+        .get(output_section_id::GCC_EXCEPT_TABLE);
+    let has_gcc_except = gcc_except_layout.mem_size > 0;
 
     // Scan for .rustc section (proc-macro metadata) before computing cmd sizes
     let mut rustc_addr = 0u64;
@@ -2433,6 +2571,7 @@ fn write_headers(
     let text_nsects = 1
         + if rustc_in_text { 1u32 } else { 0 }
         + if has_stubs { 1 } else { 0 }
+        + if has_gcc_except { 1 } else { 0 }
         + if has_eh_frame { 1 } else { 0 }
         + if has_unwind_info { 1 } else { 0 };
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
@@ -2547,6 +2686,22 @@ fn write_headers(
         w.u32(0x80000408); // S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS
         w.u32(0); // reserved1 (indirect symbol table index, 0 for now)
         w.u32(12); // reserved2 = stub size
+        w.u32(0); // reserved3
+    }
+    if has_gcc_except {
+        let ge_foff =
+            vm_addr_to_file_offset(gcc_except_layout.mem_offset, mappings).unwrap_or(0) as u32;
+        w.name16(b"__gcc_except_tab");
+        w.name16(b"__TEXT");
+        w.u64(gcc_except_layout.mem_offset);
+        w.u64(gcc_except_layout.mem_size);
+        w.u32(ge_foff);
+        w.u32(2); // align 2^2 = 4
+        w.u32(0); // reloff
+        w.u32(0); // nreloc
+        w.u32(0); // flags = S_REGULAR
+        w.u32(0); // reserved1
+        w.u32(0); // reserved2
         w.u32(0); // reserved3
     }
     if has_eh_frame {
@@ -2934,4 +3089,458 @@ impl Writer<'_> {
         self.u32(nsects);
         self.u32(0);
     }
+}
+
+/// Write a Mach-O relocatable object file (MH_OBJECT) for partial linking (-r).
+fn write_relocatable_object(layout: &Layout<'_, MachO>) -> Result {
+    use crate::layout::FileLayout;
+    use object::read::macho::Nlist as _;
+    use object::read::macho::Section as MachOSec;
+    let le = object::Endianness::Little;
+
+    // Phase 1: Collect sections and symbols from all input objects.
+    // Each output section aggregates data from matching input sections.
+    struct OutSection {
+        segname: [u8; 16],
+        sectname: [u8; 16],
+        data: Vec<u8>,
+        align: u32,
+        flags: u32,
+        relocs: Vec<[u8; 8]>, // raw Mach-O relocation entries
+    }
+
+    // Symbol entry for the output nlist table.
+    struct OutSym {
+        name: Vec<u8>,
+        n_type: u8,
+        n_sect: u8, // 1-based section ordinal in output, 0 = NO_SECT
+        n_desc: u16,
+        n_value: u64,
+    }
+
+    let mut sections: Vec<OutSection> = Vec::new();
+    let mut symbols: Vec<OutSym> = Vec::new();
+
+    // Map: (segname, sectname) -> index in `sections`
+    let mut sec_map: std::collections::HashMap<([u8; 16], [u8; 16]), usize> = Default::default();
+
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            let FileLayout::Object(obj) = file_layout else {
+                continue;
+            };
+
+            // Build input symbol index -> output symbol index mapping for this object.
+            let n_input_syms = obj.object.symbols.len();
+            let mut sym_remap: Vec<u32> = vec![0; n_input_syms];
+            // Also track which input sections map to which output sections.
+            let n_input_secs = obj.object.sections.len();
+            let mut sec_remap: Vec<u8> = vec![0; n_input_secs]; // 1-based output ordinal
+            let mut sec_value_adjust: Vec<u64> = vec![0; n_input_secs]; // offset adjustment per input section
+
+            // Process sections: copy data and build section map.
+            for sec_idx in 0..n_input_secs {
+                let Some(sec) = obj.object.sections.get(sec_idx) else {
+                    continue;
+                };
+                let sec_segname = sec.segname;
+                let sec_sectname = sec.sectname;
+                let trimmed_seg = crate::macho::trim_nul(&sec_segname);
+                let _trimmed_name = crate::macho::trim_nul(&sec_sectname);
+
+                // Skip __LD,__compact_unwind (linker-private metadata)
+                if trimmed_seg == b"__LD" {
+                    continue;
+                }
+
+                let sec_type = sec.flags(le) & 0xFF;
+                // Skip zerofill (BSS) sections' data
+                let has_data = sec_type != 0x01 && sec_type != 0x0C;
+
+                let input_offset = sec.offset(le) as usize;
+                let input_size = sec.size(le) as usize;
+
+                let out_sec_idx = if let Some(&idx) = sec_map.get(&(sec_segname, sec_sectname)) {
+                    idx
+                } else {
+                    let idx = sections.len();
+                    sec_map.insert((sec_segname, sec_sectname), idx);
+                    sections.push(OutSection {
+                        segname: sec_segname,
+                        sectname: sec_sectname,
+                        data: Vec::new(),
+                        align: sec.align(le),
+                        flags: sec.flags(le),
+                        relocs: Vec::new(),
+                    });
+                    idx
+                };
+                sec_remap[sec_idx] = (out_sec_idx + 1) as u8;
+
+                let out_sec = &mut sections[out_sec_idx];
+                // Align the output position
+                let alignment = 1usize << out_sec.align.max(sec.align(le));
+                out_sec.align = out_sec.align.max(sec.align(le));
+                let padding = (alignment - (out_sec.data.len() % alignment)) % alignment;
+                out_sec.data.resize(out_sec.data.len() + padding, 0);
+                let output_offset_in_sec = out_sec.data.len();
+                // Record the adjustment: symbols in this input section need their
+                // value increased by (output_offset_in_sec - input_section_addr).
+                let input_sec_addr = sec.addr.get(le);
+                sec_value_adjust[sec_idx] = output_offset_in_sec as u64 - input_sec_addr;
+
+                if has_data && input_size > 0 && input_offset > 0 {
+                    if let Some(data) = obj.object.data.get(input_offset..input_offset + input_size)
+                    {
+                        out_sec.data.extend_from_slice(data);
+                    } else {
+                        out_sec.data.resize(out_sec.data.len() + input_size, 0);
+                    }
+                } else {
+                    out_sec.data.resize(out_sec.data.len() + input_size, 0);
+                }
+
+                // Copy and remap relocations (deferred until symbols are mapped)
+                // For now, store reloc info to process after symbol table is built.
+                // We'll handle this in a second pass.
+            }
+
+            // Process symbols: add to output symbol table.
+            for sym_idx in 0..n_input_syms {
+                let Ok(sym) = obj.object.symbols.symbol(object::SymbolIndex(sym_idx)) else {
+                    continue;
+                };
+                let n_type = sym.n_type();
+                // Skip debug symbols (N_STAB)
+                if n_type & 0xE0 != 0 {
+                    continue;
+                }
+                let name = sym
+                    .name(le, obj.object.symbols.strings())
+                    .unwrap_or(&[])
+                    .to_vec();
+                // Remap n_sect
+                let n_sect_in = sym.n_sect();
+                let n_sect_out = if n_sect_in > 0 && (n_sect_in as usize - 1) < sec_remap.len() {
+                    sec_remap[n_sect_in as usize - 1]
+                } else {
+                    0
+                };
+                // Adjust n_value for merged section offset
+                let n_value = if n_sect_in > 0
+                    && n_sect_out > 0
+                    && (n_sect_in as usize - 1) < sec_value_adjust.len()
+                {
+                    sym.n_value(le)
+                        .wrapping_add(sec_value_adjust[n_sect_in as usize - 1])
+                } else {
+                    sym.n_value(le)
+                };
+                let out_idx = symbols.len() as u32;
+                sym_remap[sym_idx] = out_idx;
+                symbols.push(OutSym {
+                    name,
+                    n_type,
+                    n_sect: n_sect_out,
+                    n_desc: sym.n_desc(le) as u16,
+                    n_value,
+                });
+            }
+
+            // Second pass: copy and remap relocations.
+            for sec_idx in 0..n_input_secs {
+                let Some(sec) = obj.object.sections.get(sec_idx) else {
+                    continue;
+                };
+                let trimmed_seg = crate::macho::trim_nul(&sec.segname);
+                if trimmed_seg == b"__LD" {
+                    continue;
+                }
+                let out_sec_ordinal = sec_remap[sec_idx];
+                if out_sec_ordinal == 0 {
+                    continue;
+                }
+                let out_sec_idx = out_sec_ordinal as usize - 1;
+
+                let relocs = match sec.relocations(le, obj.object.data) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                for r in relocs {
+                    let ri = r.info(le);
+                    // Build output relocation with remapped symbol/section index.
+                    let new_symbolnum = if ri.r_extern {
+                        let idx = ri.r_symbolnum as usize;
+                        if idx < sym_remap.len() {
+                            sym_remap[idx]
+                        } else {
+                            ri.r_symbolnum
+                        }
+                    } else {
+                        // Non-extern: r_symbolnum is 1-based section ordinal.
+                        let sec_ord = ri.r_symbolnum as usize;
+                        if sec_ord > 0
+                            && sec_ord - 1 < sec_remap.len()
+                            && sec_remap[sec_ord - 1] > 0
+                        {
+                            sec_remap[sec_ord - 1] as u32
+                        } else {
+                            ri.r_symbolnum
+                        }
+                    };
+                    // Encode relocation entry (Mach-O ARM64 format):
+                    // word0 = r_address (adjusted for output section offset)
+                    // word1 = packed(r_symbolnum, r_pcrel, r_length, r_extern, r_type)
+                    let addr_adjust = sec_value_adjust[sec_idx] as u32;
+                    let word0 = ri.r_address.wrapping_add(addr_adjust);
+                    let word1: u32 = (new_symbolnum & 0x00FF_FFFF)
+                        | (if ri.r_pcrel { 1 << 24 } else { 0 })
+                        | ((ri.r_length as u32 & 3) << 25)
+                        | (if ri.r_extern { 1 << 27 } else { 0 })
+                        | ((ri.r_type as u32 & 0xF) << 28);
+                    let mut entry = [0u8; 8];
+                    entry[0..4].copy_from_slice(&word0.to_le_bytes());
+                    entry[4..8].copy_from_slice(&word1.to_le_bytes());
+                    sections[out_sec_idx].relocs.push(entry);
+                }
+            }
+        }
+    }
+
+    if sections.is_empty() {
+        // Nothing to output
+        let output_path = layout.symbol_db.args.output();
+        std::fs::write(output_path.as_ref(), &[])
+            .map_err(|e| crate::error!("Failed to write: {e}"))?;
+        return Ok(());
+    }
+
+    // Phase 2: Sort symbols (locals first, then defined externals, then undefined).
+    let mut local_syms: Vec<usize> = Vec::new();
+    let mut ext_def_syms: Vec<usize> = Vec::new();
+    let mut undef_syms: Vec<usize> = Vec::new();
+    for (i, sym) in symbols.iter().enumerate() {
+        if sym.name.is_empty() && sym.n_type == 0 {
+            continue; // skip null symbol
+        }
+        let is_ext = (sym.n_type & 0x01) != 0; // N_EXT
+        let sym_type = sym.n_type & 0x0E;
+        if !is_ext {
+            local_syms.push(i);
+        } else if sym_type == 0 && sym.n_sect == 0 {
+            // N_UNDF + N_EXT = undefined external
+            undef_syms.push(i);
+        } else {
+            ext_def_syms.push(i);
+        }
+    }
+    let sorted_indices: Vec<usize> = local_syms
+        .iter()
+        .chain(ext_def_syms.iter())
+        .chain(undef_syms.iter())
+        .copied()
+        .collect();
+    // Build reverse map: old index -> new index (for relocation fixup)
+    let mut new_sym_index = vec![0u32; symbols.len()];
+    for (new_idx, &old_idx) in sorted_indices.iter().enumerate() {
+        new_sym_index[old_idx] = new_idx as u32;
+    }
+
+    // Fixup relocations to use new symbol indices.
+    for sec in &mut sections {
+        for entry in &mut sec.relocs {
+            let word1 = u32::from_le_bytes(entry[4..8].try_into().unwrap());
+            let old_symbolnum = word1 & 0x00FF_FFFF;
+            let is_extern = (word1 >> 27) & 1 != 0;
+            if is_extern {
+                let new_num = if (old_symbolnum as usize) < new_sym_index.len() {
+                    new_sym_index[old_symbolnum as usize]
+                } else {
+                    old_symbolnum
+                };
+                let word1_new = (word1 & 0xFF00_0000) | (new_num & 0x00FF_FFFF);
+                entry[4..8].copy_from_slice(&word1_new.to_le_bytes());
+            }
+            // Non-extern relocs reference section ordinals, already remapped.
+        }
+    }
+
+    // Phase 3: Build string table and nlist entries.
+    let mut strtab = vec![0u8]; // starts with NUL
+    let mut nlist_data: Vec<u8> = Vec::new();
+    for &old_idx in &sorted_indices {
+        let sym = &symbols[old_idx];
+        let strx = strtab.len() as u32;
+        strtab.extend_from_slice(&sym.name);
+        strtab.push(0);
+        // nlist_64: n_strx(4) + n_type(1) + n_sect(1) + n_desc(2) + n_value(8) = 16
+        nlist_data.extend_from_slice(&strx.to_le_bytes());
+        nlist_data.push(sym.n_type);
+        nlist_data.push(sym.n_sect);
+        nlist_data.extend_from_slice(&sym.n_desc.to_le_bytes());
+        nlist_data.extend_from_slice(&sym.n_value.to_le_bytes());
+    }
+
+    // Phase 4: Compute layout and write output.
+    let nsects = sections.len() as u32;
+    let ncmds = 3u32; // LC_SEGMENT_64 + LC_SYMTAB + LC_DYSYMTAB
+    let seg_cmdsize = 72 + 80 * nsects;
+    let symtab_cmdsize = 24u32;
+    let dysymtab_cmdsize = 80u32;
+    let header_size = 32; // Mach-O 64 header
+    let total_cmdsize = seg_cmdsize + symtab_cmdsize + dysymtab_cmdsize;
+
+    let mut section_offset = header_size + total_cmdsize;
+    let mut sec_offsets: Vec<u32> = Vec::new();
+    for sec in &sections {
+        // Align section data
+        let alignment = 1u32 << sec.align;
+        section_offset = (section_offset + alignment - 1) & !(alignment - 1);
+        sec_offsets.push(section_offset);
+        section_offset += sec.data.len() as u32;
+    }
+
+    // Relocation entries follow section data
+    let mut reloc_offsets: Vec<u32> = Vec::new();
+    let mut reloc_offset = section_offset;
+    for sec in &sections {
+        reloc_offsets.push(if sec.relocs.is_empty() {
+            0
+        } else {
+            reloc_offset
+        });
+        reloc_offset += (sec.relocs.len() * 8) as u32;
+    }
+
+    // Symbol table follows relocations
+    let symoff = (reloc_offset + 7) & !7; // 8-byte align
+    let nsyms = sorted_indices.len() as u32;
+    let stroff = symoff + nsyms * 16;
+    let total_size = stroff + strtab.len() as u32;
+
+    let mut buf = vec![0u8; total_size as usize];
+
+    // Write header
+    let mut pos = 0usize;
+    let w = |buf: &mut Vec<u8>, pos: &mut usize, val: u32| {
+        buf[*pos..*pos + 4].copy_from_slice(&val.to_le_bytes());
+        *pos += 4;
+    };
+    w(&mut buf, &mut pos, MH_MAGIC_64);
+    w(&mut buf, &mut pos, CPU_TYPE_ARM64);
+    w(&mut buf, &mut pos, CPU_SUBTYPE_ARM64_ALL);
+    w(&mut buf, &mut pos, 1); // MH_OBJECT
+    w(&mut buf, &mut pos, ncmds);
+    w(&mut buf, &mut pos, total_cmdsize);
+    w(&mut buf, &mut pos, 0x2000); // MH_SUBSECTIONS_VIA_SYMBOLS
+    w(&mut buf, &mut pos, 0); // reserved
+
+    // LC_SEGMENT_64 (unnamed, contains all sections)
+    w(&mut buf, &mut pos, LC_SEGMENT_64);
+    w(&mut buf, &mut pos, seg_cmdsize);
+    // segname: empty (16 NUL bytes)
+    buf[pos..pos + 16].fill(0);
+    pos += 16;
+    // vmaddr, vmsize
+    let seg_vmsize = sections
+        .iter()
+        .enumerate()
+        .map(|(i, s)| sec_offsets[i] as u64 - sec_offsets[0] as u64 + s.data.len() as u64)
+        .max()
+        .unwrap_or(0);
+    buf[pos..pos + 8].copy_from_slice(&0u64.to_le_bytes()); // vmaddr
+    pos += 8;
+    buf[pos..pos + 8].copy_from_slice(&seg_vmsize.to_le_bytes()); // vmsize
+    pos += 8;
+    buf[pos..pos + 8].copy_from_slice(&(sec_offsets[0] as u64).to_le_bytes()); // fileoff
+    pos += 8;
+    buf[pos..pos + 8]
+        .copy_from_slice(&(section_offset as u64 - sec_offsets[0] as u64).to_le_bytes()); // filesize
+    pos += 8;
+    w(&mut buf, &mut pos, 7); // maxprot: rwx
+    w(&mut buf, &mut pos, 7); // initprot: rwx
+    w(&mut buf, &mut pos, nsects);
+    w(&mut buf, &mut pos, 0); // flags
+
+    // Section headers
+    for (i, sec) in sections.iter().enumerate() {
+        buf[pos..pos + 16].copy_from_slice(&sec.sectname);
+        pos += 16;
+        buf[pos..pos + 16].copy_from_slice(&sec.segname);
+        pos += 16;
+        buf[pos..pos + 8]
+            .copy_from_slice(&((sec_offsets[i] - sec_offsets[0]) as u64).to_le_bytes()); // addr (section-relative)
+        pos += 8;
+        buf[pos..pos + 8].copy_from_slice(&(sec.data.len() as u64).to_le_bytes()); // size
+        pos += 8;
+        w(&mut buf, &mut pos, sec_offsets[i]); // offset
+        w(&mut buf, &mut pos, sec.align); // align
+        w(&mut buf, &mut pos, reloc_offsets[i]); // reloff
+        w(&mut buf, &mut pos, sec.relocs.len() as u32); // nreloc
+        w(&mut buf, &mut pos, sec.flags); // flags
+        w(&mut buf, &mut pos, 0); // reserved1
+        w(&mut buf, &mut pos, 0); // reserved2
+        w(&mut buf, &mut pos, 0); // reserved3
+    }
+
+    // LC_SYMTAB
+    w(&mut buf, &mut pos, LC_SYMTAB);
+    w(&mut buf, &mut pos, symtab_cmdsize);
+    w(&mut buf, &mut pos, symoff);
+    w(&mut buf, &mut pos, nsyms);
+    w(&mut buf, &mut pos, stroff);
+    w(&mut buf, &mut pos, strtab.len() as u32);
+
+    // LC_DYSYMTAB
+    w(&mut buf, &mut pos, LC_DYSYMTAB);
+    w(&mut buf, &mut pos, dysymtab_cmdsize);
+    let nlocalsym = local_syms.len() as u32;
+    let nextdefsym = ext_def_syms.len() as u32;
+    let nundefsym = undef_syms.len() as u32;
+    w(&mut buf, &mut pos, 0); // ilocalsym
+    w(&mut buf, &mut pos, nlocalsym);
+    w(&mut buf, &mut pos, nlocalsym); // iextdefsym
+    w(&mut buf, &mut pos, nextdefsym);
+    w(&mut buf, &mut pos, nlocalsym + nextdefsym); // iundefsym
+    w(&mut buf, &mut pos, nundefsym);
+    // Remaining DYSYMTAB fields are all zero
+    for _ in 0..14 {
+        w(&mut buf, &mut pos, 0);
+    }
+
+    // Write section data
+    for (i, sec) in sections.iter().enumerate() {
+        let off = sec_offsets[i] as usize;
+        if off + sec.data.len() <= buf.len() {
+            buf[off..off + sec.data.len()].copy_from_slice(&sec.data);
+        }
+    }
+
+    // Write relocations
+    for (i, sec) in sections.iter().enumerate() {
+        if sec.relocs.is_empty() {
+            continue;
+        }
+        let off = reloc_offsets[i] as usize;
+        for (j, entry) in sec.relocs.iter().enumerate() {
+            let p = off + j * 8;
+            if p + 8 <= buf.len() {
+                buf[p..p + 8].copy_from_slice(entry);
+            }
+        }
+    }
+
+    // Write symbol table
+    if symoff as usize + nlist_data.len() <= buf.len() {
+        buf[symoff as usize..symoff as usize + nlist_data.len()].copy_from_slice(&nlist_data);
+    }
+    if stroff as usize + strtab.len() <= buf.len() {
+        buf[stroff as usize..stroff as usize + strtab.len()].copy_from_slice(&strtab);
+    }
+
+    let output_path = layout.symbol_db.args.output();
+    std::fs::write(output_path.as_ref(), &buf)
+        .map_err(|e| crate::error!("Failed to write: {e}"))?;
+
+    Ok(())
 }

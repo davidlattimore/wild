@@ -20,12 +20,16 @@ pub struct MachOArgs {
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
     pub(crate) is_dylib: bool,
+    pub(crate) is_relocatable: bool,
     #[allow(dead_code)]
     pub(crate) install_name: Option<Vec<u8>>,
     /// Additional dylibs to emit LC_LOAD_DYLIB for (from -l flags resolving to .tbd stubs).
     pub(crate) extra_dylibs: Vec<Vec<u8>>,
     /// Symbols to force as undefined (-u flag), triggering archive member loading.
     pub(crate) force_undefined: Vec<String>,
+    /// Symbols exported by linked dylibs (from .tbd parsing). Used to distinguish
+    /// undefined symbols that are dylib imports from truly missing symbols.
+    pub(crate) dylib_symbols: std::collections::HashSet<Vec<u8>>,
 }
 
 impl MachOArgs {
@@ -47,9 +51,11 @@ impl Default for MachOArgs {
             syslibroot: None,
             entry_symbol: Some(b"_main".to_vec()),
             is_dylib: false,
+            is_relocatable: false,
             install_name: None,
             extra_dylibs: Vec::new(),
             force_undefined: Vec::new(),
+            dylib_symbols: Default::default(),
         }
     }
 }
@@ -113,7 +119,11 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_output_executable(&self) -> bool {
-        !self.is_dylib
+        !self.is_dylib && !self.is_relocatable
+    }
+
+    fn should_output_partial_object(&self) -> bool {
+        self.is_relocatable
     }
 }
 
@@ -261,6 +271,11 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.entry_symbol = None; // dylibs have no entry point
             return Ok(());
         }
+        "-r" => {
+            args.is_relocatable = true;
+            args.entry_symbol = None;
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -287,8 +302,34 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     if let Some(lib) = arg.strip_prefix("-l") {
         if !lib.is_empty() {
             // On macOS, libSystem is implicitly linked (we emit LC_LOAD_DYLIB for it).
-            // Skip it and other system dylibs that we handle implicitly.
+            // Skip it and other system dylibs that we handle implicitly, but still
+            // parse their .tbd to know which symbols they export.
             if lib == "System" || lib == "c" || lib == "m" || lib == "pthread" {
+                // Still parse .tbd for symbol resolution (including re-exported libs)
+                let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
+                if let Some(ref root) = args.syslibroot {
+                    search_paths.push(Box::from(root.join("usr/lib")));
+                }
+                for dir in &search_paths {
+                    let tbd_path = dir.join(format!("lib{lib}.tbd"));
+                    if tbd_path.exists() {
+                        collect_tbd_symbols(&tbd_path, &mut args.dylib_symbols);
+                        // Also collect from re-exported libraries (e.g. libSystem
+                        // re-exports libdyld, libsystem_c, etc. from system/ subdir)
+                        let system_dir = dir.join("system");
+                        if system_dir.is_dir() {
+                            if let Ok(entries) = std::fs::read_dir(&system_dir) {
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p.extension().map_or(false, |e| e == "tbd") {
+                                        collect_tbd_symbols(&p, &mut args.dylib_symbols);
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
                 return Ok(());
             }
             // Try to find the library on the search path, including syslibroot
@@ -312,6 +353,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                                     args.extra_dylibs.push(dylib_path);
                                 }
                             }
+                            collect_tbd_symbols(&path, &mut args.dylib_symbols);
                             found = true;
                             break;
                         }
@@ -377,4 +419,55 @@ fn parse_tbd_install_name(path: &Path) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Collect exported symbols from a .tbd file into the given set.
+fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<u8>>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let records = match text_stub_library::parse_str(&content) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for record in &records {
+        match record {
+            text_stub_library::TbdVersionedRecord::V4(v4) => {
+                let is_arm64 = |targets: &[String]| -> bool {
+                    targets.is_empty()
+                        || targets
+                            .iter()
+                            .any(|t| t.starts_with("arm64-") || t.starts_with("arm64e-"))
+                };
+                for exp in &v4.exports {
+                    if !is_arm64(&exp.targets) {
+                        continue;
+                    }
+                    for sym in &exp.symbols {
+                        symbols.insert(sym.as_bytes().to_vec());
+                    }
+                    for sym in &exp.weak_symbols {
+                        symbols.insert(sym.as_bytes().to_vec());
+                    }
+                }
+                for exp in &v4.re_exports {
+                    if !is_arm64(&exp.targets) {
+                        continue;
+                    }
+                    for sym in &exp.symbols {
+                        symbols.insert(sym.as_bytes().to_vec());
+                    }
+                }
+            }
+            text_stub_library::TbdVersionedRecord::V3(v3) => {
+                for exp in &v3.exports {
+                    for sym in &exp.symbols {
+                        symbols.insert(sym.as_bytes().to_vec());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }

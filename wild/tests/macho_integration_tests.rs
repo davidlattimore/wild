@@ -93,6 +93,8 @@ struct TestConfig {
     archives: Vec<(String, Vec<String>)>,
     /// Shared libraries to build: source file names.
     shared_libs: Vec<String>,
+    /// Groups of sources to partial-link with -r.
+    relocatables: Vec<Vec<String>>,
     comp_args: Vec<String>,
     link_args: Vec<String>,
     expect_error: Option<String>,
@@ -142,6 +144,10 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
                 cfg.archives.push((name, sources));
             }
             "Shared" => cfg.shared_libs.push(value.trim().to_string()),
+            "Relocatable" => {
+                let sources: Vec<String> = value.split(',').map(|s| s.trim().to_string()).collect();
+                cfg.relocatables.push(sources);
+            }
             "CompArgs" => cfg.comp_args.extend(shell_words(value)),
             "LinkArgs" => cfg.link_args.extend(shell_words(value)),
             "ExpectError" => cfg.expect_error = Some(value.to_string()),
@@ -276,6 +282,30 @@ fn run_test(
             ));
         }
         objects.push(archive_path);
+    }
+
+    // Build partial-linked relocatables with -r.
+    for (group_idx, sources) in config.relocatables.iter().enumerate() {
+        let mut member_objs = Vec::new();
+        for src_name in sources {
+            let src = test_dir.join(src_name);
+            let src_cpp = src.extension().map_or(false, |e| e == "cc");
+            compile_source(&src, &build_dir, &config.comp_args, src_cpp)?;
+            member_objs.push(object_path(&build_dir, &src));
+        }
+        let reloc_path = build_dir.join(format!("relocatable{group_idx}.o"));
+        let mut reloc_cmd = Command::new(&wild_bin);
+        reloc_cmd.arg("-r");
+        for obj in &member_objs {
+            reloc_cmd.arg(obj);
+        }
+        reloc_cmd.arg("-o").arg(&reloc_path);
+        let result = reloc_cmd.output().map_err(|e| format!("wild -r: {e}"))?;
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(format!("Partial link (-r) failed:\n{stderr}"));
+        }
+        objects.push(reloc_path);
     }
 
     // Build shared libraries (dylibs) and add -L/-l flags.

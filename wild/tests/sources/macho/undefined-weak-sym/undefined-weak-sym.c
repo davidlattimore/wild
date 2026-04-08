@@ -1,5 +1,4 @@
 //#LinkerDriver:clang
-//#Ignore:weak undefined symbols not yet resolved to NULL for Mach-O
 
 int __attribute__((weak)) foo(void);
 int main() {

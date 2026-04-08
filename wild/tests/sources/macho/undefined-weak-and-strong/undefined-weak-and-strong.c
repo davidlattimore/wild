@@ -1,6 +1,6 @@
 //#Object:undefined-weak-and-strong1.c
+//#LinkerDriver:clang
 //#ExpectError:foo
-//#Ignore:undefined symbol enforcement not yet implemented for Mach-O
 
 void __attribute__((weak)) foo(void);
 void call_foo(void);

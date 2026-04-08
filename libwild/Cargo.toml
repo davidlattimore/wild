@@ -52,6 +52,7 @@ uuid = { workspace = true }
 winnow = { workspace = true }
 zerocopy = { workspace = true }
 zstd = { workspace = true }
+text-stub-library = "0.9.0"
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event = { workspace = true }

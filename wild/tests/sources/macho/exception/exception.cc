@@ -1,7 +1,6 @@
 //#LinkerDriver:clang++
 //#LinkArgs:-lc++
 //#CompArgs:-std=c++17
-//#Ignore:C++ exceptions need __gcc_except_tab, __stubs, and __got sections
 
 #include <stdexcept>
 

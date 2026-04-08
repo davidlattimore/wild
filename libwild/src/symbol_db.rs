@@ -1015,6 +1015,22 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         }
     }
 
+    /// Returns whether the symbol is a weak reference (N_WEAK_REF on Mach-O).
+    pub(crate) fn is_weak_ref(&self, symbol_id: SymbolId) -> bool {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match &self.groups[file_id.group()] {
+            Group::Objects(objects) => {
+                let file = &objects[file_id.file()];
+                let local_index = file.symbol_id_range.id_to_input(symbol_id);
+                file.parsed
+                    .object
+                    .symbol(local_index)
+                    .is_ok_and(|sym| sym.is_weak())
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn warning(&self, message: impl Into<String>) {
         self.args.warning(message);
     }
