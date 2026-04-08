@@ -41,9 +41,56 @@ const DYLD_PATH: &[u8] = b"/usr/lib/dyld";
 const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
 
 pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>) -> Result {
-    let (mappings, alloc_size) = build_mappings_and_size(layout);
+    // Collect compact-unwind entries from all input objects.
+    let plain_entries = collect_compact_unwind_entries(layout);
+
+    // Find TEXT segment bounds (first non-empty segment).
+    // The layout mem_size is content-sized (not page-aligned).  The actual
+    // page boundary between TEXT and DATA is align_to(content_end, PAGE_SIZE).
+    let (text_base, text_vm_end) = layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|s| s.sizes.file_size > 0 || s.sizes.mem_size > 0)
+        .map(|s| {
+            let content_end = s.sizes.mem_offset + s.sizes.mem_size;
+            (s.sizes.mem_offset, align_to(content_end, PAGE_SIZE))
+        })
+        .unwrap_or((PAGEZERO_SIZE, PAGEZERO_SIZE + PAGE_SIZE));
+
+    // Find the end of actual TEXT content (last byte of __eh_frame, or __text).
+    // The gap [text_content_end, text_vm_end) is zero padding within the TEXT
+    // file allocation — we can place __unwind_info there without extending
+    // TEXT vmsize or shifting DATA vmaddr.
+    let text_content_end = {
+        let eh = layout.section_layouts.get(output_section_id::EH_FRAME);
+        if eh.mem_size > 0 {
+            eh.mem_offset + eh.mem_size
+        } else {
+            let t = layout.section_layouts.get(output_section_id::TEXT);
+            t.mem_offset + t.mem_size
+        }
+    };
+    let gap_bytes = text_vm_end.saturating_sub(text_content_end);
+
+    // Decide where to place __unwind_info (4-byte aligned start of gap).
+    // The actual content is built inside write_macho after __eh_frame is written,
+    // so we only need to know whether there is room and the vm_addr.
+    let unwind_info_vm_addr = if plain_entries.is_empty() || gap_bytes == 0 {
+        0u64
+    } else {
+        (text_content_end + 3) & !3u64
+    };
+
+    let extra_text = 0u64;
+
+    let (mappings, alloc_size) = build_mappings_and_size(layout, extra_text);
     let mut buf = vec![0u8; alloc_size];
-    let final_size = write_macho::<A>(&mut buf, layout, &mappings)?;
+    let final_size = write_macho::<A>(
+        &mut buf, layout, &mappings,
+        &plain_entries,
+        unwind_info_vm_addr, text_base, text_vm_end,
+    )?;
     buf.truncate(final_size);
 
     let output_path = layout.symbol_db.args.output();
@@ -72,9 +119,11 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
 }
 
 /// Build exactly 2 segment mappings (TEXT + merged DATA) from pipeline layout.
-fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, usize) {
+/// `extra_text` extends the TEXT segment (first segment) by that many bytes.
+fn build_mappings_and_size(layout: &Layout<'_, MachO>, extra_text: u64) -> (Vec<SegmentMapping>, usize) {
     let mut raw: Vec<(u64, u64, u64)> = Vec::new();
     let mut file_cursor: u64 = 0;
+    let mut is_first = true;
     for seg in &layout.segment_layouts.segments {
         if seg.sizes.file_size == 0 && seg.sizes.mem_size == 0 {
             continue;
@@ -84,7 +133,12 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, 
         } else {
             align_to(file_cursor, PAGE_SIZE)
         };
-        let file_sz = align_to(seg.sizes.file_size as u64, PAGE_SIZE);
+        let extra = if is_first { extra_text } else { 0 };
+        is_first = false;
+        // extra_text extends the TEXT file allocation (for __unwind_info in the
+        // gap) but NOT the vmsize — vmsize is determined by the layout to avoid
+        // overlapping with the DATA segment.
+        let file_sz = align_to(seg.sizes.file_size as u64 + extra, PAGE_SIZE);
         raw.push((
             seg.sizes.mem_offset,
             seg.sizes.mem_offset + seg.sizes.mem_size,
@@ -95,9 +149,11 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, 
 
     let mut mappings = Vec::new();
     if let Some(&(vm_start, vm_end, file_off)) = raw.first() {
+        // Extend TEXT mapping to the page boundary so __unwind_info in the
+        // gap between content end and page boundary is addressable.
         mappings.push(SegmentMapping {
             vm_start,
-            vm_end,
+            vm_end: align_to(vm_end - vm_start, PAGE_SIZE) + vm_start,
             file_offset: file_off,
         });
     }
@@ -137,8 +193,12 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>) -> (Vec<SegmentMapping>, 
     };
     // Estimate LINKEDIT size: chained fixups + symtab + strtab + exports trie.
     // For dylibs with many exports, 8KB is not enough.
+    // For executables, we write all defined symbols for backtrace symbolization.
     let n_exports = layout.dynamic_symbol_definitions.len();
-    let linkedit_estimate = 8192 + n_exports * 256;
+    let n_syms = layout.symbol_resolutions.iter().filter(|r| r.is_some()).count();
+    // Each nlist64 = 16 bytes, average symbol name ~60 bytes + NUL
+    let symtab_estimate = n_syms * (16 + 64);
+    let linkedit_estimate = 8192 + n_exports * 256 + symtab_estimate;
     let total = linkedit_offset as usize + linkedit_estimate.max(8192);
     (mappings, total)
 }
@@ -176,6 +236,10 @@ fn write_macho<A: Arch<Platform = MachO>>(
     out: &mut [u8],
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
+    plain_entries: &[CollectedUnwindEntry],
+    unwind_info_vm_addr: u64,
+    text_base: u64,
+    text_vm_end: u64,
 ) -> Result<usize> {
     let le = object::Endianness::Little;
     let header_layout = layout.section_layouts.get(output_section_id::FILE_HEADER);
@@ -316,9 +380,56 @@ fn write_macho<A: Arch<Platform = MachO>>(
         32 + starts_in_image_size + seg_starts_size + imports_size + symbols_pool.len() as u32
     };
 
+    // Build and write __unwind_info now that __eh_frame is in the output buffer.
+    // Scan output __eh_frame to map func_vm_addr → EhFrameFdeInfo.
+    let unwind_info_size = if unwind_info_vm_addr != 0 {
+        let eh_layout = layout.section_layouts.get(output_section_id::EH_FRAME);
+        let fde_map: std::collections::HashMap<u64, EhFrameFdeInfo> = if eh_layout.mem_size > 0 {
+            if let Some(eh_foff) = vm_addr_to_file_offset(eh_layout.mem_offset, mappings) {
+                let m = scan_eh_frame_fde_offsets(
+                    out,
+                    eh_layout.mem_offset,
+                    eh_foff,
+                    eh_layout.mem_size as usize,
+                );
+                m
+            } else {
+                Default::default()
+            }
+        } else {
+            Default::default()
+        };
+        let available = text_vm_end.saturating_sub(unwind_info_vm_addr);
+        let content = build_unwind_info_section(
+            plain_entries, &fde_map, text_base, available,
+        );
+        if !content.is_empty() && content.len() as u64 <= available {
+            if let Some(ui_foff) = vm_addr_to_file_offset(unwind_info_vm_addr, mappings) {
+                let end = ui_foff + content.len();
+                if end <= out.len() {
+                    out[ui_foff..end].copy_from_slice(&content);
+                }
+            }
+            content.len() as u64
+        } else {
+            if !content.is_empty() {
+                tracing::debug!(
+                    "compact_unwind: __unwind_info too large ({} bytes) for gap ({} bytes)",
+                    content.len(), available
+                );
+            }
+            0
+        }
+    } else {
+        0
+    };
+
     // Write headers
     let header_offset = header_layout.file_offset;
-    let chained_fixups_offset = write_headers(out, header_offset, layout, mappings, cf_data_size)?;
+    let chained_fixups_offset = write_headers(
+        out, header_offset, layout, mappings, cf_data_size,
+        unwind_info_vm_addr, unwind_info_size,
+    )?;
 
     // Write chained fixups
     let final_size = if let Some(cf_off) = chained_fixups_offset {
@@ -355,11 +466,11 @@ fn write_macho<A: Arch<Platform = MachO>>(
         out.len()
     };
 
-    // For dylibs: write symbol table with exported symbols
+    // Write symbol table
     let final_size = if layout.symbol_db.args.is_dylib {
         write_dylib_symtab(out, final_size, layout, mappings)?
     } else {
-        final_size
+        write_exe_symtab(out, final_size, layout, mappings)?
     };
 
     Ok(final_size)
@@ -494,6 +605,132 @@ fn write_dylib_symtab(
                     .copy_from_slice(&(trie_off as u32).to_le_bytes());
                 out[off as usize + 12..off as usize + 16]
                     .copy_from_slice(&(trie.len() as u32).to_le_bytes());
+            }
+            _ => {}
+        }
+        off += cmdsize;
+    }
+
+    Ok(pos)
+}
+
+/// Write a symbol table for executables so that backtraces can resolve function names.
+fn write_exe_symtab(
+    out: &mut [u8],
+    start: usize,
+    layout: &Layout<'_, MachO>,
+    _mappings: &[SegmentMapping],
+) -> Result<usize> {
+    use crate::symbol_db::SymbolId;
+
+    // Collect all defined symbols with non-zero addresses.
+    let mut entries: Vec<(Vec<u8>, u64, u8)> = Vec::new(); // (name, value, n_type)
+    for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
+        let Some(res) = res else { continue };
+        if res.raw_value == 0 {
+            continue;
+        }
+        if res.flags.contains(crate::value_flags::ValueFlags::DYNAMIC) {
+            continue;
+        }
+        let symbol_id = SymbolId::from_usize(sym_idx);
+        let name = match layout.symbol_db.symbol_name(symbol_id) {
+            Ok(n) => n.bytes().to_vec(),
+            Err(_) => continue,
+        };
+        // Skip empty or internal names
+        if name.is_empty() {
+            continue;
+        }
+        // N_SECT=0x0e, N_EXT=0x01 for global, N_SECT for local
+        let n_type = 0x0e_u8; // N_SECT (defined in a section)
+        entries.push((name, res.raw_value, n_type));
+    }
+
+    if entries.is_empty() {
+        return Ok(start);
+    }
+
+    // Sort by address for easier debugging
+    entries.sort_by_key(|e| e.1);
+
+    // Build string table: starts with \0
+    let mut strtab = vec![0u8];
+    let mut str_offsets = Vec::new();
+    for (name, _, _) in &entries {
+        str_offsets.push(strtab.len() as u32);
+        strtab.extend_from_slice(name);
+        strtab.push(0);
+    }
+
+    // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
+    let symoff = (start + 7) & !7;
+    let nsyms = entries.len();
+    let mut pos = symoff;
+    for (i, (_, value, n_type)) in entries.iter().enumerate() {
+        if pos + 16 > out.len() {
+            break;
+        }
+        // nlist64: n_strx (4), n_type (1), n_sect (1), n_desc (2), n_value (8)
+        out[pos..pos + 4].copy_from_slice(&str_offsets[i].to_le_bytes());
+        out[pos + 4] = *n_type;
+        out[pos + 5] = 1; // n_sect: section 1 (__text)
+        out[pos + 6..pos + 8].copy_from_slice(&0u16.to_le_bytes());
+        out[pos + 8..pos + 16].copy_from_slice(&value.to_le_bytes());
+        pos += 16;
+    }
+
+    // Write string table
+    let stroff = pos;
+    if stroff + strtab.len() <= out.len() {
+        out[stroff..stroff + strtab.len()].copy_from_slice(&strtab);
+    }
+    pos = stroff + strtab.len();
+
+    // Patch LC_SYMTAB, LC_DYSYMTAB, and LINKEDIT segment in the header
+    let mut off = 32u32;
+    let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap());
+    for _ in 0..ncmds {
+        let cmd = u32::from_le_bytes(out[off as usize..off as usize + 4].try_into().unwrap());
+        let cmdsize =
+            u32::from_le_bytes(out[off as usize + 4..off as usize + 8].try_into().unwrap());
+        match cmd {
+            LC_SYMTAB => {
+                out[off as usize + 8..off as usize + 12]
+                    .copy_from_slice(&(symoff as u32).to_le_bytes());
+                out[off as usize + 12..off as usize + 16]
+                    .copy_from_slice(&(nsyms as u32).to_le_bytes());
+                out[off as usize + 16..off as usize + 20]
+                    .copy_from_slice(&(stroff as u32).to_le_bytes());
+                out[off as usize + 20..off as usize + 24]
+                    .copy_from_slice(&(strtab.len() as u32).to_le_bytes());
+            }
+            0x19 => {
+                // LC_SEGMENT_64 — update LINKEDIT filesize/vmsize
+                let segname = &out[off as usize + 8..off as usize + 24];
+                if segname.starts_with(b"__LINKEDIT") {
+                    let linkedit_fileoff = u64::from_le_bytes(
+                        out[off as usize + 40..off as usize + 48]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let new_filesize = pos as u64 - linkedit_fileoff;
+                    out[off as usize + 48..off as usize + 56]
+                        .copy_from_slice(&new_filesize.to_le_bytes());
+                    let new_vmsize = align_to(new_filesize, PAGE_SIZE);
+                    out[off as usize + 32..off as usize + 40]
+                        .copy_from_slice(&new_vmsize.to_le_bytes());
+                }
+            }
+            LC_DYSYMTAB => {
+                // All symbols are local for executables
+                let o = off as usize + 8;
+                out[o..o + 4].copy_from_slice(&0u32.to_le_bytes()); // ilocalsym
+                out[o + 4..o + 8].copy_from_slice(&(nsyms as u32).to_le_bytes()); // nlocalsym
+                out[o + 8..o + 12].copy_from_slice(&(nsyms as u32).to_le_bytes()); // iextdefsym
+                out[o + 12..o + 16].copy_from_slice(&0u32.to_le_bytes()); // nextdefsym
+                out[o + 16..o + 20].copy_from_slice(&(nsyms as u32).to_le_bytes()); // iundefsym
+                out[o + 20..o + 24].copy_from_slice(&0u32.to_le_bytes()); // nundefsym
             }
             _ => {}
         }
@@ -1160,14 +1397,14 @@ fn apply_relocations(
                 // ARM64_RELOC_UNSIGNED 64-bit.
                 // If preceded by a SUBTRACTOR, compute difference:
                 //   result = target_addr - subtrahend + existing_content
-                // For GOT-indirect pointers (e.g. __eh_frame personality),
-                // use the GOT entry address instead of the symbol address.
                 if let Some(sub_addr) = pending_subtrahend.take() {
                     if patch_file_offset + 8 <= out.len() {
-                        let effective_target = got_addr.unwrap_or(target_addr);
+                        // SUBTRACTOR+UNSIGNED encodes a pcrel difference (e.g. FDE pc_begin,
+                        // LSDA pointer). Always use the direct symbol address, never the GOT
+                        // address — GOT indirection is expressed via POINTER_TO_GOT (type 7).
                         let existing = i64::from_le_bytes(
                             out[patch_file_offset..patch_file_offset + 8].try_into().unwrap());
-                        let val = effective_target as i64 - sub_addr as i64 + existing;
+                        let val = target_addr as i64 - sub_addr as i64 + existing;
                         out[patch_file_offset..patch_file_offset + 8]
                             .copy_from_slice(&val.to_le_bytes());
                     }
@@ -1393,6 +1630,566 @@ fn write_pageoff12(out: &mut [u8], offset: usize, target: u64) {
     write_u32_at(out, offset, (insn & 0xFFC0_03FF) | (imm12 << 10));
 }
 
+// ── Compact unwind / __unwind_info generation ──────────────────────────────
+
+/// A per-function compact unwind entry collected from `__LD,__compact_unwind`.
+struct CollectedUnwindEntry {
+    /// Output VM address of the function.
+    func_addr: u64,
+    /// Function size in bytes.
+    func_size: u32,
+    /// Compact unwind encoding (ARM64 mode + register mask).
+    encoding: u32,
+}
+
+/// Scan all input objects for `__LD,__compact_unwind` sections and collect
+/// frame-pointer entries that can be represented directly in `__unwind_info`.
+/// Personality entries are handled separately by scanning output `__eh_frame`.
+fn collect_compact_unwind_entries(layout: &Layout<'_, MachO>) -> Vec<CollectedUnwindEntry> {
+    use object::read::macho::MachHeader as _;
+    use object::read::macho::Section as _;
+    use object::read::macho::Segment as _;
+    let le = object::Endianness::Little;
+    let mut entries: Vec<CollectedUnwindEntry> = Vec::new();
+
+    let mut n_objects = 0usize;
+    let mut n_cu_entries = 0usize;
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            let FileLayout::Object(obj) = file_layout else {
+                continue;
+            };
+            let _ = n_objects; // suppress unused warning
+            n_objects += 1;
+            // Parse raw load commands to reach __LD segment (not in obj.object.sections).
+            let Ok(header) =
+                object::macho::MachHeader64::<object::Endianness>::parse(obj.object.data, 0)
+            else {
+                continue;
+            };
+            // Mach-O object files have a single unnamed LC_SEGMENT_64 containing
+            // ALL sections. Each section has its own segname field. Iterate all
+            // sections of the single segment to find __LD,__compact_unwind.
+            let Ok(mut cmds) = header.load_commands(le, obj.object.data, 0) else {
+                continue;
+            };
+            while let Ok(Some(cmd)) = cmds.next() {
+                let Ok(Some((seg, seg_data))) = cmd.segment_64() else {
+                    continue;
+                };
+                let Ok(sections) = seg.sections(le, seg_data) else {
+                    continue;
+                };
+                for sec in sections {
+                    let sec_segname = crate::macho::trim_nul(&sec.segname);
+                    let sectname = crate::macho::trim_nul(&sec.sectname);
+                    if sec_segname != b"__LD" || sectname != b"__compact_unwind" {
+                        continue;
+                    }
+                    n_cu_entries += 1;
+                    let sec_off = sec.offset.get(le) as usize;
+                    let sec_size = sec.size.get(le) as usize;
+                    if sec_size == 0 || sec_off == 0 {
+                        continue;
+                    }
+                    let Some(data) = obj.object.data.get(sec_off..sec_off + sec_size) else {
+                        continue;
+                    };
+                    let relocs = sec.relocations(le, obj.object.data).unwrap_or(&[]);
+                    let n = sec_size / 32;
+                    for i in 0..n {
+                        let base = i * 32;
+                        if base + 32 > data.len() {
+                            break;
+                        }
+                        let func_size =
+                            u32::from_le_bytes(data[base + 8..base + 12].try_into().unwrap());
+                        let encoding =
+                            u32::from_le_bytes(data[base + 12..base + 16].try_into().unwrap());
+                        if encoding == 0 {
+                            continue; // no unwind info needed
+                        }
+                        // DWARF mode → handled via __eh_frame FDE scan, skip here.
+                        if (encoding & 0x0F00_0000) == 0x0300_0000 {
+                            continue;
+                        }
+                        // Plain frame-pointer / no-unwind entry.
+                        let Some(func_addr) =
+                            resolve_compact_unwind_addr(obj, layout, le, relocs, base, data)
+                        else {
+                            continue;
+                        };
+                        entries.push(CollectedUnwindEntry { func_addr, func_size, encoding });
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::debug!(
+        "compact_unwind: {} raw entries, {} plain",
+        n_cu_entries, entries.len()
+    );
+    entries.sort_by_key(|e| e.func_addr);
+    entries.dedup_by_key(|e| e.func_addr);
+    entries
+}
+
+/// Resolve the VM address stored at `field_offset` within a compact-unwind entry.
+/// `field_offset` is the absolute byte offset within the `__compact_unwind` section data.
+/// `sec_data` is the raw section bytes (used to read the implicit 8-byte addend for
+/// non-extern / section-relative relocations).
+fn resolve_compact_unwind_addr(
+    obj: &ObjectLayout<'_, MachO>,
+    layout: &Layout<'_, MachO>,
+    le: object::Endianness,
+    relocs: &[object::macho::Relocation<object::Endianness>],
+    field_offset: usize,
+    sec_data: &[u8],
+) -> Option<u64> {
+    use object::read::macho::Nlist as _;
+    for r in relocs {
+        let reloc = r.info(le);
+        if reloc.r_address as usize != field_offset {
+            continue;
+        }
+        if reloc.r_extern {
+            let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
+            let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
+            if let Some(res) = layout.merged_symbol_resolution(sym_id) {
+                if res.raw_value != 0 {
+                    return Some(res.raw_value);
+                }
+            }
+            // Fallback: local symbol (compute from section base + symbol value).
+            let sym = obj.object.symbols.symbol(sym_idx).ok()?;
+            let n_sect = sym.n_sect();
+            if n_sect == 0 {
+                return None;
+            }
+            let sec_idx = n_sect as usize - 1;
+            let sec_out = obj.section_resolutions.get(sec_idx)?.address()?;
+            let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
+            return Some(sec_out + sym.n_value(le).wrapping_sub(sec_in));
+        } else {
+            // Non-extern (section-relative): r_symbolnum is 1-based section ordinal.
+            let sec_ord = reloc.r_symbolnum as usize;
+            if sec_ord == 0 {
+                return None;
+            }
+            let sec_idx = sec_ord - 1;
+            let sec_out = obj.section_resolutions.get(sec_idx)?.address()?;
+            let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
+            // Read the 8-byte implicit addend from the field.
+            let addend = u64::from_le_bytes(
+                sec_data.get(field_offset..field_offset + 8)?.try_into().ok()?
+            );
+            return Some(sec_out + addend.wrapping_sub(sec_in));
+        }
+    }
+    None
+}
+
+
+/// Build the binary content of the `__unwind_info` section from collected entries.
+/// `text_base` is the VM address of the start of the `__TEXT` segment.
+///
+/// Produces a version-1 unwind_info with regular second-level pages (kind=2).
+/// Entries with personality/LSDA are not included (use DWARF FDEs for those).
+/// Info extracted from a `__eh_frame` CIE augmentation string.
+#[derive(Default, Clone)]
+struct CieAugInfo {
+    /// Whether the CIE has a personality function ('P' in augstr).
+    has_personality: bool,
+    /// VM address of the GOT slot for the personality function, or 0.
+    pers_got_vm: u64,
+    /// Whether FDEs referencing this CIE carry an LSDA pointer ('L' in augstr).
+    has_lsda: bool,
+    /// Size of the FDE pc_begin / pc_range fields in bytes (from 'R' enc; 0 = unknown/8).
+    fde_ptr_size: u8,
+    /// Size of the LSDA pointer in FDE augmentation data (from 'L' enc; 0 = unknown/8).
+    lsda_ptr_size: u8,
+}
+
+/// Per-FDE info extracted from the output `__eh_frame` buffer.
+pub(crate) struct EhFrameFdeInfo {
+    /// Byte offset of the FDE within the `__eh_frame` section.
+    pub section_offset: u32,
+    /// VM address of the LSDA for this function, or 0.
+    pub lsda_vm: u64,
+    /// VM address of the GOT slot for the personality function, or 0.
+    pub pers_got_vm: u64,
+}
+
+/// Read a ULEB128 value from `data` at `pos`, advancing `pos`.
+fn read_uleb128(data: &[u8], pos: &mut usize) -> u64 {
+    let mut val = 0u64;
+    let mut shift = 0;
+    while *pos < data.len() {
+        let b = data[*pos];
+        *pos += 1;
+        val |= ((b & 0x7F) as u64) << shift;
+        shift += 7;
+        if b & 0x80 == 0 { break; }
+    }
+    val
+}
+
+/// Determine the byte size of an encoded pointer value from a DW_EH_PE encoding byte.
+/// Returns 4 or 8; defaults to 8 (pointer-sized) for unknown formats.
+fn eh_ptr_size(enc: u8) -> u8 {
+    match enc & 0x0F {
+        0x00 => 8, // DW_EH_PE_absptr (pointer-sized = 8 on 64-bit)
+        0x02 => 2,
+        0x03 => 4, // DW_EH_PE_udata4
+        0x04 => 8, // DW_EH_PE_udata8
+        0x09 => 2,
+        0x0A => 4,
+        0x0B => 4, // DW_EH_PE_sdata4
+        0x0C => 8, // DW_EH_PE_sdata8
+        _ => 8,
+    }
+}
+
+/// Read a PC-relative signed value of `size` bytes from `data` at `pos`,
+/// apply it relative to `field_vm_addr`, and return the target VM address.
+fn read_pcrel(data: &[u8], pos: usize, size: usize, field_vm_addr: u64) -> u64 {
+    let bytes = match data.get(pos..pos + size) {
+        Some(b) => b,
+        None => return 0,
+    };
+    let delta = match size {
+        4 => i32::from_le_bytes(bytes.try_into().unwrap_or([0; 4])) as i64,
+        8 => i64::from_le_bytes(bytes.try_into().unwrap_or([0; 8])),
+        _ => return 0,
+    };
+    (field_vm_addr as i64 + delta) as u64
+}
+
+/// Parse a CIE at section offset `cie_pos` and return its augmentation info.
+fn parse_cie_aug(data: &[u8], cie_pos: usize, eh_frame_vm_addr: u64) -> CieAugInfo {
+    let mut info = CieAugInfo::default();
+    // Skip: length(4) + cie_id(4) + version(1) = 9 bytes.
+    let mut pos = cie_pos + 9;
+    // Find augmentation string (null-terminated).
+    let aug_start = pos;
+    while pos < data.len() && data[pos] != 0 { pos += 1; }
+    if pos >= data.len() { return info; }
+    let aug_bytes = &data[aug_start..pos];
+    pos += 1; // skip null terminator
+
+    let has_z = aug_bytes.contains(&b'z');
+    let has_p = aug_bytes.contains(&b'P');
+    let has_l = aug_bytes.contains(&b'L');
+    let has_r = aug_bytes.contains(&b'R');
+    info.has_lsda = has_l;
+
+    // Skip code_alignment (ULEB128), data_alignment (SLEB128), ra_register (ULEB128).
+    read_uleb128(data, &mut pos); // code_alignment
+    // SLEB128 (just skip as if ULEB128 since we only care about the byte count)
+    loop {
+        if pos >= data.len() { return info; }
+        let b = data[pos]; pos += 1;
+        if b & 0x80 == 0 { break; }
+    }
+    read_uleb128(data, &mut pos); // ra_register
+
+    if !has_z { return info; }
+    let aug_data_len = read_uleb128(data, &mut pos) as usize;
+    let aug_data_start = pos;
+
+    // Augmentation data contains per-letter info in augstr order (skipping 'z').
+    let mut ap = aug_data_start;
+    for &ch in aug_bytes {
+        if ap >= aug_data_start + aug_data_len { break; }
+        match ch {
+            b'P' if has_p => {
+                let pers_enc = data[ap]; ap += 1;
+                let sz = eh_ptr_size(pers_enc) as usize;
+                if ap + sz <= data.len() {
+                    // Personality ptr is PC-relative from the field address.
+                    let field_vm = eh_frame_vm_addr + ap as u64;
+                    let target_vm = read_pcrel(data, ap, sz, field_vm);
+                    if target_vm != 0 {
+                        info.has_personality = true;
+                        info.pers_got_vm = target_vm;
+                    }
+                }
+                ap += sz;
+            }
+            b'L' if has_l => {
+                let lsda_enc = data[ap]; ap += 1;
+                info.lsda_ptr_size = eh_ptr_size(lsda_enc);
+            }
+            b'R' if has_r => {
+                let fde_enc = data[ap]; ap += 1;
+                info.fde_ptr_size = eh_ptr_size(fde_enc);
+            }
+            _ => {}
+        }
+    }
+
+    // Default pointer size = 8 for 64-bit Mach-O.
+    if info.fde_ptr_size == 0 { info.fde_ptr_size = 8; }
+    if info.lsda_ptr_size == 0 { info.lsda_ptr_size = 8; }
+    info
+}
+
+/// Scan the output `__eh_frame` buffer.
+/// Returns a map: `func_vm_addr → EhFrameFdeInfo` for every FDE found.
+/// FDEs without personality have `pers_got_vm = 0`.
+fn scan_eh_frame_fde_offsets(
+    buf: &[u8],
+    eh_frame_vm_addr: u64,
+    eh_frame_file_offset: usize,
+    eh_frame_size: usize,
+) -> std::collections::HashMap<u64, EhFrameFdeInfo> {
+    use crate::eh_frame::EhFrameEntryPrefix;
+    use std::mem::size_of;
+    use zerocopy::FromBytes;
+
+    let mut map = std::collections::HashMap::new();
+    // CIE map: section_offset → CieAugInfo
+    let mut cie_map: std::collections::HashMap<u32, CieAugInfo> = Default::default();
+
+    let Some(data) = buf.get(eh_frame_file_offset..eh_frame_file_offset + eh_frame_size) else {
+        return map;
+    };
+
+    const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
+    let mut pos = 0usize;
+
+    while pos + PREFIX_LEN <= data.len() {
+        let Ok(prefix) = EhFrameEntryPrefix::read_from_bytes(&data[pos..pos + PREFIX_LEN]) else {
+            break;
+        };
+        if prefix.length == 0 { break; }
+        let size = 4 + prefix.length as usize;
+        if pos + size > data.len() { break; }
+
+        if prefix.cie_id == 0 {
+            // CIE: parse augmentation.
+            let cie_aug = parse_cie_aug(data, pos, eh_frame_vm_addr);
+            cie_map.insert(pos as u32, cie_aug);
+        } else {
+            // FDE: resolve CIE, then extract pc_begin, LSDA.
+            // cie_id = byte distance from the cie_ptr field to the CIE.
+            let cie_ptr_field_off = pos + 4;
+            let cie_off = (cie_ptr_field_off as u64).wrapping_sub(prefix.cie_id as u64) as u32;
+            let cie_aug = cie_map.get(&cie_off).cloned().unwrap_or_default();
+            let ptr_size = cie_aug.fde_ptr_size.max(4) as usize;
+
+            // pc_begin at byte 8, PC-relative signed value of ptr_size bytes.
+            let pc_begin_field_vm = eh_frame_vm_addr + pos as u64 + 8;
+            let func_vm = read_pcrel(data, pos + 8, ptr_size, pc_begin_field_vm);
+            if func_vm == 0 { pos += size; continue; }
+
+            // pc_range at byte 8+ptr_size (absolute, not PC-relative).
+            // Skip it (we don't use pc_range for __unwind_info).
+
+            // aug_data_length at byte 8 + 2*ptr_size.
+            let aug_len_pos = pos + 8 + 2 * ptr_size;
+            let mut ap = aug_len_pos;
+            let aug_len = read_uleb128(data, &mut ap) as usize;
+
+            // LSDA pointer at start of aug_data (if CIE has 'L').
+            let lsda_vm = if cie_aug.has_lsda && cie_aug.lsda_ptr_size > 0 && ap + cie_aug.lsda_ptr_size as usize <= data.len() {
+                let lsda_field_vm = eh_frame_vm_addr + ap as u64;
+                read_pcrel(data, ap, cie_aug.lsda_ptr_size as usize, lsda_field_vm)
+            } else {
+                0
+            };
+            let _ = aug_len;
+
+            map.insert(func_vm, EhFrameFdeInfo {
+                section_offset: pos as u32,
+                lsda_vm,
+                pers_got_vm: cie_aug.pers_got_vm,
+            });
+        }
+
+        pos += size;
+    }
+
+    map
+}
+
+/// Build the binary content of `__unwind_info` from collected compact-unwind entries
+/// and FDE info from the output `__eh_frame`.
+///
+/// `plain_entries`:  ARM64 frame-pointer entries (from __compact_unwind).
+/// `fde_map`:        func_vm_addr → EhFrameFdeInfo (from scanning output __eh_frame).
+/// `text_base`:      VM address of the start of `__TEXT`.
+///
+/// For each FDE with a personality function, emits a DWARF-mode entry
+/// (`UNWIND_HAS_LSDA | pers_idx | UNWIND_ARM64_DWARF | fde_section_offset`).
+/// Plain frame-pointer entries are also included.
+fn build_unwind_info_section(
+    plain_entries: &[CollectedUnwindEntry],
+    fde_map: &std::collections::HashMap<u64, EhFrameFdeInfo>,
+    text_base: u64,
+    max_bytes: u64,
+) -> Vec<u8> {
+    // ARM64 compact-unwind encoding constants.
+    const UNWIND_ARM64_DWARF: u32 = 0x0300_0000;
+
+    // Build: (func_addr, func_size, encoding) sorted by func_addr.
+    let mut all_entries: Vec<(u64, u32, u32)> = Vec::new();
+
+    // Collect unique personality GOT slots (in encounter order).
+    let mut personalities: Vec<u64> = Vec::new();
+
+    // Emit DWARF-mode entries for FDEs that have a personality function.
+    // Each such FDE needs an __unwind_info entry so the unwinder can find it.
+    //
+    // For DWARF-mode entries the unwinder reads the LSDA from the FDE
+    // augmentation data in __eh_frame, NOT from the __unwind_info LSDA array.
+    // So we omit UNWIND_HAS_LSDA and the LSDA array to save space.
+    for (&func_vm, fde_info) in fde_map {
+        if fde_info.pers_got_vm == 0 { continue; } // no personality → skip
+
+        // Personality index (1-based into the personality array we build).
+        let pers_idx = if let Some(pos) = personalities.iter().position(|&g| g == fde_info.pers_got_vm) {
+            pos + 1
+        } else {
+            personalities.push(fde_info.pers_got_vm);
+            personalities.len()
+        };
+
+        let enc = UNWIND_ARM64_DWARF | fde_info.section_offset
+            | (((pers_idx as u32) & 3) << 28);
+        all_entries.push((func_vm, 0u32, enc));
+    }
+
+    let pers_count = all_entries.len();
+    for e in plain_entries {
+        if fde_map.get(&e.func_addr).is_some_and(|f| f.pers_got_vm != 0) { continue; }
+        all_entries.push((e.func_addr, e.func_size, e.encoding));
+    }
+
+    if all_entries.is_empty() {
+        return Vec::new();
+    }
+
+    all_entries.sort_by_key(|e| e.0);
+    all_entries.dedup_by_key(|e| e.0);
+
+    // Truncate if the full content would exceed max_bytes.
+    // Personality entries (pers_count) are critical; trim plain entries first.
+    let n_pers = personalities.len() as u32;
+    const ENTRIES_PER_PAGE: usize = 500;
+    loop {
+        let np = all_entries.len().div_ceil(ENTRIES_PER_PAGE);
+        // Estimate: header(28) + pers(n*4) + index((np+1)*12) + SL pages(np*8 + entries*8)
+        let est = 28 + (n_pers as usize) * 4 + (np + 1) * 12 + np * 8 + all_entries.len() * 8;
+        if est as u64 <= max_bytes || all_entries.len() <= pers_count {
+            break;
+        }
+        // Remove last plain entry (they're sorted, so the highest address is removed first).
+        all_entries.pop();
+    }
+
+    let num_pages = all_entries.len().div_ceil(ENTRIES_PER_PAGE);
+
+    tracing::debug!(
+        "compact_unwind: building __unwind_info: {} entries ({} pers), {} personalities",
+        all_entries.len(), pers_count, personalities.len()
+    );
+
+    // DWARF-mode entries all have unique encodings (different FDE offsets) so
+    // common encodings provide no benefit — skip them to save space.
+
+    // Section layout:
+    //   [28]         header (7 × u32)
+    //   [P*4]        personality array (GOT slot offsets from TEXT base)
+    //   [(N+1)*12]   first-level index (N pages + sentinel)
+    //   [page data…]
+    //
+    // LSDA array is empty: DWARF-mode entries get LSDA from the FDE augmentation
+    // data in __eh_frame, so no separate LSDA index is needed.
+    let ce_off = 28u32;
+    let pers_off = ce_off; // no common encodings
+    let pers_bytes = n_pers * 4;
+    let idx_off = pers_off + pers_bytes;
+    let idx_bytes = (num_pages as u32 + 1) * 12;
+    let lsda_off = idx_off + idx_bytes; // empty LSDA array starts here
+    let sl_start = lsda_off;
+
+    let mut sl_offsets = Vec::with_capacity(num_pages);
+    let mut cur = sl_start;
+    for i in 0..num_pages {
+        sl_offsets.push(cur);
+        let n = (all_entries.len() - i * ENTRIES_PER_PAGE).min(ENTRIES_PER_PAGE);
+        cur += 8 + n as u32 * 8;
+    }
+    let total = cur as usize;
+
+    let mut out = vec![0u8; total];
+    macro_rules! wu32 {
+        ($off:expr, $val:expr) => {
+            out[$off..$off + 4].copy_from_slice(&($val as u32).to_le_bytes())
+        };
+    }
+    macro_rules! wu16 {
+        ($off:expr, $val:expr) => {
+            out[$off..$off + 2].copy_from_slice(&($val as u16).to_le_bytes())
+        };
+    }
+
+    // Header
+    wu32!(0,  1u32);           // version
+    wu32!(4,  ce_off);         // commonEncodingsArraySectionOffset
+    wu32!(8,  0u32);           // commonEncodingsArrayCount (none)
+    wu32!(12, pers_off);       // personalityArraySectionOffset
+    wu32!(16, n_pers);         // personalityArrayCount
+    wu32!(20, idx_off);        // indexSectionOffset
+    wu32!(24, num_pages as u32 + 1); // indexCount (includes sentinel)
+
+    // Personality array: 4-byte offsets from TEXT base to GOT slots.
+    for (i, &got_vm) in personalities.iter().enumerate() {
+        let offset_from_text = (got_vm - text_base) as u32;
+        wu32!(pers_off as usize + i * 4, offset_from_text);
+    }
+
+    // First-level index entries + second-level regular pages
+    for page in 0..num_pages {
+        let start = page * ENTRIES_PER_PAGE;
+        let end = (start + ENTRIES_PER_PAGE).min(all_entries.len());
+        let page_entries = &all_entries[start..end];
+
+        let first_fn_off = (page_entries[0].0 - text_base) as u32;
+        let sl_off = sl_offsets[page] as usize;
+
+        // Index entry (12 bytes)
+        let ie = idx_off as usize + page * 12;
+        wu32!(ie,     first_fn_off);
+        wu32!(ie + 4, sl_off as u32);  // secondLevelPagesSectionOffset
+        wu32!(ie + 8, lsda_off);       // lsdaIndexArraySectionOffset
+
+        // Regular second-level page header (8 bytes)
+        wu32!(sl_off,     2u32);                        // kind = UNWIND_SECOND_LEVEL_REGULAR
+        wu16!(sl_off + 4, 8u16);                        // entryPageOffset
+        wu16!(sl_off + 6, page_entries.len() as u16);   // entryCount
+
+        // Entries (8 bytes each: funcOffset u32 + encoding u32)
+        for (j, &(fa, _, enc)) in page_entries.iter().enumerate() {
+            let eo = sl_off + 8 + j * 8;
+            wu32!(eo,     (fa - text_base) as u32);
+            wu32!(eo + 4, enc);
+        }
+    }
+
+    // Sentinel first-level index entry
+    let (last_fa, last_fs, _) = *all_entries.last().unwrap();
+    let sentinel_fn_off = (last_fa - text_base + last_fs as u64) as u32;
+    let sie = idx_off as usize + num_pages * 12;
+    wu32!(sie,     sentinel_fn_off);
+    wu32!(sie + 4, 0u32);     // secondLevelPagesSectionOffset = 0 (sentinel)
+    wu32!(sie + 8, lsda_off); // lsdaIndexArraySectionOffset
+
+    out
+}
+
 /// Write Mach-O headers. Returns the chained fixups file offset.
 fn write_headers(
     out: &mut [u8],
@@ -1400,6 +2197,8 @@ fn write_headers(
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
     chained_fixups_data_size: u32,
+    unwind_info_vm_addr: u64,
+    unwind_info_size: u64,
 ) -> Result<Option<u64>> {
     let text_vm_start = mappings.first().map_or(PAGEZERO_SIZE, |m| m.vm_start);
     let text_vm_end = mappings
@@ -1507,9 +2306,11 @@ fn write_headers(
     let rustc_in_text = has_rustc && rustc_addr < text_vm_start + text_filesize;
     let eh_frame_layout = layout.section_layouts.get(output_section_id::EH_FRAME);
     let has_eh_frame = eh_frame_layout.mem_size > 0;
+    let has_unwind_info = unwind_info_size > 0;
     let text_nsects = 1
         + if rustc_in_text { 1u32 } else { 0 }
-        + if has_eh_frame { 1 } else { 0 };
+        + if has_eh_frame { 1 } else { 0 }
+        + if has_unwind_info { 1 } else { 0 };
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
     let init_array_layout = layout.section_layouts.get(output_section_id::INIT_ARRAY);
     let has_init_array = init_array_layout.mem_size > 0;
@@ -1620,6 +2421,21 @@ fn write_headers(
         w.u32(0);
         w.u32(0);
         w.u32(0);
+    }
+    if has_unwind_info {
+        let ui_foff = vm_addr_to_file_offset(unwind_info_vm_addr, mappings).unwrap_or(0) as u32;
+        w.name16(b"__unwind_info");
+        w.name16(b"__TEXT");
+        w.u64(unwind_info_vm_addr);
+        w.u64(unwind_info_size);
+        w.u32(ui_foff);
+        w.u32(2); // align 2^2 = 4
+        w.u32(0); // reloff
+        w.u32(0); // nreloc
+        w.u32(0); // flags = S_REGULAR
+        w.u32(0); // reserved1
+        w.u32(0); // reserved2
+        w.u32(0); // reserved3
     }
 
     if has_data {

@@ -1,5 +1,4 @@
 //#LinkerDriver:clang
-//#Ignore:__eh_frame SUBTRACTOR relocations need correct FDE computation
 
 fn inner() -> String {
     let bt = std::backtrace::Backtrace::force_capture();
