@@ -1031,10 +1031,12 @@ impl platform::Platform for MachO {
             if !reloc.r_extern {
                 continue;
             }
-            if reloc.r_type == 10 { // ADDEND
+            if reloc.r_type == 10 {
+                // ADDEND
                 continue;
             }
-            if reloc.r_type == 1 { // SUBTRACTOR
+            if reloc.r_type == 1 {
+                // SUBTRACTOR
                 after_subtractor = true;
                 continue;
             }

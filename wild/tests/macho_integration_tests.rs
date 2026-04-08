@@ -126,11 +126,17 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
             "Archive" => {
                 let parts: Vec<&str> = value.splitn(2, ':').collect();
                 let (name, sources) = if parts.len() == 2 {
-                    (parts[0].to_string(), parts[1].split(',').map(|s| s.trim().to_string()).collect())
+                    (
+                        parts[0].to_string(),
+                        parts[1].split(',').map(|s| s.trim().to_string()).collect(),
+                    )
                 } else {
                     // Archive:src.c — auto-name the archive
                     let src = value.trim().to_string();
-                    let stem = src.strip_suffix(".c").or(src.strip_suffix(".cc")).unwrap_or(&src);
+                    let stem = src
+                        .strip_suffix(".c")
+                        .or(src.strip_suffix(".cc"))
+                        .unwrap_or(&src);
                     (format!("{stem}.a"), vec![src])
                 };
                 cfg.archives.push((name, sources));
@@ -143,7 +149,9 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
             "LinkerDriver" if value.trim().starts_with("clang") => cfg.use_clang_driver = true,
             "Contains" => cfg.contains.push(value.to_string()),
             "DoesNotContain" => cfg.does_not_contain.push(value.to_string()),
-            "ExpectSym" => cfg.expect_syms.push(value.split_whitespace().next().unwrap_or(value).to_string()),
+            "ExpectSym" => cfg
+                .expect_syms
+                .push(value.split_whitespace().next().unwrap_or(value).to_string()),
             "NoSym" => cfg.no_syms.push(value.trim().to_string()),
             "Ignore" => cfg.ignore_reason = Some(value.to_string()),
             _ => {} // Ignore unknown directives for forward-compatibility.
@@ -198,7 +206,8 @@ fn run_test(
         let output = build_dir.join(test_name);
         let mut cmd = Command::new("rustc");
         cmd.arg(primary)
-            .arg("-o").arg(&output)
+            .arg("-o")
+            .arg(&output)
             .arg("-Clinker=clang")
             .arg(format!("-Clink-arg=-fuse-ld={}", wild_bin.display()));
         for arg in &config.link_args {
@@ -208,13 +217,19 @@ fn run_test(
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);
             if let Some(ref pattern) = config.expect_error {
-                if stderr.contains(pattern) { return Ok(()); }
-                return Err(format!("Expected error matching '{pattern}', got:\n{stderr}"));
+                if stderr.contains(pattern) {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "Expected error matching '{pattern}', got:\n{stderr}"
+                ));
             }
             return Err(format!("rustc failed:\n{stderr}"));
         }
         if config.run_enabled {
-            let run = Command::new(&output).output().map_err(|e| format!("run: {e}"))?;
+            let run = Command::new(&output)
+                .output()
+                .map_err(|e| format!("run: {e}"))?;
             let code = run.status.code().unwrap_or(-1);
             if code != 42 {
                 return Err(format!("Expected exit code 42, got {code}"));
@@ -255,7 +270,10 @@ fn run_test(
         }
         let ar_result = ar_cmd.output().map_err(|e| format!("ar: {e}"))?;
         if !ar_result.status.success() {
-            return Err(format!("ar failed: {}", String::from_utf8_lossy(&ar_result.stderr)));
+            return Err(format!(
+                "ar failed: {}",
+                String::from_utf8_lossy(&ar_result.stderr)
+            ));
         }
         objects.push(archive_path);
     }
@@ -273,15 +291,20 @@ fn run_test(
             .arg("-dynamiclib")
             .arg(format!("-fuse-ld={}", wild_bin.display()))
             .arg(&src)
-            .arg("-o").arg(&dylib_path)
+            .arg("-o")
+            .arg(&dylib_path)
             .arg(format!("-Wl,-install_name,@rpath/lib{stem}.dylib"));
         for arg in &config.comp_args {
             dylib_cmd.arg(arg);
         }
-        let result = dylib_cmd.output().map_err(|e| format!("dylib build: {e}"))?;
+        let result = dylib_cmd
+            .output()
+            .map_err(|e| format!("dylib build: {e}"))?;
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);
-            return Err(format!("Failed to build dylib from {lib_src_name}:\n{stderr}"));
+            return Err(format!(
+                "Failed to build dylib from {lib_src_name}:\n{stderr}"
+            ));
         }
         extra_link_args.push(format!("-L{}", build_dir.display()));
         extra_link_args.push(format!("-l{stem}"));
@@ -363,21 +386,24 @@ fn run_test(
         use object::read::ObjectSymbol as _;
         let obj_file = object::File::parse(&*binary)
             .map_err(|e| format!("Failed to parse output binary: {e}"))?;
-        let sym_names: Vec<&str> = obj_file
-            .symbols()
-            .filter_map(|s| s.name().ok())
-            .collect();
+        let sym_names: Vec<&str> = obj_file.symbols().filter_map(|s| s.name().ok()).collect();
 
         for expected in &config.expect_syms {
             // Mach-O adds a leading underscore to C symbols.
             let with_underscore = format!("_{expected}");
-            if !sym_names.iter().any(|n| *n == expected.as_str() || *n == with_underscore) {
+            if !sym_names
+                .iter()
+                .any(|n| *n == expected.as_str() || *n == with_underscore)
+            {
                 return Err(format!("Expected symbol `{expected}` not found in output"));
             }
         }
         for absent in &config.no_syms {
             let with_underscore = format!("_{absent}");
-            if sym_names.iter().any(|n| *n == absent.as_str() || *n == with_underscore) {
+            if sym_names
+                .iter()
+                .any(|n| *n == absent.as_str() || *n == with_underscore)
+            {
                 return Err(format!("Symbol `{absent}` should not be in output"));
             }
         }

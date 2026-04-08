@@ -63,11 +63,15 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     // file allocation — we can place __unwind_info there without extending
     // TEXT vmsize or shifting DATA vmaddr.
     let text_content_end = {
+        // Find the end of the last TEXT-segment section: EH_FRAME > PLT_GOT > TEXT
         let eh = layout.section_layouts.get(output_section_id::EH_FRAME);
+        let plt = layout.section_layouts.get(output_section_id::PLT_GOT);
+        let t = layout.section_layouts.get(output_section_id::TEXT);
         if eh.mem_size > 0 {
             eh.mem_offset + eh.mem_size
+        } else if plt.mem_size > 0 {
+            plt.mem_offset + plt.mem_size
         } else {
-            let t = layout.section_layouts.get(output_section_id::TEXT);
             t.mem_offset + t.mem_size
         }
     };
@@ -87,9 +91,13 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     let (mappings, alloc_size) = build_mappings_and_size(layout, extra_text);
     let mut buf = vec![0u8; alloc_size];
     let final_size = write_macho::<A>(
-        &mut buf, layout, &mappings,
+        &mut buf,
+        layout,
+        &mappings,
         &plain_entries,
-        unwind_info_vm_addr, text_base, text_vm_end,
+        unwind_info_vm_addr,
+        text_base,
+        text_vm_end,
     )?;
     buf.truncate(final_size);
 
@@ -120,7 +128,10 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
 
 /// Build exactly 2 segment mappings (TEXT + merged DATA) from pipeline layout.
 /// `extra_text` extends the TEXT segment (first segment) by that many bytes.
-fn build_mappings_and_size(layout: &Layout<'_, MachO>, extra_text: u64) -> (Vec<SegmentMapping>, usize) {
+fn build_mappings_and_size(
+    layout: &Layout<'_, MachO>,
+    extra_text: u64,
+) -> (Vec<SegmentMapping>, usize) {
     let mut raw: Vec<(u64, u64, u64)> = Vec::new();
     let mut file_cursor: u64 = 0;
     let mut is_first = true;
@@ -195,7 +206,11 @@ fn build_mappings_and_size(layout: &Layout<'_, MachO>, extra_text: u64) -> (Vec<
     // For dylibs with many exports, 8KB is not enough.
     // For executables, we write all defined symbols for backtrace symbolization.
     let n_exports = layout.dynamic_symbol_definitions.len();
-    let n_syms = layout.symbol_resolutions.iter().filter(|r| r.is_some()).count();
+    let n_syms = layout
+        .symbol_resolutions
+        .iter()
+        .filter(|r| r.is_some())
+        .count();
     // Each nlist64 = 16 bytes, average symbol name ~60 bytes + NUL
     let symtab_estimate = n_syms * (16 + 64);
     let linkedit_estimate = 8192 + n_exports * 256 + symtab_estimate;
@@ -280,8 +295,15 @@ fn write_macho<A: Arch<Platform = MachO>>(
     )?;
 
     // Populate GOT entries for non-import symbols
-    write_got_entries(out, layout, mappings, &mut rebase_fixups,
-        &mut bind_fixups, &mut imports, has_extra_dylibs)?;
+    write_got_entries(
+        out,
+        layout,
+        mappings,
+        &mut rebase_fixups,
+        &mut bind_fixups,
+        &mut imports,
+        has_extra_dylibs,
+    )?;
 
     // Build chained fixup data: merge rebase + bind, encode per-page chains
     rebase_fixups.sort_by_key(|f| f.file_offset);
@@ -400,9 +422,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
             Default::default()
         };
         let available = text_vm_end.saturating_sub(unwind_info_vm_addr);
-        let content = build_unwind_info_section(
-            plain_entries, &fde_map, text_base, available,
-        );
+        let content = build_unwind_info_section(plain_entries, &fde_map, text_base, available);
         if !content.is_empty() && content.len() as u64 <= available {
             if let Some(ui_foff) = vm_addr_to_file_offset(unwind_info_vm_addr, mappings) {
                 let end = ui_foff + content.len();
@@ -415,7 +435,8 @@ fn write_macho<A: Arch<Platform = MachO>>(
             if !content.is_empty() {
                 tracing::debug!(
                     "compact_unwind: __unwind_info too large ({} bytes) for gap ({} bytes)",
-                    content.len(), available
+                    content.len(),
+                    available
                 );
             }
             0
@@ -427,8 +448,13 @@ fn write_macho<A: Arch<Platform = MachO>>(
     // Write headers
     let header_offset = header_layout.file_offset;
     let chained_fixups_offset = write_headers(
-        out, header_offset, layout, mappings, cf_data_size,
-        unwind_info_vm_addr, unwind_info_size,
+        out,
+        header_offset,
+        layout,
+        mappings,
+        cf_data_size,
+        unwind_info_vm_addr,
+        unwind_info_size,
     )?;
 
     // Write chained fixups
@@ -966,7 +992,9 @@ fn write_filtered_eh_frame(
     use std::mem::size_of_val;
     use zerocopy::FromBytes;
 
-    let relocs = input_section.relocations(le, obj.object.data).unwrap_or(&[]);
+    let relocs = input_section
+        .relocations(le, obj.object.data)
+        .unwrap_or(&[]);
 
     const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
     let mut input_pos = 0;
@@ -975,10 +1003,9 @@ fn write_filtered_eh_frame(
 
     // First pass: determine which entries to keep and build a compacted copy.
     while input_pos + PREFIX_LEN <= input_data.len() {
-        let prefix = EhFrameEntryPrefix::read_from_bytes(
-            &input_data[input_pos..input_pos + PREFIX_LEN],
-        )
-        .unwrap();
+        let prefix =
+            EhFrameEntryPrefix::read_from_bytes(&input_data[input_pos..input_pos + PREFIX_LEN])
+                .unwrap();
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_input = input_pos + size;
         if next_input > input_data.len() {
@@ -1003,7 +1030,9 @@ fn write_filtered_eh_frame(
                             let n_sect = sym.n_sect();
                             if n_sect > 0 {
                                 let sec_idx = n_sect as usize - 1;
-                                loaded = obj.section_resolutions.get(sec_idx)
+                                loaded = obj
+                                    .section_resolutions
+                                    .get(sec_idx)
                                     .and_then(|r| r.address())
                                     .is_some();
                             }
@@ -1052,10 +1081,9 @@ fn write_filtered_eh_frame(
     let mut cie_map2 = std::collections::HashMap::new();
 
     while input_pos + PREFIX_LEN <= input_data.len() {
-        let prefix = EhFrameEntryPrefix::read_from_bytes(
-            &input_data[input_pos..input_pos + PREFIX_LEN],
-        )
-        .unwrap();
+        let prefix =
+            EhFrameEntryPrefix::read_from_bytes(&input_data[input_pos..input_pos + PREFIX_LEN])
+                .unwrap();
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_input = input_pos + size;
         if next_input > input_data.len() {
@@ -1077,8 +1105,11 @@ fn write_filtered_eh_frame(
                         if let Ok(sym) = obj.object.symbols.symbol(sym_idx) {
                             let n = sym.n_sect();
                             if n > 0 {
-                                loaded = obj.section_resolutions.get(n as usize - 1)
-                                    .and_then(|r| r.address()).is_some();
+                                loaded = obj
+                                    .section_resolutions
+                                    .get(n as usize - 1)
+                                    .and_then(|r| r.address())
+                                    .is_some();
                             }
                         }
                     }
@@ -1089,7 +1120,8 @@ fn write_filtered_eh_frame(
 
         if keep {
             // Collect relocs for this entry and apply them at their output positions
-            let entry_relocs: Vec<_> = relocs.iter()
+            let entry_relocs: Vec<_> = relocs
+                .iter()
                 .filter(|r| {
                     let off = r.info(le).r_address as usize;
                     off >= input_pos && off < next_input
@@ -1097,7 +1129,8 @@ fn write_filtered_eh_frame(
                 .collect();
 
             // Create adjusted relocs with output-relative addresses
-            let adjusted: Vec<object::macho::Relocation<object::Endianness>> = entry_relocs.iter()
+            let adjusted: Vec<object::macho::Relocation<object::Endianness>> = entry_relocs
+                .iter()
                 .map(|r| {
                     let mut copy = **r;
                     let info = r.info(le);
@@ -1181,9 +1214,18 @@ fn write_object_sections(
         let sectname = crate::macho::trim_nul(input_section.sectname());
         if sectname == b"__eh_frame" {
             write_filtered_eh_frame(
-                out, file_offset, output_addr, input_data,
-                input_section, obj, layout, le,
-                rebase_fixups, bind_fixups, imports, has_extra_dylibs,
+                out,
+                file_offset,
+                output_addr,
+                input_data,
+                input_section,
+                obj,
+                layout,
+                le,
+                rebase_fixups,
+                bind_fixups,
+                imports,
+                has_extra_dylibs,
             )?;
             continue;
         }
@@ -1231,11 +1273,13 @@ fn apply_relocations(
     for reloc_raw in relocs {
         let reloc = reloc_raw.info(le);
 
-        if reloc.r_type == 10 { // ARM64_RELOC_ADDEND
+        if reloc.r_type == 10 {
+            // ARM64_RELOC_ADDEND
             pending_addend = reloc.r_symbolnum as i64;
             continue;
         }
-        if reloc.r_type == 1 { // ARM64_RELOC_SUBTRACTOR (part of a pair)
+        if reloc.r_type == 1 {
+            // ARM64_RELOC_SUBTRACTOR (part of a pair)
             // Store the subtrahend symbol address for the next UNSIGNED reloc.
             let sub_addr = if reloc.r_extern {
                 let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
@@ -1251,22 +1295,36 @@ fn apply_relocations(
                             let n_sect = sym.n_sect();
                             if n_sect > 0 {
                                 let sec_idx = n_sect as usize - 1;
-                                let sec_out = obj.section_resolutions.get(sec_idx)
-                                    .and_then(|r| r.address()).unwrap_or(0);
-                                let sec_in = obj.object.sections.get(sec_idx)
-                                    .map(|s| s.addr.get(le)).unwrap_or(0);
+                                let sec_out = obj
+                                    .section_resolutions
+                                    .get(sec_idx)
+                                    .and_then(|r| r.address())
+                                    .unwrap_or(0);
+                                let sec_in = obj
+                                    .object
+                                    .sections
+                                    .get(sec_idx)
+                                    .map(|s| s.addr.get(le))
+                                    .unwrap_or(0);
                                 sec_out + sym.n_value(le).wrapping_sub(sec_in)
-                            } else { 0 }
-                        } else { 0 }
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        }
                     }
                 }
             } else {
                 let sec_ord = reloc.r_symbolnum as usize;
                 if sec_ord > 0 {
-                    obj.section_resolutions.get(sec_ord - 1)
+                    obj.section_resolutions
+                        .get(sec_ord - 1)
                         .and_then(|r| r.address())
                         .unwrap_or(0)
-                } else { 0 }
+                } else {
+                    0
+                }
             };
             pending_subtrahend = Some(sub_addr);
             continue;
@@ -1285,7 +1343,7 @@ fn apply_relocations(
             let sym_idx = object::SymbolIndex(reloc.r_symbolnum as usize);
             let sym_id = obj.symbol_id_range.input_to_id(sym_idx);
             match layout.merged_symbol_resolution(sym_id) {
-                Some(res) if res.raw_value != 0 => (
+                Some(res) if res.raw_value != 0 || res.format_specific.plt_address.is_some() => (
                     res.raw_value,
                     res.format_specific.got_address,
                     res.format_specific.plt_address,
@@ -1297,11 +1355,12 @@ fn apply_relocations(
                     use object::read::macho::Nlist as _;
                     let fallback = obj.object.symbols.symbol(sym_idx).ok().and_then(|sym| {
                         let n_sect = sym.n_sect();
-                        if n_sect == 0 { return None; }
+                        if n_sect == 0 {
+                            return None;
+                        }
                         let sec_idx = n_sect as usize - 1;
                         let sec_out = obj.section_resolutions.get(sec_idx)?.address()?;
-                        let sec_in = obj.object.sections.get(sec_idx)
-                            .map(|s| s.addr.get(le))?;
+                        let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
                         Some(sec_out + sym.n_value(le).wrapping_sub(sec_in))
                     });
                     if let Some(addr) = fallback {
@@ -1309,7 +1368,11 @@ fn apply_relocations(
                         let plt = other.and_then(|r| r.format_specific.plt_address);
                         (addr, got, plt)
                     } else if let Some(res) = other {
-                        (res.raw_value, res.format_specific.got_address, res.format_specific.plt_address)
+                        (
+                            res.raw_value,
+                            res.format_specific.got_address,
+                            res.format_specific.plt_address,
+                        )
                     } else {
                         continue;
                     }
@@ -1403,7 +1466,10 @@ fn apply_relocations(
                         // LSDA pointer). Always use the direct symbol address, never the GOT
                         // address — GOT indirection is expressed via POINTER_TO_GOT (type 7).
                         let existing = i64::from_le_bytes(
-                            out[patch_file_offset..patch_file_offset + 8].try_into().unwrap());
+                            out[patch_file_offset..patch_file_offset + 8]
+                                .try_into()
+                                .unwrap(),
+                        );
                         let val = target_addr as i64 - sub_addr as i64 + existing;
                         out[patch_file_offset..patch_file_offset + 8]
                             .copy_from_slice(&val.to_le_bytes());
@@ -1719,7 +1785,11 @@ fn collect_compact_unwind_entries(layout: &Layout<'_, MachO>) -> Vec<CollectedUn
                         else {
                             continue;
                         };
-                        entries.push(CollectedUnwindEntry { func_addr, func_size, encoding });
+                        entries.push(CollectedUnwindEntry {
+                            func_addr,
+                            func_size,
+                            encoding,
+                        });
                     }
                 }
             }
@@ -1728,7 +1798,8 @@ fn collect_compact_unwind_entries(layout: &Layout<'_, MachO>) -> Vec<CollectedUn
 
     tracing::debug!(
         "compact_unwind: {} raw entries, {} plain",
-        n_cu_entries, entries.len()
+        n_cu_entries,
+        entries.len()
     );
     entries.sort_by_key(|e| e.func_addr);
     entries.dedup_by_key(|e| e.func_addr);
@@ -1782,14 +1853,16 @@ fn resolve_compact_unwind_addr(
             let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
             // Read the 8-byte implicit addend from the field.
             let addend = u64::from_le_bytes(
-                sec_data.get(field_offset..field_offset + 8)?.try_into().ok()?
+                sec_data
+                    .get(field_offset..field_offset + 8)?
+                    .try_into()
+                    .ok()?,
             );
             return Some(sec_out + addend.wrapping_sub(sec_in));
         }
     }
     None
 }
-
 
 /// Build the binary content of the `__unwind_info` section from collected entries.
 /// `text_base` is the VM address of the start of the `__TEXT` segment.
@@ -1830,7 +1903,9 @@ fn read_uleb128(data: &[u8], pos: &mut usize) -> u64 {
         *pos += 1;
         val |= ((b & 0x7F) as u64) << shift;
         shift += 7;
-        if b & 0x80 == 0 { break; }
+        if b & 0x80 == 0 {
+            break;
+        }
     }
     val
 }
@@ -1873,8 +1948,12 @@ fn parse_cie_aug(data: &[u8], cie_pos: usize, eh_frame_vm_addr: u64) -> CieAugIn
     let mut pos = cie_pos + 9;
     // Find augmentation string (null-terminated).
     let aug_start = pos;
-    while pos < data.len() && data[pos] != 0 { pos += 1; }
-    if pos >= data.len() { return info; }
+    while pos < data.len() && data[pos] != 0 {
+        pos += 1;
+    }
+    if pos >= data.len() {
+        return info;
+    }
     let aug_bytes = &data[aug_start..pos];
     pos += 1; // skip null terminator
 
@@ -1888,23 +1967,33 @@ fn parse_cie_aug(data: &[u8], cie_pos: usize, eh_frame_vm_addr: u64) -> CieAugIn
     read_uleb128(data, &mut pos); // code_alignment
     // SLEB128 (just skip as if ULEB128 since we only care about the byte count)
     loop {
-        if pos >= data.len() { return info; }
-        let b = data[pos]; pos += 1;
-        if b & 0x80 == 0 { break; }
+        if pos >= data.len() {
+            return info;
+        }
+        let b = data[pos];
+        pos += 1;
+        if b & 0x80 == 0 {
+            break;
+        }
     }
     read_uleb128(data, &mut pos); // ra_register
 
-    if !has_z { return info; }
+    if !has_z {
+        return info;
+    }
     let aug_data_len = read_uleb128(data, &mut pos) as usize;
     let aug_data_start = pos;
 
     // Augmentation data contains per-letter info in augstr order (skipping 'z').
     let mut ap = aug_data_start;
     for &ch in aug_bytes {
-        if ap >= aug_data_start + aug_data_len { break; }
+        if ap >= aug_data_start + aug_data_len {
+            break;
+        }
         match ch {
             b'P' if has_p => {
-                let pers_enc = data[ap]; ap += 1;
+                let pers_enc = data[ap];
+                ap += 1;
                 let sz = eh_ptr_size(pers_enc) as usize;
                 if ap + sz <= data.len() {
                     // Personality ptr is PC-relative from the field address.
@@ -1918,11 +2007,13 @@ fn parse_cie_aug(data: &[u8], cie_pos: usize, eh_frame_vm_addr: u64) -> CieAugIn
                 ap += sz;
             }
             b'L' if has_l => {
-                let lsda_enc = data[ap]; ap += 1;
+                let lsda_enc = data[ap];
+                ap += 1;
                 info.lsda_ptr_size = eh_ptr_size(lsda_enc);
             }
             b'R' if has_r => {
-                let fde_enc = data[ap]; ap += 1;
+                let fde_enc = data[ap];
+                ap += 1;
                 info.fde_ptr_size = eh_ptr_size(fde_enc);
             }
             _ => {}
@@ -1930,8 +2021,12 @@ fn parse_cie_aug(data: &[u8], cie_pos: usize, eh_frame_vm_addr: u64) -> CieAugIn
     }
 
     // Default pointer size = 8 for 64-bit Mach-O.
-    if info.fde_ptr_size == 0 { info.fde_ptr_size = 8; }
-    if info.lsda_ptr_size == 0 { info.lsda_ptr_size = 8; }
+    if info.fde_ptr_size == 0 {
+        info.fde_ptr_size = 8;
+    }
+    if info.lsda_ptr_size == 0 {
+        info.lsda_ptr_size = 8;
+    }
     info
 }
 
@@ -1963,9 +2058,13 @@ fn scan_eh_frame_fde_offsets(
         let Ok(prefix) = EhFrameEntryPrefix::read_from_bytes(&data[pos..pos + PREFIX_LEN]) else {
             break;
         };
-        if prefix.length == 0 { break; }
+        if prefix.length == 0 {
+            break;
+        }
         let size = 4 + prefix.length as usize;
-        if pos + size > data.len() { break; }
+        if pos + size > data.len() {
+            break;
+        }
 
         if prefix.cie_id == 0 {
             // CIE: parse augmentation.
@@ -1982,7 +2081,10 @@ fn scan_eh_frame_fde_offsets(
             // pc_begin at byte 8, PC-relative signed value of ptr_size bytes.
             let pc_begin_field_vm = eh_frame_vm_addr + pos as u64 + 8;
             let func_vm = read_pcrel(data, pos + 8, ptr_size, pc_begin_field_vm);
-            if func_vm == 0 { pos += size; continue; }
+            if func_vm == 0 {
+                pos += size;
+                continue;
+            }
 
             // pc_range at byte 8+ptr_size (absolute, not PC-relative).
             // Skip it (we don't use pc_range for __unwind_info).
@@ -1993,7 +2095,10 @@ fn scan_eh_frame_fde_offsets(
             let aug_len = read_uleb128(data, &mut ap) as usize;
 
             // LSDA pointer at start of aug_data (if CIE has 'L').
-            let lsda_vm = if cie_aug.has_lsda && cie_aug.lsda_ptr_size > 0 && ap + cie_aug.lsda_ptr_size as usize <= data.len() {
+            let lsda_vm = if cie_aug.has_lsda
+                && cie_aug.lsda_ptr_size > 0
+                && ap + cie_aug.lsda_ptr_size as usize <= data.len()
+            {
                 let lsda_field_vm = eh_frame_vm_addr + ap as u64;
                 read_pcrel(data, ap, cie_aug.lsda_ptr_size as usize, lsda_field_vm)
             } else {
@@ -2001,11 +2106,14 @@ fn scan_eh_frame_fde_offsets(
             };
             let _ = aug_len;
 
-            map.insert(func_vm, EhFrameFdeInfo {
-                section_offset: pos as u32,
-                lsda_vm,
-                pers_got_vm: cie_aug.pers_got_vm,
-            });
+            map.insert(
+                func_vm,
+                EhFrameFdeInfo {
+                    section_offset: pos as u32,
+                    lsda_vm,
+                    pers_got_vm: cie_aug.pers_got_vm,
+                },
+            );
         }
 
         pos += size;
@@ -2046,24 +2154,33 @@ fn build_unwind_info_section(
     // augmentation data in __eh_frame, NOT from the __unwind_info LSDA array.
     // So we omit UNWIND_HAS_LSDA and the LSDA array to save space.
     for (&func_vm, fde_info) in fde_map {
-        if fde_info.pers_got_vm == 0 { continue; } // no personality → skip
+        if fde_info.pers_got_vm == 0 {
+            continue;
+        } // no personality → skip
 
         // Personality index (1-based into the personality array we build).
-        let pers_idx = if let Some(pos) = personalities.iter().position(|&g| g == fde_info.pers_got_vm) {
+        let pers_idx = if let Some(pos) = personalities
+            .iter()
+            .position(|&g| g == fde_info.pers_got_vm)
+        {
             pos + 1
         } else {
             personalities.push(fde_info.pers_got_vm);
             personalities.len()
         };
 
-        let enc = UNWIND_ARM64_DWARF | fde_info.section_offset
-            | (((pers_idx as u32) & 3) << 28);
+        let enc = UNWIND_ARM64_DWARF | fde_info.section_offset | (((pers_idx as u32) & 3) << 28);
         all_entries.push((func_vm, 0u32, enc));
     }
 
     let pers_count = all_entries.len();
     for e in plain_entries {
-        if fde_map.get(&e.func_addr).is_some_and(|f| f.pers_got_vm != 0) { continue; }
+        if fde_map
+            .get(&e.func_addr)
+            .is_some_and(|f| f.pers_got_vm != 0)
+        {
+            continue;
+        }
         all_entries.push((e.func_addr, e.func_size, e.encoding));
     }
 
@@ -2093,7 +2210,9 @@ fn build_unwind_info_section(
 
     tracing::debug!(
         "compact_unwind: building __unwind_info: {} entries ({} pers), {} personalities",
-        all_entries.len(), pers_count, personalities.len()
+        all_entries.len(),
+        pers_count,
+        personalities.len()
     );
 
     // DWARF-mode entries all have unique encodings (different FDE offsets) so
@@ -2137,12 +2256,12 @@ fn build_unwind_info_section(
     }
 
     // Header
-    wu32!(0,  1u32);           // version
-    wu32!(4,  ce_off);         // commonEncodingsArraySectionOffset
-    wu32!(8,  0u32);           // commonEncodingsArrayCount (none)
-    wu32!(12, pers_off);       // personalityArraySectionOffset
-    wu32!(16, n_pers);         // personalityArrayCount
-    wu32!(20, idx_off);        // indexSectionOffset
+    wu32!(0, 1u32); // version
+    wu32!(4, ce_off); // commonEncodingsArraySectionOffset
+    wu32!(8, 0u32); // commonEncodingsArrayCount (none)
+    wu32!(12, pers_off); // personalityArraySectionOffset
+    wu32!(16, n_pers); // personalityArrayCount
+    wu32!(20, idx_off); // indexSectionOffset
     wu32!(24, num_pages as u32 + 1); // indexCount (includes sentinel)
 
     // Personality array: 4-byte offsets from TEXT base to GOT slots.
@@ -2162,19 +2281,19 @@ fn build_unwind_info_section(
 
         // Index entry (12 bytes)
         let ie = idx_off as usize + page * 12;
-        wu32!(ie,     first_fn_off);
-        wu32!(ie + 4, sl_off as u32);  // secondLevelPagesSectionOffset
-        wu32!(ie + 8, lsda_off);       // lsdaIndexArraySectionOffset
+        wu32!(ie, first_fn_off);
+        wu32!(ie + 4, sl_off as u32); // secondLevelPagesSectionOffset
+        wu32!(ie + 8, lsda_off); // lsdaIndexArraySectionOffset
 
         // Regular second-level page header (8 bytes)
-        wu32!(sl_off,     2u32);                        // kind = UNWIND_SECOND_LEVEL_REGULAR
-        wu16!(sl_off + 4, 8u16);                        // entryPageOffset
-        wu16!(sl_off + 6, page_entries.len() as u16);   // entryCount
+        wu32!(sl_off, 2u32); // kind = UNWIND_SECOND_LEVEL_REGULAR
+        wu16!(sl_off + 4, 8u16); // entryPageOffset
+        wu16!(sl_off + 6, page_entries.len() as u16); // entryCount
 
         // Entries (8 bytes each: funcOffset u32 + encoding u32)
         for (j, &(fa, _, enc)) in page_entries.iter().enumerate() {
             let eo = sl_off + 8 + j * 8;
-            wu32!(eo,     (fa - text_base) as u32);
+            wu32!(eo, (fa - text_base) as u32);
             wu32!(eo + 4, enc);
         }
     }
@@ -2183,8 +2302,8 @@ fn build_unwind_info_section(
     let (last_fa, last_fs, _) = *all_entries.last().unwrap();
     let sentinel_fn_off = (last_fa - text_base + last_fs as u64) as u32;
     let sie = idx_off as usize + num_pages * 12;
-    wu32!(sie,     sentinel_fn_off);
-    wu32!(sie + 4, 0u32);     // secondLevelPagesSectionOffset = 0 (sentinel)
+    wu32!(sie, sentinel_fn_off);
+    wu32!(sie + 4, 0u32); // secondLevelPagesSectionOffset = 0 (sentinel)
     wu32!(sie + 8, lsda_off); // lsdaIndexArraySectionOffset
 
     out
@@ -2240,6 +2359,10 @@ fn write_headers(
     let tbss_layout = layout.section_layouts.get(output_section_id::TBSS);
     let has_tlv = tdata_layout.mem_size > 0 || tbss_layout.mem_size > 0;
     let has_tvars = has_tlv;
+    let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
+    let has_stubs = plt_layout.mem_size > 0;
+    let got_layout = layout.section_layouts.get(output_section_id::GOT);
+    let has_got = got_layout.mem_size > 0;
 
     // Scan for .rustc section (proc-macro metadata) before computing cmd sizes
     let mut rustc_addr = 0u64;
@@ -2309,6 +2432,7 @@ fn write_headers(
     let has_unwind_info = unwind_info_size > 0;
     let text_nsects = 1
         + if rustc_in_text { 1u32 } else { 0 }
+        + if has_stubs { 1 } else { 0 }
         + if has_eh_frame { 1 } else { 0 }
         + if has_unwind_info { 1 } else { 0 };
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
@@ -2320,6 +2444,9 @@ fn write_headers(
             data_nsects += 1;
         }
         if has_init_array {
+            data_nsects += 1;
+        }
+        if has_got {
             data_nsects += 1;
         }
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
@@ -2406,9 +2533,25 @@ fn write_headers(
         w.u32(0);
         w.u32(0);
     }
+    if has_stubs {
+        let stubs_foff =
+            vm_addr_to_file_offset(plt_layout.mem_offset, mappings).unwrap_or(0) as u32;
+        w.name16(b"__stubs");
+        w.name16(b"__TEXT");
+        w.u64(plt_layout.mem_offset);
+        w.u64(plt_layout.mem_size);
+        w.u32(stubs_foff);
+        w.u32(2); // align 2^2 = 4
+        w.u32(0); // reloff
+        w.u32(0); // nreloc
+        w.u32(0x80000408); // S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS
+        w.u32(0); // reserved1 (indirect symbol table index, 0 for now)
+        w.u32(12); // reserved2 = stub size
+        w.u32(0); // reserved3
+    }
     if has_eh_frame {
-        let eh_foff = vm_addr_to_file_offset(eh_frame_layout.mem_offset, mappings)
-            .unwrap_or(0) as u32;
+        let eh_foff =
+            vm_addr_to_file_offset(eh_frame_layout.mem_offset, mappings).unwrap_or(0) as u32;
         w.name16(b"__eh_frame");
         w.name16(b"__TEXT");
         w.u64(eh_frame_layout.mem_offset);
@@ -2444,6 +2587,9 @@ fn write_headers(
             nsects += 1;
         }
         if has_init_array {
+            nsects += 1;
+        }
+        if has_got {
             nsects += 1;
         }
         let data_cmd_size = 72 + 80 * nsects;
@@ -2555,6 +2701,22 @@ fn write_headers(
             w.u32(0);
             w.u32(0);
             w.u32(0);
+        }
+        if has_got {
+            let got_foff = vm_addr_to_file_offset(got_layout.mem_offset, mappings)
+                .unwrap_or(data_fileoff as usize) as u32;
+            w.name16(b"__got");
+            w.name16(b"__DATA");
+            w.u64(got_layout.mem_offset);
+            w.u64(got_layout.mem_size);
+            w.u32(got_foff);
+            w.u32(3); // align 2^3 = 8
+            w.u32(0); // reloff
+            w.u32(0); // nreloc
+            w.u32(0x06); // S_NON_LAZY_SYMBOL_POINTERS
+            w.u32(0); // reserved1
+            w.u32(0); // reserved2
+            w.u32(0); // reserved3
         }
         if has_init_array {
             let ia_foff = vm_addr_to_file_offset(init_array_layout.mem_offset, mappings)

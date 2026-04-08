@@ -81,10 +81,7 @@ pub(crate) trait EhFrameHandler<'data, R: Relocation> {
 
     /// Given the pc_begin relocation of an FDE, return the section index of the
     /// target function. Returns None if the FDE should be discarded.
-    fn fde_target_section(
-        &self,
-        rel: &R,
-    ) -> crate::error::Result<Option<object::SectionIndex>>;
+    fn fde_target_section(&self, rel: &R) -> crate::error::Result<Option<object::SectionIndex>>;
 
     /// Store a parsed CIE.
     fn store_cie(&mut self, offset: u32, cie: Cie<'data>);

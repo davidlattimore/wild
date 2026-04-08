@@ -3991,8 +3991,8 @@ impl<'data> Default for ExceptionFrames<'data> {
     }
 }
 
-use crate::eh_frame::ExceptionFrame;
 use crate::eh_frame::EhFrameSizes;
+use crate::eh_frame::ExceptionFrame;
 
 impl<'data> ExceptionFrames<'data> {
     fn len(&self) -> usize {
