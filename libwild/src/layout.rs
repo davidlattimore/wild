@@ -2796,7 +2796,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
             let flags = resources
                 .per_symbol_flags
                 .get_atomic(canonical_target_id)
-                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
+                .fetch_or(ValueFlags::EXPORT_DYNAMIC | ValueFlags::WEAK);
 
             if !flags.has_resolution() {
                 queue.send_work::<A>(
