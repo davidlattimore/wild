@@ -2294,7 +2294,7 @@ fn build_obj(
         output_path.clone()
     };
 
-    if is_newer(&output_file, deps.iter()) {
+    if command_line_unchanged(&command, &output_file) && is_newer(&output_file, deps.iter()) {
         return Ok(BuiltObject {
             path: output_path,
             inputs,
@@ -2317,6 +2317,8 @@ fn build_obj(
         );
     }
 
+    write_cmd_file(&command, &output_file)?;
+
     if needs_run_with {
         post_process_rust_run_script(&output_path).with_context(|| {
             format!(
@@ -2332,6 +2334,26 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+fn cmd_path(output_path: &Path) -> PathBuf {
+    add_to_path(output_path, ".cmd")
+}
+
+/// Returns whether the command-line used to produce `output_path` is the same as previously used.
+fn command_line_unchanged(command: &Command, output_path: &Path) -> bool {
+    let cmd_path = cmd_path(output_path);
+    if let Ok(existing_cmd) = std::fs::read_to_string(&cmd_path) {
+        existing_cmd == command_as_str(command)
+    } else {
+        false
+    }
+}
+
+fn write_cmd_file(command: &Command, output_file: &Path) -> Result {
+    let cmd_path = cmd_path(output_file);
+    std::fs::write(&cmd_path, command_as_str(command))?;
+    Ok(())
 }
 
 /// Verifies that if we've created or considered creating `output_path` previously in this process,
