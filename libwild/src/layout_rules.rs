@@ -131,7 +131,7 @@ impl<'data> LayoutRulesBuilder<'data> {
         &mut self,
         input: &InputLinkerScript<'data>,
         output_sections: &mut OutputSections<'data, P>,
-    ) -> Result<ProcessedLinkerScript<'data>> {
+    ) -> Result<ProcessedLinkerScript<'data, P>> {
         let mut symbol_defs = Vec::new();
         let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();

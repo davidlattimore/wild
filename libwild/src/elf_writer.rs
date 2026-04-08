@@ -114,7 +114,6 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::secnames::NOTE_GNU_BUILD_ID_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::stt;
 use linker_utils::loongarch64::highest_relocation_with_bias;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::relaxation::SectionRelaxDeltas;
@@ -2012,9 +2011,8 @@ fn write_symbols<'data>(
     }
 
     if layout.args().should_output_partial_object() {
-        let e = LittleEndian;
         for (sym_index, sym) in object.object.symbols.enumerate() {
-            if !sym.is_undefined(e) {
+            if !platform::Symbol::is_undefined(sym) {
                 continue;
             }
             let Ok(name) = object.object.symbol_name(sym) else {
@@ -3592,7 +3590,7 @@ pub(crate) struct EpilogueOffsets {
 }
 
 fn write_linker_script_state<'data, A: Arch<Platform = Elf>>(
-    script: &LinkerScriptLayoutState,
+    script: &LinkerScriptLayoutState<Elf>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
 ) -> Result {
@@ -3610,7 +3608,7 @@ fn write_linker_script_state<'data, A: Arch<Platform = Elf>>(
 }
 
 fn write_synthetic_symbols<'data, A: Arch<Platform = Elf>>(
-    syn: &SyntheticSymbolsLayout,
+    syn: &SyntheticSymbolsLayout<Elf>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
 ) -> Result {
@@ -3993,7 +3991,7 @@ fn write_linker_script_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,
     symbol_id: SymbolId,
-    script: &LinkerScriptLayoutState,
+    script: &LinkerScriptLayoutState<Elf>,
 ) -> Result {
     let local_index = script
         .internal_symbols
@@ -4074,7 +4072,7 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
                             .output_index_of_section(section_id)
                             .unwrap_or(u32::from(object::elf::SHN_ABS))
                     });
-            Ok((shndx, def_info.elf_symbol_type.raw()))
+            Ok((shndx, def_info.symbol.st_type()))
         }
         crate::grouping::SequencedInput::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
@@ -4106,7 +4104,7 @@ fn write_internal_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,
     symbol_id: SymbolId,
-    def_info: &crate::parsing::InternalSymDefInfo,
+    def_info: &crate::parsing::InternalSymDefInfo<Elf>,
 ) -> Result {
     if matches!(
         def_info.placement,
@@ -4145,7 +4143,7 @@ fn write_defsym_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &ElfLayout,
     symbol_id: SymbolId,
-    def_info: &crate::parsing::InternalSymDefInfo,
+    def_info: &crate::parsing::InternalSymDefInfo<Elf>,
 ) -> Result {
     debug_assert!(matches!(
         def_info.placement,
@@ -4303,7 +4301,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
                     format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
                 })?;
         }
-    } else if sym.is_common(LittleEndian) {
+    } else if platform::Symbol::is_common(sym) {
         let symbol_id = sym_def.symbol_id;
         let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
@@ -4330,7 +4328,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
             .with_context(|| {
                 format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
             })?;
-    } else if sym.is_absolute(LittleEndian) {
+    } else if platform::Symbol::is_absolute(sym) {
         dynamic_symbol_writer
             .copy_absolute_symbol(sym, name, ValueFlags::empty())
             .with_context(|| {
@@ -4353,7 +4351,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
 }
 
 fn write_internal_symbols(
-    internal_symbols: &InternalSymbols,
+    internal_symbols: &InternalSymbols<Elf>,
     layout: &ElfLayout,
     symbol_writer: &mut SymbolTableWriter<'_, '_>,
 ) -> Result {
@@ -4408,7 +4406,7 @@ fn write_internal_symbols(
                 .transpose()?
                 .unwrap_or(u32::from(object::elf::SHN_ABS));
 
-            (shndx, def_info.elf_symbol_type.raw())
+            (shndx, def_info.symbol.st_type())
         };
 
         // Move symbols that are in our header (section 0) into the first section, otherwise they'll
@@ -4419,7 +4417,7 @@ fn write_internal_symbols(
 
         let mut address = resolution.value();
 
-        if def_info.elf_symbol_type == stt::TLS {
+        if platform::Symbol::is_tls(&def_info.symbol) {
             address -= layout.tls_start_address();
         }
 
@@ -4431,7 +4429,7 @@ fn write_internal_symbols(
         }
 
         // PROVIDE_HIDDEN symbols should be local, not global
-        let st_bind = if def_info.is_hidden {
+        let st_bind = if platform::Symbol::is_hidden(&def_info.symbol) {
             object::elf::STB_LOCAL
         } else {
             object::elf::STB_GLOBAL
@@ -5061,7 +5059,7 @@ impl<'out> ProgramHeaderWriter<'out> {
 }
 
 fn write_internal_symbols_plt_got_entries<'data, A: Arch<Platform = Elf>>(
-    internal_symbols: &InternalSymbols,
+    internal_symbols: &InternalSymbols<Elf>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
 ) -> Result {

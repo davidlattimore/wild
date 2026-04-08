@@ -391,7 +391,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         if self.groups.is_empty() {
             self.groups
-                .push(Group::Prelude(crate::parsing::Prelude::new::<P>(
+                .push(Group::Prelude(crate::parsing::Prelude::new(
                     self.args,
                     self.output_kind,
                 )));
@@ -518,7 +518,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         &mut self,
         per_symbol_flags: &mut PerSymbolFlags,
         symbol_name: PreHashed<UnversionedSymbolName<'data>>,
-        syn: &ResolvedSyntheticSymbols<'data>,
+        syn: &ResolvedSyntheticSymbols<'data, P>,
     ) -> SymbolId {
         debug_assert_eq!(syn.file_id.group() + 1, self.groups.len());
 
@@ -939,7 +939,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         })
     }
 
-    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data> {
+    pub(crate) fn new_synthetic_symbols_group(&mut self) -> ResolvedSyntheticSymbols<'data, P> {
         let file_id = FileId::new(self.groups.len() as u32, 0);
         let start_symbol_id = self.next_symbol_id();
 
@@ -1562,7 +1562,7 @@ fn populate_symbol_db<'data>(
 }
 
 fn load_linker_script_symbols<'data, P: Platform>(
-    script: &SequencedLinkerScript<'data>,
+    script: &SequencedLinkerScript<'data, P>,
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
@@ -1580,7 +1580,7 @@ fn load_linker_script_symbols<'data, P: Platform>(
         let mut flags = ValueFlags::NON_INTERPOSABLE;
         // PROVIDE_HIDDEN symbols have hidden visibility, which means they should be
         // non-interposable (already set) and not exported to dynamic symbol table.
-        if definition.is_hidden {
+        if definition.symbol.is_hidden() {
             flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
         }
         symbols_out.set_next(flags, symbol_id, script.file_id);
@@ -1989,8 +1989,8 @@ impl TryFrom<usize> for SymbolId {
     }
 }
 
-impl<'data> Prelude<'data> {
-    fn load_symbols<P: Platform>(
+impl<'data, P: Platform> Prelude<'data, P> {
+    fn load_symbols(
         &self,
         symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
         outputs: &mut SymbolLoadOutputs<'data>,
@@ -2014,7 +2014,7 @@ impl<'data> Prelude<'data> {
                     ValueFlags::NON_INTERPOSABLE
                 }
             };
-            if definition.is_hidden {
+            if definition.symbol.is_hidden() {
                 flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
             }
             symbols_out.set_next(flags, symbol_id, PRELUDE_FILE_ID);
@@ -2028,7 +2028,7 @@ impl std::fmt::Display for SymbolId {
     }
 }
 
-impl InternalSymDefInfo<'_> {
+impl<P: Platform> InternalSymDefInfo<'_, P> {
     pub(crate) fn section_id(self) -> Option<OutputSectionId> {
         match self.placement {
             SymbolPlacement::Undefined

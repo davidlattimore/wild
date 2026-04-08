@@ -20,9 +20,9 @@ use std::fmt::Display;
 
 #[derive(Debug)]
 pub(crate) enum Group<'data, P: Platform> {
-    Prelude(Prelude<'data>),
+    Prelude(Prelude<'data, P>),
     Objects(&'data [SequencedInputObject<'data, P>]),
-    LinkerScripts(Vec<SequencedLinkerScript<'data>>),
+    LinkerScripts(Vec<SequencedLinkerScript<'data, P>>),
     SyntheticSymbols(SyntheticSymbols),
     #[cfg(feature = "plugins")]
     LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
@@ -36,17 +36,17 @@ pub(crate) struct SequencedInputObject<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct SequencedLinkerScript<'data> {
-    pub(crate) parsed: ProcessedLinkerScript<'data>,
+pub(crate) struct SequencedLinkerScript<'data, P: Platform> {
+    pub(crate) parsed: ProcessedLinkerScript<'data, P>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
 
 #[derive(Debug)]
 pub(crate) enum SequencedInput<'db, 'data, P: Platform> {
-    Prelude(&'db Prelude<'data>),
+    Prelude(&'db Prelude<'data, P>),
     Object(&'data SequencedInputObject<'data, P>),
-    LinkerScript(&'db SequencedLinkerScript<'data>),
+    LinkerScript(&'db SequencedLinkerScript<'data, P>),
     SyntheticSymbols(&'db SyntheticSymbols),
     #[cfg(feature = "plugins")]
     LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
@@ -103,7 +103,7 @@ impl<'data, P: Platform> Group<'data, P> {
 pub(crate) fn create_groups<'data, P: Platform>(
     symbol_db: &mut SymbolDb<'data, P>,
     parsed_objects: Vec<Box<ParsedInputObject<'data, P>>>,
-    linker_scripts: Vec<ProcessedLinkerScript<'data>>,
+    linker_scripts: Vec<ProcessedLinkerScript<'data, P>>,
 ) {
     timing_phase!("Group files");
 
@@ -159,7 +159,7 @@ pub(crate) fn create_groups<'data, P: Platform>(
         }
     }
 
-    let linker_scripts: Vec<SequencedLinkerScript<'_>> = linker_scripts
+    let linker_scripts: Vec<SequencedLinkerScript<'_, P>> = linker_scripts
         .into_iter()
         .enumerate()
         .map(|(i, script)| {
@@ -278,7 +278,7 @@ impl<'data, P: Platform> SequencedInputObject<'data, P> {
     }
 }
 
-impl<'data> SequencedLinkerScript<'data> {
+impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
         UnversionedSymbolName::new(self.parsed.symbol_defs[local_index].name)
