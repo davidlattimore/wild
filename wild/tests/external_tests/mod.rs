@@ -5,6 +5,7 @@ use crate::Filter;
 use crate::Result;
 use libtest_mimic::Trial;
 use std::env;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -97,7 +98,7 @@ fn get_external_linker() -> &'static ExternalLinker {
 
 fn get_fakes_dir() -> &'static Path {
     static DIR: OnceLock<FakesDir> = OnceLock::new();
-    DIR.get_or_init(|| FakesDir::new(get_external_linker()))
+    DIR.get_or_init(|| FakesDir::new(get_external_linker()).unwrap())
         .path()
 }
 
@@ -107,7 +108,7 @@ enum FakesDir {
 }
 
 impl FakesDir {
-    fn new(linker: &ExternalLinker) -> Self {
+    fn new(linker: &ExternalLinker) -> Result<Self> {
         match linker {
             ExternalLinker::Wild => {
                 let current_dir = env::current_dir().expect("failed to get current directory");
@@ -117,7 +118,7 @@ impl FakesDir {
                     "fakes-debug directory not found at {}",
                     fakes.display()
                 );
-                FakesDir::Static(fakes)
+                Ok(FakesDir::Static(fakes))
             }
             ExternalLinker::ThirdParty { path, name } => {
                 let tmp = tempfile::tempdir()
@@ -126,13 +127,12 @@ impl FakesDir {
 
                 for link_name in &["mold", "ld", "ld.lld"] {
                     let link = tmp_path.join(link_name);
-                    std::os::unix::fs::symlink(path, &link).unwrap_or_else(|e| {
-                        panic!(
-                            "failed to create symlink {} -> {}: {e}",
-                            link.display(),
-                            path.display()
-                        )
-                    });
+                    // Note, we can't just create a symlink, since lld requires that it's invoked as
+                    // "ld.lld" to work properly. Instead, we create a wrapper script.
+                    let script_contents = format!("#!/bin/bash\nexec {} \"$@\"\n", path.display());
+                    let mut file = std::fs::File::create(&link)?;
+                    file.write_all(script_contents.as_bytes())?;
+                    libwild::make_executable(&file)?;
                 }
 
                 eprintln!(
@@ -141,7 +141,7 @@ impl FakesDir {
                     tmp_path.display()
                 );
 
-                FakesDir::Temp(tmp)
+                Ok(FakesDir::Temp(tmp))
             }
         }
     }

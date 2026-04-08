@@ -2,8 +2,10 @@ use crate::error::Result;
 use std::fs::File;
 use std::path::PathBuf;
 
+/// Make the the supplied file executable by adding execute permissions for all users that have read
+/// permissions. On non-Unix platforms, this is a no-op.
 #[allow(clippy::unnecessary_wraps)]
-pub(crate) fn make_executable(_file: &File) -> Result {
+pub fn make_executable(_file: &File) -> Result {
     #[cfg(unix)]
     {
         use std::os::unix::prelude::PermissionsExt;

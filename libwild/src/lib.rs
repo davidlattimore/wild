@@ -89,6 +89,7 @@ use crate::version_script::VersionScript;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
+pub use fs::make_executable;
 use input_data::FileLoader;
 use input_data::InputFile;
 use input_data::InputLinkerScript;
