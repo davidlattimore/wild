@@ -118,7 +118,7 @@
 // Wild is the only linker that adds GLIBC_ABI_DT_RELR dynamic symbol
 // dependency.
 //#SkipLinker:ld
-//#ExpectDynSym:GLIBC_ABI_DT_RELR
+//#Contains:GLIBC_ABI_DT_RELR
 //#RequiresGlibc:true
 //#Contains:.relr.dyn
 

@@ -1933,7 +1933,7 @@ fn find_required_sections<'data, A: Arch>(
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
 
-    <A::Platform as Platform>::finalise_find_required_sections(&group_states);
+    <A::Platform as Platform>::finalise_find_required_sections(&mut group_states, symbol_db)?;
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
