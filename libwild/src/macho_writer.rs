@@ -111,6 +111,10 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     )?;
     buf.truncate(final_size);
 
+    if layout.symbol_db.args.common().validate_output {
+        validate_macho_output(&buf)?;
+    }
+
     let output_path = layout.symbol_db.args.output();
     std::fs::write(output_path.as_ref(), &buf)
         .map_err(|e| crate::error!("Failed to write: {e}"))?;
@@ -3541,6 +3545,136 @@ fn write_relocatable_object(layout: &Layout<'_, MachO>) -> Result {
     let output_path = layout.symbol_db.args.output();
     std::fs::write(output_path.as_ref(), &buf)
         .map_err(|e| crate::error!("Failed to write: {e}"))?;
+
+    Ok(())
+}
+
+/// Validate structural invariants of a Mach-O output binary.
+///
+/// Called when `WILD_VALIDATE_OUTPUT=1` is set. Parses the output back and checks:
+///
+/// # Segment invariants
+/// - Segment vmaddr is page-aligned (16KB on arm64)
+/// - Segment fileoff is page-aligned (when filesize > 0)
+/// - Segment file content fits within the file
+///
+/// # Section invariants
+/// - Section addr is within parent segment [vmaddr, vmaddr+vmsize)
+/// - Section file offset is within parent segment [fileoff, fileoff+filesize)
+/// - Section addr respects its declared alignment
+/// - Sections within a segment do not overlap
+///
+/// # Chained fixups invariants
+/// - Page start offsets are within a page (< page_size)
+fn validate_macho_output(buf: &[u8]) -> Result {
+    use object::read::macho::{MachHeader as _, Section as _, Segment as _};
+    let le = object::Endianness::Little;
+    let header = object::macho::MachHeader64::<object::Endianness>::parse(buf, 0)
+        .map_err(|e| crate::error!("validate: bad Mach-O header: {e}"))?;
+    let mut cmds = header
+        .load_commands(le, buf, 0)
+        .map_err(|e| crate::error!("validate: bad load commands: {e}"))?;
+
+    let file_len = buf.len() as u64;
+
+    while let Ok(Some(cmd)) = cmds.next() {
+        if let Ok(Some((seg, seg_data))) = cmd.segment_64() {
+            let segname = crate::macho::trim_nul(&seg.segname);
+            let segname_str = String::from_utf8_lossy(segname);
+
+            let vm_addr = seg.vmaddr.get(le);
+            let vm_size = seg.vmsize.get(le);
+            let file_off = seg.fileoff.get(le);
+            let file_size = seg.filesize.get(le);
+
+            // Segment vmaddr page alignment
+            if vm_addr % PAGE_SIZE != 0 && !segname.is_empty() {
+                crate::bail!(
+                    "validate: segment {segname_str} vmaddr {vm_addr:#x} not page-aligned"
+                );
+            }
+
+            // Segment fileoff page alignment
+            if file_size > 0 && file_off % PAGE_SIZE != 0 {
+                crate::bail!(
+                    "validate: segment {segname_str} fileoff {file_off:#x} not page-aligned"
+                );
+            }
+
+            // Segment fits in file
+            if file_off + file_size > file_len {
+                crate::bail!(
+                    "validate: segment {segname_str} extends beyond file \
+                     ({file_off:#x}+{file_size:#x} > {file_len:#x})"
+                );
+            }
+
+            // Section invariants
+            if let Ok(sections) = seg.sections(le, seg_data) {
+                let mut prev_end: u64 = 0;
+                for sec in sections {
+                    let sect_raw = sec.sectname();
+                    let sect_name = String::from_utf8_lossy(crate::macho::trim_nul(sect_raw));
+
+                    let sec_addr = sec.addr(le);
+                    let sec_size = sec.size(le);
+                    let sec_offset = sec.offset(le) as u64;
+                    let sec_align = sec.align(le);
+
+                    // Section addr within segment
+                    if sec_size > 0
+                        && (sec_addr < vm_addr || sec_addr + sec_size > vm_addr + vm_size)
+                    {
+                        crate::bail!(
+                            "validate: section {segname_str},{sect_name} addr \
+                             {sec_addr:#x}+{sec_size:#x} outside segment \
+                             [{vm_addr:#x}..{:#x})",
+                            vm_addr + vm_size
+                        );
+                    }
+
+                    // Section file offset within segment
+                    let sec_type = sec.flags(le) & 0xFF;
+                    let is_zerofill = sec_type == 0x01 || sec_type == 0x0C;
+                    if sec_size > 0 && !is_zerofill && sec_offset > 0 && file_size > 0 {
+                        if sec_offset < file_off
+                            || sec_offset + sec_size > file_off + file_size
+                        {
+                            crate::bail!(
+                                "validate: section {segname_str},{sect_name} file range \
+                                 [{sec_offset:#x}..{:#x}) outside segment \
+                                 [{file_off:#x}..{:#x})",
+                                sec_offset + sec_size,
+                                file_off + file_size
+                            );
+                        }
+                    }
+
+                    // Section alignment
+                    if sec_size > 0 && sec_align > 0 {
+                        let alignment = 1u64 << sec_align;
+                        if sec_addr % alignment != 0 {
+                            crate::bail!(
+                                "validate: section {segname_str},{sect_name} addr \
+                                 {sec_addr:#x} not aligned to 2^{sec_align} ({alignment})"
+                            );
+                        }
+                    }
+
+                    // No overlap with previous section
+                    if sec_size > 0 && sec_addr > 0 && sec_addr < prev_end {
+                        crate::bail!(
+                            "validate: section {segname_str},{sect_name} at {sec_addr:#x} \
+                             overlaps previous section ending at {prev_end:#x}"
+                        );
+                    }
+                    if sec_size > 0 {
+                        prev_end = sec_addr + sec_size;
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }

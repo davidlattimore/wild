@@ -276,6 +276,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.entry_symbol = None;
             return Ok(());
         }
+        "--validate-output" => {
+            args.common.validate_output = true;
+            return Ok(());
+        }
         _ => {}
     }
 

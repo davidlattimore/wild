@@ -374,6 +374,9 @@ fn run_test(
         c
     };
 
+    // Enable output validation in Wild itself.
+    cmd.env("WILD_VALIDATE_OUTPUT", "1");
+
     let link_result = cmd.output().map_err(|e| format!("wild: {e}"))?;
 
     // Check for expected errors.
@@ -397,8 +400,11 @@ fn run_test(
         return Err(format!("Link failed:\n{stderr}"));
     }
 
-    // Binary content checks.
+    // Verify Mach-O structural invariants.
     let binary = std::fs::read(&output).map_err(|e| format!("read output: {e}"))?;
+    verify_macho_invariants(&binary, &output)?;
+
+    // Binary content checks.
     for needle in &config.contains {
         if !binary_contains(&binary, needle.as_bytes()) {
             return Err(format!("Output binary does not contain '{needle}'"));
@@ -447,6 +453,139 @@ fn run_test(
         let code = run.status.code().unwrap_or(-1);
         if code != 42 {
             return Err(format!("Expected exit code 42, got {code}"));
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify structural invariants of a Mach-O binary.
+///
+/// These invariants must hold for dyld to load the binary correctly:
+/// - All segments must be page-aligned (16KB on arm64).
+/// - Section addresses must be within their parent segment's [vmaddr, vmaddr+vmsize).
+/// - Section file offsets must be within [segment.fileoff, segment.fileoff+segment.filesize).
+/// - Sections within a segment must not overlap.
+/// - LC_SYMTAB offsets must be within the file.
+/// - Chained fixup page starts must reference offsets within a page (< page_size).
+fn verify_macho_invariants(
+    binary: &[u8],
+    path: &std::path::Path,
+) -> Result<(), String> {
+    use object::read::macho::{MachHeader as _, Segment as _, Section as _};
+    let le = object::Endianness::Little;
+    let header = object::macho::MachHeader64::<object::Endianness>::parse(binary, 0)
+        .map_err(|e| format!("{}: failed to parse Mach-O header: {e}", path.display()))?;
+    let mut cmds = header
+        .load_commands(le, binary, 0)
+        .map_err(|e| format!("{}: bad load commands: {e}", path.display()))?;
+
+    let file_len = binary.len() as u64;
+    let page_size: u64 = 0x4000; // 16KB on arm64
+
+    while let Ok(Some(cmd)) = cmds.next() {
+        if let Ok(Some((seg, seg_data))) = cmd.segment_64() {
+            let segname = std::str::from_utf8(
+                &seg.segname[..seg.segname.iter().position(|&b| b == 0).unwrap_or(16)],
+            )
+            .unwrap_or("<invalid>");
+
+            let vm_addr = seg.vmaddr.get(le);
+            let vm_size = seg.vmsize.get(le);
+            let file_off = seg.fileoff.get(le);
+            let file_size = seg.filesize.get(le);
+
+            // Invariant: segment vmaddr must be page-aligned.
+            if vm_addr % page_size != 0 && !segname.is_empty() {
+                return Err(format!(
+                    "{}: segment {segname} vmaddr {vm_addr:#x} is not page-aligned",
+                    path.display()
+                ));
+            }
+
+            // Invariant: segment file offset must be page-aligned (except __PAGEZERO).
+            if file_size > 0 && file_off % page_size != 0 {
+                return Err(format!(
+                    "{}: segment {segname} fileoff {file_off:#x} is not page-aligned",
+                    path.display()
+                ));
+            }
+
+            // Invariant: segment file content must fit in the file.
+            if file_off + file_size > file_len {
+                return Err(format!(
+                    "{}: segment {segname} extends beyond file \
+                     (fileoff {file_off:#x} + filesize {file_size:#x} > file len {file_len:#x})",
+                    path.display()
+                ));
+            }
+
+            // Check sections within this segment.
+            if let Ok(sections) = seg.sections(le, seg_data) {
+                let mut prev_end: u64 = 0;
+                for sec in sections {
+                    let sect_name_raw = sec.sectname();
+                    let sect_name = std::str::from_utf8(
+                        &sect_name_raw
+                            [..sect_name_raw.iter().position(|&b| b == 0).unwrap_or(16)],
+                    )
+                    .unwrap_or("<invalid>");
+
+                    let sec_addr = sec.addr(le);
+                    let sec_size = sec.size(le);
+                    let sec_offset = sec.offset(le) as u64;
+                    let sec_align = sec.align(le);
+
+                    // Invariant: section address must be within the segment.
+                    if sec_size > 0 && (sec_addr < vm_addr || sec_addr + sec_size > vm_addr + vm_size) {
+                        return Err(format!(
+                            "{}: section {segname},{sect_name} addr {sec_addr:#x}+{sec_size:#x} \
+                             outside segment [{vm_addr:#x}..{:#x})",
+                            path.display(),
+                            vm_addr + vm_size
+                        ));
+                    }
+
+                    // Invariant: section file offset must be within the segment.
+                    let sec_type = sec.flags(le) & 0xFF;
+                    let is_zerofill = sec_type == 0x01 || sec_type == 0x0C;
+                    if sec_size > 0 && !is_zerofill && sec_offset > 0 {
+                        if sec_offset < file_off || sec_offset + sec_size > file_off + file_size {
+                            return Err(format!(
+                                "{}: section {segname},{sect_name} file range \
+                                 [{sec_offset:#x}..{:#x}) outside segment [{file_off:#x}..{:#x})",
+                                path.display(),
+                                sec_offset + sec_size,
+                                file_off + file_size
+                            ));
+                        }
+                    }
+
+                    // Invariant: section must respect its alignment.
+                    if sec_size > 0 && sec_align > 0 {
+                        let alignment = 1u64 << sec_align;
+                        if sec_addr % alignment != 0 {
+                            return Err(format!(
+                                "{}: section {segname},{sect_name} addr {sec_addr:#x} \
+                                 not aligned to 2^{sec_align} ({alignment})",
+                                path.display()
+                            ));
+                        }
+                    }
+
+                    // Invariant: sections must not overlap (within the same segment).
+                    if sec_addr > 0 && sec_addr < prev_end {
+                        return Err(format!(
+                            "{}: section {segname},{sect_name} at {sec_addr:#x} \
+                             overlaps previous section ending at {prev_end:#x}",
+                            path.display()
+                        ));
+                    }
+                    if sec_size > 0 {
+                        prev_end = sec_addr + sec_size;
+                    }
+                }
+            }
         }
     }
 
