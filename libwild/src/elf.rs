@@ -918,15 +918,6 @@ impl platform::Platform for Elf {
             name: b"_TLS_MODULE_BASE_",
             symbol: elf_symbol,
         });
-
-        // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
-        // defined.
-        if args.z_pack_relative_relocs {
-            symbols.add_symbol(InternalSymDefInfo::new(
-                SymbolPlacement::ImportDynamicSymbol,
-                b"GLIBC_ABI_DT_RELR",
-            ));
-        }
     }
 
     fn built_in_section_infos<'data>()
