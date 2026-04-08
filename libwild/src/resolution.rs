@@ -560,11 +560,11 @@ pub(crate) struct ResolvedGroup<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) enum ResolvedFile<'data, P: Platform> {
     NotLoaded(NotLoaded),
-    Prelude(ResolvedPrelude<'data>),
+    Prelude(ResolvedPrelude<'data, P>),
     Object(ResolvedObject<'data, P>),
     Dynamic(ResolvedDynamic<'data, P>),
-    LinkerScript(ResolvedLinkerScript<'data>),
-    SyntheticSymbols(ResolvedSyntheticSymbols<'data>),
+    LinkerScript(ResolvedLinkerScript<'data, P>),
+    SyntheticSymbols(ResolvedSyntheticSymbols<'data, P>),
     #[cfg(feature = "plugins")]
     LtoInput(ResolvedLtoInput),
 }
@@ -631,8 +631,8 @@ impl UnloadedSection {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedPrelude<'data> {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+pub(crate) struct ResolvedPrelude<'data, P: Platform> {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
 /// Resolved state common to dynamic and regular objects.
@@ -666,18 +666,18 @@ pub(crate) struct ResolvedDynamic<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ResolvedLinkerScript<'data> {
+pub(crate) struct ResolvedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedSyntheticSymbols<'data> {
+pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
 #[cfg(feature = "plugins")]
@@ -786,7 +786,7 @@ struct UndefinedSymbol<'data> {
 }
 
 fn load_prelude<'scope, 'data, P: Platform>(
-    prelude: &crate::parsing::Prelude,
+    prelude: &crate::parsing::Prelude<P>,
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'scope, P>,
     scope: &Scope<'scope>,
@@ -841,7 +841,7 @@ fn canonicalise_undefined_symbols<'data, P: Platform>(
     groups: &[ResolvedGroup<'data, P>],
     symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
-    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
+    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data, P>,
 ) {
     timing_phase!("Canonicalise undefined symbols");
 
@@ -965,7 +965,7 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
     name: PreHashed<UnversionedSymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data, P>,
     per_symbol_flags: &mut PerSymbolFlags,
-    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data>,
+    custom_start_stop_defs: &mut ResolvedSyntheticSymbols<'data, P>,
     output_sections: &OutputSections<P>,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
@@ -1396,7 +1396,7 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
     }
 }
 
-impl<'data> std::fmt::Display for ResolvedLinkerScript<'data> {
+impl<'data, P: Platform> std::fmt::Display for ResolvedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
@@ -1460,13 +1460,13 @@ impl<'data, P: Platform> ResolvedFile<'data, P> {
     }
 }
 
-impl ResolvedPrelude<'_> {
+impl<'data, P: Platform> ResolvedPrelude<'data, P> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         SymbolIdRange::input(SymbolId::undefined(), self.symbol_definitions.len())
     }
 }
 
-impl ResolvedSyntheticSymbols<'_> {
+impl<'data, P: Platform> ResolvedSyntheticSymbols<'data, P> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         SymbolIdRange::input(self.start_symbol_id, self.symbol_definitions.len())
     }

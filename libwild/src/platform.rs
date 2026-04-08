@@ -171,7 +171,9 @@ pub(crate) struct RelaxSymbolInfo {
 }
 
 /// A platform for which we support writing producing linked outputs.
-pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'static {
+pub(crate) trait Platform:
+    Copy + Send + Sync + Sized + Default + std::fmt::Debug + 'static
+{
     type File<'data>: ObjectFile<'data, Platform = Self>;
     type SymtabEntry: Symbol;
     type SectionHeader: SectionHeader;
@@ -405,7 +407,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef];
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
         output_kind: OutputKind,
         args: &Self::Args,
     );
@@ -552,7 +554,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
-        def_info: &InternalSymDefInfo,
+        def_info: &InternalSymDefInfo<Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<Self>,
     ) -> Result;
@@ -627,6 +629,10 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> bool {
         false
     }
+
+    /// Used when the linker needs to create a symtab entry from scratch rather than copying one
+    /// from an input file.
+    fn default_symtab_entry() -> Self::SymtabEntry;
 
     fn lookup_for_partial_link(
         _section_name: &[u8],
@@ -873,7 +879,7 @@ pub(crate) trait SectionFlags:
     fn is_alloc(self) -> bool;
 }
 
-pub(crate) trait Symbol: std::fmt::Debug + Send + Sync + 'static {
+pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
     /// Returns information about the symbol if it's a common symbol. Platforms that don't have
     /// common symbols can just return None.
     fn as_common(&self) -> Option<CommonSymbol>;
@@ -916,6 +922,8 @@ pub(crate) trait Symbol: std::fmt::Debug + Send + Sync + 'static {
     fn is_hidden(&self) -> bool;
 
     fn is_gnu_unique(&self) -> bool;
+
+    fn with_hidden(self, hidden: bool) -> Self;
 }
 
 #[derive(Clone, Copy)]

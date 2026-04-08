@@ -25,6 +25,7 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::symbol_db::Visibility;
+use gimli::LittleEndian;
 use object::Endian;
 use object::Endianness;
 use object::U32;
@@ -45,7 +46,7 @@ use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
 
 const LE: Endianness = Endianness::Little;
@@ -593,6 +594,15 @@ impl platform::Symbol for SymtabEntry {
     fn is_gnu_unique(&self) -> bool {
         false
     }
+
+    fn with_hidden(mut self, hidden: bool) -> Self {
+        if hidden {
+            self.n_type |= N_PEXT;
+        } else {
+            self.n_type &= !N_PEXT;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -1008,7 +1018,7 @@ impl platform::Platform for MachO {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Self>,
         output_kind: crate::output_kind::OutputKind,
         args: &Self::Args,
     ) {
@@ -1218,7 +1228,7 @@ impl platform::Platform for MachO {
 
     fn allocate_internal_symbol(
         symbol_id: crate::symbol_db::SymbolId,
-        def_info: &crate::parsing::InternalSymDefInfo,
+        def_info: &crate::parsing::InternalSymDefInfo<Self>,
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) -> crate::error::Result {
@@ -1319,6 +1329,16 @@ impl platform::Platform for MachO {
                 *mem_offset += size_of::<CodeSignatureCommand>() as u64;
             }
             _ => {}
+        }
+    }
+
+    fn default_symtab_entry() -> Self::SymtabEntry {
+        Self::SymtabEntry {
+            n_strx: Default::default(),
+            n_type: Default::default(),
+            n_sect: Default::default(),
+            n_desc: Default::default(),
+            n_value: Default::default(),
         }
     }
 }

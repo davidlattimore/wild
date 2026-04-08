@@ -47,8 +47,6 @@ use crate::program_segments::ProgramSegments;
 use crate::resolution;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolvedGroup;
-use crate::resolution::ResolvedLinkerScript;
-use crate::resolution::ResolvedSyntheticSymbols;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
 use crate::sharding::ShardKey;
@@ -382,7 +380,7 @@ fn update_defsym_symbol_resolutions<'data, P: Platform>(
 
 fn update_defsym_symbol_resolution<'data, P: Platform>(
     symbol_id: SymbolId,
-    def_info: &InternalSymDefInfo,
+    def_info: &InternalSymDefInfo<P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
 ) -> Result {
@@ -575,10 +573,10 @@ pub(crate) enum FileLayout<'data, P: Platform> {
     Prelude(PreludeLayout<'data, P>),
     Object(ObjectLayout<'data, P>),
     Dynamic(DynamicLayout<'data, P>),
-    SyntheticSymbols(SyntheticSymbolsLayout<'data>),
+    SyntheticSymbols(SyntheticSymbolsLayout<'data, P>),
     Epilogue(EpilogueLayout<P>),
     NotLoaded,
-    LinkerScript(LinkerScriptLayoutState<'data>),
+    LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
 
 /// Address information for a symbol.
@@ -633,16 +631,16 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     Object(ObjectLayoutState<'data, P>),
     Dynamic(DynamicLayoutState<'data, P>),
     NotLoaded(NotLoaded),
-    SyntheticSymbols(SyntheticSymbolsLayoutState<'data>),
+    SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
     Epilogue(EpilogueLayoutState<P>),
-    LinkerScript(LinkerScriptLayoutState<'data>),
+    LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
 pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
-    internal_symbols: InternalSymbols<'data>,
+    internal_symbols: InternalSymbols<'data, P>,
     entry_symbol_id: Option<SymbolId>,
     identity: String,
     header_info: Option<HeaderInfo>,
@@ -650,10 +648,10 @@ pub(crate) struct PreludeLayoutState<'data, P: Platform> {
     pub(crate) format_specific: P::PreludeLayoutStateExt,
 }
 
-pub(crate) struct SyntheticSymbolsLayoutState<'data> {
+pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
-    internal_symbols: InternalSymbols<'data>,
+    internal_symbols: InternalSymbols<'data, P>,
 }
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
@@ -661,16 +659,16 @@ pub(crate) struct EpilogueLayoutState<P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct LinkerScriptLayoutState<'data> {
+pub(crate) struct LinkerScriptLayoutState<'data, P: Platform> {
     file_id: FileId,
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
-    pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) internal_symbols: InternalSymbols<'data, P>,
 }
 
 #[derive(Debug)]
-pub(crate) struct SyntheticSymbolsLayout<'data> {
-    pub(crate) internal_symbols: InternalSymbols<'data>,
+pub(crate) struct SyntheticSymbolsLayout<'data, P: Platform> {
+    pub(crate) internal_symbols: InternalSymbols<'data, P>,
 }
 
 #[derive(Debug)]
@@ -699,14 +697,14 @@ pub(crate) struct PreludeLayout<'data, P: Platform> {
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
-    pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) internal_symbols: InternalSymbols<'data, P>,
     pub(crate) dynamic_linker: Option<CString>,
     pub(crate) format_specific: P::PreludeLayoutExt,
 }
 
 #[derive(Debug)]
-pub(crate) struct InternalSymbols<'data> {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+pub(crate) struct InternalSymbols<'data, P: Platform> {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
     pub(crate) start_symbol_id: SymbolId,
 }
 
@@ -908,7 +906,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for PreludeLayoutState<'
     }
 }
 
-impl HandlerData for LinkerScriptLayoutState<'_> {
+impl<P: Platform> HandlerData for LinkerScriptLayoutState<'_, P> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         self.symbol_id_range
     }
@@ -918,7 +916,7 @@ impl HandlerData for LinkerScriptLayoutState<'_> {
     }
 }
 
-impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutState<'data> {
+impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutState<'data, P> {
     fn load_symbol<'scope, A: Arch<Platform = P>>(
         &mut self,
         _common: &mut CommonGroupState<'data, P>,
@@ -931,7 +929,7 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutSt
     }
 }
 
-impl HandlerData for SyntheticSymbolsLayoutState<'_> {
+impl<P: Platform> HandlerData for SyntheticSymbolsLayoutState<'_, P> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -941,7 +939,7 @@ impl HandlerData for SyntheticSymbolsLayoutState<'_> {
     }
 }
 
-impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayoutState<'data> {
+impl<'data, P: Platform> SymbolRequestHandler<'data, P> for SyntheticSymbolsLayoutState<'data, P> {
     fn load_symbol<'scope, A: Arch<Platform = P>>(
         &mut self,
         _common: &mut CommonGroupState<'data, P>,
@@ -2433,13 +2431,13 @@ impl<P: Platform> std::fmt::Display for EpilogueLayoutState<P> {
     }
 }
 
-impl std::fmt::Display for SyntheticSymbolsLayoutState<'_> {
+impl<P: Platform> std::fmt::Display for SyntheticSymbolsLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<synthetic>", f)
     }
 }
 
-impl std::fmt::Display for LinkerScriptLayoutState<'_> {
+impl<P: Platform> std::fmt::Display for LinkerScriptLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
@@ -2627,7 +2625,7 @@ pub(crate) fn resolution_flags(rel_kind: RelocationKind) -> ValueFlags {
 }
 
 impl<'data, P: Platform> PreludeLayoutState<'data, P> {
-    fn new(input_state: resolution::ResolvedPrelude<'data>, args: &P::Args) -> Self {
+    fn new(input_state: resolution::ResolvedPrelude<'data, P>, args: &P::Args) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
             symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
@@ -3139,8 +3137,8 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 }
 
-impl<'data> InternalSymbols<'data> {
-    fn activate_symbols<P: Platform>(
+impl<'data, P: Platform> InternalSymbols<'data, P> {
+    fn activate_symbols(
         &self,
         common: &mut CommonGroupState<'data, P>,
         resources: &GraphResources<'data, '_, P>,
@@ -3161,7 +3159,7 @@ impl<'data> InternalSymbols<'data> {
             }
 
             // PROVIDE_HIDDEN symbols should not be exported to dynsym.
-            if def_info.is_hidden {
+            if def_info.symbol.is_hidden() {
                 continue;
             }
 
@@ -3178,11 +3176,11 @@ impl<'data> InternalSymbols<'data> {
         Ok(())
     }
 
-    fn allocate_symbol_table_sizes<P: Platform>(
+    fn allocate_symbol_table_sizes(
         &self,
         sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, P>,
-        mut should_keep_symbol: impl FnMut(SymbolId, &InternalSymDefInfo) -> bool,
+        mut should_keep_symbol: impl FnMut(SymbolId, &InternalSymDefInfo<P>) -> bool,
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
         for (index, def_info) in self.symbol_definitions.iter().enumerate() {
@@ -3200,7 +3198,7 @@ impl<'data> InternalSymbols<'data> {
         Ok(())
     }
 
-    fn finalise_layout<P: Platform>(
+    fn finalise_layout(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,
@@ -3226,7 +3224,7 @@ impl<'data> InternalSymbols<'data> {
 fn create_start_end_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
-    def_info: InternalSymDefInfo,
+    def_info: InternalSymDefInfo<P>,
     symbol_id: SymbolId,
 ) -> Option<Resolution<P>> {
     if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3369,8 +3367,10 @@ fn should_emit_undefined_error<P: Platform>(
     }
 }
 
-impl<'data> SyntheticSymbolsLayoutState<'data> {
-    fn new(input_state: ResolvedSyntheticSymbols<'data>) -> SyntheticSymbolsLayoutState<'data> {
+impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
+    fn new(
+        input_state: resolution::ResolvedSyntheticSymbols<'data, P>,
+    ) -> SyntheticSymbolsLayoutState<'data, P> {
         SyntheticSymbolsLayoutState {
             file_id: input_state.file_id,
             symbol_id_range: SymbolIdRange::input(
@@ -3384,7 +3384,7 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
         }
     }
 
-    fn finalise_sizes<P: Platform>(
+    fn finalise_sizes(
         &self,
         common: &mut CommonGroupState<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
@@ -3408,12 +3408,12 @@ impl<'data> SyntheticSymbolsLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_layout<P: Platform>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<SyntheticSymbolsLayout<'data>> {
+    ) -> Result<SyntheticSymbolsLayout<'data, P>> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
@@ -4861,8 +4861,8 @@ impl<'data, P: Platform> DynamicLayoutState<'data, P> {
     }
 }
 
-impl<'data> LinkerScriptLayoutState<'data> {
-    fn finalise_layout<P: Platform>(
+impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
+    fn finalise_layout(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter<P>,
@@ -4872,7 +4872,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
             .finalise_layout(memory_offsets, resolutions_out, resources)
     }
 
-    fn new(input: ResolvedLinkerScript<'data>) -> Self {
+    fn new(input: resolution::ResolvedLinkerScript<'data, P>) -> Self {
         Self {
             file_id: input.file_id,
             input: input.input,
@@ -4884,7 +4884,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
         }
     }
 
-    fn activate<P: Platform>(
+    fn activate(
         &self,
         common: &mut CommonGroupState<'data, P>,
         resources: &GraphResources<'data, '_, P>,
@@ -4892,7 +4892,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
         self.internal_symbols.activate_symbols(common, resources)
     }
 
-    fn finalise_sizes<P: Platform>(
+    fn finalise_sizes(
         &self,
         common: &mut CommonGroupState<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,

@@ -13,30 +13,29 @@ use crate::output_section_id::OutputSectionId;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
+use crate::platform::Symbol;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use linker_utils::elf::SymbolType;
-use linker_utils::elf::stt;
 
 pub(crate) fn process_linker_scripts<'data, P: Platform>(
     linker_scripts_in: &[InputLinkerScript<'data>],
     output_sections: &mut OutputSections<'data, P>,
     layout_rules_builder: &mut LayoutRulesBuilder<'data>,
-) -> Result<Vec<ProcessedLinkerScript<'data>>> {
+) -> Result<Vec<ProcessedLinkerScript<'data, P>>> {
     timing_phase!("Process linker scripts");
 
     linker_scripts_in
         .iter()
         .map(|script| layout_rules_builder.process_linker_script(script, output_sections))
-        .collect::<Result<Vec<ProcessedLinkerScript>>>()
+        .collect::<Result<Vec<ProcessedLinkerScript<P>>>>()
 }
 
 #[derive(Debug)]
-pub(crate) struct Prelude<'data> {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+pub(crate) struct Prelude<'data, P: Platform> {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
 #[derive(Debug)]
@@ -47,9 +46,9 @@ pub(crate) struct ParsedInputObject<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct ProcessedLinkerScript<'data> {
+pub(crate) struct ProcessedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
+    pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data, P>>,
     pub(crate) assertions: Vec<crate::linker_script::AssertCommand<'data>>,
     /// Raw bytes of the linker script file. Used to compute line numbers from
     /// `AssertCommand::remainder` when reporting errors.
@@ -64,13 +63,11 @@ pub(crate) struct SyntheticSymbols {
 }
 
 #[derive(Clone, Copy, derive_more::Debug)]
-pub(crate) struct InternalSymDefInfo<'data> {
+pub(crate) struct InternalSymDefInfo<'data, P: Platform> {
+    pub(crate) symbol: P::SymtabEntry,
     pub(crate) placement: SymbolPlacement<'data>,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
-    pub(crate) elf_symbol_type: SymbolType,
-    /// If true, this symbol should have hidden visibility (from PROVIDE_HIDDEN).
-    pub(crate) is_hidden: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -176,30 +173,29 @@ pub(crate) fn parse_number(s: &str) -> Result<u64, ()> {
     }
 }
 
-impl<'data> InternalSymDefInfo<'data> {
+impl<'data, P: Platform> InternalSymDefInfo<'data, P> {
     pub(crate) fn new(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
         Self {
             placement,
             name,
-            elf_symbol_type: stt::NOTYPE,
-            is_hidden: false,
+            symbol: P::default_symtab_entry(),
         }
     }
 
     pub(crate) fn with_hidden(self, hidden: bool) -> Self {
         Self {
-            is_hidden: hidden,
+            symbol: self.symbol.with_hidden(hidden),
             ..self
         }
     }
 
     pub(crate) fn hide(&mut self) -> &mut Self {
-        self.is_hidden = true;
+        self.symbol = self.symbol.with_hidden(true);
         self
     }
 
     pub(crate) fn set_hidden(&mut self, hidden: bool) -> &mut Self {
-        self.is_hidden = hidden;
+        self.symbol = self.symbol.with_hidden(hidden);
         self
     }
 }
@@ -227,8 +223,8 @@ impl<'data, P: Platform> ParsedInputObject<'data, P> {
     }
 }
 
-impl<'data> Prelude<'data> {
-    pub(crate) fn new<P: Platform>(args: &'data P::Args, output_kind: OutputKind) -> Self {
+impl<'data, P: Platform> Prelude<'data, P> {
+    pub(crate) fn new(args: &'data P::Args, output_kind: OutputKind) -> Self {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();
@@ -265,15 +261,15 @@ impl<'data> Prelude<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct InternalSymbolsBuilder<'data> {
-    symbol_definitions: Vec<InternalSymDefInfo<'data>>,
+pub(crate) struct InternalSymbolsBuilder<'data, P: Platform> {
+    symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
-impl<'data> InternalSymbolsBuilder<'data> {
+impl<'data, P: Platform> InternalSymbolsBuilder<'data, P> {
     pub(crate) fn add_symbol(
         &mut self,
-        def: InternalSymDefInfo<'data>,
-    ) -> &mut InternalSymDefInfo<'data> {
+        def: InternalSymDefInfo<'data, P>,
+    ) -> &mut InternalSymDefInfo<'data, P> {
         let index = self.symbol_definitions.len();
         self.symbol_definitions.push(def);
         &mut self.symbol_definitions[index]
@@ -283,7 +279,7 @@ impl<'data> InternalSymbolsBuilder<'data> {
         &mut self,
         section_id: OutputSectionId,
         name: &'static str,
-    ) -> &mut InternalSymDefInfo<'data> {
+    ) -> &mut InternalSymDefInfo<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionStart(section_id),
             name.as_bytes(),
@@ -294,7 +290,7 @@ impl<'data> InternalSymbolsBuilder<'data> {
         &mut self,
         section_id: OutputSectionId,
         name: &'static str,
-    ) -> &mut InternalSymDefInfo<'data> {
+    ) -> &mut InternalSymDefInfo<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionEnd(section_id),
             name.as_bytes(),
@@ -305,7 +301,7 @@ impl<'data> InternalSymbolsBuilder<'data> {
         &mut self,
         section_id: OutputSectionId,
         name: &'static str,
-    ) -> &mut InternalSymDefInfo<'data> {
+    ) -> &mut InternalSymDefInfo<'data, P> {
         self.add_symbol(InternalSymDefInfo::new(
             SymbolPlacement::SectionGroupEnd(section_id),
             name.as_bytes(),
@@ -313,7 +309,7 @@ impl<'data> InternalSymbolsBuilder<'data> {
     }
 }
 
-impl<'data> ProcessedLinkerScript<'data> {
+impl<'data, P: Platform> ProcessedLinkerScript<'data, P> {
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbol_defs.len()
     }
@@ -325,7 +321,7 @@ impl<'data, P: Platform> std::fmt::Display for ParsedInputObject<'data, P> {
     }
 }
 
-impl std::fmt::Display for ProcessedLinkerScript<'_> {
+impl<'data, P: Platform> std::fmt::Display for ProcessedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }

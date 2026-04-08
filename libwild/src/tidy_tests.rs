@@ -173,10 +173,11 @@ fn check_elf_specific_code() -> Result {
 
     // Files where we don't allow ELF-specific code.
     const DISALLOWED: &[&str] = &[
-        "layout.rs",
-        "symbol_db.rs",
-        "resolution.rs",
         "input_data.rs",
+        "layout.rs",
+        "parsing.rs",
+        "resolution.rs",
+        "symbol_db.rs",
     ];
 
     // Patterns that we still allow. These should probably be dealt with, either by renaming these

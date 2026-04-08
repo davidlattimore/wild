@@ -108,7 +108,6 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::stt;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::read_string;
 use linker_utils::utils::read_u32;
@@ -166,7 +165,7 @@ pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Elf;
 
 #[derive(derive_more::Debug)]
@@ -808,7 +807,7 @@ impl platform::Platform for Elf {
     }
 
     fn create_linker_defined_symbols(
-        symbols: &mut crate::parsing::InternalSymbolsBuilder,
+        symbols: &mut crate::parsing::InternalSymbolsBuilder<Elf>,
         output_kind: OutputKind,
         args: &ElfArgs,
     ) {
@@ -908,6 +907,8 @@ impl platform::Platform for Elf {
         // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
         // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
         // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
+        let mut elf_symbol = SymtabEntry::default();
+        elf_symbol.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_TLS);
         symbols.add_symbol(InternalSymDefInfo {
             placement: if output_kind == OutputKind::SharedObject {
                 SymbolPlacement::SectionStart(output_section_id::TDATA)
@@ -915,8 +916,7 @@ impl platform::Platform for Elf {
                 SymbolPlacement::SectionEnd(output_section_id::TBSS)
             },
             name: b"_TLS_MODULE_BASE_",
-            elf_symbol_type: stt::TLS,
-            is_hidden: false,
+            symbol: elf_symbol,
         });
 
         // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
@@ -1498,12 +1498,12 @@ impl platform::Platform for Elf {
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
-        def_info: &InternalSymDefInfo,
+        def_info: &InternalSymDefInfo<Elf>,
         sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<Self>,
     ) -> Result {
         // PROVIDE_HIDDEN symbols are local, others are global
-        let symtab_part = if def_info.is_hidden {
+        let symtab_part = if def_info.symbol.is_hidden() {
             part_id::SYMTAB_LOCAL
         } else {
             part_id::SYMTAB_GLOBAL
@@ -1935,6 +1935,10 @@ impl platform::Platform for Elf {
         mem_offset: &mut u64,
     ) {
         *mem_offset = segment_alignment.align_modulo(*file_offset as u64, *mem_offset);
+    }
+
+    fn default_symtab_entry() -> Self::SymtabEntry {
+        Default::default()
     }
 }
 
@@ -2854,6 +2858,16 @@ impl platform::Symbol for SymtabEntry {
 
     fn is_gnu_unique(&self) -> bool {
         self.st_bind() == object::elf::STB_GNU_UNIQUE
+    }
+
+    fn with_hidden(mut self, hidden: bool) -> Self {
+        self.st_other &= !0x3;
+        self.st_other |= if hidden {
+            object::elf::STV_HIDDEN
+        } else {
+            object::elf::STV_DEFAULT
+        };
+        self
     }
 }
 
