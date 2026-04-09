@@ -6,7 +6,8 @@
 //! Each test assembles a .s file, links with Wild, and verifies
 //! the output binary is structurally valid and codesigns cleanly.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn wild_binary_path() -> PathBuf {
@@ -53,17 +54,13 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
             .with_ignored_flag(
                 // Known failures — ignore until fixed
                 test_name == "arm64-relocs"
-                    || test_name == "objc-category-merging-erase-objc-name-test"
+                    || test_name == "objc-category-merging-erase-objc-name-test",
             ),
         );
     }
 }
 
-fn run_lld_test(
-    wild_bin: &Path,
-    test_path: &Path,
-    is_dylib: bool,
-) -> Result<(), String> {
+fn run_lld_test(wild_bin: &Path, test_path: &Path, is_dylib: bool) -> Result<(), String> {
     let build_dir = std::env::temp_dir().join("wild-lld-tests");
     std::fs::create_dir_all(&build_dir).map_err(|e| format!("mkdir: {e}"))?;
 
@@ -72,8 +69,7 @@ fn run_lld_test(
     let out_path = build_dir.join(format!("{stem}.out"));
 
     // Strip comment lines and assemble
-    let content = std::fs::read_to_string(test_path)
-        .map_err(|e| format!("read: {e}"))?;
+    let content = std::fs::read_to_string(test_path).map_err(|e| format!("read: {e}"))?;
     let clean: String = content
         .lines()
         .filter(|l| !l.starts_with('#'))

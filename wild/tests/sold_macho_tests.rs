@@ -5,7 +5,8 @@
 //! Each test is a bash script that compiles C/C++ code, links with the linker
 //! under test (via `--ld-path=./ld64`), and verifies the output.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 
 fn wild_binary_path() -> PathBuf {
@@ -55,55 +56,55 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "bind-at-load",           // -Wl,-bind_at_load -Wl,-no_fixup_chains
-        "flat-namespace",         // -flat_namespace
-        "undefined",              // -undefined warning
-        "U",                      // -U (dynamic lookup)
-        "umbrella",               // -umbrella
-        "mark-dead-strippable-dylib", // -mark_dead_strippable_dylib
-        "application-extension",  // -application_extension
-        "application-extension2", // -application_extension
-        "exported-symbols-list",  // -exported_symbols_list
-        "unexported-symbols-list", // -unexported_symbols_list
-        "export-dynamic",         // -export_dynamic
-        "merge-scope",            // visibility merging
-        "force-load",             // -force_load
-        "all-load",               // -all_load
-        "hidden-l",               // -hidden-l
-        "needed-l",               // -needed-l
-        "needed-framework",       // -needed_framework
-        "weak-l",                 // -weak-l
-        "weak-undef",             // -U / weak undefined
-        "weak-def-dylib",         // dylib weak defs
-        "reexport-l",             // -reexport-l
-        "reexport-library",       // -reexport_library
-        "install-name",           // -install_name
+        "bind-at-load",                 // -Wl,-bind_at_load -Wl,-no_fixup_chains
+        "flat-namespace",               // -flat_namespace
+        "undefined",                    // -undefined warning
+        "U",                            // -U (dynamic lookup)
+        "umbrella",                     // -umbrella
+        "mark-dead-strippable-dylib",   // -mark_dead_strippable_dylib
+        "application-extension",        // -application_extension
+        "application-extension2",       // -application_extension
+        "exported-symbols-list",        // -exported_symbols_list
+        "unexported-symbols-list",      // -unexported_symbols_list
+        "export-dynamic",               // -export_dynamic
+        "merge-scope",                  // visibility merging
+        "force-load",                   // -force_load
+        "all-load",                     // -all_load
+        "hidden-l",                     // -hidden-l
+        "needed-l",                     // -needed-l
+        "needed-framework",             // -needed_framework
+        "weak-l",                       // -weak-l
+        "weak-undef",                   // -U / weak undefined
+        "weak-def-dylib",               // dylib weak defs
+        "reexport-l",                   // -reexport-l
+        "reexport-library",             // -reexport_library
+        "install-name",                 // -install_name
         "install-name-executable-path", // @executable_path
         "install-name-loader-path",     // @loader_path
-        "install-name-rpath",    // @rpath
-        "rpath",                  // -rpath
-        "search-paths-first",     // -search_paths_first
-        "search-dylibs-first",    // -search_dylibs_first
-        "sectcreate",             // -sectcreate
-        "order-file",             // -order_file
-        "stack-size",             // -stack_size
-        "map",                    // -map
-        "dependency-info",        // -dependency_info
-        "print-dependencies",     // -print_dependency_info
-        "macos-version-min",      // -macos_version_min
-        "platform-version",       // -platform_version
-        "S",                      // -S (strip debug)
-        "strip",                  // strip tool compatibility
-        "no-function-starts",     // -no_function_starts
-        "data-in-code-info",      // LC_DATA_IN_CODE
-        "subsections-via-symbols", // -subsections_via_symbols
-        "add-ast-path",           // -add_ast_path
-        "add-empty-section",      // -add_empty_section
-        "pagezero-size2",         // -pagezero_size variations
-        "pagezero-size3",         // -pagezero_size variations
-        "oso-prefix",             // -oso_prefix
-        "start-stop-symbol",      // __start_/__stop_ sections
-        "framework",              // -framework (non-system)
+        "install-name-rpath",           // @rpath
+        "rpath",                        // -rpath
+        "search-paths-first",           // -search_paths_first
+        "search-dylibs-first",          // -search_dylibs_first
+        "sectcreate",                   // -sectcreate
+        "order-file",                   // -order_file
+        "stack-size",                   // -stack_size
+        "map",                          // -map
+        "dependency-info",              // -dependency_info
+        "print-dependencies",           // -print_dependency_info
+        "macos-version-min",            // -macos_version_min
+        "platform-version",             // -platform_version
+        "S",                            // -S (strip debug)
+        "strip",                        // strip tool compatibility
+        "no-function-starts",           // -no_function_starts
+        "data-in-code-info",            // LC_DATA_IN_CODE
+        "subsections-via-symbols",      // -subsections_via_symbols
+        "add-ast-path",                 // -add_ast_path
+        "add-empty-section",            // -add_empty_section
+        "pagezero-size2",               // -pagezero_size variations
+        "pagezero-size3",               // -pagezero_size variations
+        "oso-prefix",                   // -oso_prefix
+        "start-stop-symbol",            // __start_/__stop_ sections
+        "framework",                    // -framework (non-system)
     ];
 
     // Tests requiring LTO
@@ -111,32 +112,32 @@ fn should_ignore(name: &str) -> bool {
 
     // Validation/correctness bugs in Wild to fix
     const WILD_BUGS: &[&str] = &[
-        "dylib",                     // n_value outside section range
-        "tls",                       // TLV descriptor offset validation
-        "tls-dylib",                 // TLS across dylibs
-        "tls-mismatch",             // TLS type mismatch errors
-        "tls-mismatch2",            // TLS type mismatch errors
-        "common",                    // common symbols
-        "common-alignment",          // common symbol alignment
-        "cstring",                   // cstring dedup/merging
-        "duplicate-error",           // duplicate symbol errors
-        "missing-error",             // undefined symbol error format
-        "undef",                     // undefined symbol handling
-        "entry",                     // -e / custom entry point
-        "fixup-chains-addend",       // fixup chain addends
-        "fixup-chains-addend64",     // 64-bit fixup chain addends
-        "fixup-chains-unaligned-error", // unaligned fixup error
-        "data-reloc",                // data relocations
+        "dylib",                           // n_value outside section range
+        "tls",                             // TLV descriptor offset validation
+        "tls-dylib",                       // TLS across dylibs
+        "tls-mismatch",                    // TLS type mismatch errors
+        "tls-mismatch2",                   // TLS type mismatch errors
+        "common",                          // common symbols
+        "common-alignment",                // common symbol alignment
+        "cstring",                         // cstring dedup/merging
+        "duplicate-error",                 // duplicate symbol errors
+        "missing-error",                   // undefined symbol error format
+        "undef",                           // undefined symbol handling
+        "entry",                           // -e / custom entry point
+        "fixup-chains-addend",             // fixup chain addends
+        "fixup-chains-addend64",           // 64-bit fixup chain addends
+        "fixup-chains-unaligned-error",    // unaligned fixup error
+        "data-reloc",                      // data relocations
         "exception-in-static-initializer", // init func exceptions
-        "indirect-symtab",           // indirect symbol table
-        "init-offsets",              // __mod_init_func offsets
-        "init-offsets-fixup-chains", // init offsets + fixup chains
-        "literals",                  // literal section merging
-        "libunwind",                 // libunwind integration
-        "objc-selector",             // ObjC selector refs
-        "debuginfo",                 // debug info pass-through
-        "filepath",                  // N_SO stab entries
-        "filepath2",                 // N_SO stab entries
+        "indirect-symtab",                 // indirect symbol table
+        "init-offsets",                    // __mod_init_func offsets
+        "init-offsets-fixup-chains",       // init offsets + fixup chains
+        "literals",                        // literal section merging
+        "libunwind",                       // libunwind integration
+        "objc-selector",                   // ObjC selector refs
+        "debuginfo",                       // debug info pass-through
+        "filepath",                        // N_SO stab entries
+        "filepath2",                       // N_SO stab entries
     ];
 
     // x86_64-specific tests
@@ -158,16 +159,16 @@ fn should_ignore(name: &str) -> bool {
 
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
-        "lc-build-version",          // LC_BUILD_VERSION tool field
-        "uuid",                      // LC_UUID
-        "uuid2",                     // LC_UUID reproducibility
-        "version",                   // -current_version / -compatibility_version
-        "w",                         // -w (suppress warnings)
-        "x",                         // -x (no local symbols)
-        "Z",                         // -Z (no default search paths)
-        "adhoc-codesign",            // codesign hash verification
-        "dead-strip-dylibs",         // -dead_strip_dylibs
-        "dead-strip-dylibs2",        // -dead_strip_dylibs
+        "lc-build-version",   // LC_BUILD_VERSION tool field
+        "uuid",               // LC_UUID
+        "uuid2",              // LC_UUID reproducibility
+        "version",            // -current_version / -compatibility_version
+        "w",                  // -w (suppress warnings)
+        "x",                  // -x (no local symbols)
+        "Z",                  // -Z (no default search paths)
+        "adhoc-codesign",     // codesign hash verification
+        "dead-strip-dylibs",  // -dead_strip_dylibs
+        "dead-strip-dylibs2", // -dead_strip_dylibs
     ];
 
     DIRECT_LD64.contains(&name)
