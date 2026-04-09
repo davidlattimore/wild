@@ -947,8 +947,12 @@ fn write_exe_symtab(
         return Ok(start);
     }
 
-    // Sort by address for easier debugging
-    entries.sort_by_key(|e| e.1);
+    // Sort: locals first, then externals; within each group, by address.
+    // DYSYMTAB requires this ordering (ilocalsym..iextdefsym..iundefsym).
+    entries.sort_by_key(|e| {
+        let is_ext = (e.2 & 0x01) != 0;
+        (is_ext, e.1)
+    });
 
     // Build string table: starts with \0
     let mut strtab = vec![0u8];
@@ -1030,14 +1034,33 @@ fn write_exe_symtab(
                 }
             }
             LC_DYSYMTAB => {
-                // All symbols are local for executables
+                // Split symbols into local and external ranges
+                let n_locals = entries
+                    .iter()
+                    .filter(|(_, _, nt)| (*nt & 0x01) == 0) // no N_EXT
+                    .count();
+                let n_ext = nsyms - n_locals;
                 let o = off as usize + 8;
                 out[o..o + 4].copy_from_slice(&0u32.to_le_bytes()); // ilocalsym
-                out[o + 4..o + 8].copy_from_slice(&(nsyms as u32).to_le_bytes()); // nlocalsym
-                out[o + 8..o + 12].copy_from_slice(&(nsyms as u32).to_le_bytes()); // iextdefsym
-                out[o + 12..o + 16].copy_from_slice(&0u32.to_le_bytes()); // nextdefsym
+                out[o + 4..o + 8].copy_from_slice(&(n_locals as u32).to_le_bytes()); // nlocalsym
+                out[o + 8..o + 12].copy_from_slice(&(n_locals as u32).to_le_bytes()); // iextdefsym
+                out[o + 12..o + 16].copy_from_slice(&(n_ext as u32).to_le_bytes()); // nextdefsym
                 out[o + 16..o + 20].copy_from_slice(&(nsyms as u32).to_le_bytes()); // iundefsym
                 out[o + 20..o + 24].copy_from_slice(&0u32.to_le_bytes()); // nundefsym
+            }
+            LC_DYLD_EXPORTS_TRIE => {
+                // Must come right after fixups
+                out[off as usize + 8..off as usize + 12]
+                    .copy_from_slice(&(start as u32).to_le_bytes());
+                out[off as usize + 12..off as usize + 16]
+                    .copy_from_slice(&0u32.to_le_bytes());
+            }
+            0x26 | 0x29 => {
+                // function_starts, data_in_code: right before symtab
+                out[off as usize + 8..off as usize + 12]
+                    .copy_from_slice(&(symoff as u32).to_le_bytes());
+                out[off as usize + 12..off as usize + 16]
+                    .copy_from_slice(&0u32.to_le_bytes());
             }
             _ => {}
         }
@@ -3131,9 +3154,11 @@ fn write_headers(
     }
     add_cmd(&mut ncmds, &mut cmdsize, 24); // SYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 80); // DYSYMTAB
-    add_cmd(&mut ncmds, &mut cmdsize, 32);
-    add_cmd(&mut ncmds, &mut cmdsize, 16);
-    add_cmd(&mut ncmds, &mut cmdsize, 16);
+    add_cmd(&mut ncmds, &mut cmdsize, 32); // LC_BUILD_VERSION
+    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DYLD_CHAINED_FIXUPS
+    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DYLD_EXPORTS_TRIE
+    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_FUNCTION_STARTS
+    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DATA_IN_CODE
 
     let filetype = if is_dylib { 6u32 } else { MH_EXECUTE }; // MH_DYLIB = 6
     w.u32(MH_MAGIC_64);
@@ -3342,6 +3367,16 @@ fn write_headers(
     w.u32(16);
     w.u32(last_file_end as u32);
     w.u32(0);
+    // LC_FUNCTION_STARTS = 0x26
+    w.u32(0x26);
+    w.u32(16);
+    w.u32(last_file_end as u32); // offset (patched later)
+    w.u32(0);                    // size 0
+    // LC_DATA_IN_CODE = 0x29
+    w.u32(0x29);
+    w.u32(16);
+    w.u32(last_file_end as u32); // offset (patched later)
+    w.u32(0);                    // size 0
 
     Ok(Some(cf_offset))
 }
