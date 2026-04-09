@@ -1314,6 +1314,15 @@ impl<'data, P: Platform> Layout<'data, P> {
                 return Ok(0);
             }
 
+            // If the user explicitly specified an entry point (via -e), error out.
+            if self.symbol_db.has_explicit_entry() {
+                let entry_name = String::from_utf8_lossy(self.symbol_db.entry_symbol_name());
+                crate::bail!(
+                    "undefined entry point symbol: {}",
+                    entry_name
+                );
+            }
+
             // There's no entry point specified, set it to the start of .text. This is pretty weird,
             // but it's what GNU ld does.
             let text_layout = self.section_layouts.get(output_section_id::TEXT);

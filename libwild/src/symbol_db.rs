@@ -899,6 +899,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.args.entry_symbol_name(self.entry)
     }
 
+    pub(crate) fn has_explicit_entry(&self) -> bool {
+        self.args.has_explicit_entry()
+    }
+
     pub(crate) fn defsym_defined_via_cli_option(&self, symbol_name: &[u8]) -> bool {
         self.args
             .defsym()

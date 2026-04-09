@@ -19,6 +19,7 @@ pub struct MachOArgs {
     pub(crate) lib_search_paths: Vec<Box<Path>>,
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
+    pub(crate) explicit_entry: bool,
     pub(crate) is_dylib: bool,
     pub(crate) is_relocatable: bool,
     #[allow(dead_code)]
@@ -50,6 +51,7 @@ impl Default for MachOArgs {
             lib_search_paths: Vec::new(),
             syslibroot: None,
             entry_symbol: Some(b"_main".to_vec()),
+            explicit_entry: false,
             is_dylib: false,
             is_relocatable: false,
             install_name: None,
@@ -80,6 +82,10 @@ impl platform::Args for MachOArgs {
         linker_script_entry
             .or(self.entry_symbol.as_deref())
             .unwrap_or(b"_main")
+    }
+
+    fn has_explicit_entry(&self) -> bool {
+        self.explicit_entry
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
@@ -185,6 +191,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-e" => {
             if let Some(val) = input.next() {
                 args.entry_symbol = Some(val.as_ref().as_bytes().to_vec());
+                args.explicit_entry = true;
             }
             return Ok(());
         }

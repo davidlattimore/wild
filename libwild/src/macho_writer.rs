@@ -697,6 +697,9 @@ fn write_dylib_symtab(
         strtab.push(0);
     }
 
+    // Build section ranges from the already-written headers for n_sect lookup.
+    let section_ranges = parse_section_ranges(out);
+
     // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
     let symoff = (start + 7) & !7; // align to 8
     let nsyms = entries.len();
@@ -705,10 +708,15 @@ fn write_dylib_symtab(
         if pos + 16 > out.len() {
             break;
         }
+        let n_sect = section_ranges
+            .iter()
+            .position(|&(s, e)| *value >= s && *value < e)
+            .map(|idx| (idx + 1) as u8)
+            .unwrap_or(1);
         // nlist64: n_strx (4), n_type (1), n_sect (1), n_desc (2), n_value (8)
         out[pos..pos + 4].copy_from_slice(&str_offsets[i].to_le_bytes());
         out[pos + 4] = 0x0F; // N_SECT | N_EXT
-        out[pos + 5] = 1; // n_sect: section 1 (__text) — patched later
+        out[pos + 5] = n_sect;
         out[pos + 6..pos + 8].copy_from_slice(&0u16.to_le_bytes()); // n_desc
         out[pos + 8..pos + 16].copy_from_slice(&value.to_le_bytes());
         pos += 16;
@@ -801,6 +809,36 @@ fn write_dylib_symtab(
     Ok(pos)
 }
 
+/// Parse section address ranges from the already-written Mach-O headers.
+/// Returns a vec of (start_addr, end_addr) in section order.
+fn parse_section_ranges(out: &[u8]) -> Vec<(u64, u64)> {
+    let mut ranges = Vec::new();
+    let mut hoff = 32usize;
+    let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap_or([0; 4])) as usize;
+    for _ in 0..ncmds {
+        if hoff + 8 > out.len() {
+            break;
+        }
+        let cmd = u32::from_le_bytes(out[hoff..hoff + 4].try_into().unwrap());
+        let cmdsize = u32::from_le_bytes(out[hoff + 4..hoff + 8].try_into().unwrap()) as usize;
+        if cmd == LC_SEGMENT_64 && hoff + 72 <= out.len() {
+            let nsects =
+                u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
+            for j in 0..nsects {
+                let so = hoff + 72 + j * 80;
+                if so + 48 > out.len() {
+                    break;
+                }
+                let addr = u64::from_le_bytes(out[so + 32..so + 40].try_into().unwrap());
+                let size = u64::from_le_bytes(out[so + 40..so + 48].try_into().unwrap());
+                ranges.push((addr, addr + size));
+            }
+        }
+        hoff += cmdsize;
+    }
+    ranges
+}
+
 /// Write a symbol table for executables so that backtraces can resolve function names.
 fn write_exe_symtab(
     out: &mut [u8],
@@ -889,33 +927,7 @@ fn write_exe_symtab(
     }
 
     // Build section ranges from the already-written headers for n_sect lookup.
-    let section_ranges: Vec<(u64, u64)> = {
-        let mut ranges = Vec::new();
-        let mut hoff = 32usize;
-        let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap_or([0; 4])) as usize;
-        for _ in 0..ncmds {
-            if hoff + 8 > out.len() {
-                break;
-            }
-            let cmd = u32::from_le_bytes(out[hoff..hoff + 4].try_into().unwrap());
-            let cmdsize = u32::from_le_bytes(out[hoff + 4..hoff + 8].try_into().unwrap()) as usize;
-            if cmd == LC_SEGMENT_64 && hoff + 72 <= out.len() {
-                let nsects =
-                    u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
-                for j in 0..nsects {
-                    let so = hoff + 72 + j * 80;
-                    if so + 48 > out.len() {
-                        break;
-                    }
-                    let addr = u64::from_le_bytes(out[so + 32..so + 40].try_into().unwrap());
-                    let size = u64::from_le_bytes(out[so + 40..so + 48].try_into().unwrap());
-                    ranges.push((addr, addr + size));
-                }
-            }
-            hoff += cmdsize;
-        }
-        ranges
-    };
+    let section_ranges = parse_section_ranges(out);
 
     // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
     let symoff = (start + 7) & !7;
@@ -2910,7 +2922,7 @@ fn write_headers(
     };
 
     let text_layout = layout.section_layouts.get(output_section_id::TEXT);
-    let entry_addr = layout.entry_symbol_address().unwrap_or(0);
+    let entry_addr = layout.entry_symbol_address()?;
     let entry_offset =
         vm_addr_to_file_offset(entry_addr, mappings).unwrap_or(text_layout.file_offset);
 

@@ -56,12 +56,10 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "bind-at-load",                 // -Wl,-bind_at_load -Wl,-no_fixup_chains
         "flat-namespace",               // -flat_namespace
         "undefined",                    // -undefined warning
         "U",                            // -U (dynamic lookup)
         "umbrella",                     // -umbrella
-        "mark-dead-strippable-dylib",   // -mark_dead_strippable_dylib
         "application-extension",        // -application_extension
         "application-extension2",       // -application_extension
         "exported-symbols-list",        // -exported_symbols_list
@@ -75,7 +73,6 @@ fn should_ignore(name: &str) -> bool {
         "needed-framework",             // -needed_framework
         "weak-l",                       // -weak-l
         "weak-undef",                   // -U / weak undefined
-        "weak-def-dylib",               // dylib weak defs
         "reexport-l",                   // -reexport-l
         "reexport-library",             // -reexport_library
         "install-name",                 // -install_name
@@ -101,7 +98,6 @@ fn should_ignore(name: &str) -> bool {
         "add-ast-path",                 // -add_ast_path
         "add-empty-section",            // -add_empty_section
         "pagezero-size2",               // -pagezero_size variations
-        "pagezero-size3",               // -pagezero_size variations
         "oso-prefix",                   // -oso_prefix
         "start-stop-symbol",            // __start_/__stop_ sections
         "framework",                    // -framework (non-system)
@@ -110,24 +106,29 @@ fn should_ignore(name: &str) -> bool {
     // Tests requiring LTO
     const LTO: &[&str] = &["lto", "lto-dead-strip-dylibs", "object-path-lto"];
 
+    // Tests that need linking against a .dylib (Wild can't yet consume dylib inputs)
+    const NEEDS_DYLIB_INPUT: &[&str] = &[
+        "dylib",              // creates then links against dylib
+        "tls-dylib",         // TLS across dylibs
+        "data-reloc",        // links dylib + object
+        "fixup-chains-addend",   // links dylib + object
+        "fixup-chains-addend64", // links dylib + object
+        "weak-def-dylib",    // weak defs from dylib
+        "mark-dead-strippable-dylib", // links against dylib
+    ];
+
     // Validation/correctness bugs in Wild to fix
     const WILD_BUGS: &[&str] = &[
-        "dylib",                           // n_value outside section range
         "tls",                             // TLV descriptor offset validation
-        "tls-dylib",                       // TLS across dylibs
         "tls-mismatch",                    // TLS type mismatch errors
         "tls-mismatch2",                   // TLS type mismatch errors
         "common",                          // common symbols
         "common-alignment",                // common symbol alignment
         "cstring",                         // cstring dedup/merging
-        "duplicate-error",                 // duplicate symbol errors
+        "duplicate-error",                 // duplicate symbol error format
         "missing-error",                   // undefined symbol error format
         "undef",                           // undefined symbol handling
-        "entry",                           // -e / custom entry point
-        "fixup-chains-addend",             // fixup chain addends
-        "fixup-chains-addend64",           // 64-bit fixup chain addends
         "fixup-chains-unaligned-error",    // unaligned fixup error
-        "data-reloc",                      // data relocations
         "exception-in-static-initializer", // init func exceptions
         "indirect-symtab",                 // indirect symbol table
         "init-offsets",                    // __mod_init_func offsets
@@ -136,15 +137,15 @@ fn should_ignore(name: &str) -> bool {
         "libunwind",                       // libunwind integration
         "objc-selector",                   // ObjC selector refs
         "debuginfo",                       // debug info pass-through
-        "filepath",                        // N_SO stab entries
-        "filepath2",                       // N_SO stab entries
+        "filepath",                        // -filelist support
+        "filepath2",                       // -filelist support
     ];
 
     // x86_64-specific tests
-    const X86_ONLY: &[&str] = &["eh-frame"];
+    const X86_ONLY: &[&str] = &[];
 
     // Tests that invoke ld64 directly (not through cc --ld-path)
-    const NO_LD_PATH: &[&str] = &["objc"];
+    const NO_LD_PATH: &[&str] = &[];
 
     // .tbd parsing features not yet supported
     const TBD: &[&str] = &[
@@ -177,6 +178,7 @@ fn should_ignore(name: &str) -> bool {
         || WILD_BUGS.contains(&name)
         || X86_ONLY.contains(&name)
         || NO_LD_PATH.contains(&name)
+        || NEEDS_DYLIB_INPUT.contains(&name)
         || TBD.contains(&name)
         || OUTPUT_FORMAT.contains(&name)
 }

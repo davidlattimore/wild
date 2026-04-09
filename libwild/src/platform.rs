@@ -1114,6 +1114,11 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8];
 
+    /// Whether the user explicitly specified an entry point (e.g. via `-e`).
+    fn has_explicit_entry(&self) -> bool {
+        false
+    }
+
     fn version_script_path(&self) -> Option<&Path> {
         None
     }
