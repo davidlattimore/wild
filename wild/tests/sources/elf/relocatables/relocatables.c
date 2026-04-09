@@ -1,5 +1,6 @@
 //#EnableLinker:lld
 //#Object:runtime.c
+//#CompArgs:-g
 //#Relocatable:relocatable-1.c,relocatable-2.c
 
 #include "runtime.h"
