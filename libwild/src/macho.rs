@@ -915,8 +915,6 @@ impl platform::Platform for MachO {
         todo!()
     }
 
-    fn finalise_find_required_sections(groups: &[crate::layout::GroupState<Self>]) {}
-
     fn activate_dynamic<'data>(
         state: &mut crate::layout::DynamicLayoutState<'data, Self>,
         common: &mut crate::layout::CommonGroupState<'data, Self>,

@@ -1933,7 +1933,7 @@ fn find_required_sections<'data, A: Arch>(
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
 
-    <A::Platform as Platform>::finalise_find_required_sections(&group_states);
+    <A::Platform as Platform>::finalise_find_required_sections(&mut group_states, symbol_db)?;
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2677,8 +2677,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
         self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
-        self.load_explicit_imports::<A>(resources, queue, scope);
-
         Ok(())
     }
 
@@ -2769,43 +2767,6 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 WorkItem::LoadGlobalSymbol(symbol_id),
                 scope,
             );
-        }
-    }
-
-    fn load_explicit_imports<'scope, A: Arch>(
-        &self,
-        resources: &'scope GraphResources<'data, '_, A::Platform>,
-        queue: &mut LocalWorkQueue,
-        scope: &Scope<'scope>,
-    ) {
-        for def_info in &self.internal_symbols.symbol_definitions {
-            if def_info.placement != SymbolPlacement::ImportDynamicSymbol {
-                continue;
-            }
-
-            let Some(symbol_id) = resources
-                .symbol_db
-                .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
-            else {
-                // No libs contain the requested symbol, skipping.
-                return;
-            };
-
-            let canonical_target_id = resources.symbol_db.definition(symbol_id);
-            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
-            let flags = resources
-                .per_symbol_flags
-                .get_atomic(canonical_target_id)
-                .fetch_or(ValueFlags::EXPORT_DYNAMIC);
-
-            if !flags.has_resolution() {
-                queue.send_work::<A>(
-                    resources,
-                    file_id,
-                    WorkItem::LoadGlobalSymbol(canonical_target_id),
-                    scope,
-                );
-            }
         }
     }
 
@@ -3240,9 +3201,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
     }
 
     let raw_value = match def_info.placement {
-        SymbolPlacement::Undefined
-        | SymbolPlacement::ForceUndefined
-        | SymbolPlacement::ImportDynamicSymbol => 0,
+        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }

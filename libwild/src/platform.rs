@@ -301,8 +301,13 @@ pub(crate) trait Platform:
         mem_offset: &mut u64,
     );
 
-    /// Called after GC phase has completed. Mostly useful for platform-specific logging.
-    fn finalise_find_required_sections(groups: &[layout::GroupState<Self>]);
+    /// Called after GC phase has completed.
+    fn finalise_find_required_sections<'data>(
+        _groups: &mut [layout::GroupState<Self>],
+        _symbol_db: &SymbolDb<'data, Self>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// The dynamic object will be linked against. This is a chance to perform extra initialisation
     /// of `state`.

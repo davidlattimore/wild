@@ -470,7 +470,10 @@ impl platform::Platform for Elf {
         *memory_offsets.get(part_id::EH_FRAME)
     }
 
-    fn finalise_find_required_sections(groups: &[layout::GroupState<Elf>]) {
+    fn finalise_find_required_sections<'data>(
+        groups: &mut [layout::GroupState<Elf>],
+        symbol_db: &SymbolDb<'data, Elf>,
+    ) -> Result {
         tracing::debug!(target: "metrics", total = groups
             .iter()
             .map(|g| g.common.format_specific.exception_frame_count)
@@ -480,6 +483,12 @@ impl platform::Platform for Elf {
             .iter()
             .map(|g| g.common.format_specific.exception_frame_relocations)
             .sum::<usize>(), "resolved relocations");
+
+        if symbol_db.args.is_relr_enabled() {
+            load_glibc_abi_dt_relr_version(groups, symbol_db)?;
+        }
+
+        Ok(())
     }
 
     fn activate_dynamic<'data>(
@@ -918,15 +927,6 @@ impl platform::Platform for Elf {
             name: b"_TLS_MODULE_BASE_",
             symbol: elf_symbol,
         });
-
-        // When `-z pack-relative-relocs` is used, Glibc requires this special version to be
-        // defined.
-        if args.z_pack_relative_relocs {
-            symbols.add_symbol(InternalSymDefInfo::new(
-                SymbolPlacement::ImportDynamicSymbol,
-                b"GLIBC_ABI_DT_RELR",
-            ));
-        }
     }
 
     fn built_in_section_infos<'data>()
@@ -1942,6 +1942,32 @@ impl platform::Platform for Elf {
     }
 }
 
+/// Marks the symbol version associated with the dynamic symbol `GLIBC_ABI_DT_RELR` as needed.
+/// Referencing the version will cause the binary to error if it's loaded with a glibc that doesn't
+/// support relr. glibc will error at startup if we use relr and don't reference the version. If
+/// we're not linking against glibc, then the symbol (and version) will be absent. This is not an
+/// error and the binary will work fine provided the dynamic loader supports relr.
+fn load_glibc_abi_dt_relr_version(
+    groups: &mut [layout::GroupState<'_, Elf>],
+    symbol_db: &SymbolDb<Elf>,
+) -> Result {
+    if let Some(symbol_id) =
+        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(b"GLIBC_ABI_DT_RELR"))
+    {
+        let file_id = symbol_db.file_id_for_symbol(symbol_id);
+        if let layout::FileLayoutState::Dynamic(state) =
+            &mut groups[file_id.group()].files[file_id.file()]
+        {
+            let symbol_index = state.symbol_id_range.id_to_offset(symbol_id);
+            state
+                .format_specific_state
+                .mark_version_as_needed(state.object.versym[symbol_index])?;
+        }
+    }
+
+    Ok(())
+}
+
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Elf;
 
@@ -2352,15 +2378,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         state: &mut DynamicLayoutStateExt<'data>,
     ) -> Result {
         if let Some(version_index) = self.versym.get(symbol_index.0) {
-            let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-            // Versions 0 and 1 are local and global. We care about the versions after that.
-            if version_index > object::elf::VER_NDX_GLOBAL {
-                *state
-                    .symbol_versions_needed
-                    .get_mut(version_index as usize - 1)
-                    .with_context(|| format!("Invalid symbol version index {version_index}"))? =
-                    true;
-            }
+            state.mark_version_as_needed(*version_index)?;
         }
 
         Ok(())
@@ -2472,6 +2490,22 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             // GNU ld which recursively loads all transitive dependencies of shared objects and
             // checks our shared object against those.
             && has_complete_deps(self, resources)
+    }
+}
+
+impl DynamicLayoutStateExt<'_> {
+    /// Marks the specified version as needed, provided it's not a local or global version.
+    fn mark_version_as_needed(&mut self, version_index: Versym) -> Result {
+        let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+
+        // Versions 0 and 1 are local and global. We care about the versions after that.
+        if version_index > object::elf::VER_NDX_GLOBAL {
+            *self
+                .symbol_versions_needed
+                .get_mut(version_index as usize - 1)
+                .with_context(|| format!("Invalid symbol version index {version_index}"))? = true;
+        }
+        Ok(())
     }
 }
 
