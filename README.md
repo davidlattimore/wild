@@ -127,8 +127,7 @@ The following is working with the caveat that there may be bugs:
 * Most of the top downloaded crates on crates.io have been tested with Wild and pass their tests
 * Debug info
 * GNU jobserver support
-* Very basic linker script support (section mapping, keeping sections, alignment, defining start /
-  stop symbols).
+* Partial linker script support. See the [linker script support matrix](LINKER_SCRIPT_SUPPORT.md) for details.
 
 ### What isn't yet supported?
 
