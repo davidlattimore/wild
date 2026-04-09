@@ -258,8 +258,21 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             input.next(); // sdk_version
             return Ok(());
         }
+        "-force_load" => {
+            if let Some(val) = input.next() {
+                let path = Path::new(val.as_ref());
+                let mut mods = *modifier_stack.last().unwrap();
+                mods.whole_archive = true;
+                args.common.inputs.push(Input {
+                    spec: InputSpec::File(Box::from(path)),
+                    search_first: None,
+                    modifiers: mods,
+                });
+            }
+            return Ok(());
+        }
         // Flags that take 1 argument, ignored (group 2)
-        "-undefined" | "-multiply_defined" | "-force_load" | "-upward-l" | "-alignment" => {
+        "-undefined" | "-multiply_defined" | "-upward-l" | "-alignment" => {
             input.next();
             return Ok(());
         }
