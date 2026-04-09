@@ -2103,8 +2103,19 @@ fn write_adrp(out: &mut [u8], offset: usize, pc: u64, target: u64) {
 fn write_pageoff12(out: &mut [u8], offset: usize, target: u64) {
     let page_off = (target & 0xFFF) as u32;
     let insn = read_u32(out, offset);
+    // Determine the access size shift for scaled load/store instructions.
+    // For integer LDR/STR: bits 31:30 encode the size directly.
+    // For SIMD/FP LDR/STR (V bit = bit 26): size depends on both
+    // bits 31:30 and opc bits 23:22.
     let shift = if (insn & 0x3B00_0000) == 0x3900_0000 {
-        (insn >> 30) & 0x3
+        let size = (insn >> 30) & 0x3;
+        let v = (insn >> 26) & 1;
+        let opc = (insn >> 22) & 0x3;
+        if v == 1 && opc == 3 && size == 0 {
+            4 // 128-bit SIMD (Q register): scale by 16 = 2^4
+        } else {
+            size
+        }
     } else {
         0
     };
