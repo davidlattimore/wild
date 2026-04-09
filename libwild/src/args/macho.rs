@@ -170,6 +170,11 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
 ) -> Result {
     // Flags that take a following argument (must be checked before prefix matching)
     match arg {
+        "-help" | "--help" => {
+            println!("Usage: wild [options] file...");
+            println!("  Wild — a fast linker");
+            std::process::exit(0);
+        }
         "-o" | "--output" => {
             if let Some(val) = input.next() {
                 args.output = Arc::from(Path::new(val.as_ref()));

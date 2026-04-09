@@ -52,7 +52,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
 
 fn should_ignore(name: &str) -> bool {
     // Tests that don't use --ld-path (invoke ./ld64 directly without cc)
-    const DIRECT_LD64: &[&str] = &["response-file"];
+    const DIRECT_LD64: &[&str] = &[];
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
