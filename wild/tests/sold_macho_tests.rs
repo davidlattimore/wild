@@ -158,7 +158,6 @@ fn should_ignore(name: &str) -> bool {
         "uuid2",              // LC_UUID reproducibility
         "version",            // -current_version / -compatibility_version
         "w",                  // -w (suppress warnings)
-        "x",                  // -x (no local symbols)
         "Z",                  // -Z (no default search paths)
         "adhoc-codesign",     // codesign hash verification
         "dead-strip-dylibs",  // -dead_strip_dylibs

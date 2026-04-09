@@ -839,6 +839,29 @@ fn parse_section_ranges(out: &[u8]) -> Vec<(u64, u64)> {
     ranges
 }
 
+/// Check if a symbol was originally external (N_EXT) in its input object.
+fn is_symbol_external(
+    layout: &Layout<'_, MachO>,
+    symbol_id: crate::symbol_db::SymbolId,
+) -> bool {
+    use object::read::macho::Nlist as _;
+    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            if let crate::layout::FileLayout::Object(obj) = file_layout {
+                if obj.file_id == file_id {
+                    let local_index = symbol_id.to_input(obj.symbol_id_range);
+                    if let Ok(sym) = obj.object.symbols.symbol(local_index) {
+                        return (sym.n_type() & object::macho::N_EXT) != 0;
+                    }
+                }
+            }
+        }
+    }
+    // Default to external for prelude/synthetic symbols
+    true
+}
+
 /// Write a symbol table for executables so that backtraces can resolve function names.
 fn write_exe_symtab(
     out: &mut [u8],
@@ -867,13 +890,20 @@ fn write_exe_symtab(
         if name.is_empty() {
             continue;
         }
-        let is_local = res.flags.is_downgraded_to_local();
+        // Check if this symbol is external by looking at its original binding.
+        // Local symbols (static functions, file-scoped data) should NOT get N_EXT.
+        let is_external = !res.flags.is_downgraded_to_local()
+            && is_symbol_external(layout, symbol_id);
+        // -x: strip local (non-external) symbols from the output
+        if layout.symbol_db.args.strip_locals && !is_external {
+            continue;
+        }
         let n_type = if res.flags.contains(crate::value_flags::ValueFlags::ABSOLUTE) {
-            if is_local { 0x02_u8 } else { 0x03_u8 } // N_ABS [| N_EXT]
-        } else if is_local {
-            0x0e_u8 // N_SECT (local)
-        } else {
+            if is_external { 0x03_u8 } else { 0x02_u8 } // N_ABS [| N_EXT]
+        } else if is_external {
             0x0f_u8 // N_SECT | N_EXT (external)
+        } else {
+            0x0e_u8 // N_SECT (local)
         };
         seen_names.insert(name.clone());
         entries.push((name, res.raw_value, n_type));

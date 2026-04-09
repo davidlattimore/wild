@@ -22,6 +22,7 @@ pub struct MachOArgs {
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
     pub(crate) explicit_entry: bool,
+    pub(crate) strip_locals: bool,
     pub(crate) is_dylib: bool,
     pub(crate) is_relocatable: bool,
     #[allow(dead_code)]
@@ -54,6 +55,7 @@ impl Default for MachOArgs {
             syslibroot: None,
             entry_symbol: Some(b"_main".to_vec()),
             explicit_entry: false,
+            strip_locals: false,
             is_dylib: false,
             is_relocatable: false,
             install_name: None,
@@ -310,7 +312,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_adhoc_codesign"
         | "-adhoc_codesign"
         | "-S"
-        | "-x"
         | "-w"
         | "-Z"
         | "-data_in_code_info"
@@ -331,6 +332,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-dylib" | "-dynamiclib" => {
             args.is_dylib = true;
             args.entry_symbol = None; // dylibs have no entry point
+            return Ok(());
+        }
+        "-x" => {
+            args.strip_locals = true;
             return Ok(());
         }
         "-r" => {
