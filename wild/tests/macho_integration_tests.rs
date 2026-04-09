@@ -468,11 +468,10 @@ fn run_test(
 /// - Sections within a segment must not overlap.
 /// - LC_SYMTAB offsets must be within the file.
 /// - Chained fixup page starts must reference offsets within a page (< page_size).
-fn verify_macho_invariants(
-    binary: &[u8],
-    path: &std::path::Path,
-) -> Result<(), String> {
-    use object::read::macho::{MachHeader as _, Segment as _, Section as _};
+fn verify_macho_invariants(binary: &[u8], path: &std::path::Path) -> Result<(), String> {
+    use object::read::macho::MachHeader as _;
+    use object::read::macho::Section as _;
+    use object::read::macho::Segment as _;
     let le = object::Endianness::Little;
     let header = object::macho::MachHeader64::<object::Endianness>::parse(binary, 0)
         .map_err(|e| format!("{}: failed to parse Mach-O header: {e}", path.display()))?;
@@ -526,8 +525,7 @@ fn verify_macho_invariants(
                 for sec in sections {
                     let sect_name_raw = sec.sectname();
                     let sect_name = std::str::from_utf8(
-                        &sect_name_raw
-                            [..sect_name_raw.iter().position(|&b| b == 0).unwrap_or(16)],
+                        &sect_name_raw[..sect_name_raw.iter().position(|&b| b == 0).unwrap_or(16)],
                     )
                     .unwrap_or("<invalid>");
 
@@ -537,7 +535,9 @@ fn verify_macho_invariants(
                     let sec_align = sec.align(le);
 
                     // Invariant: section address must be within the segment.
-                    if sec_size > 0 && (sec_addr < vm_addr || sec_addr + sec_size > vm_addr + vm_size) {
+                    if sec_size > 0
+                        && (sec_addr < vm_addr || sec_addr + sec_size > vm_addr + vm_size)
+                    {
                         return Err(format!(
                             "{}: section {segname},{sect_name} addr {sec_addr:#x}+{sec_size:#x} \
                              outside segment [{vm_addr:#x}..{:#x})",

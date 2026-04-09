@@ -58,4 +58,3 @@ pub(crate) struct CieAtOffset<'data> {
     pub(crate) offset: u32,
     pub(crate) cie: Cie<'data>,
 }
-

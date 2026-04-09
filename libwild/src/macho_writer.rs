@@ -299,7 +299,11 @@ fn write_macho<A: Arch<Platform = MachO>>(
                     &mut bind_fixups,
                     &mut imports,
                     has_extra_dylibs,
-                    if validate { Some(&mut write_ranges) } else { None },
+                    if validate {
+                        Some(&mut write_ranges)
+                    } else {
+                        None
+                    },
                 )?;
             }
         }
@@ -430,7 +434,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
 
         if tvars_start != usize::MAX {
             for off in (tvars_start..tvars_end).step_by(24) {
-                positions.insert(off + 8);  // key field
+                positions.insert(off + 8); // key field
                 positions.insert(off + 16); // offset field
             }
         }
@@ -885,14 +889,19 @@ fn write_exe_symtab(
         let mut hoff = 32usize;
         let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap_or([0; 4])) as usize;
         for _ in 0..ncmds {
-            if hoff + 8 > out.len() { break; }
+            if hoff + 8 > out.len() {
+                break;
+            }
             let cmd = u32::from_le_bytes(out[hoff..hoff + 4].try_into().unwrap());
             let cmdsize = u32::from_le_bytes(out[hoff + 4..hoff + 8].try_into().unwrap()) as usize;
             if cmd == LC_SEGMENT_64 && hoff + 72 <= out.len() {
-                let nsects = u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
+                let nsects =
+                    u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
                 for j in 0..nsects {
                     let so = hoff + 72 + j * 80;
-                    if so + 48 > out.len() { break; }
+                    if so + 48 > out.len() {
+                        break;
+                    }
                     let addr = u64::from_le_bytes(out[so + 32..so + 40].try_into().unwrap());
                     let size = u64::from_le_bytes(out[so + 40..so + 48].try_into().unwrap());
                     ranges.push((addr, addr + size));
@@ -1883,10 +1892,13 @@ fn apply_relocations(
                             // Log non-TLS rebases that MIGHT be TLS
                             if reloc.r_extern {
                                 use object::read::macho::Nlist as _;
-                                if let Ok(sym) = obj.object.symbols.symbol(
-                                    object::SymbolIndex(reloc.r_symbolnum as usize),
-                                ) {
-                                    let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                                if let Ok(sym) = obj
+                                    .object
+                                    .symbols
+                                    .symbol(object::SymbolIndex(reloc.r_symbolnum as usize))
+                                {
+                                    let name =
+                                        sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
                                     if name.ends_with(b"$tlv$init") {
                                         let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
                                             .and_then(|mut f| {
@@ -2833,7 +2845,11 @@ fn macho_section_info(id: crate::output_section_id::OutputSectionId) -> Option<M
         output_section_id::BSS => (DATA_SEG, name16(b"__bss"), 0x01),
         _ => return None,
     };
-    Some(MachoSectionInfo { segname, sectname, flags })
+    Some(MachoSectionInfo {
+        segname,
+        sectname,
+        flags,
+    })
 }
 
 /// Write Mach-O headers. Returns the chained fixups file offset.
@@ -2974,8 +2990,7 @@ fn write_headers(
         if sec_layout.mem_size == 0 {
             continue;
         }
-        let file_off = vm_addr_to_file_offset(sec_layout.mem_offset, mappings)
-            .unwrap_or(0) as u32;
+        let file_off = vm_addr_to_file_offset(sec_layout.mem_offset, mappings).unwrap_or(0) as u32;
         if let Some(info) = macho_section_info(sec_id) {
             let hdr = SectionHeader {
                 segname: *info.segname,
@@ -3028,8 +3043,8 @@ fn write_headers(
     // Add .rustc in DATA if not in TEXT.
     if has_rustc && !rustc_in_text {
         let rc_addr = rustc_addr.max(data_vmaddr);
-        let rc_foff = vm_addr_to_file_offset(rustc_addr, mappings)
-            .unwrap_or(data_fileoff as usize) as u32;
+        let rc_foff =
+            vm_addr_to_file_offset(rustc_addr, mappings).unwrap_or(data_fileoff as usize) as u32;
         data_sections.push(SectionHeader {
             segname: DATA_SEG_NAME,
             sectname: *b".rustc\0\0\0\0\0\0\0\0\0\0",
@@ -3838,7 +3853,9 @@ fn write_relocatable_object(layout: &Layout<'_, MachO>) -> Result {
 /// # Chained fixups invariants
 /// - Page start offsets are within a page (< page_size)
 fn validate_macho_output(buf: &[u8]) -> Result {
-    use object::read::macho::{MachHeader as _, Section as _, Segment as _};
+    use object::read::macho::MachHeader as _;
+    use object::read::macho::Section as _;
+    use object::read::macho::Segment as _;
     let le = object::Endianness::Little;
     let header = object::macho::MachHeader64::<object::Endianness>::parse(buf, 0)
         .map_err(|e| crate::error!("validate: bad Mach-O header: {e}"))?;
@@ -3908,9 +3925,7 @@ fn validate_macho_output(buf: &[u8]) -> Result {
                     let sec_type = sec.flags(le) & 0xFF;
                     let is_zerofill = sec_type == 0x01 || sec_type == 0x0C;
                     if sec_size > 0 && !is_zerofill && sec_offset > 0 && file_size > 0 {
-                        if sec_offset < file_off
-                            || sec_offset + sec_size > file_off + file_size
-                        {
+                        if sec_offset < file_off || sec_offset + sec_size > file_off + file_size {
                             crate::bail!(
                                 "validate: section {segname_str},{sect_name} file range \
                                  [{sec_offset:#x}..{:#x}) outside segment \
@@ -4134,10 +4149,12 @@ fn validate_macho_output(buf: &[u8]) -> Result {
                         let sec_size = sec.size(le);
                         let sec_type = sec.flags(le) & 0xFF;
                         // Skip zerofill sections (no file data)
-                        if sec_size > 0 && sec_offset > 0 && sec_type != 0x01 && sec_type != 0x0C
-                        {
-                            all_sections
-                                .push((sec_offset, sec_size, format!("{segname},{sectname}")));
+                        if sec_size > 0 && sec_offset > 0 && sec_type != 0x01 && sec_type != 0x0C {
+                            all_sections.push((
+                                sec_offset,
+                                sec_size,
+                                format!("{segname},{sectname}"),
+                            ));
                         }
                     }
                 }

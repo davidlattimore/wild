@@ -1529,8 +1529,8 @@ impl platform::Platform for MachO {
 
         // __TEXT segment (r-x): headers, code, read-only data, stubs
         builder.add_section(output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::RODATA);     // __cstring
-        builder.add_section(output_section_id::COMMENT);     // __literal4/8/16
+        builder.add_section(output_section_id::RODATA); // __cstring
+        builder.add_section(output_section_id::COMMENT); // __literal4/8/16
         builder.add_section(output_section_id::DATA_REL_RO); // __text_const
         builder.add_sections(&custom.ro);
         builder.add_section(output_section_id::TEXT);
