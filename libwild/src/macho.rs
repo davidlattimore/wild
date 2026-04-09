@@ -213,7 +213,15 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 s as *const macho::Section64<Endianness>,
                 &section_header.0 as *const macho::Section64<Endianness>,
             ) {
-                return Ok(trim_nul(s.sectname()));
+                let sectname = trim_nul(s.sectname());
+                let segname = trim_nul(&s.segname);
+                // __const appears in both __TEXT (read-only, no pointers) and
+                // __DATA (has pointer relocations). Qualify with segment name
+                // so they map to different output sections.
+                if sectname == b"__const" && segname == b"__TEXT" {
+                    return Ok(b"__text_const");
+                }
+                return Ok(sectname);
             }
         }
         Err(error!("Section header not found in file's section table"))
@@ -254,8 +262,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_alignment(&self, section: &SectionHeader) -> crate::error::Result<u64> {
-        // Mach-O stores alignment as a power of 2
-        Ok(1u64 << section.0.align(LE))
+        let raw_align = 1u64 << section.0.align(LE);
+        // __thread_vars descriptors contain pointers and need 8-byte alignment,
+        // but rustc/clang emit them with align=1. Force minimum 8-byte alignment
+        // to match ld64 behaviour.
+        let sec_type = section.0.flags(LE) & 0xFF;
+        if sec_type == 0x13 {
+            // S_THREAD_LOCAL_VARIABLES
+            Ok(raw_align.max(8))
+        } else {
+            Ok(raw_align)
+        }
     }
 
     fn relocations(
@@ -375,8 +392,11 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_tls(&self) -> bool {
+        // Only __thread_data and __thread_bss are actual TLS data sections.
+        // __thread_vars is the descriptor table that lives in regular DATA —
+        // it must NOT be marked as TLS so it gets a normal section resolution.
         let sectname = trim_nul(self.0.sectname());
-        sectname == b"__thread_vars" || sectname == b"__thread_data" || sectname == b"__thread_bss"
+        sectname == b"__thread_data" || sectname == b"__thread_bss"
     }
 
     fn is_merge_section(&self) -> bool {
@@ -1509,7 +1529,9 @@ impl platform::Platform for MachO {
 
         // __TEXT segment (r-x): headers, code, read-only data, stubs
         builder.add_section(output_section_id::FILE_HEADER);
-        builder.add_section(output_section_id::RODATA);
+        builder.add_section(output_section_id::RODATA);     // __cstring
+        builder.add_section(output_section_id::COMMENT);     // __literal4/8/16
+        builder.add_section(output_section_id::DATA_REL_RO); // __text_const
         builder.add_sections(&custom.ro);
         builder.add_section(output_section_id::TEXT);
         builder.add_sections(&custom.exec);
@@ -1519,6 +1541,8 @@ impl platform::Platform for MachO {
 
         // __DATA segment (rw-): writable data, GOT, BSS
         builder.add_section(output_section_id::DATA);
+        builder.add_section(output_section_id::CSTRING); // __DATA,__const
+        builder.add_section(output_section_id::PREINIT_ARRAY); // __thread_vars
         builder.add_section(output_section_id::INIT_ARRAY); // __mod_init_func
         builder.add_section(output_section_id::FINI_ARRAY); // __mod_term_func
         builder.add_sections(&custom.data);
@@ -1539,15 +1563,17 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         SectionRule::exact_section(b"__text", output_section_id::TEXT),
         SectionRule::exact_section(b"__stubs", output_section_id::TEXT),
         SectionRule::exact_section(b"__stub_helper", output_section_id::TEXT),
-        // Sections like __const, __cstring, __literal* can appear in both __TEXT and
-        // __DATA segments. The pipeline groups by name, so both variants merge into one
-        // output section. Placing them all in DATA ensures pointers get rebase fixups.
-        SectionRule::exact_section(b"__const", output_section_id::DATA),
-        // __cstring and __literal* are truly read-only (no pointers). Keep in RODATA.
+        // Each Mach-O section gets a dedicated output section ID where possible.
+        // Sharing output section IDs between sections with different names can
+        // cause data overlap when the layout pipeline assigns overlapping parts.
+        // __DATA,__const has pointer relocations — give it CSTRING (unused regular
+        // section on Mach-O) to keep it separate from __data (both align 8).
+        SectionRule::exact_section(b"__const", output_section_id::CSTRING),
+        SectionRule::exact_section(b"__text_const", output_section_id::DATA_REL_RO),
         SectionRule::exact_section(b"__cstring", output_section_id::RODATA),
-        SectionRule::exact_section(b"__literal4", output_section_id::RODATA),
-        SectionRule::exact_section(b"__literal8", output_section_id::RODATA),
-        SectionRule::exact_section(b"__literal16", output_section_id::RODATA),
+        SectionRule::exact_section(b"__literal4", output_section_id::COMMENT),
+        SectionRule::exact_section(b"__literal8", output_section_id::COMMENT),
+        SectionRule::exact_section(b"__literal16", output_section_id::COMMENT),
         SectionRule::exact_section(b"__data", output_section_id::DATA),
         SectionRule::exact_section(b"__la_symbol_ptr", output_section_id::DATA),
         SectionRule::exact_section(b"__nl_symbol_ptr", output_section_id::DATA),
@@ -1556,7 +1582,10 @@ const MACHO_SECTION_RULES: &[crate::layout_rules::SectionRule<'static>] = {
         // This separates TLS bind fixups from GOT bind fixups in the chain.
         // __thread_vars must NOT share the GOT output section — GOT-only entries
         // (e.g. for __eh_frame personality pointers) would overlap with TLV descriptors.
-        SectionRule::exact_section(b"__thread_vars", output_section_id::DATA),
+        // __thread_vars uses PREINIT_ARRAY (unused on Mach-O) as its dedicated
+        // output section so all thread_vars from all objects are grouped contiguously.
+        // Using DATA would interleave them with __data from other objects.
+        SectionRule::exact_section(b"__thread_vars", output_section_id::PREINIT_ARRAY),
         SectionRule::exact_section(b"__thread_data", output_section_id::TDATA),
         SectionRule::exact_section(b"__thread_bss", output_section_id::TBSS),
         // Constructor/destructor function pointer arrays (Mach-O equivalent of

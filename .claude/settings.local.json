@@ -52,7 +52,10 @@
       "Bash(clang -c /tmp/t_ext_main.c -o /tmp/t_ext_main.o)",
       "Bash(/tmp/t_ext_out)",
       "Bash(RUST_BACKTRACE=1 /tmp/rust_map)",
-      "Bash(RUST_BACKTRACE=full /tmp/rust_map)"
+      "Bash(RUST_BACKTRACE=full /tmp/rust_map)",
+      "Bash(/tmp/test_shared/shared-basic)",
+      "Bash(objdump --macho --private-headers /tmp/test_shared/libshared-basic-lib.dylib)",
+      "Bash(objdump --macho --private-headers /tmp/test_shared/shared-basic)"
     ]
   }
 }

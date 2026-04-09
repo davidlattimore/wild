@@ -116,6 +116,7 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     }
 
     let output_path = layout.symbol_db.args.output();
+
     std::fs::write(output_path.as_ref(), &buf)
         .map_err(|e| crate::error!("Failed to write: {e}"))?;
 
@@ -137,6 +138,7 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
             }
         }
     }
+
     Ok(())
 }
 
@@ -279,6 +281,10 @@ fn write_macho<A: Arch<Platform = MachO>>(
     let mut imports: Vec<ImportEntry> = Vec::new();
     let has_extra_dylibs = !layout.symbol_db.args.extra_dylibs.is_empty();
 
+    // Track section write ranges for overlap detection (validation only).
+    let validate = layout.symbol_db.args.common().validate_output;
+    let mut write_ranges: Vec<(usize, usize, String)> = Vec::new();
+
     // Copy section data and apply relocations
     for group in &layout.group_layouts {
         for file_layout in &group.files {
@@ -293,7 +299,24 @@ fn write_macho<A: Arch<Platform = MachO>>(
                     &mut bind_fixups,
                     &mut imports,
                     has_extra_dylibs,
+                    if validate { Some(&mut write_ranges) } else { None },
                 )?;
+            }
+        }
+    }
+
+    // Validate: no two section data writes should overlap.
+    if validate && !write_ranges.is_empty() {
+        write_ranges.sort_by_key(|r| r.0);
+        for w in write_ranges.windows(2) {
+            let (off1, size1, ref name1) = w[0];
+            let (off2, _size2, ref name2) = w[1];
+            if off1 + size1 > off2 {
+                crate::bail!(
+                    "validate: section data write overlap: \
+                     {name1} [{off1:#x}..{:#x}) and {name2} [{off2:#x}..)",
+                    off1 + size1
+                );
             }
         }
     }
@@ -319,9 +342,116 @@ fn write_macho<A: Arch<Platform = MachO>>(
         has_extra_dylibs,
     )?;
 
-    // Build chained fixup data: merge rebase + bind, encode per-page chains
+    // Build chained fixup data: merge rebase + bind, encode per-page chains.
+    //
+    // Filter out fixups that fall on __thread_vars `key` or `offset` fields.
+    // TLV descriptors are 24-byte structs: (init_ptr, key, offset).
+    // Only `init` (at offset 0 of each descriptor) should have a fixup (bind to
+    // __tlv_bootstrap). The `key` (offset 8) and `offset` (offset 16) fields are
+    // plain values that dyld manages — they must NOT be in the fixup chain.
+    // Find __thread_vars key/offset field file offsets to exclude from
+    // the fixup chain. TLV descriptors are 24 bytes: only the init pointer
+    // (byte 0) should have a fixup. The key (byte 8) and offset (byte 16)
+    // are plain values that must not be in the chain.
+    //
+    // We find the thread_vars address range by scanning all bind+rebase
+    // fixups: every fixup at a position that's (n*24 + 8) or (n*24 + 16)
+    // relative to the first __tlv_bootstrap bind is a key/offset field.
+    //
+    // Simpler approach: collect ALL fixup file offsets that target TDATA
+    // or TBSS addresses (these are the TLV offset fields whose values
+    // were correctly computed by apply_relocations). They should NOT have
+    // rebase fixups because we wrote TLS-relative offsets, not absolute
+    // addresses. However, the non-extern relocation path may have created
+    // rebase fixups anyway. Remove them.
+    // Build set of file offsets for __thread_vars key/offset fields.
+    // These must NOT be in the fixup chain. We identify them by scanning
+    // the output for the bind fixups we already created for __tlv_bootstrap
+    // and init-function pointers — every such fixup marks the start of a
+    // 24-byte TLV descriptor. The key (+8) and offset (+16) fields after
+    // each descriptor start must be excluded.
+    let tvars_key_offset_positions: std::collections::HashSet<usize> = {
+        let mut positions = std::collections::HashSet::new();
+        // Every fixup (bind or rebase) that's at a 24-byte-aligned position
+        // within the thread_vars output IS a descriptor start.
+        // But we don't know exactly where tvars is in the output.
+        // Use a different approach: find ALL fixups in the DATA segment,
+        // and for each one, check if the 8 bytes before it are also a fixup
+        // (which would make this a key field after an init fixup) or if
+        // 16 bytes before is a fixup (making this an offset field).
+        //
+        // Actually simplest: find tvars range from the bind fixups for
+        // __tlv_bootstrap. The first and last such bind define the range.
+        let mut tvars_start = usize::MAX;
+        let mut tvars_end = 0usize;
+        for f in &bind_fixups {
+            if let Some(imp) = imports.get(f.import_index as usize) {
+                if imp.name == b"__tlv_bootstrap" {
+                    tvars_start = tvars_start.min(f.file_offset);
+                    tvars_end = tvars_end.max(f.file_offset + 24); // descriptor size
+                }
+            }
+        }
+        // Also scan rebase fixups that target init functions (which are in
+        // __thread_data/__thread_bss). These are at descriptor +0 too.
+        // A rebase targeting TDATA/TBSS means it's a TLS offset value (written
+        // by apply_relocations). But init-function rebase fixups target TEXT.
+        // To catch all descriptors, extend the range to cover all rebase fixups
+        // between the first and last __tlv_bootstrap binds.
+        // Actually, the tvars section is contiguous. Extend by scanning:
+        // starting from the first __tlv_bootstrap bind, every 24 bytes is a
+        // descriptor until we run out.
+        if tvars_start != usize::MAX {
+            // Find the total tvars block: from the first bind, walk forward
+            // checking if there's a fixup or data at each 24-byte boundary.
+            // The block size = (number of descriptors) * 24.
+            // We know from bind_fixups how many __tlv_bootstrap entries there are,
+            // but some descriptors have rebase inits instead. Use the DATA output
+            // section's thread_vars content size.
+            // The simplest: compute from the input objects.
+            let le = object::Endianness::Little;
+            let mut total_tvars_size = 0usize;
+            for group in &layout.group_layouts {
+                for file_layout in &group.files {
+                    if let FileLayout::Object(obj) = file_layout {
+                        for sec_idx in 0..obj.object.sections.len() {
+                            if let Some(s) = obj.object.sections.get(sec_idx) {
+                                use object::read::macho::Section as _;
+                                if s.flags(le) & 0xFF == 0x13 {
+                                    total_tvars_size += s.size(le) as usize;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            tvars_end = tvars_start + total_tvars_size;
+        }
+
+        if tvars_start != usize::MAX {
+            for off in (tvars_start..tvars_end).step_by(24) {
+                positions.insert(off + 8);  // key field
+                positions.insert(off + 16); // offset field
+            }
+        }
+        positions
+    };
+
     rebase_fixups.sort_by_key(|f| f.file_offset);
     bind_fixups.sort_by_key(|f| f.file_offset);
+
+    // Zero out __thread_vars key fields. Key must always be 0 — dyld
+    // initializes it at runtime with a pthread key. Relocation application
+    // may have written garbage into key positions from non-extern relocations.
+    // Key is at offset +8 in each 24-byte descriptor.
+    // tvars_key_offset_positions contains both key (+8) and offset (+16) positions.
+    // Key positions: those that are 8 bytes before an offset position.
+    for &pos in &tvars_key_offset_positions {
+        // Check if pos+8 is also in the set (making this a key field)
+        if tvars_key_offset_positions.contains(&(pos + 8)) && pos + 8 <= out.len() {
+            out[pos..pos + 8].fill(0);
+        }
+    }
 
     let data_seg_start = if mappings.len() > 1 {
         mappings[1].file_offset as usize
@@ -344,6 +474,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
         if f.file_offset < data_seg_start || f.file_offset >= data_seg_end {
             continue;
         }
+        if tvars_key_offset_positions.contains(&f.file_offset) {
+            continue;
+        }
         let target_offset = f.target.wrapping_sub(image_base);
         all_data_fixups.push((f.file_offset, target_offset & 0xF_FFFF_FFFF));
     }
@@ -351,6 +484,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
         if f.file_offset < data_seg_start || f.file_offset >= data_seg_end {
             continue;
         }
+        // Don't filter bind fixups for __thread_vars init pointers —
+        // those ARE legitimate (bind to __tlv_bootstrap).
+        // Only filter rebase fixups for key/offset fields.
         let encoded = (1u64 << 63) | (f.import_index as u64 & 0xFF_FFFF);
         all_data_fixups.push((f.file_offset, encoded));
     }
@@ -563,7 +699,7 @@ fn write_dylib_symtab(
         // nlist64: n_strx (4), n_type (1), n_sect (1), n_desc (2), n_value (8)
         out[pos..pos + 4].copy_from_slice(&str_offsets[i].to_le_bytes());
         out[pos + 4] = 0x0F; // N_SECT | N_EXT
-        out[pos + 5] = 1; // n_sect: section 1 (__text)
+        out[pos + 5] = 1; // n_sect: section 1 (__text) — patched later
         out[pos + 6..pos + 8].copy_from_slice(&0u16.to_le_bytes()); // n_desc
         out[pos + 8..pos + 16].copy_from_slice(&value.to_le_bytes());
         pos += 16;
@@ -743,6 +879,30 @@ fn write_exe_symtab(
         strtab.push(0);
     }
 
+    // Build section ranges from the already-written headers for n_sect lookup.
+    let section_ranges: Vec<(u64, u64)> = {
+        let mut ranges = Vec::new();
+        let mut hoff = 32usize;
+        let ncmds = u32::from_le_bytes(out[16..20].try_into().unwrap_or([0; 4])) as usize;
+        for _ in 0..ncmds {
+            if hoff + 8 > out.len() { break; }
+            let cmd = u32::from_le_bytes(out[hoff..hoff + 4].try_into().unwrap());
+            let cmdsize = u32::from_le_bytes(out[hoff + 4..hoff + 8].try_into().unwrap()) as usize;
+            if cmd == LC_SEGMENT_64 && hoff + 72 <= out.len() {
+                let nsects = u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
+                for j in 0..nsects {
+                    let so = hoff + 72 + j * 80;
+                    if so + 48 > out.len() { break; }
+                    let addr = u64::from_le_bytes(out[so + 32..so + 40].try_into().unwrap());
+                    let size = u64::from_le_bytes(out[so + 40..so + 48].try_into().unwrap());
+                    ranges.push((addr, addr + size));
+                }
+            }
+            hoff += cmdsize;
+        }
+        ranges
+    };
+
     // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
     let symoff = (start + 7) & !7;
     let nsyms = entries.len();
@@ -751,10 +911,18 @@ fn write_exe_symtab(
         if pos + 16 > out.len() {
             break;
         }
-        // nlist64: n_strx (4), n_type (1), n_sect (1), n_desc (2), n_value (8)
+        let n_sect = if *n_type == 0x02 {
+            0u8 // N_ABS
+        } else {
+            section_ranges
+                .iter()
+                .position(|&(s, e)| *value >= s && *value < e)
+                .map(|idx| (idx + 1) as u8)
+                .unwrap_or(0)
+        };
         out[pos..pos + 4].copy_from_slice(&str_offsets[i].to_le_bytes());
         out[pos + 4] = *n_type;
-        out[pos + 5] = 1; // n_sect: section 1 (__text)
+        out[pos + 5] = n_sect;
         out[pos + 6..pos + 8].copy_from_slice(&0u16.to_le_bytes());
         out[pos + 8..pos + 16].copy_from_slice(&value.to_le_bytes());
         pos += 16;
@@ -1229,8 +1397,23 @@ fn write_object_sections(
     bind_fixups: &mut Vec<BindFixup>,
     imports: &mut Vec<ImportEntry>,
     has_extra_dylibs: bool,
+    mut write_ranges: Option<&mut Vec<(usize, usize, String)>>,
 ) -> Result {
     use object::read::macho::Section as MachOSection;
+
+    // Verify that sections/section_resolutions/object.sections have same length.
+    if let Some(ref _ranges) = write_ranges {
+        let loaded = obj.sections.len();
+        let resolutions = obj.section_resolutions.len();
+        let input = obj.object.sections.len();
+        if loaded != resolutions || loaded != input {
+            crate::bail!(
+                "validate: section count mismatch for {}: \
+                 loaded={loaded} resolutions={resolutions} input={input}",
+                obj.input
+            );
+        }
+    }
 
     for (sec_idx, _slot) in obj.sections.iter().enumerate() {
         let section_res = &obj.section_resolutions[sec_idx];
@@ -1245,6 +1428,24 @@ fn write_object_sections(
             Some(s) => s,
             None => continue,
         };
+
+        // Log __const section resolutions for debugging
+        if let Some(ref _ranges) = write_ranges {
+            use object::read::macho::Section as _;
+            let sectname = crate::macho::trim_nul(input_section.sectname());
+            let segname = crate::macho::trim_nul(&input_section.segname);
+            if sectname == b"__const" {
+                let input_addr = input_section.addr(le);
+                let input_size = input_section.size(le);
+                let _ = std::fs::OpenOptions::new().create(true).append(true)
+                    .open("/tmp/wild_const_debug.log")
+                    .and_then(|mut f| {
+                        use std::io::Write;
+                        writeln!(f, "sec[{sec_idx}] {},{}: input={input_addr:#x}+{input_size:#x} → output={output_addr:#x} foff={file_offset:#x}",
+                            String::from_utf8_lossy(segname), String::from_utf8_lossy(sectname))
+                    });
+            }
+        }
 
         let sec_type = input_section.flags(le) & 0xFF;
         if sec_type == 0x01 || sec_type == 0x0C || sec_type == 0x12 {
@@ -1283,6 +1484,39 @@ fn write_object_sections(
         }
 
         if file_offset + input_size <= out.len() {
+            if let Some(ref mut ranges) = write_ranges {
+                let sectname = crate::macho::trim_nul(input_section.sectname());
+                let segname = crate::macho::trim_nul(&input_section.segname);
+                ranges.push((
+                    file_offset,
+                    input_size,
+                    format!(
+                        "{},{}",
+                        String::from_utf8_lossy(segname),
+                        String::from_utf8_lossy(sectname)
+                    ),
+                ));
+
+                // Invariant: verify round-trip — after copy, reading the first
+                // 8 bytes from the output at the resolved address must match
+                // the first 8 bytes of the input section data. If they differ,
+                // another section's data was already at that position.
+                if input_size >= 8 {
+                    let expected = &input_data[..8];
+                    let actual = &out[file_offset..file_offset + 8];
+                    // Only check if the position was previously zero (fresh)
+                    if actual != [0u8; 8] && actual != expected {
+                        crate::bail!(
+                            "validate: section {},{} at foff={file_offset:#x} — \
+                             output already has data {:02x?} but input starts with {:02x?}",
+                            String::from_utf8_lossy(segname),
+                            String::from_utf8_lossy(sectname),
+                            actual,
+                            expected
+                        );
+                    }
+                }
+            }
             out[file_offset..file_offset + input_size].copy_from_slice(input_data);
         }
 
@@ -1408,12 +1642,63 @@ fn apply_relocations(
                     let fallback = obj.object.symbols.symbol(sym_idx).ok().and_then(|sym| {
                         let n_sect = sym.n_sect();
                         if n_sect == 0 {
+                            // Symbol is undefined (no section). Check if it has a name
+                            // that looks like a TLS init symbol.
+                            let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                            if name.ends_with(b"$tlv$init") {
+                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
+                                    .and_then(|mut f| {
+                                        use std::io::Write;
+                                        writeln!(f, "TLS $tlv$init with n_sect=0: {}", String::from_utf8_lossy(name))
+                                    });
+                            }
                             return None;
                         }
                         let sec_idx = n_sect as usize - 1;
-                        let sec_out = obj.section_resolutions.get(sec_idx)?.address()?;
+                        // Try section_resolutions first.
+                        let sec_res_addr = obj
+                            .section_resolutions
+                            .get(sec_idx)
+                            .and_then(|r| r.address());
+                        if let Some(sec_out) = sec_res_addr {
+                            let sec_in =
+                                obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
+                            let result = sec_out + sym.n_value(le).wrapping_sub(sec_in);
+                            let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                            if name.ends_with(b"$tlv$init") {
+                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
+                                    .and_then(|mut f| {
+                                        use std::io::Write;
+                                        writeln!(f, "TLS resolved: sec_out={sec_out:#x} sec_in={sec_in:#x} n_value={:#x} result={result:#x}", sym.n_value(le))
+                                    });
+                            }
+                            return Some(result);
+                        }
+                        // Section resolution missing — fall back to TDATA/TBSS for TLS.
+                        use object::read::macho::Section as _;
+                        let sec_type = obj
+                            .object
+                            .sections
+                            .get(sec_idx)
+                            .map(|s| s.flags(le) & 0xFF)?;
                         let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
-                        Some(sec_out + sym.n_value(le).wrapping_sub(sec_in))
+                        let sym_offset = sym.n_value(le).wrapping_sub(sec_in);
+                        let tdata = layout.section_layouts.get(output_section_id::TDATA);
+                        let tbss = layout.section_layouts.get(output_section_id::TBSS);
+                        match sec_type {
+                            0x11 if tdata.mem_size > 0 => {
+                                tracing::warn!("TLS fallback: tdata + {sym_offset:#x} -> {:#x}", tdata.mem_offset + sym_offset);
+                                Some(tdata.mem_offset + sym_offset)
+                            }
+                            0x12 if tbss.mem_size > 0 => {
+                                tracing::warn!("TLS fallback: tbss + {sym_offset:#x} -> {:#x}", tbss.mem_offset + sym_offset);
+                                Some(tbss.mem_offset + sym_offset)
+                            }
+                            _ => {
+                                tracing::warn!("TLS fallback MISS: sec_type={sec_type:#x}");
+                                None
+                            }
+                        }
                     });
                     if let Some(addr) = fallback {
                         let got = other.and_then(|r| r.format_specific.got_address);
@@ -1438,15 +1723,54 @@ fn apply_relocations(
                 continue;
             }
             let sec_idx = sec_ord - 1;
-            let Some(output_sec_addr) = obj
+            let output_sec_addr = obj
                 .section_resolutions
                 .get(sec_idx)
-                .and_then(|r| r.address())
-            else {
-                continue;
-            };
-            // Return section base; addend is added below along with extern path.
-            (output_sec_addr, None, None)
+                .and_then(|r| r.address());
+            if let Some(addr) = output_sec_addr {
+                (addr, None, None)
+            } else {
+                // Section resolution missing. For TLS sections (__thread_data,
+                // __thread_bss), fall back to the TDATA/TBSS output section layout.
+                // Read the in-place value to get the symbol's offset within the
+                // input section, then compute the output address.
+                use object::read::macho::Section as _;
+                let input_sec = obj.object.sections.get(sec_idx);
+                let sec_type = input_sec.map(|s| s.flags(le) & 0xFF).unwrap_or(0);
+                let input_sec_base = input_sec.map(|s| s.addr.get(le)).unwrap_or(0);
+                let tdata = layout.section_layouts.get(output_section_id::TDATA);
+                let tbss = layout.section_layouts.get(output_section_id::TBSS);
+                match sec_type {
+                    0x11 if tdata.mem_size > 0 => {
+                        // Read in-place addend: absolute input address at reloc position
+                        let in_place = if patch_file_offset + 8 <= out.len() {
+                            u64::from_le_bytes(
+                                out[patch_file_offset..patch_file_offset + 8]
+                                    .try_into()
+                                    .unwrap_or([0; 8]),
+                            )
+                        } else {
+                            0
+                        };
+                        let sym_offset = in_place.wrapping_sub(input_sec_base);
+                        (tdata.mem_offset + sym_offset, None, None)
+                    }
+                    0x12 if tbss.mem_size > 0 => {
+                        let in_place = if patch_file_offset + 8 <= out.len() {
+                            u64::from_le_bytes(
+                                out[patch_file_offset..patch_file_offset + 8]
+                                    .try_into()
+                                    .unwrap_or([0; 8]),
+                            )
+                        } else {
+                            0
+                        };
+                        let sym_offset = in_place.wrapping_sub(input_sec_base);
+                        (tbss.mem_offset + sym_offset, None, None)
+                    }
+                    _ => continue,
+                }
+            }
         };
 
         let target_addr = (target_addr as i64 + addend) as u64;
@@ -1555,10 +1879,27 @@ fn apply_relocations(
                         let in_tbss = tbss.mem_size > 0
                             && target_addr >= tbss.mem_offset
                             && target_addr < tbss.mem_offset + tbss.mem_size;
+                        if !in_tdata && !in_tbss && target_addr > 0 {
+                            // Log non-TLS rebases that MIGHT be TLS
+                            if reloc.r_extern {
+                                use object::read::macho::Nlist as _;
+                                if let Ok(sym) = obj.object.symbols.symbol(
+                                    object::SymbolIndex(reloc.r_symbolnum as usize),
+                                ) {
+                                    let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                                    if name.ends_with(b"$tlv$init") {
+                                        let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
+                                            .and_then(|mut f| {
+                                                use std::io::Write;
+                                                writeln!(f, "MISSED TLS: target={target_addr:#x} tdata=[{:#x}..{:#x}) tbss=[{:#x}..{:#x})",
+                                                    tdata.mem_offset, tdata.mem_offset+tdata.mem_size,
+                                                    tbss.mem_offset, tbss.mem_offset+tbss.mem_size)
+                                            });
+                                    }
+                                }
+                            }
+                        }
                         if in_tdata || in_tbss {
-                            // TLS offset relative to the GLOBAL TLS template start.
-                            // The template is the TDATA section content (init data for
-                            // all TLS variables across all objects) followed by TBSS.
                             let tls_init_start = tdata.mem_offset;
                             let tls_init_size = tdata.mem_size;
                             let tls_offset = if in_tbss {
@@ -1567,6 +1908,11 @@ fn apply_relocations(
                             } else {
                                 target_addr.saturating_sub(tls_init_start)
                             };
+                            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
+                                .and_then(|mut f| {
+                                    use std::io::Write;
+                                    writeln!(f, "TLS write: foff={patch_file_offset:#x} offset={tls_offset:#x} target={target_addr:#x}")
+                                });
                             out[patch_file_offset..patch_file_offset + 8]
                                 .copy_from_slice(&tls_offset.to_le_bytes());
                         } else {
@@ -2447,6 +2793,49 @@ fn build_unwind_info_section(
     out
 }
 
+/// Mach-O section metadata for a given output section ID.
+struct MachoSectionInfo {
+    segname: &'static [u8; 16],
+    sectname: [u8; 16],
+    flags: u32,
+}
+
+/// Map an OutputSectionId to Mach-O section name and flags.
+/// Returns None for sections that don't need their own section header
+/// (e.g. FILE_HEADER, BSS handled specially, etc.).
+fn macho_section_info(id: crate::output_section_id::OutputSectionId) -> Option<MachoSectionInfo> {
+    use crate::output_section_id;
+    fn name16(s: &[u8]) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        let len = s.len().min(16);
+        buf[..len].copy_from_slice(&s[..len]);
+        buf
+    }
+    static TEXT_SEG: &[u8; 16] = b"__TEXT\0\0\0\0\0\0\0\0\0\0";
+    static DATA_SEG: &[u8; 16] = b"__DATA\0\0\0\0\0\0\0\0\0\0";
+
+    let (segname, sectname, flags) = match id {
+        output_section_id::TEXT => (TEXT_SEG, name16(b"__text"), 0x8000_0400u32),
+        output_section_id::PLT_GOT => (TEXT_SEG, name16(b"__stubs"), 0x8000_0408),
+        output_section_id::GCC_EXCEPT_TABLE => (TEXT_SEG, name16(b"__gcc_except_tab"), 0),
+        output_section_id::EH_FRAME => (TEXT_SEG, name16(b"__eh_frame"), 0x6800_000B),
+        output_section_id::RODATA => (TEXT_SEG, name16(b"__cstring"), 0),
+        output_section_id::COMMENT => (TEXT_SEG, name16(b"__literal"), 0),
+        output_section_id::DATA_REL_RO => (TEXT_SEG, name16(b"__const"), 0),
+        output_section_id::DATA => (DATA_SEG, name16(b"__data"), 0),
+        output_section_id::CSTRING => (DATA_SEG, name16(b"__const"), 0),
+        output_section_id::GOT => (DATA_SEG, name16(b"__got"), 0x06),
+        output_section_id::PREINIT_ARRAY => (DATA_SEG, name16(b"__thread_vars"), 0x13),
+        output_section_id::INIT_ARRAY => (DATA_SEG, name16(b"__mod_init_func"), 0x09),
+        output_section_id::FINI_ARRAY => (DATA_SEG, name16(b"__mod_term_func"), 0x0E),
+        output_section_id::TDATA => (DATA_SEG, name16(b"__thread_data"), 0x11),
+        output_section_id::TBSS => (DATA_SEG, name16(b"__thread_bss"), 0x12),
+        output_section_id::BSS => (DATA_SEG, name16(b"__bss"), 0x01),
+        _ => return None,
+    };
+    Some(MachoSectionInfo { segname, sectname, flags })
+}
+
 /// Write Mach-O headers. Returns the chained fixups file offset.
 fn write_headers(
     out: &mut [u8],
@@ -2496,16 +2885,7 @@ fn write_headers(
     let tdata_layout = layout.section_layouts.get(output_section_id::TDATA);
     let tbss_layout = layout.section_layouts.get(output_section_id::TBSS);
     let has_tlv = tdata_layout.mem_size > 0 || tbss_layout.mem_size > 0;
-    let has_tvars = has_tlv;
-    let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
-    let has_stubs = plt_layout.mem_size > 0;
-    let got_layout = layout.section_layouts.get(output_section_id::GOT);
-    let has_got = got_layout.mem_size > 0;
-    let gcc_except_layout = layout
-        .section_layouts
-        .get(output_section_id::GCC_EXCEPT_TABLE);
-    let has_gcc_except = gcc_except_layout.mem_size > 0;
-
+    let _has_tvars = has_tlv;
     // Scan for .rustc section (proc-macro metadata) before computing cmd sizes
     let mut rustc_addr = 0u64;
     let mut rustc_size = 0u64;
@@ -2569,29 +2949,112 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, 72);
     } // PAGEZERO (exe only)
     let rustc_in_text = has_rustc && rustc_addr < text_vm_start + text_filesize;
-    let eh_frame_layout = layout.section_layouts.get(output_section_id::EH_FRAME);
-    let has_eh_frame = eh_frame_layout.mem_size > 0;
     let has_unwind_info = unwind_info_size > 0;
-    let text_nsects = 1
-        + if rustc_in_text { 1u32 } else { 0 }
-        + if has_stubs { 1 } else { 0 }
-        + if has_gcc_except { 1 } else { 0 }
-        + if has_eh_frame { 1 } else { 0 }
-        + if has_unwind_info { 1 } else { 0 };
+
+    // Dynamically collect TEXT and DATA section headers from all output sections.
+    // This replaces the hardcoded section counting.
+    struct SectionHeader {
+        segname: [u8; 16],
+        sectname: [u8; 16],
+        addr: u64,
+        size: u64,
+        offset: u32,
+        align: u32,
+        flags: u32,
+    }
+
+    let mut text_sections: Vec<SectionHeader> = Vec::new();
+    let mut data_sections: Vec<SectionHeader> = Vec::new();
+
+    static TEXT_SEG_NAME: [u8; 16] = *b"__TEXT\0\0\0\0\0\0\0\0\0\0";
+    static DATA_SEG_NAME: [u8; 16] = *b"__DATA\0\0\0\0\0\0\0\0\0\0";
+
+    // Enumerate all output sections that have content.
+    for (sec_id, sec_layout) in layout.section_layouts.iter() {
+        if sec_layout.mem_size == 0 {
+            continue;
+        }
+        let file_off = vm_addr_to_file_offset(sec_layout.mem_offset, mappings)
+            .unwrap_or(0) as u32;
+        if let Some(info) = macho_section_info(sec_id) {
+            let hdr = SectionHeader {
+                segname: *info.segname,
+                sectname: info.sectname,
+                addr: sec_layout.mem_offset,
+                size: sec_layout.mem_size,
+                offset: file_off,
+                align: sec_layout.alignment.exponent as u32,
+                flags: info.flags,
+            };
+            if *info.segname == TEXT_SEG_NAME {
+                text_sections.push(hdr);
+            } else {
+                data_sections.push(hdr);
+            }
+        }
+    }
+    // Sort by address within each segment.
+    text_sections.sort_by_key(|s| s.addr);
+    data_sections.sort_by_key(|s| s.addr);
+
+    // Add special sections: .rustc (if in TEXT), __unwind_info
+    if rustc_in_text {
+        let rustc_foff = vm_addr_to_file_offset(rustc_addr, mappings).unwrap_or(0) as u32;
+        text_sections.push(SectionHeader {
+            segname: TEXT_SEG_NAME,
+            sectname: *b".rustc\0\0\0\0\0\0\0\0\0\0",
+            addr: rustc_addr,
+            size: rustc_size,
+            offset: rustc_foff,
+            align: 0,
+            flags: 0,
+        });
+    }
+    if has_unwind_info {
+        let ui_foff = vm_addr_to_file_offset(unwind_info_vm_addr, mappings).unwrap_or(0) as u32;
+        text_sections.push(SectionHeader {
+            segname: TEXT_SEG_NAME,
+            sectname: *b"__unwind_info\0\0\0",
+            addr: unwind_info_vm_addr,
+            size: unwind_info_size,
+            offset: ui_foff,
+            align: 2,
+            flags: 0,
+        });
+    }
+    // Re-sort TEXT after adding special sections.
+    text_sections.sort_by_key(|s| s.addr);
+
+    // Add .rustc in DATA if not in TEXT.
+    if has_rustc && !rustc_in_text {
+        let rc_addr = rustc_addr.max(data_vmaddr);
+        let rc_foff = vm_addr_to_file_offset(rustc_addr, mappings)
+            .unwrap_or(data_fileoff as usize) as u32;
+        data_sections.push(SectionHeader {
+            segname: DATA_SEG_NAME,
+            sectname: *b".rustc\0\0\0\0\0\0\0\0\0\0",
+            addr: rc_addr,
+            size: rustc_size,
+            offset: rc_foff,
+            align: 0,
+            flags: 0,
+        });
+        data_sections.sort_by_key(|s| s.addr);
+    }
+
+    // Fix up __thread_data: override type to S_THREAD_LOCAL_REGULAR and extend
+    // Fix __thread_data flags (set correct Mach-O section type).
+    for sec in &mut data_sections {
+        let name = crate::macho::trim_nul(&sec.sectname);
+        if name == b"__thread_data" {
+            sec.flags = 0x11; // S_THREAD_LOCAL_REGULAR
+        }
+    }
+
+    let text_nsects = text_sections.len() as u32;
     add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * text_nsects); // TEXT
-    let init_array_layout = layout.section_layouts.get(output_section_id::INIT_ARRAY);
-    let has_init_array = init_array_layout.mem_size > 0;
     if has_data {
-        let mut data_nsects = if has_tvars { 2u32 } else { 0 };
-        if has_rustc {
-            data_nsects += 1;
-        }
-        if has_init_array {
-            data_nsects += 1;
-        }
-        if has_got {
-            data_nsects += 1;
-        }
+        let data_nsects = data_sections.len() as u32;
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
     }
     add_cmd(&mut ncmds, &mut cmdsize, 72); // LINKEDIT
@@ -2649,109 +3112,29 @@ fn write_headers(
     w.u32(VM_PROT_READ | VM_PROT_EXECUTE);
     w.u32(text_nsects);
     w.u32(0);
-    w.name16(b"__text");
-    w.name16(b"__TEXT");
-    w.u64(text_layout.mem_offset);
-    w.u64(text_layout.mem_size);
-    w.u32(text_layout.file_offset as u32);
-    w.u32(2);
-    w.u32(0);
-    w.u32(0);
-    w.u32(0x80000400);
-    w.u32(0);
-    w.u32(0);
-    w.u32(0);
-    if rustc_in_text {
-        let rustc_foff = vm_addr_to_file_offset(rustc_addr, mappings).unwrap_or(0) as u32;
-        w.name16(b".rustc");
-        w.name16(b"__TEXT");
-        w.u64(rustc_addr);
-        w.u64(rustc_size);
-        w.u32(rustc_foff);
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-    }
-    if has_stubs {
-        let stubs_foff =
-            vm_addr_to_file_offset(plt_layout.mem_offset, mappings).unwrap_or(0) as u32;
-        w.name16(b"__stubs");
-        w.name16(b"__TEXT");
-        w.u64(plt_layout.mem_offset);
-        w.u64(plt_layout.mem_size);
-        w.u32(stubs_foff);
-        w.u32(2); // align 2^2 = 4
+    // Write TEXT section headers.
+    for sec in &text_sections {
+        w.buf[w.pos..w.pos + 16].copy_from_slice(&sec.sectname);
+        w.pos += 16;
+        w.buf[w.pos..w.pos + 16].copy_from_slice(&sec.segname);
+        w.pos += 16;
+        w.u64(sec.addr);
+        w.u64(sec.size);
+        w.u32(sec.offset);
+        w.u32(sec.align);
         w.u32(0); // reloff
         w.u32(0); // nreloc
-        w.u32(0x80000408); // S_SYMBOL_STUBS | S_ATTR_SOME_INSTRUCTIONS | S_ATTR_PURE_INSTRUCTIONS
-        w.u32(0); // reserved1 (indirect symbol table index, 0 for now)
-        w.u32(12); // reserved2 = stub size
-        w.u32(0); // reserved3
-    }
-    if has_gcc_except {
-        let ge_foff =
-            vm_addr_to_file_offset(gcc_except_layout.mem_offset, mappings).unwrap_or(0) as u32;
-        w.name16(b"__gcc_except_tab");
-        w.name16(b"__TEXT");
-        w.u64(gcc_except_layout.mem_offset);
-        w.u64(gcc_except_layout.mem_size);
-        w.u32(ge_foff);
-        w.u32(2); // align 2^2 = 4
-        w.u32(0); // reloff
-        w.u32(0); // nreloc
-        w.u32(0); // flags = S_REGULAR
+        w.u32(sec.flags);
         w.u32(0); // reserved1
-        w.u32(0); // reserved2
-        w.u32(0); // reserved3
-    }
-    if has_eh_frame {
-        let eh_foff =
-            vm_addr_to_file_offset(eh_frame_layout.mem_offset, mappings).unwrap_or(0) as u32;
-        w.name16(b"__eh_frame");
-        w.name16(b"__TEXT");
-        w.u64(eh_frame_layout.mem_offset);
-        w.u64(eh_frame_layout.mem_size);
-        w.u32(eh_foff);
-        w.u32(3); // align 2^3 = 8
-        w.u32(0);
-        w.u32(0);
-        w.u32(0x6800_000B); // S_COALESCED | S_ATTR_NO_TOC | S_ATTR_STRIP_STATIC_SYMS | S_ATTR_LIVE_SUPPORT
-        w.u32(0);
-        w.u32(0);
-        w.u32(0);
-    }
-    if has_unwind_info {
-        let ui_foff = vm_addr_to_file_offset(unwind_info_vm_addr, mappings).unwrap_or(0) as u32;
-        w.name16(b"__unwind_info");
-        w.name16(b"__TEXT");
-        w.u64(unwind_info_vm_addr);
-        w.u64(unwind_info_size);
-        w.u32(ui_foff);
-        w.u32(2); // align 2^2 = 4
-        w.u32(0); // reloff
-        w.u32(0); // nreloc
-        w.u32(0); // flags = S_REGULAR
-        w.u32(0); // reserved1
-        w.u32(0); // reserved2
+        // reserved2: stub size for S_SYMBOL_STUBS
+        let reserved2 = if sec.flags & 0xFF == 0x08 { 12u32 } else { 0 };
+        w.u32(reserved2);
         w.u32(0); // reserved3
     }
 
     if has_data {
-        let mut nsects = if has_tvars { 2u32 } else { 0 };
-        if has_rustc {
-            nsects += 1;
-        }
-        if has_init_array {
-            nsects += 1;
-        }
-        if has_got {
-            nsects += 1;
-        }
-        let data_cmd_size = 72 + 80 * nsects;
+        let data_nsects = data_sections.len() as u32;
+        let data_cmd_size = 72 + 80 * data_nsects;
         w.u32(LC_SEGMENT_64);
         w.u32(data_cmd_size);
         w.name16(b"__DATA");
@@ -2761,137 +3144,25 @@ fn write_headers(
         w.u64(data_filesize);
         w.u32(VM_PROT_READ | VM_PROT_WRITE);
         w.u32(VM_PROT_READ | VM_PROT_WRITE);
-        w.u32(nsects);
+        w.u32(data_nsects);
         w.u32(0);
-        if has_tvars {
-            // Section addresses must be within [data_vmaddr, data_vmaddr+data_vmsize).
-            // Clamp to segment range.
-            // Find actual __thread_vars address by scanning object sections
-            let le = object::Endianness::Little;
-            let mut tvars_addr = u64::MAX;
-            let mut tvars_size = 0u64;
-            let mut tdata_addr = u64::MAX;
-            let mut tdata_size = 0u64;
-            for group in &layout.group_layouts {
-                for file_layout in &group.files {
-                    if let FileLayout::Object(obj) = file_layout {
-                        for (sec_idx, _) in obj.sections.iter().enumerate() {
-                            if let Some(s) = obj.object.sections.get(sec_idx) {
-                                use object::read::macho::Section as _;
-                                let sec_type = s.flags(le) & 0xFF;
-                                if let Some(addr) = obj.section_resolutions[sec_idx].address() {
-                                    if sec_type == 0x13 {
-                                        // S_THREAD_LOCAL_VARIABLES
-                                        tvars_addr = tvars_addr.min(addr);
-                                        tvars_size += s.size(le);
-                                    } else if sec_type == 0x11 {
-                                        // S_THREAD_LOCAL_REGULAR
-                                        tdata_addr = tdata_addr.min(addr);
-                                        tdata_size += s.size(le);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            tvars_size = (tvars_size / 24) * 24;
-            if tvars_addr == u64::MAX {
-                tvars_addr = 0;
-            }
-            // If no type-0x11 sections, use TDATA layout (may be empty but correctly positioned)
-            if tdata_addr == u64::MAX {
-                tdata_addr = tdata_layout.mem_offset;
-            }
-            let tvars_foff = vm_addr_to_file_offset(tvars_addr, mappings)
-                .unwrap_or(data_fileoff as usize) as u32;
-            w.name16(b"__thread_vars");
-            w.name16(b"__DATA");
-            w.u64(tvars_addr);
-            w.u64(tvars_size);
-            w.u32(tvars_foff);
-            w.u32(3);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0x13); // S_THREAD_LOCAL_VARIABLES
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
 
-            // __thread_data: init template. Size includes TBSS for dyld.
-            let tdata_init_addr = tdata_addr;
-            let tdata_init_size = ((tdata_size + 7) & !7) + tbss_layout.mem_size;
-            let tdata_init_foff = vm_addr_to_file_offset(tdata_init_addr, mappings)
-                .unwrap_or(data_fileoff as usize) as u32;
-            w.name16(b"__thread_data");
-            w.name16(b"__DATA");
-            w.u64(tdata_init_addr);
-            w.u64(tdata_init_size);
-            w.u32(tdata_init_foff);
-            w.u32(2);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0x11); // S_THREAD_LOCAL_REGULAR
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-        }
-        if has_rustc {
-            // Always emit .rustc in __DATA for rustc to find metadata.
-            let rc_addr = if rustc_in_text {
-                data_vmaddr
-            } else {
-                rustc_addr.max(data_vmaddr)
-            };
-            let rc_foff = if rustc_in_text {
-                data_fileoff as u32
-            } else {
-                vm_addr_to_file_offset(rustc_addr, mappings).unwrap_or(data_fileoff as usize) as u32
-            };
-            w.name16(b".rustc");
-            w.name16(b"__DATA");
-            w.u64(rc_addr);
-            w.u64(rustc_size);
-            w.u32(rc_foff);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
-        }
-        if has_got {
-            let got_foff = vm_addr_to_file_offset(got_layout.mem_offset, mappings)
-                .unwrap_or(data_fileoff as usize) as u32;
-            w.name16(b"__got");
-            w.name16(b"__DATA");
-            w.u64(got_layout.mem_offset);
-            w.u64(got_layout.mem_size);
-            w.u32(got_foff);
-            w.u32(3); // align 2^3 = 8
+        // Write DATA section headers.
+        for sec in &data_sections {
+            w.buf[w.pos..w.pos + 16].copy_from_slice(&sec.sectname);
+            w.pos += 16;
+            w.buf[w.pos..w.pos + 16].copy_from_slice(&sec.segname);
+            w.pos += 16;
+            w.u64(sec.addr);
+            w.u64(sec.size);
+            w.u32(sec.offset);
+            w.u32(sec.align);
             w.u32(0); // reloff
             w.u32(0); // nreloc
-            w.u32(0x06); // S_NON_LAZY_SYMBOL_POINTERS
+            w.u32(sec.flags);
             w.u32(0); // reserved1
             w.u32(0); // reserved2
             w.u32(0); // reserved3
-        }
-        if has_init_array {
-            let ia_foff = vm_addr_to_file_offset(init_array_layout.mem_offset, mappings)
-                .unwrap_or(data_fileoff as usize) as u32;
-            w.name16(b"__mod_init_func");
-            w.name16(b"__DATA");
-            w.u64(init_array_layout.mem_offset);
-            w.u64(init_array_layout.mem_size);
-            w.u32(ia_foff);
-            w.u32(3); // align 2^3 = 8
-            w.u32(0);
-            w.u32(0);
-            w.u32(0x09); // S_MOD_INIT_FUNC_POINTERS
-            w.u32(0);
-            w.u32(0);
-            w.u32(0);
         }
     }
 
@@ -3672,6 +3943,384 @@ fn validate_macho_output(buf: &[u8]) -> Result {
                         prev_end = sec_addr + sec_size;
                     }
                 }
+            }
+        }
+
+        // Check TLS invariants for __thread_vars descriptors.
+        if let Ok(Some((seg, seg_data))) = cmd.segment_64() {
+            if crate::macho::trim_nul(&seg.segname) == b"__DATA" {
+                if let Ok(sections) = seg.sections(le, seg_data) {
+                    let mut tdata_size = 0u64;
+                    let mut tbss_size = 0u64;
+                    let mut tvars_foff = 0usize;
+                    let mut tvars_count = 0usize;
+                    for sec in sections {
+                        let sec_type = sec.flags(le) & 0xFF;
+                        let size = sec.size(le);
+                        match sec_type {
+                            0x11 => tdata_size = size,
+                            0x12 => tbss_size = size,
+                            0x13 => {
+                                tvars_foff = sec.offset(le) as usize;
+                                tvars_count = size as usize / 24;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let tls_total = tdata_size + tbss_size;
+
+                    if tvars_count > 0 && tls_total > 0 {
+                        let mut offsets = Vec::new();
+                        for i in 0..tvars_count {
+                            let base = tvars_foff + i * 24;
+                            if base + 24 > buf.len() {
+                                break;
+                            }
+                            let key =
+                                u64::from_le_bytes(buf[base + 8..base + 16].try_into().unwrap());
+                            let offset =
+                                u64::from_le_bytes(buf[base + 16..base + 24].try_into().unwrap());
+
+                            // Invariant: key must be 0 (dyld manages it at runtime)
+                            if key != 0 {
+                                crate::bail!(
+                                    "validate: TLV descriptor [{i}] key={key:#x} (must be 0)"
+                                );
+                            }
+
+                            // Invariant: offset must not have fixup encoding
+                            // (high bits in 51-63 must be 0)
+                            if (offset >> 51) != 0 {
+                                crate::bail!(
+                                    "validate: TLV descriptor [{i}] offset={offset:#x} \
+                                     has fixup encoding (bits 51+ set)"
+                                );
+                            }
+
+                            // Invariant: offset must be within TLS block
+                            if offset >= tls_total {
+                                crate::bail!(
+                                    "validate: TLV descriptor [{i}] offset={offset:#x} \
+                                     exceeds TLS block size {tls_total:#x} \
+                                     (thread_data={tdata_size:#x} + thread_bss={tbss_size:#x})"
+                                );
+                            }
+
+                            offsets.push(offset);
+                        }
+
+                        // Invariant: no two TLV descriptors should share the same offset
+                        // (unless both are zero — which indicates a bug but may not crash)
+                        offsets.sort();
+                        for w in offsets.windows(2) {
+                            if w[0] == w[1] && tvars_count > 1 {
+                                crate::bail!(
+                                    "validate: duplicate TLV offset {:#x} — \
+                                     two thread-locals share the same TLS slot",
+                                    w[0]
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check LC_SYMTAB
+        if let Ok(Some(symtab)) = cmd.symtab() {
+            let symoff = symtab.symoff.get(le) as u64;
+            let nsyms = symtab.nsyms.get(le) as u64;
+            let stroff = symtab.stroff.get(le) as u64;
+            let strsize = symtab.strsize.get(le) as u64;
+            let sym_end = symoff + nsyms * 16;
+            if sym_end > file_len {
+                crate::bail!(
+                    "validate: LC_SYMTAB extends beyond file \
+                     (symoff {symoff:#x} + {nsyms}*16 = {sym_end:#x} > {file_len:#x})"
+                );
+            }
+            if stroff + strsize > file_len {
+                crate::bail!(
+                    "validate: LC_SYMTAB strtab extends beyond file \
+                     (stroff {stroff:#x} + {strsize:#x} > {file_len:#x})"
+                );
+            }
+        }
+    }
+
+    // Symbol-section consistency check: every defined symbol's n_value must
+    // fall within the address range of the section identified by its n_sect.
+    // This catches layout bugs where a symbol is resolved using the wrong
+    // section's output address.
+    {
+        let mut cmds_sym = header
+            .load_commands(le, buf, 0)
+            .map_err(|e| crate::error!("validate: {e}"))?;
+        // Collect all sections with their address ranges
+        let mut section_ranges: Vec<(u64, u64)> = Vec::new(); // (addr, addr+size)
+        while let Ok(Some(cmd)) = cmds_sym.next() {
+            if let Ok(Some((seg, seg_data))) = cmd.segment_64() {
+                if let Ok(sections) = seg.sections(le, seg_data) {
+                    for sec in sections {
+                        let addr = sec.addr(le);
+                        let size = sec.size(le);
+                        section_ranges.push((addr, addr + size));
+                    }
+                }
+            }
+            if let Ok(Some(symtab)) = cmd.symtab() {
+                let symoff = symtab.symoff.get(le) as usize;
+                let nsyms = symtab.nsyms.get(le) as usize;
+                let stroff = symtab.stroff.get(le) as usize;
+                for i in 0..nsyms {
+                    let sym_off = symoff + i * 16;
+                    if sym_off + 16 > buf.len() {
+                        break;
+                    }
+                    let n_strx = u32::from_le_bytes(buf[sym_off..sym_off + 4].try_into().unwrap());
+                    let n_type = buf[sym_off + 4];
+                    let n_sect = buf[sym_off + 5];
+                    let n_value =
+                        u64::from_le_bytes(buf[sym_off + 8..sym_off + 16].try_into().unwrap());
+
+                    // Only check defined symbols in a section (N_SECT = 0x0e)
+                    if (n_type & 0x0e) != 0x0e || n_sect == 0 {
+                        continue;
+                    }
+                    let sec_idx = n_sect as usize - 1;
+                    if sec_idx >= section_ranges.len() {
+                        continue;
+                    }
+                    let (sec_start, sec_end) = section_ranges[sec_idx];
+                    if n_value < sec_start || n_value > sec_end {
+                        // Get symbol name for the error message
+                        let name = if (n_strx as usize) < buf.len() - stroff {
+                            let name_start = stroff + n_strx as usize;
+                            let name_end = buf[name_start..]
+                                .iter()
+                                .position(|&b| b == 0)
+                                .map(|p| name_start + p)
+                                .unwrap_or(name_start);
+                            String::from_utf8_lossy(&buf[name_start..name_end]).to_string()
+                        } else {
+                            format!("<sym {i}>")
+                        };
+                        crate::bail!(
+                            "validate: symbol '{name}' n_value={n_value:#x} is outside \
+                             section {sec_idx} range [{sec_start:#x}..{sec_end:#x})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Global section file-offset overlap check: no two sections should
+    // write to the same file bytes. This catches bugs where multiple input
+    // sections map to overlapping parts of the same output section.
+    {
+        let mut cmds2 = header
+            .load_commands(le, buf, 0)
+            .map_err(|e| crate::error!("validate: bad load commands: {e}"))?;
+        let mut all_sections: Vec<(u64, u64, String)> = Vec::new();
+        while let Ok(Some(cmd)) = cmds2.next() {
+            if let Ok(Some((seg, seg_data))) = cmd.segment_64() {
+                let segname = String::from_utf8_lossy(crate::macho::trim_nul(&seg.segname));
+                if let Ok(sections) = seg.sections(le, seg_data) {
+                    for sec in sections {
+                        let sectname =
+                            String::from_utf8_lossy(crate::macho::trim_nul(sec.sectname()));
+                        let sec_offset = sec.offset(le) as u64;
+                        let sec_size = sec.size(le);
+                        let sec_type = sec.flags(le) & 0xFF;
+                        // Skip zerofill sections (no file data)
+                        if sec_size > 0 && sec_offset > 0 && sec_type != 0x01 && sec_type != 0x0C
+                        {
+                            all_sections
+                                .push((sec_offset, sec_size, format!("{segname},{sectname}")));
+                        }
+                    }
+                }
+            }
+        }
+        all_sections.sort_by_key(|s| s.0);
+        for w in all_sections.windows(2) {
+            let (off1, size1, ref name1) = w[0];
+            let (off2, _size2, ref name2) = w[1];
+            if off1 + size1 > off2 {
+                crate::bail!(
+                    "validate: section file ranges overlap: \
+                     {name1} [{off1:#x}..{:#x}) and {name2} [{off2:#x}..)",
+                    off1 + size1
+                );
+            }
+        }
+    }
+
+    // Validate chained fixup chains: walk every chain entry and verify
+    // rebase targets are within the image and strides stay within pages.
+    validate_chained_fixups(buf)?;
+
+    Ok(())
+}
+
+/// Walk all chained fixup chains and validate each entry.
+fn validate_chained_fixups(buf: &[u8]) -> Result {
+    use object::read::macho::MachHeader as _;
+    let le = object::Endianness::Little;
+    let header = match object::macho::MachHeader64::<object::Endianness>::parse(buf, 0) {
+        Ok(h) => h,
+        Err(_) => return Ok(()),
+    };
+    let mut cmds = match header.load_commands(le, buf, 0) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    // Find LC_DYLD_CHAINED_FIXUPS and the DATA segment
+    let mut cf_off = 0u32;
+    let mut cf_size = 0u32;
+    let mut data_fileoff = 0u64;
+    let mut _data_vmaddr = 0u64;
+    let mut image_end = 0u64; // highest vmaddr + vmsize
+
+    // Scan load commands manually for chained fixups offset.
+    {
+        let mut off = 32usize; // after Mach-O 64 header
+        let ncmds = u32::from_le_bytes(buf[16..20].try_into().unwrap_or([0; 4])) as usize;
+        for _ in 0..ncmds {
+            if off + 8 > buf.len() {
+                break;
+            }
+            let cmd_val = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+            let cmdsize = u32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap()) as usize;
+            if cmd_val == 0x8000_0034 && off + 16 <= buf.len() {
+                cf_off = u32::from_le_bytes(buf[off + 8..off + 12].try_into().unwrap());
+                cf_size = u32::from_le_bytes(buf[off + 12..off + 16].try_into().unwrap());
+            }
+            off += cmdsize;
+        }
+    }
+
+    while let Ok(Some(cmd)) = cmds.next() {
+        if let Ok(Some((seg, _))) = cmd.segment_64() {
+            let va = seg.vmaddr.get(le);
+            let vs = seg.vmsize.get(le);
+            image_end = image_end.max(va + vs);
+            let segname = crate::macho::trim_nul(&seg.segname);
+            if segname == b"__DATA" {
+                data_fileoff = seg.fileoff.get(le);
+                _data_vmaddr = va;
+            }
+        }
+    }
+
+    if cf_off == 0 || cf_size == 0 {
+        return Ok(()); // no chained fixups
+    }
+
+    let cf = match buf.get(cf_off as usize..(cf_off + cf_size) as usize) {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    if cf.len() < 32 {
+        return Ok(());
+    }
+
+    let starts_offset = u32::from_le_bytes(cf[4..8].try_into().unwrap()) as usize;
+    let imports_count = u32::from_le_bytes(cf[16..20].try_into().unwrap());
+
+    if starts_offset + 4 > cf.len() {
+        return Ok(());
+    }
+    let seg_count = u32::from_le_bytes(cf[starts_offset..starts_offset + 4].try_into().unwrap());
+
+    for s in 0..seg_count as usize {
+        let seg_off_pos = starts_offset + 4 + s * 4;
+        if seg_off_pos + 4 > cf.len() {
+            break;
+        }
+        let seg_off =
+            u32::from_le_bytes(cf[seg_off_pos..seg_off_pos + 4].try_into().unwrap()) as usize;
+        if seg_off == 0 {
+            continue;
+        }
+        let ss = starts_offset + seg_off;
+        if ss + 22 > cf.len() {
+            continue;
+        }
+        let page_size = u16::from_le_bytes(cf[ss + 4..ss + 6].try_into().unwrap()) as u64;
+        let page_count = u16::from_le_bytes(cf[ss + 20..ss + 22].try_into().unwrap()) as usize;
+
+        if page_size == 0 {
+            continue;
+        }
+
+        for p in 0..page_count {
+            let ps_pos = ss + 22 + p * 2;
+            if ps_pos + 2 > cf.len() {
+                break;
+            }
+            let ps = u16::from_le_bytes(cf[ps_pos..ps_pos + 2].try_into().unwrap());
+            if ps == 0xFFFF {
+                continue;
+            }
+            if ps as u64 >= page_size {
+                crate::bail!(
+                    "validate: chained fixup page start {ps:#x} >= page_size {page_size:#x} \
+                     (seg {s}, page {p})"
+                );
+            }
+
+            // Walk the chain
+            let page_file_off = data_fileoff as usize + p * page_size as usize;
+            let mut file_off = page_file_off + ps as usize;
+            let mut chain_count = 0u32;
+            loop {
+                if file_off + 8 > buf.len() {
+                    crate::bail!(
+                        "validate: fixup chain entry at file offset {file_off:#x} \
+                         beyond file end (seg {s}, page {p}, entry {chain_count})"
+                    );
+                }
+                let val = u64::from_le_bytes(buf[file_off..file_off + 8].try_into().unwrap());
+                let bind = (val >> 63) & 1;
+                let next_stride = ((val >> 51) & 0xFFF) as usize;
+
+                if bind != 0 {
+                    let ordinal = (val & 0xFF_FFFF) as u32;
+                    if ordinal >= imports_count {
+                        crate::bail!(
+                            "validate: bind ordinal {ordinal} >= imports_count {imports_count} \
+                             at file offset {file_off:#x} (seg {s}, page {p})"
+                        );
+                    }
+                } else {
+                    let target = val & 0xF_FFFF_FFFF;
+                    if target > 0 && target > image_end {
+                        crate::bail!(
+                            "validate: rebase target {target:#x} beyond image end {image_end:#x} \
+                             at file offset {file_off:#x} (seg {s}, page {p})"
+                        );
+                    }
+                }
+
+                chain_count += 1;
+                if next_stride == 0 {
+                    break;
+                }
+
+                let next_off = file_off + next_stride * 4;
+                let next_in_page = next_off - page_file_off;
+                if next_in_page >= page_size as usize {
+                    crate::bail!(
+                        "validate: fixup chain crosses page boundary at file offset \
+                         {file_off:#x}, next at +{} bytes = offset {next_in_page:#x} in page \
+                         (page_size={page_size:#x}, seg {s}, page {p})",
+                        next_stride * 4
+                    );
+                }
+                file_off = next_off;
             }
         }
     }
