@@ -3111,9 +3111,9 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
     }
     add_cmd(&mut ncmds, &mut cmdsize, 72); // LINKEDIT
+    add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_UUID
     if is_dylib {
         add_cmd(&mut ncmds, &mut cmdsize, id_dylib_cmd_size); // LC_ID_DYLIB
-        add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_UUID
     } else {
         add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_MAIN
     }
@@ -3248,6 +3248,22 @@ fn write_headers(
         0,
     );
 
+    // LC_UUID = 0x1B
+    w.u32(0x1B);
+    w.u32(24);
+    // Generate a deterministic UUID from the output content
+    let uuid_bytes: [u8; 16] = {
+        let mut h = [0u8; 16];
+        let output_name = layout.symbol_db.args.output();
+        for (i, b) in output_name.to_string_lossy().bytes().enumerate() {
+            h[i % 16] ^= b;
+        }
+        h[6] = (h[6] & 0x0F) | 0x40; // version 4
+        h[8] = (h[8] & 0x3F) | 0x80; // variant 1
+        h
+    };
+    w.bytes(&uuid_bytes);
+
     if is_dylib {
         // LC_ID_DYLIB = 0x0D
         w.u32(0x0D);
@@ -3259,20 +3275,6 @@ fn write_headers(
         w.bytes(install_name.as_bytes());
         w.u8(0);
         w.pad8();
-        // LC_UUID = 0x1B (required for dlopen)
-        w.u32(0x1B);
-        w.u32(24);
-        // Generate a deterministic UUID from the output path
-        let uuid_bytes: [u8; 16] = {
-            let mut h = [0u8; 16];
-            for (i, b) in install_name.bytes().enumerate() {
-                h[i % 16] ^= b;
-            }
-            h[6] = (h[6] & 0x0F) | 0x40; // version 4
-            h[8] = (h[8] & 0x3F) | 0x80; // variant 1
-            h
-        };
-        w.bytes(&uuid_bytes);
     } else {
         w.u32(LC_MAIN);
         w.u32(24);

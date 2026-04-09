@@ -154,8 +154,8 @@ fn should_ignore(name: &str) -> bool {
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
         "lc-build-version",   // LC_BUILD_VERSION tool field
-        "uuid",               // LC_UUID
-        "uuid2",              // LC_UUID reproducibility
+        "uuid",               // LC_UUID reproducibility (needs -final_output)
+        // uuid2 now passes
         "version",            // -current_version / -compatibility_version
         "w",                  // -w (suppress warnings)
         "Z",                  // -Z (no default search paths)
