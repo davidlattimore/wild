@@ -227,13 +227,15 @@ fn build_mappings_and_size(
         .iter()
         .filter(|r| r.is_some())
         .count();
-    // Each nlist64 = 16 bytes, average symbol name ~80 bytes + NUL.
-    // Also account for chained fixups data (page starts, imports, symbols).
-    let symtab_estimate = n_syms * (16 + 80);
-    let n_fixups = n_syms; // rough upper bound: each symbol may need a fixup
-    let fixups_estimate = 8192 + n_fixups * 8; // page starts + import entries
+    // Each nlist64 = 16 bytes, Rust mangled symbol names average ~200 bytes.
+    // Also account for chained fixups data (page starts, imports, symbol names).
+    // Overestimating is cheap (buffer is truncated to actual size); underestimating
+    // causes silent data loss and codesign failure.
+    let symtab_estimate = n_syms * (16 + 200);
+    let n_fixups = n_syms;
+    let fixups_estimate = 16384 + n_fixups * 12;
     let linkedit_estimate = fixups_estimate + n_exports * 256 + symtab_estimate;
-    let total = linkedit_offset as usize + linkedit_estimate.max(16384);
+    let total = linkedit_offset as usize + linkedit_estimate.max(65536);
     (mappings, total)
 }
 
