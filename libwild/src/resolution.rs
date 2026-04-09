@@ -642,6 +642,7 @@ pub(crate) struct ResolvedCommon<'data, P: Platform> {
     pub(crate) object: &'data P::File<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) whole_archive: bool,
 }
 
 #[derive(Debug)]
@@ -1000,6 +1001,7 @@ impl<'data, P: Platform> ResolvedCommon<'data, P> {
             object: &obj.parsed.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,
+            whole_archive: obj.parsed.modifiers.whole_archive,
         }
     }
 
@@ -1118,7 +1120,8 @@ fn resolve_section<'data, P: Platform>(
 
     let mut unloaded_section;
     let mut is_debug_info = false;
-    let mut must_load = input_section.should_retain() || input_section.is_note();
+    let mut must_load =
+        input_section.should_retain() || input_section.is_note() || obj.common.whole_archive;
 
     let file_name = if let Some(entry) = &obj.common.input.entry {
         // For archive members, match against the member name (e.g., "app.o"),

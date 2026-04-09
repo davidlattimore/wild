@@ -3642,6 +3642,12 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .context("Cannot parse .riscv.attributes section")?;
         }
 
+        // For whole-archive members, ensure all defined symbols get DIRECT flag
+        // so they receive resolutions and appear in the output symbol table.
+        if self.input.file.modifiers.whole_archive {
+            self.load_all_defined_symbols::<A>(common, resources, queue, scope)?;
+        }
+
         let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
             && (!self.input.has_archive_semantics()
                 || resources
@@ -3980,6 +3986,37 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             dynamic_symbol_index,
             memory_offsets,
         )))
+    }
+
+    /// For whole-archive members, set DIRECT on all defined symbols so they
+    /// get resolutions during finalisation and appear in the output.
+    fn load_all_defined_symbols<'scope, A: Arch<Platform = P>>(
+        &mut self,
+        common: &mut CommonGroupState<'data, P>,
+        resources: &'scope GraphResources<'data, 'scope, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        for (sym_index, sym) in self.object.enumerate_symbols() {
+            if sym.is_undefined() || sym.is_common() {
+                continue;
+            }
+            // Skip symbols in discarded sections (e.g. __compact_unwind).
+            if let Ok(Some(sec_idx)) = self.object.symbol_section(sym, sym_index) {
+                if matches!(self.sections.get(sec_idx.0), Some(SectionSlot::Discard)) {
+                    continue;
+                }
+            }
+            let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+            let old_flags = resources
+                .per_symbol_flags
+                .get_atomic(symbol_id)
+                .fetch_or(ValueFlags::DIRECT);
+            if !old_flags.has_resolution() {
+                self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
+            }
+        }
+        Ok(())
     }
 
     fn load_non_hidden_symbols<'scope, A: Arch<Platform = P>>(

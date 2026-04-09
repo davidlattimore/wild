@@ -867,10 +867,13 @@ fn write_exe_symtab(
         if name.is_empty() {
             continue;
         }
+        let is_local = res.flags.is_downgraded_to_local();
         let n_type = if res.flags.contains(crate::value_flags::ValueFlags::ABSOLUTE) {
-            0x02_u8 // N_ABS
+            if is_local { 0x02_u8 } else { 0x03_u8 } // N_ABS [| N_EXT]
+        } else if is_local {
+            0x0e_u8 // N_SECT (local)
         } else {
-            0x0e_u8 // N_SECT
+            0x0f_u8 // N_SECT | N_EXT (external)
         };
         seen_names.insert(name.clone());
         entries.push((name, res.raw_value, n_type));

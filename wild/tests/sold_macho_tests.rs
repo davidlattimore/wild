@@ -66,8 +66,6 @@ fn should_ignore(name: &str) -> bool {
         "unexported-symbols-list",      // -unexported_symbols_list
         "export-dynamic",               // -export_dynamic
         "merge-scope",                  // visibility merging
-        "force-load",                   // -force_load
-        "all-load",                     // -all_load
         "hidden-l",                     // -hidden-l
         "needed-l",                     // -needed-l
         "needed-framework",             // -needed_framework
