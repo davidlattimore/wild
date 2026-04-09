@@ -227,10 +227,13 @@ fn build_mappings_and_size(
         .iter()
         .filter(|r| r.is_some())
         .count();
-    // Each nlist64 = 16 bytes, average symbol name ~60 bytes + NUL
-    let symtab_estimate = n_syms * (16 + 64);
-    let linkedit_estimate = 8192 + n_exports * 256 + symtab_estimate;
-    let total = linkedit_offset as usize + linkedit_estimate.max(8192);
+    // Each nlist64 = 16 bytes, average symbol name ~80 bytes + NUL.
+    // Also account for chained fixups data (page starts, imports, symbols).
+    let symtab_estimate = n_syms * (16 + 80);
+    let n_fixups = n_syms; // rough upper bound: each symbol may need a fixup
+    let fixups_estimate = 8192 + n_fixups * 8; // page starts + import entries
+    let linkedit_estimate = fixups_estimate + n_exports * 256 + symtab_estimate;
+    let total = linkedit_offset as usize + linkedit_estimate.max(16384);
     (mappings, total)
 }
 
