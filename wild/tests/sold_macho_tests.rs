@@ -72,7 +72,6 @@ fn should_ignore(name: &str) -> bool {
         "needed-l",                     // -needed-l
         "needed-framework",             // -needed_framework
         "weak-l",                       // -weak-l
-        "weak-undef",                   // -U / weak undefined
         "reexport-l",                   // -reexport-l
         "reexport-library",             // -reexport_library
         "install-name",                 // -install_name
@@ -137,8 +136,6 @@ fn should_ignore(name: &str) -> bool {
         "libunwind",                       // libunwind integration
         "objc-selector",                   // ObjC selector refs
         "debuginfo",                       // debug info pass-through
-        "filepath",                        // -filelist support
-        "filepath2",                       // -filelist support
     ];
 
     // x86_64-specific tests

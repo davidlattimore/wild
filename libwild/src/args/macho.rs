@@ -6,9 +6,11 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -213,8 +215,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-order_file"
         | "-exported_symbols_list"
         | "-unexported_symbols_list"
-        | "-filelist"
-        | "-sectcreate"
         | "-framework"
         | "-weak_framework"
         | "-weak_library"
@@ -224,8 +224,31 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-client_name"
         | "-sub_library"
         | "-sub_umbrella"
-        | "-objc_abi_version" => {
+        | "-objc_abi_version"
+        | "-add_ast_path"
+        | "-macos_version_min"
+        | "-dependency_info"
+        | "-map"
+        | "-stack_size"
+        | "-pagezero_size"
+        | "-image_base"
+        | "-final_output"
+        | "-oso_prefix"
+        | "-needed_framework" => {
             input.next(); // consume the argument
+            return Ok(());
+        }
+        // -sectcreate takes 3 arguments: segname sectname file
+        "-sectcreate" => {
+            input.next(); // segname
+            input.next(); // sectname
+            input.next(); // file
+            return Ok(());
+        }
+        // -add_empty_section takes 2 arguments: segname sectname
+        "-add_empty_section" => {
+            input.next(); // segname
+            input.next(); // sectname
             return Ok(());
         }
         // -platform_version takes 3 arguments: platform min_version sdk_version
@@ -236,8 +259,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         // Flags that take 1 argument, ignored (group 2)
-        "-undefined" | "-multiply_defined" | "-force_load" | "-weak-l" | "-needed-l"
-        | "-reexport-l" | "-upward-l" | "-alignment" => {
+        "-undefined" | "-multiply_defined" | "-force_load" | "-upward-l" | "-alignment" => {
             input.next();
             return Ok(());
         }
@@ -256,13 +278,28 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-ObjC"
         | "-no_implicit_dylibs"
         | "-search_paths_first"
+        | "-search_dylibs_first"
         | "-two_levelnamespace"
         | "-flat_namespace"
         | "-bind_at_load"
         | "-pie"
         | "-no_pie"
         | "-execute"
-        | "-bundle" => {
+        | "-bundle"
+        | "-no_function_starts"
+        | "-no_fixup_chains"
+        | "-fixup_chains"
+        | "-no_adhoc_codesign"
+        | "-adhoc_codesign"
+        | "-S"
+        | "-x"
+        | "-w"
+        | "-Z"
+        | "-data_in_code_info"
+        | "-no_data_in_code_info"
+        | "-function_starts"
+        | "-subsections_via_symbols"
+        | "-reproducible" => {
             return Ok(());
         }
         "-all_load" => {
@@ -287,6 +324,36 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.common.validate_output = true;
             return Ok(());
         }
+        "-filelist" => {
+            if let Some(val) = input.next() {
+                let val = val.as_ref();
+                // -filelist <path>[,<directory>]
+                let (file_path, prefix) = if let Some(comma) = val.find(',') {
+                    (&val[..comma], Some(&val[comma + 1..]))
+                } else {
+                    (val, None)
+                };
+                let content = std::fs::read_to_string(file_path)
+                    .with_context(|| format!("Failed to read filelist `{file_path}`"))?;
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let path = if let Some(dir) = prefix {
+                        Path::new(dir).join(line)
+                    } else {
+                        PathBuf::from(line)
+                    };
+                    args.common.inputs.push(Input {
+                        spec: InputSpec::File(Box::from(path.as_path())),
+                        search_first: None,
+                        modifiers: *modifier_stack.last().unwrap(),
+                    });
+                }
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -306,6 +373,26 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         } else {
             args.lib_search_paths.push(Box::from(Path::new(path)));
         }
+        return Ok(());
+    }
+
+    // -F<path> (framework search path) — ignore for now
+    if arg.strip_prefix("-F").is_some() {
+        return Ok(());
+    }
+
+    // -U <symbol> (allow undefined, dynamic lookup)
+    if arg == "-U" {
+        input.next();
+        return Ok(());
+    }
+
+    // Prefix link flags: -hidden-l<name>, -needed-l<name>, -reexport-l<name>, -weak-l<name>
+    if arg.starts_with("-hidden-l")
+        || arg.starts_with("-needed-l")
+        || arg.starts_with("-reexport-l")
+        || arg.starts_with("-weak-l")
+    {
         return Ok(());
     }
 
