@@ -1673,14 +1673,6 @@ fn apply_relocations(
                         if n_sect == 0 {
                             // Symbol is undefined (no section). Check if it has a name
                             // that looks like a TLS init symbol.
-                            let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
-                            if name.ends_with(b"$tlv$init") {
-                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
-                                    .and_then(|mut f| {
-                                        use std::io::Write;
-                                        writeln!(f, "TLS $tlv$init with n_sect=0: {}", String::from_utf8_lossy(name))
-                                    });
-                            }
                             return None;
                         }
                         let sec_idx = n_sect as usize - 1;
@@ -1694,12 +1686,26 @@ fn apply_relocations(
                                 obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
                             let result = sec_out + sym.n_value(le).wrapping_sub(sec_in);
                             let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                            // For TLS init symbols ($tlv$init), compute a TLS-block-
+                            // relative offset instead of an absolute address. The TLV
+                            // descriptor offset field is read by dyld as an offset into
+                            // the thread-local storage template (tdata + tbss).
                             if name.ends_with(b"$tlv$init") {
-                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
-                                    .and_then(|mut f| {
-                                        use std::io::Write;
-                                        writeln!(f, "TLS resolved: sec_out={sec_out:#x} sec_in={sec_in:#x} n_value={:#x} result={result:#x}", sym.n_value(le))
-                                    });
+                                let tdata = layout.section_layouts.get(output_section_id::TDATA);
+                                let tdata_start = tdata.mem_offset;
+                                let tbss = layout.section_layouts.get(output_section_id::TBSS);
+                                use object::read::macho::Section as _;
+                                let sec_type = obj.object.sections.get(sec_idx)
+                                    .map(|s| s.flags(le) & 0xFF).unwrap_or(0);
+                                let tls_offset = if sec_type == 0x12 {
+                                    // S_THREAD_LOCAL_ZEROFILL: offset = tdata_size + offset_in_tbss
+                                    let tbss_start = tbss.mem_offset;
+                                    tdata.mem_size + (result - tbss_start)
+                                } else {
+                                    // S_THREAD_LOCAL_REGULAR: offset = offset_in_tdata
+                                    result - tdata_start
+                                };
+                                return Some(tls_offset);
                             }
                             return Some(result);
                         }
@@ -1908,43 +1914,14 @@ fn apply_relocations(
                         let in_tbss = tbss.mem_size > 0
                             && target_addr >= tbss.mem_offset
                             && target_addr < tbss.mem_offset + tbss.mem_size;
-                        if !in_tdata && !in_tbss && target_addr > 0 {
-                            // Log non-TLS rebases that MIGHT be TLS
-                            if reloc.r_extern {
-                                use object::read::macho::Nlist as _;
-                                if let Ok(sym) = obj
-                                    .object
-                                    .symbols
-                                    .symbol(object::SymbolIndex(reloc.r_symbolnum as usize))
-                                {
-                                    let name =
-                                        sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
-                                    if name.ends_with(b"$tlv$init") {
-                                        let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
-                                            .and_then(|mut f| {
-                                                use std::io::Write;
-                                                writeln!(f, "MISSED TLS: target={target_addr:#x} tdata=[{:#x}..{:#x}) tbss=[{:#x}..{:#x})",
-                                                    tdata.mem_offset, tdata.mem_offset+tdata.mem_size,
-                                                    tbss.mem_offset, tbss.mem_offset+tbss.mem_size)
-                                            });
-                                    }
-                                }
-                            }
-                        }
                         if in_tdata || in_tbss {
                             let tls_init_start = tdata.mem_offset;
                             let tls_init_size = tdata.mem_size;
                             let tls_offset = if in_tbss {
-                                let aligned_init = (tls_init_size + 7) & !7;
-                                aligned_init + target_addr.saturating_sub(tbss.mem_offset)
+                                tls_init_size + target_addr.saturating_sub(tbss.mem_offset)
                             } else {
                                 target_addr.saturating_sub(tls_init_start)
                             };
-                            let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/wild_tls_debug.log")
-                                .and_then(|mut f| {
-                                    use std::io::Write;
-                                    writeln!(f, "TLS write: foff={patch_file_offset:#x} offset={tls_offset:#x} target={target_addr:#x}")
-                                });
                             out[patch_file_offset..patch_file_offset + 8]
                                 .copy_from_slice(&tls_offset.to_le_bytes());
                         } else {
