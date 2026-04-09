@@ -504,7 +504,8 @@ impl platform::Symbol for SymtabEntry {
             && (n_type & macho::N_EXT) != 0
             && self.n_value(LE) > 0
         {
-            let alignment_val = u64::from(self.n_desc(LE));
+            // GET_COMM_ALIGN: alignment is encoded in bits 8-11 of n_desc
+            let alignment_val = u64::from((self.n_desc(LE) >> 8) & 0x0f);
             let alignment = crate::alignment::Alignment::new(if alignment_val > 0 {
                 1u64 << alignment_val
             } else {
@@ -522,8 +523,11 @@ impl platform::Symbol for SymtabEntry {
 
     fn is_undefined(&self) -> bool {
         let n_type = self.n_type();
-        // Not a stab, and type is N_UNDF
-        (n_type & macho::N_STAB) == 0 && (n_type & macho::N_TYPE) == macho::N_UNDF
+        // Not a stab, and type is N_UNDF, but NOT a common symbol
+        // (common symbols are N_UNDF | N_EXT with n_value > 0)
+        (n_type & macho::N_STAB) == 0
+            && (n_type & macho::N_TYPE) == macho::N_UNDF
+            && !self.is_common()
     }
 
     fn is_local(&self) -> bool {

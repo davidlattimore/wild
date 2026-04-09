@@ -119,8 +119,6 @@ fn should_ignore(name: &str) -> bool {
         "tls",                             // TLV descriptor offset validation
         "tls-mismatch",                    // TLS type mismatch errors
         "tls-mismatch2",                   // TLS type mismatch errors
-        "common",                          // common symbols
-        "common-alignment",                // common symbol alignment
         "cstring",                         // cstring dedup/merging
         "duplicate-error",                 // duplicate symbol error format
         "missing-error",                   // undefined symbol error format
