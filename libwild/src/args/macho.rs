@@ -104,6 +104,8 @@ pub struct MachOArgs {
     pub(crate) oso_prefix: Option<String>,
     /// AST file paths from -add_ast_path (emitted as N_AST stab entries).
     pub(crate) ast_paths: Vec<String>,
+    /// Map file path from -map.
+    pub(crate) map_file: Option<PathBuf>,
     /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
     pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -174,6 +176,7 @@ impl Default for MachOArgs {
             needed_dylib_indices: Default::default(),
             oso_prefix: None,
             ast_paths: Vec::new(),
+            map_file: None,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -476,10 +479,16 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-map" => {
+            if let Some(val) = input.next() {
+                args.map_file = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
         "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
         | "-umbrella" | "-allowable_client"
         | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
-        | "-dependency_info" | "-map" | "-image_base" => {
+        | "-dependency_info" | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());
         }

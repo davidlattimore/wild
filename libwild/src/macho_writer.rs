@@ -143,6 +143,95 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
         }
     }
 
+    // Write map file if requested.
+    if let Some(ref map_path) = layout.symbol_db.args.map_file {
+        write_map_file(layout, map_path)?;
+    }
+
+    Ok(())
+}
+
+/// Write a link map file showing object files, sections, and symbols.
+fn write_map_file(layout: &Layout<'_, MachO>, path: &std::path::Path) -> Result {
+    use crate::layout::FileLayout;
+    use std::io::Write;
+
+    let mut f = std::fs::File::create(path)
+        .map_err(|e| crate::error!("Failed to create map file `{}`: {e}", path.display()))?;
+
+    // Object files section
+    writeln!(f, "# Object files:").unwrap();
+    let mut obj_index = 0usize;
+    let mut obj_paths: Vec<String> = Vec::new();
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            if let FileLayout::Object(obj) = file_layout {
+                let path_str = std::fs::canonicalize(&obj.input.file.filename)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| obj.input.file.filename.to_string_lossy().into_owned());
+                writeln!(f, "[{obj_index:3}] {path_str}").unwrap();
+                obj_paths.push(path_str);
+                obj_index += 1;
+            }
+        }
+    }
+
+    // Sections — aggregate by (segname, sectname)
+    writeln!(f, "\n# Sections:\n# Address\tSize\t\tSegment\tSection").unwrap();
+    let le = object::Endianness::Little;
+    let mut section_map: std::collections::BTreeMap<(Vec<u8>, Vec<u8>), (u64, u64)> = Default::default();
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            if let FileLayout::Object(obj) = file_layout {
+                for (sec_idx, _slot) in obj.sections.iter().enumerate() {
+                    if let Some(addr) = obj.section_resolutions.get(sec_idx).and_then(|r| r.address()) {
+                        if let Some(sec) = obj.object.sections.get(sec_idx) {
+                            use object::read::macho::Section as _;
+                            let segname = crate::macho::trim_nul(sec.segname()).to_vec();
+                            let sectname = crate::macho::trim_nul(sec.sectname()).to_vec();
+                            let size = sec.size(le);
+                            if size > 0 {
+                                let entry = section_map.entry((segname, sectname)).or_insert((u64::MAX, 0));
+                                entry.0 = entry.0.min(addr);
+                                entry.1 += size;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for ((segname, sectname), (addr, size)) in &section_map {
+        let seg = String::from_utf8_lossy(segname);
+        let sect = String::from_utf8_lossy(sectname);
+        writeln!(f, "0x{addr:08X}     0x{size:08X}      {seg}  {sect}").unwrap();
+    }
+
+    // Symbols
+    writeln!(f, "\n# Symbols:\n# Address\tSize\t\tFile  Name").unwrap();
+    let mut sym_obj_idx = 0usize;
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            if let FileLayout::Object(obj) = file_layout {
+                for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
+                    let Some(res) = res else { continue };
+                    if res.raw_value == 0 { continue; }
+                    let symbol_id = crate::symbol_db::SymbolId::from_usize(sym_idx);
+                    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+                    if file_id != obj.file_id { continue; }
+                    let name = match layout.symbol_db.symbol_name(symbol_id) {
+                        Ok(n) => n.bytes(),
+                        Err(_) => continue,
+                    };
+                    if name.is_empty() { continue; }
+                    let name_str = String::from_utf8_lossy(name);
+                    writeln!(f, "0x{:08X}     0x{:08X}      [{sym_obj_idx:3}] {name_str}", res.raw_value, 0).unwrap();
+                }
+                sym_obj_idx += 1;
+            }
+        }
+    }
+
     Ok(())
 }
 

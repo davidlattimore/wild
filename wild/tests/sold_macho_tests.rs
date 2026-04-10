@@ -82,7 +82,7 @@ fn should_ignore(name: &str) -> bool {
         "sectcreate",          // -sectcreate
         "order-file",          // -order_file
         // stack-size now passes
-        "map",                // -map
+        // map now passes (link map file writer)
         "dependency-info",    // -dependency_info
         "print-dependencies", // -print_dependency_info
         // macos-version-min now passes
