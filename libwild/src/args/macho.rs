@@ -692,7 +692,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             // Skip it and other system dylibs that we handle implicitly, but still
             // parse their .tbd to know which symbols they export.
             if lib == "System" || lib == "c" || lib == "m" || lib == "pthread" {
-                // Still parse .tbd for symbol resolution (including re-exported libs)
                 let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
                 if let Some(ref root) = args.syslibroot {
                     search_paths.push(Box::from(root.join("usr/lib")));
