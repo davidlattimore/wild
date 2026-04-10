@@ -2807,9 +2807,14 @@ fn apply_relocations(
                                 .copy_from_slice(&tls_offset.to_le_bytes());
                         } else {
                             if patch_file_offset % 8 != 0 {
-                                crate::bail!(
-                                    "{section_desc}: unaligned base relocation"
-                                );
+                                // Skip metadata sections (e.g. __llvm_addrsig)
+                                // that aren't part of the runtime data layout.
+                                if !section_desc.contains("__llvm") {
+                                    crate::bail!(
+                                        "{section_desc}: unaligned base relocation"
+                                    );
+                                }
+                                continue;
                             }
                             rebase_fixups.push(RebaseFixup {
                                 file_offset: patch_file_offset,
