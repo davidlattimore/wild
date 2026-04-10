@@ -70,7 +70,7 @@ fn should_ignore(name: &str) -> bool {
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         "needed-framework",        // -needed_framework
         "weak-l",                  // -weak-l
-        "reexport-l",              // -reexport-l
+        // reexport-l now passes (DylibLoadKind::Reexport + dylib input)
         "reexport-library",        // -reexport_library
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
@@ -119,7 +119,7 @@ fn should_ignore(name: &str) -> bool {
         "tls",                             // TLV descriptor offset validation
         "tls-mismatch",                    // TLS type mismatch errors
         "tls-mismatch2",                   // TLS type mismatch errors
-        "cstring",                         // cstring dedup/merging
+        // cstring now passes (S_CSTRING_LITERALS merge enabled)
         "duplicate-error",                 // duplicate symbol error format
         "missing-error",                   // undefined symbol error format
         "undef",                           // undefined symbol handling

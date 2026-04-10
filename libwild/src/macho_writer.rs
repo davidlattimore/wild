@@ -2012,6 +2012,40 @@ fn apply_relocations(
                         let sym_offset = in_place.wrapping_sub(input_sec_base);
                         (tbss.mem_offset + sym_offset, None, None)
                     }
+                    // S_CSTRING_LITERALS — merged string section
+                    0x02 => {
+                        if let Some(crate::resolution::SectionSlot::MergeStrings(merge_slot)) =
+                            obj.sections.get(sec_idx)
+                        {
+                            let section_id = merge_slot.part_id.output_section_id();
+                            let strings_section = layout.merged_strings.get(section_id);
+                            // Read in-place value to get the input address of the string
+                            let in_place = if patch_file_offset + 8 <= out.len() {
+                                u64::from_le_bytes(
+                                    out[patch_file_offset..patch_file_offset + 8]
+                                        .try_into()
+                                        .unwrap_or([0; 8]),
+                                )
+                            } else {
+                                0
+                            };
+                            let input_offset = in_place.wrapping_sub(input_sec_base);
+                            if let Ok(string_offset) =
+                                crate::string_merging::find_string(merge_slot, input_offset, strings_section)
+                            {
+                                let bucket_addrs = layout
+                                    .merged_string_start_addresses
+                                    .bucket_addresses(section_id);
+                                let addr =
+                                    bucket_addrs[string_offset.bucket()] + string_offset.offset_in_bucket();
+                                (addr, None, None)
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    }
                     _ => continue,
                 }
             }

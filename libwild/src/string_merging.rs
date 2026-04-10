@@ -891,7 +891,7 @@ fn work_with_bucket<'data, 'scope>(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct BucketOffset(u32);
+pub(crate) struct BucketOffset(u32);
 
 struct OverflowedOffset {
     input: LinearInputOffset,
@@ -908,11 +908,11 @@ impl BucketOffset {
         ))
     }
 
-    fn bucket(self) -> usize {
+    pub(crate) fn bucket(self) -> usize {
         (self.0 >> (32 - MERGE_STRING_BUCKET_BITS)) as usize
     }
 
-    fn offset_in_bucket(self) -> u64 {
+    pub(crate) fn offset_in_bucket(self) -> u64 {
         u64::from(self.0 & ((1 << (32 - MERGE_STRING_BUCKET_BITS)) - 1))
     }
 }
@@ -1013,7 +1013,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
-    let mut input_offset = symbol.value();
+    let mut input_offset = object.symbol_value_in_section(symbol, section_index)?;
 
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend
@@ -1043,7 +1043,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     Ok(Some(address))
 }
 
-fn find_string(
+pub(crate) fn find_string(
     merge_slot: &StringMergeSectionSlot,
     input_offset: u64,
     strings_section: &MergedStringsSection<'_>,

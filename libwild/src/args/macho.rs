@@ -228,7 +228,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_merge_sections(&self) -> bool {
-        false
+        true
     }
 
     fn relocation_model(&self) -> crate::args::RelocationModel {
