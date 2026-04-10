@@ -64,11 +64,13 @@ which = { workspace = true }
 wait-timeout = { workspace = true }
 
 [features]
-default = ["fork"]
+default = ["fork", "macho-lto"]
 
 fork = ["libwild/fork"]
 
 plugins = ["libwild/plugins"]
+
+macho-lto = ["libwild/macho-lto"]
 
 perfetto = ["libwild/perfetto"]
 

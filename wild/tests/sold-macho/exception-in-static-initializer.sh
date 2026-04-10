@@ -23,4 +23,4 @@ EOF
 
 $CXX --ld-path=./ld64 -o $t/exe $t/a.o
 ( set +e; $t/exe; true ) >& $t/log
-grep -q 'terminating with uncaught exception of type Error: ERROR STRING' $t/log
+grep -Eq 'terminating (with|due to) uncaught exception of type Error: ERROR STRING' $t/log

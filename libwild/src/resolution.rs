@@ -976,6 +976,19 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
     } else if let Some(s) = symbol_name_bytes.strip_prefix(b"__stop_") {
         (s, false)
     } else {
+        // Try Mach-O section$/segment$ prefixes.
+        let macho_id = resolve_macho_start_stop(symbol_name_bytes);
+        if let Some((id, start)) = macho_id {
+            let def_info = if start {
+                InternalSymDefInfo::new(SymbolPlacement::SectionStart(id), name.bytes())
+            } else {
+                InternalSymDefInfo::new(SymbolPlacement::SectionEnd(id), name.bytes())
+            };
+            let symbol_id =
+                symbol_db.add_synthetic_symbol(per_symbol_flags, name, custom_start_stop_defs);
+            custom_start_stop_defs.symbol_definitions.push(def_info);
+            return Some(symbol_id);
+        }
         return None;
     };
 
@@ -992,6 +1005,54 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
     custom_start_stop_defs.symbol_definitions.push(def_info);
 
     Some(symbol_id)
+}
+
+/// Map Mach-O section$/segment$ symbol names to output section IDs.
+fn resolve_macho_start_stop(
+    name: &[u8],
+) -> Option<(crate::output_section_id::OutputSectionId, bool)> {
+    use crate::output_section_id;
+    let (rest, is_start) = if let Some(r) = name.strip_prefix(b"section$start$") {
+        (r, true)
+    } else if let Some(r) = name.strip_prefix(b"section$end$") {
+        (r, false)
+    } else if let Some(r) = name.strip_prefix(b"segment$start$") {
+        // segment start/end → use the first/last section of the segment.
+        let id = match r {
+            b"__TEXT" => Some(output_section_id::TEXT),
+            b"__DATA" => Some(output_section_id::DATA),
+            _ => None,
+        };
+        return id.map(|id| (id, true));
+    } else if let Some(r) = name.strip_prefix(b"segment$end$") {
+        let id = match r {
+            b"__TEXT" => Some(output_section_id::TEXT),
+            b"__DATA" => Some(output_section_id::DATA),
+            _ => None,
+        };
+        return id.map(|id| (id, false));
+    } else {
+        return None;
+    };
+
+    // section$start$<segment>$<section> or section$end$<segment>$<section>
+    // Split at last '$' to get section name.
+    let parts: Vec<&[u8]> = rest.split(|&b| b == b'$').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let sect = parts[parts.len() - 1];
+    let id = match sect {
+        b"__text" => output_section_id::TEXT,
+        b"__data" => output_section_id::DATA,
+        b"__bss" => output_section_id::BSS,
+        b"__cstring" => output_section_id::RODATA,
+        b"__const" => output_section_id::DATA_REL_RO,
+        b"__got" => output_section_id::GOT,
+        // Unknown sections: use TEXT as fallback (address will be section start/end).
+        _ => output_section_id::TEXT,
+    };
+    Some((id, is_start))
 }
 
 impl<'data, P: Platform> ResolvedCommon<'data, P> {

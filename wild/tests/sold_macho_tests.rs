@@ -56,35 +56,35 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "flat-namespace", // -flat_namespace
-        "undefined",      // -undefined warning
+        // flat-namespace now passes (GOT for local globals + MH_TWOLEVEL removal)
+        // undefined now passes (-flat_namespace + -undefined,warning)
         // U now passes (-U emits undefined symbol in output symtab)
-        "umbrella", // -umbrella
+        // umbrella now passes (LC_SUB_FRAMEWORK emission)
         // application-extension now passes (-application_extension + TBD flags)
         // application-extension2 now passes (MH_APP_EXTENSION_SAFE check)
         // exported-symbols-list now passes (export trie filtering via export_list)
         // unexported-symbols-list now passes (unexport_list filtering)
-        "export-dynamic", // -export_dynamic
-        "merge-scope",    // visibility merging
+        // export-dynamic now passes (LTO support + EXPORT_DYNAMIC flag fix)
+        "merge-scope",    // .weak_def_can_be_hidden visibility merging
         // hidden-l now passes (archive symbols added to unexport list)
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         // needed-framework now passes (dead_strip_dylibs + needed)
-        "weak-l", // -weak-l
+        // weak-l now passes (LC_LOAD_WEAK_DYLIB command value fix)
         // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
         // reexport-library now passes (symtab alignment + reexport_library)
         // install-name now passes (-install_name support)
-        "install-name-executable-path", // @executable_path
-        "install-name-loader-path",     // @loader_path
-        "install-name-rpath",           // @rpath
+        // install-name-executable-path now passes (@executable_path expansion)
+        // install-name-loader-path now passes (@loader_path expansion)
+        // install-name-rpath now passes (@rpath expansion in re-export resolution)
         // rpath now passes (-rpath → LC_RPATH)
         // search-paths-first now passes (default search order is paths-first)
-        "search-dylibs-first", // -search_dylibs_first (needs opposite search order)
-        "sectcreate",          // -sectcreate
+        // search-dylibs-first now passes (pre-scan for global flags)
+        // sectcreate now passes (-sectcreate data written to TEXT segment gap)
         "order-file",          // -order_file
         // stack-size now passes
         // map now passes (link map file writer)
         // dependency-info now passes
-        "print-dependencies", // -print_dependency_info
+        // print-dependencies now passes (--print-dependencies output)
         // macos-version-min now passes
         // platform-version now passes
         // S now passes (stab debug symbol pass-through + -S strip)
@@ -96,43 +96,43 @@ fn should_ignore(name: &str) -> bool {
         // add-empty-section now passes
         // pagezero-size2 now passes (error when used with -dylib)
         // oso-prefix now passes (-oso_prefix with canonicalized OSO paths)
-        "start-stop-symbol", /* __start_/__stop_ sections
-                              * framework now passes (-F/-framework support) */
+        // start-stop-symbol now passes (section$/segment$ synthetic symbols)
+        // framework now passes (-F/-framework support)
     ];
 
     // Tests requiring LTO
-    const LTO: &[&str] = &["lto", "lto-dead-strip-dylibs", "object-path-lto"];
+    // lto, object-path-lto, export-dynamic now pass (Mach-O LTO via libLTO.dylib)
+    const LTO: &[&str] = &[];
 
     // Tests that need linking against a .dylib
     const NEEDS_DYLIB_INPUT: &[&str] = &[
         // dylib now passes (dylib input consumption)
         "tls-dylib", // TLS across dylibs
         // data-reloc now passes
-        "fixup-chains-addend", // links dylib + object (fixup chains)
-        "fixup-chains-addend64", /* links dylib + object (fixup chains)
-                                * weak-def-dylib now passes
-                                * mark-dead-strippable-dylib now passes
-                                * (MH_DEAD_STRIPPABLE_DYLIB + auto-strip) */
+        // fixup-chains-addend now passes (implicit addend from data + import table addend)
+        // fixup-chains-addend64 now passes (DYLD_CHAINED_IMPORT_ADDEND64 format 3)
+        // weak-def-dylib now passes
+        // mark-dead-strippable-dylib now passes (MH_DEAD_STRIPPABLE_DYLIB + auto-strip)
     ];
 
     // Validation/correctness bugs in Wild to fix
     const WILD_BUGS: &[&str] = &[
-        "tls",           // TLV descriptor offset validation
+        "tls",           // TLV across dylib (link-time resolution)
         "tls-mismatch",  // TLS type mismatch errors
         "tls-mismatch2", // TLS type mismatch errors
         // cstring now passes (S_CSTRING_LITERALS merge enabled)
         // duplicate-error now passes (error format matches sold)
         // missing-error now passes (error format matches sold)
-        "undef",                           // undefined symbol handling
-        "fixup-chains-unaligned-error",    // unaligned fixup error
-        "exception-in-static-initializer", // init func exceptions
-        "indirect-symtab",                 // indirect symbol table
-        "init-offsets",                    // __mod_init_func offsets
-        "init-offsets-fixup-chains",       // init offsets + fixup chains
-        "literals",                        // literal section merging
+        // undef now passes (-u symbols kept alive as GC roots)
+        // fixup-chains-unaligned-error now passes (test asm symbol prefix fix)
+        // exception-in-static-initializer now passes (libc++ message wording fix)
+        // indirect-symtab now passes (DYSYMTAB + indirect symbol table)
+        // init-offsets now passes (__init_offsets section with S_INIT_FUNC_OFFSETS)
+        // init-offsets-fixup-chains now passes (-fixup_chains implies -init_offsets)
+        "literals",                        // ARM64 cc doesn't emit __literal8 (x86-only)
         "libunwind",                       // libunwind integration
         "objc-selector",                   // ObjC selector refs
-        "debuginfo",                       // debug info pass-through
+        // debuginfo now passes (SO/BNSYM/FUN/ENSYM stab synthesis for dsymutil)
     ];
 
     // x86_64-specific tests

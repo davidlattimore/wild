@@ -71,6 +71,9 @@ fork = []
 # Support for linker-plugins.
 plugins = ["libloading"]
 
+# Support for Mach-O LTO via libLTO.dylib.
+macho-lto = ["libloading"]
+
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]
 

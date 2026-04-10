@@ -32,6 +32,8 @@ mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
+#[cfg(feature = "macho-lto")]
+pub(crate) mod macho_lto;
 pub(crate) mod macho_writer;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;

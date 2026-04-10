@@ -86,7 +86,11 @@ impl FileKind {
             Ok(FileKind::FatBinary)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
-        } else if bytes.starts_with(b"BC") {
+        } else if bytes.starts_with(b"BC")
+            || bytes.starts_with(&0x0B17C0DEu32.to_le_bytes())
+        {
+            // Raw LLVM bitcode ("BC" magic) or bitcode wrapper (0x0B17C0DE).
+            // Clang -flto on macOS produces the wrapper format.
             Ok(FileKind::LlvmIr)
         } else {
             bail!("Couldn't identify file type");

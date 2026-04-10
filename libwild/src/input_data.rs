@@ -710,6 +710,40 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         // supplied when actually needed, since GCC seems to pretty much always pass a plugin to the
         // linker.
         if kind.is_compiler_ir() {
+            // If the platform provides a native LTO library (Mach-O libLTO.dylib),
+            // compile bitcode to native code immediately and treat as a regular object.
+            #[cfg(feature = "macho-lto")]
+            if let Some(lto_lib_path) = self.args.lto_library_path() {
+                let filename = input_ref.file.filename.to_string_lossy().into_owned();
+                let obj_path = crate::macho_lto::compile_bitcode_to_file(
+                    data,
+                    lto_lib_path,
+                    &filename,
+                    self.args,
+                )?;
+                let native_file_data = FileData::new(&obj_path, false)?;
+                let native_data = self.inputs_arena.alloc(InputFile {
+                    filename: input_ref.file.filename.clone(),
+                    original_filename: input_ref.file.original_filename.clone(),
+                    modifiers: input_ref.file.modifiers,
+                    data: Some(native_file_data),
+                });
+                let native_kind = FileKind::identify_bytes(native_data.data())?;
+                let native_ref = InputRef {
+                    file: native_data,
+                    entry: input_ref.entry,
+                };
+                let input_bytes = InputBytes {
+                    kind: native_kind,
+                    input: native_ref,
+                    data: native_data.data(),
+                    modifiers: input_ref.file.modifiers,
+                };
+                return Ok(InputRecord::Object(
+                    ParsedInputObject::new(&input_bytes, self.args),
+                ));
+            }
+
             return Ok(InputRecord::LtoInput(Box::new(UnclaimedLtoInput {
                 input_ref,
                 file: Arc::clone(file),

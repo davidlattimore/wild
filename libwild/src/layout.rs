@@ -2694,6 +2694,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         self.mark_defsyms_as_used::<A>(resources, queue, scope);
 
         self.load_explicit_imports::<A>(resources, queue, scope);
+        self.load_force_undefined::<A>(resources, queue, scope);
 
         Ok(())
     }
@@ -2814,6 +2815,40 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 .get_atomic(canonical_target_id)
                 .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
+            if !flags.has_resolution() {
+                queue.send_work::<A>(
+                    resources,
+                    file_id,
+                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                    scope,
+                );
+            }
+        }
+    }
+
+    /// Load symbols requested by -u (force undefined) so they survive GC.
+    fn load_force_undefined<'scope, A: Arch>(
+        &self,
+        resources: &'scope GraphResources<'data, '_, A::Platform>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
+    ) {
+        for def_info in &self.internal_symbols.symbol_definitions {
+            if def_info.placement != SymbolPlacement::ForceUndefined {
+                continue;
+            }
+            let Some(symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(def_info.name))
+            else {
+                continue;
+            };
+            let canonical_target_id = resources.symbol_db.definition(symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+            let flags = resources
+                .per_symbol_flags
+                .get_atomic(canonical_target_id)
+                .fetch_or(ValueFlags::DIRECT);
             if !flags.has_resolution() {
                 queue.send_work::<A>(
                     resources,

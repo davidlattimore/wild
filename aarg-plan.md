@@ -28,8 +28,9 @@ These flags are now parsed and wired to the platform trait, reusing ELF backend 
   stored in `MachOArgs`, emitted in `LC_ID_DYLIB` (was hardcoded to 1.0.0).
 - **`-bundle`** -- Sets `is_bundle` field. Writer emits `MH_BUNDLE` filetype, skips
   `LC_MAIN` (bundles have no entry point), keeps `LC_LOAD_DYLINKER`.
-- **`-sectcreate`** -- File data now read and stored in `MachOArgs.sectcreate` (was
-  discarding the file path). Writer integration deferred -- needs segment layout work.
+- **`-sectcreate`** -- File data read and stored in `MachOArgs.sectcreate`. Writer places
+  data in the TEXT segment gap (same pattern as `__unwind_info`), adds section headers.
+  `sold-macho/sectcreate` test now passes (101 tests passing, was 100).
 - **`-F` / `-framework` / `-weak_framework` / `-needed_framework`** -- Framework search
   paths stored, framework bundle resolution implemented. `sold-macho/framework` test
   now passes (63 tests passing, was 62). Uses absolute path as install name for
@@ -373,7 +374,7 @@ Implementation: compare against object file cputype/cpusubtype. Error on mismatc
 | `-w` | Suppress warnings; cosmetic |
 | `-Z` | Don't search default lib dirs; dev/testing |
 | `-data_in_code_info` / `-function_starts` | Already enabled by default |
-| `-lto_library`, `-mllvm`, `-object_path_lto` | Requires LTO support first |
+| `-lto_library`, `-mllvm`, `-object_path_lto` | Implemented via libLTO.dylib (macho-lto feature) |
 | `-adhoc_codesign` | Already handled implicitly on arm64 |
 
 ## Known bugs blocking test passes (from `sold_macho_tests.rs`)

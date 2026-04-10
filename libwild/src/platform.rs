@@ -1149,6 +1149,16 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
+    /// Path to libLTO.dylib for native LTO compilation (Mach-O -lto_library).
+    fn lto_library_path(&self) -> Option<&Path> {
+        None
+    }
+
+    /// Path to write LTO-compiled intermediate object (Mach-O -object_path_lto).
+    fn object_path_lto(&self) -> Option<&Path> {
+        None
+    }
+
     fn should_gc_sections(&self) -> bool {
         true
     }

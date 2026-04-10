@@ -401,7 +401,11 @@ impl platform::SectionHeader for SectionHeader {
 
     fn is_merge_section(&self) -> bool {
         let flags = self.0.flags(LE) & macho::SECTION_TYPE;
-        flags == macho::S_CSTRING_LITERALS || flags == macho::S_LITERAL_POINTERS
+        flags == macho::S_CSTRING_LITERALS
+            || flags == macho::S_LITERAL_POINTERS
+            || flags == macho::S_4BYTE_LITERALS
+            || flags == macho::S_8BYTE_LITERALS
+            || flags == 0x0E // S_16BYTE_LITERALS (not in object crate)
     }
 
     fn is_strings(&self) -> bool {
@@ -450,7 +454,11 @@ impl platform::SectionHeader for SectionHeader {
 
     fn is_prog_bits(&self) -> bool {
         let section_type = self.0.flags(LE) & macho::SECTION_TYPE;
-        section_type == macho::S_REGULAR || section_type == macho::S_CSTRING_LITERALS
+        section_type == macho::S_REGULAR
+            || section_type == macho::S_CSTRING_LITERALS
+            || section_type == macho::S_4BYTE_LITERALS
+            || section_type == macho::S_8BYTE_LITERALS
+            || section_type == 0x0E // S_16BYTE_LITERALS
     }
 
     fn is_no_bits(&self) -> bool {
@@ -1073,9 +1081,12 @@ impl platform::Platform for MachO {
 
             let is_def_undef = resources.symbol_db.is_undefined(symbol_id);
             let is_ref_undef = resources.symbol_db.is_undefined(local_symbol_id);
+            let flat_ns = resources.symbol_db.args.flat_namespace;
             let flags_to_add = match reloc.r_type {
                 5 | 6 | 7 => crate::value_flags::ValueFlags::GOT, // GOT_LOAD / POINTER_TO_GOT
-                2 if is_def_undef => {
+                2 if is_def_undef || (flat_ns && reloc.r_extern) => {
+                    // BRANCH26 to undefined, or to any extern in flat_namespace
+                    // (flat namespace requires interposable stubs for all globals).
                     crate::value_flags::ValueFlags::PLT | crate::value_flags::ValueFlags::GOT
                 }
                 // UNSIGNED after SUBTRACTOR: personality pointers in __eh_frame CIE
@@ -1096,7 +1107,13 @@ impl platform::Platform for MachO {
             // not found in any input or linked dylib. Only check when we have
             // .tbd symbol data (meaning syslibroot was provided and we can
             // distinguish dylib imports from truly missing symbols).
-            if is_def_undef && !resources.symbol_db.args.dylib_symbols.is_empty() {
+            if is_def_undef
+                && !resources.symbol_db.args.dylib_symbols.is_empty()
+                && !crate::platform::Args::should_allow_object_undefined(
+                    resources.symbol_db.args,
+                    resources.symbol_db.output_kind,
+                )
+            {
                 use object::read::macho::Nlist as _;
                 let local_sym = state.object.symbols.symbol(sym_idx).ok();
                 let is_weak = local_sym.map_or(false, |s| {
@@ -1384,7 +1401,7 @@ impl platform::Platform for MachO {
 
     fn is_symbol_non_interposable<'data>(
         _object: &Self::File<'data>,
-        _args: &Self::Args,
+        args: &Self::Args,
         _sym: &Self::SymtabEntry,
         _output_kind: crate::output_kind::OutputKind,
         _export_list: Option<&crate::export_list::ExportList>,
@@ -1392,8 +1409,8 @@ impl platform::Platform for MachO {
         _archive_semantics: bool,
         _is_undefined: bool,
     ) -> bool {
-        // Mach-O two-level namespace: symbols are generally non-interposable
-        true
+        // With -flat_namespace, symbols are interposable (dyld searches all dylibs).
+        !args.flat_namespace
     }
 
     fn allocate_header_sizes(

@@ -22,6 +22,15 @@ pub(crate) enum DylibLoadKind {
     Reexport, // LC_REEXPORT_DYLIB
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum UndefinedTreatment {
+    #[default]
+    Error,
+    Warning,
+    Suppress,
+    DynamicLookup,
+}
+
 #[derive(Debug)]
 pub struct MachOArgs {
     pub(crate) common: super::CommonArgs,
@@ -94,6 +103,8 @@ pub struct MachOArgs {
     has_pagezero_size: bool,
     /// -Z: don't search default library paths.
     no_default_search_paths: bool,
+    /// Whether to emit __init_offsets instead of __mod_init_func (-init_offsets or -fixup_chains).
+    pub(crate) use_init_offsets: bool,
     /// Whether -dead_strip_dylibs was passed.
     pub(crate) dead_strip_dylibs: bool,
     /// Whether -mark_dead_strippable_dylib was passed (sets MH_DEAD_STRIPPABLE_DYLIB).
@@ -115,16 +126,32 @@ pub struct MachOArgs {
     pub(crate) application_extension: bool,
     /// Dylib names that aren't marked extension-safe (for deferred warning).
     non_extension_safe_dylibs: Vec<String>,
+    /// Whether -flat_namespace was passed (disables two-level namespace).
+    pub(crate) flat_namespace: bool,
+    /// Treatment for undefined symbols (-undefined flag).
+    pub(crate) undefined_treatment: UndefinedTreatment,
     /// -w: suppress warnings.
     suppress_warnings: bool,
     /// Symbols from -U to emit as undefined in output symtab.
     pub(crate) dynamic_undefined_symbols: Vec<Vec<u8>>,
+    /// Symbol ordering from -order_file (symbol name → priority).
+    pub(crate) symbol_order: std::collections::HashMap<String, u32>,
+    /// Whether --print-dependencies was passed.
+    pub(crate) print_dependencies: bool,
+    /// Umbrella framework name from -umbrella.
+    pub(crate) umbrella: Option<String>,
     /// Path for -dependency_info output.
     pub(crate) dependency_info_path: Option<PathBuf>,
     /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
     pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
     pending_tbd_inputs: Vec<PathBuf>,
+    /// Path to libLTO.dylib from -lto_library.
+    pub(crate) lto_library: Option<PathBuf>,
+    /// Path to write LTO-compiled intermediate object (-object_path_lto).
+    pub(crate) object_path_lto: Option<PathBuf>,
+    /// Extra LLVM options from -mllvm.
+    pub(crate) mllvm_options: Vec<String>,
 }
 
 impl MachOArgs {
@@ -186,6 +213,7 @@ impl Default for MachOArgs {
             search_dylibs_first: false,
             has_pagezero_size: false,
             no_default_search_paths: false,
+            use_init_offsets: false,
             dead_strip_dylibs: false,
             mark_dead_strippable: false,
             dylib_symbol_provenance: Default::default(),
@@ -196,11 +224,19 @@ impl Default for MachOArgs {
             map_file: None,
             application_extension: false,
             non_extension_safe_dylibs: Vec::new(),
+            flat_namespace: false,
+            undefined_treatment: UndefinedTreatment::Error,
             suppress_warnings: false,
             dynamic_undefined_symbols: Vec::new(),
+            symbol_order: Default::default(),
+            print_dependencies: false,
+            umbrella: None,
             dependency_info_path: None,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
+            lto_library: None,
+            object_path_lto: None,
+            mllvm_options: Vec::new(),
         }
     }
 }
@@ -263,6 +299,18 @@ impl platform::Args for MachOArgs {
         self.unexported_symbols_list.as_deref()
     }
 
+    fn should_allow_object_undefined(&self, _output_kind: crate::OutputKind) -> bool {
+        self.undefined_treatment != UndefinedTreatment::Error || self.flat_namespace
+    }
+
+    fn lto_library_path(&self) -> Option<&Path> {
+        self.lto_library.as_deref()
+    }
+
+    fn object_path_lto(&self) -> Option<&Path> {
+        self.object_path_lto.as_deref()
+    }
+
     fn dylib_symbols(&self) -> &std::collections::HashSet<Vec<u8>> {
         &self.dylib_symbols
     }
@@ -303,13 +351,26 @@ impl platform::Args for MachOArgs {
 /// Parse macOS linker arguments. Handles the ld64-compatible flags that clang passes.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut MachOArgs,
-    mut input: I,
+    input: I,
 ) -> Result {
+    // Collect args so we can pre-scan for global flags that affect input processing.
+    let all_args: Vec<String> = input.map(|a| a.as_ref().to_string()).collect();
+
+    // Pre-scan for flags that must be effective before any input is processed.
+    for a in &all_args {
+        match a.as_str() {
+            "-search_dylibs_first" => args.search_dylibs_first = true,
+            "-init_offsets" => args.use_init_offsets = true,
+            "-fixup_chains" => args.use_init_offsets = true,
+            "-no_fixup_chains" => {} // keep use_init_offsets as-is unless -init_offsets was explicit
+            _ => {}
+        }
+    }
+
+    let mut arg_iter = all_args.iter().map(|s| s.as_str());
     let mut modifier_stack = vec![Modifiers::default()];
 
-    while let Some(arg) = input.next() {
-        let arg = arg.as_ref();
-
+    while let Some(arg) = arg_iter.next() {
         // Handle @response files
         if let Some(path) = arg.strip_prefix('@') {
             let file_args = crate::args::read_args_from_file(Path::new(path))?;
@@ -321,7 +382,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             continue;
         }
 
-        parse_one_arg(args, arg, &mut input, &mut modifier_stack)?;
+        parse_one_arg(args, arg, &mut arg_iter, &mut modifier_stack)?;
     }
 
     // Resolve deferred .tbd inputs now that -platform_version is known.
@@ -376,6 +437,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             if let Some(val) = input.next() {
                 args.output = Arc::from(Path::new(val.as_ref()));
             }
+            return Ok(());
+        }
+        "--print-dependencies" | "--print_dependencies" => {
+            args.print_dependencies = true;
             return Ok(());
         }
         "--time" => {
@@ -524,8 +589,46 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
-        "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
-        | "-umbrella" | "-allowable_client" | "-client_name" | "-sub_library" | "-sub_umbrella"
+        "-lto_library" => {
+            if let Some(val) = input.next() {
+                args.lto_library = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-object_path_lto" => {
+            if let Some(val) = input.next() {
+                args.object_path_lto = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-mllvm" => {
+            if let Some(val) = input.next() {
+                args.mllvm_options.push(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
+        "-umbrella" => {
+            if let Some(val) = input.next() {
+                args.umbrella = Some(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
+        "-order_file" => {
+            if let Some(val) = input.next() {
+                let path = PathBuf::from(val.as_ref());
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    for (i, line) in content.lines().enumerate() {
+                        let sym = line.trim();
+                        if !sym.is_empty() && !sym.starts_with('#') {
+                            args.symbol_order.insert(sym.to_string(), i as u32);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+        "-headerpad"
+        | "-allowable_client" | "-client_name" | "-sub_library" | "-sub_umbrella"
         | "-objc_abi_version" | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());
@@ -595,7 +698,19 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         // Flags that take 1 argument, ignored (group 2)
-        "-undefined" | "-multiply_defined" | "-upward-l" | "-alignment" => {
+        "-undefined" => {
+            if let Some(val) = input.next() {
+                args.undefined_treatment = match val.as_ref() {
+                    "error" => UndefinedTreatment::Error,
+                    "warning" => UndefinedTreatment::Warning,
+                    "suppress" => UndefinedTreatment::Suppress,
+                    "dynamic_lookup" => UndefinedTreatment::DynamicLookup,
+                    _ => UndefinedTreatment::Error,
+                };
+            }
+            return Ok(());
+        }
+        "-multiply_defined" | "-upward-l" | "-alignment" => {
             input.next();
             return Ok(());
         }
@@ -609,6 +724,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-export_dynamic" => {
             args.export_dynamic = true;
+            return Ok(());
+        }
+        "-flat_namespace" => {
+            args.flat_namespace = true;
             return Ok(());
         }
         "-dead_strip" => {
@@ -653,13 +772,13 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_implicit_dylibs"
         | "-search_paths_first"
         | "-two_levelnamespace"
-        | "-flat_namespace"
         | "-bind_at_load"
         | "-pie"
         | "-no_pie"
         | "-execute"
         | "-no_fixup_chains"
         | "-fixup_chains"
+        | "-init_offsets"
         | "-adhoc_codesign"
         | "-data_in_code_info"
         | "-function_starts"
@@ -1280,6 +1399,7 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     let mut install_name: Option<Vec<u8>> = None;
     let mut exported_symbols: Vec<Vec<u8>> = Vec::new();
     let mut reexported_dylib_paths: Vec<String> = Vec::new();
+    let mut dylib_rpaths: Vec<PathBuf> = Vec::new();
     let mh_flags = if data.len() >= 28 {
         u32::from_le_bytes(data[24..28].try_into().unwrap())
     } else {
@@ -1340,6 +1460,22 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
                     parse_export_trie(&data[trie_off..trie_off + trie_size], &mut exported_symbols);
                 }
             }
+            // LC_RPATH = 0x8000001C
+            if cmd == 0x8000_001C && cmdsize >= 12 {
+                let path_off =
+                    u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
+                if path_off < cmdsize {
+                    let s = offset + path_off;
+                    let e = data[s..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| s + p)
+                        .unwrap_or(offset + cmdsize);
+                    if let Ok(rp) = std::str::from_utf8(&data[s..e]) {
+                        dylib_rpaths.push(PathBuf::from(rp));
+                    }
+                }
+            }
             // LC_DYLD_INFO / LC_DYLD_INFO_ONLY: export info is at fields [40..48]
             if (cmd == 0x22 || cmd == 0x8000_0022) && cmdsize >= 48 {
                 let export_off =
@@ -1387,10 +1523,15 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
         .into_iter()
         .chain(args.lib_search_paths.iter().map(|d| d.to_path_buf()))
         .collect();
+    let loader_dir = path.parent().map(|d| d.to_path_buf());
+    let output_dir = args.output.parent().map(|d| d.to_path_buf());
     for reexport_install_name in reexported_dylib_paths {
         collect_dylib_reexport_symbols(
             &reexport_install_name,
             &search_dirs,
+            &dylib_rpaths,
+            loader_dir.as_deref(),
+            output_dir.as_deref(),
             &mut args.dylib_symbols,
             0,
         );
@@ -1399,22 +1540,47 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     Ok(())
 }
 
+/// Expand a Mach-O install name with @rpath/, @loader_path/, or @executable_path/ prefix
+/// into candidate filesystem paths for link-time resolution.
+fn expand_install_name(
+    install_name: &str,
+    rpaths: &[PathBuf],
+    loader_dir: Option<&Path>,
+    output_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    if let Some(rel) = install_name.strip_prefix("@rpath/") {
+        rpaths.iter().map(|rp| rp.join(rel)).collect()
+    } else if let Some(rel) = install_name.strip_prefix("@loader_path/") {
+        loader_dir.map(|d| vec![d.join(rel)]).unwrap_or_default()
+    } else if let Some(rel) = install_name.strip_prefix("@executable_path/") {
+        output_dir.map(|d| vec![d.join(rel)]).unwrap_or_default()
+    } else {
+        vec![PathBuf::from(install_name)]
+    }
+}
+
 /// Recursively collect symbols from a re-exported dylib and its re-exports.
 fn collect_dylib_reexport_symbols(
     install_name: &str,
     search_dirs: &[PathBuf],
+    rpaths: &[PathBuf],
+    loader_dir: Option<&Path>,
+    output_dir: Option<&Path>,
     symbols: &mut std::collections::HashSet<Vec<u8>>,
     depth: usize,
 ) {
     if depth > 8 {
         return; // prevent infinite recursion
     }
+    // Build candidate paths: expand @rpath/@loader_path/@executable_path, then search dirs.
+    let mut candidates = expand_install_name(install_name, rpaths, loader_dir, output_dir);
     let file_name = Path::new(install_name).file_name().unwrap_or_default();
-    // Try absolute path, then each search directory.
-    let candidates = std::iter::once(PathBuf::from(install_name))
-        .chain(search_dirs.iter().map(|d| d.join(file_name)));
-    for candidate in candidates {
-        let Ok(data) = std::fs::read(&candidate) else {
+    for dir in search_dirs {
+        candidates.push(dir.join(file_name));
+    }
+
+    for candidate in &candidates {
+        let Ok(data) = std::fs::read(candidate) else {
             continue;
         };
         if data.len() < 32 {
@@ -1422,6 +1588,7 @@ fn collect_dylib_reexport_symbols(
         }
         let mut exported = Vec::new();
         let mut nested_reexports = Vec::new();
+        let mut nested_rpaths = Vec::new();
         let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
         let mut off = 32;
         for _ in 0..ncmds {
@@ -1446,6 +1613,22 @@ fn collect_dylib_reexport_symbols(
                         .unwrap_or(off + sz);
                     if let Ok(name) = std::str::from_utf8(&data[s..e]) {
                         nested_reexports.push(name.to_string());
+                    }
+                }
+            }
+            // LC_RPATH
+            if cmd == 0x8000_001C && sz >= 12 {
+                let p_off =
+                    u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
+                if p_off < sz {
+                    let s = off + p_off;
+                    let e = data[s..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| s + p)
+                        .unwrap_or(off + sz);
+                    if let Ok(rp) = std::str::from_utf8(&data[s..e]) {
+                        nested_rpaths.push(PathBuf::from(rp));
                     }
                 }
             }
@@ -1474,15 +1657,26 @@ fn collect_dylib_reexport_symbols(
         for sym in exported {
             symbols.insert(sym);
         }
-        // Also add the parent dir of this dylib as a search path for nested re-exports.
+        // For nested re-exports, combine rpaths and use this dylib's dir as loader_path.
+        let mut combined_rpaths = rpaths.to_vec();
+        combined_rpaths.extend(nested_rpaths);
         let mut dirs = search_dirs.to_vec();
         if let Some(parent) = candidate.parent() {
             if !dirs.contains(&parent.to_path_buf()) {
                 dirs.push(parent.to_path_buf());
             }
         }
+        let nested_loader = candidate.parent();
         for nested in nested_reexports {
-            collect_dylib_reexport_symbols(&nested, &dirs, symbols, depth + 1);
+            collect_dylib_reexport_symbols(
+                &nested,
+                &dirs,
+                &combined_rpaths,
+                nested_loader,
+                output_dir,
+                symbols,
+                depth + 1,
+            );
         }
         return; // found the file, stop searching candidates
     }

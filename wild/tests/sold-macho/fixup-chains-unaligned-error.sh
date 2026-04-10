@@ -2,11 +2,11 @@
 . $(dirname $0)/common.inc
 
 cat <<EOF | $CC -o $t/a.o -c -xassembler -
-.globl foo, bar
+.globl _foo, _bar
 .data
 .byte 0
-foo:
-.quad bar
+_foo:
+.quad _bar
 EOF
 
 cat <<EOF | $CC -o $t/b.o -c -xc -
