@@ -1205,7 +1205,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data, P: Platform>(
             .collect_vec()
             .join("\n");
 
-        bail!("Duplicate symbols detected: {error_details}");
+        bail!("{error_details}");
     }
 
     symbol_db.buckets = buckets;
@@ -1344,10 +1344,10 @@ fn select_symbol<'data, P: Platform>(
                 && !symbol_db.db.args.allow_multiple_definitions()
             {
                 bail!(
-                    "{}, defined in {} and {}",
-                    symbol_db.symbol_name_for_display(first_id),
-                    symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                    "duplicate symbol: {}: {}: {}",
                     symbol_db.file(symbol_db.file_id_for_symbol(id)),
+                    symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                    symbol_db.symbol_name_for_display(first_id),
                 );
             }
         }

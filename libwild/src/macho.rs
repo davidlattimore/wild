@@ -1110,8 +1110,9 @@ impl platform::Platform for MachO {
                     if !in_dylib {
                         let sym_display = resources.symbol_db.symbol_name_for_display(symbol_id);
                         resources.report_error(crate::error!(
-                            "Undefined symbol {sym_display}, referenced by {}",
+                            "undefined symbol: {}: {}",
                             state.input,
+                            sym_display,
                         ));
                     }
                 }

@@ -120,8 +120,8 @@ fn should_ignore(name: &str) -> bool {
         "tls-mismatch",  // TLS type mismatch errors
         "tls-mismatch2", // TLS type mismatch errors
         // cstring now passes (S_CSTRING_LITERALS merge enabled)
-        "duplicate-error",                 // duplicate symbol error format
-        "missing-error",                   // undefined symbol error format
+        // duplicate-error now passes (error format matches sold)
+        // missing-error now passes (error format matches sold)
         "undef",                           // undefined symbol handling
         "fixup-chains-unaligned-error",    // unaligned fixup error
         "exception-in-static-initializer", // init func exceptions
