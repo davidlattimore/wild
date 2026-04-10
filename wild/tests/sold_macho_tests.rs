@@ -58,7 +58,7 @@ fn should_ignore(name: &str) -> bool {
     const UNSUPPORTED_FLAGS: &[&str] = &[
         "flat-namespace",         // -flat_namespace
         "undefined",              // -undefined warning
-        "U",                      // -U (dynamic lookup)
+        // U now passes (-U emits undefined symbol in output symtab)
         "umbrella",               // -umbrella
         // application-extension now passes (-application_extension + TBD flags)
         // application-extension2 now passes (MH_APP_EXTENSION_SAFE check)

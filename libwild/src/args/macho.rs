@@ -116,6 +116,8 @@ pub struct MachOArgs {
     non_extension_safe_dylibs: Vec<String>,
     /// -w: suppress warnings.
     suppress_warnings: bool,
+    /// Symbols from -U to emit as undefined in output symtab.
+    pub(crate) dynamic_undefined_symbols: Vec<Vec<u8>>,
     /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
     pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -192,6 +194,7 @@ impl Default for MachOArgs {
             application_extension: false,
             non_extension_safe_dylibs: Vec::new(),
             suppress_warnings: false,
+            dynamic_undefined_symbols: Vec::new(),
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -785,8 +788,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     // -U <symbol> (allow undefined, dynamic lookup)
     if arg == "-U" {
         if let Some(sym) = input.next() {
-            // Add to dylib_symbols so undefined check skips it.
-            args.dylib_symbols.insert(sym.as_ref().as_bytes().to_vec());
+            let name = sym.as_ref().as_bytes().to_vec();
+            args.dylib_symbols.insert(name.clone());
+            args.dynamic_undefined_symbols.push(name);
         }
         return Ok(());
     }

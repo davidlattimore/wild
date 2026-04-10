@@ -1156,6 +1156,14 @@ fn write_exe_symtab(
         }
     }
 
+    // Add -U (dynamic undefined) symbols as N_UNDF | N_EXT in the output.
+    for sym_name in &layout.symbol_db.args.dynamic_undefined_symbols {
+        if !seen_names.contains(sym_name) {
+            seen_names.insert(sym_name.clone());
+            entries.push((sym_name.clone(), 0, 0x01)); // N_UNDF | N_EXT
+        }
+    }
+
     if entries.is_empty() && stab_entries.is_empty() {
         return Ok(start);
     }
