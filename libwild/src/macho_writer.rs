@@ -3423,7 +3423,43 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, dylinker_cmd_size);
     }
     add_cmd(&mut ncmds, &mut cmdsize, dylib_cmd_size); // libSystem
-    let extra_dylibs = &layout.symbol_db.args.extra_dylibs;
+
+    // Filter extra_dylibs when -dead_strip_dylibs: only keep dylibs with referenced symbols.
+    let all_extra_dylibs = &layout.symbol_db.args.extra_dylibs;
+    let filtered_extra: Vec<&(Vec<u8>, crate::args::macho::DylibLoadKind)>;
+    let extra_dylibs: &[&(Vec<u8>, crate::args::macho::DylibLoadKind)] =
+        if layout.symbol_db.args.dead_strip_dylibs {
+            // Find which dylib indices have at least one referenced symbol.
+            let mut used_indices = std::collections::HashSet::new();
+            // Check which symbols from the symbol resolutions are from dylibs.
+            for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
+                if res.is_none() {
+                    // Unresolved — check if it's a dylib symbol.
+                    let sym_id = crate::symbol_db::SymbolId::from_usize(sym_idx);
+                    if let Ok(name) = layout.symbol_db.symbol_name(sym_id) {
+                        if let Some(&idx) =
+                            layout.symbol_db.args.dylib_symbol_provenance.get(name.bytes())
+                        {
+                            used_indices.insert(idx);
+                        }
+                    }
+                }
+            }
+            filtered_extra = all_extra_dylibs
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    used_indices.contains(i)
+                        || layout.symbol_db.args.needed_dylib_indices.contains(i)
+                })
+                .map(|(_, d)| d)
+                .collect();
+            &filtered_extra
+        } else {
+            // Convert &Vec<T> to &[&T] — just use all dylibs.
+            filtered_extra = all_extra_dylibs.iter().collect();
+            &filtered_extra
+        };
     let extra_dylib_sizes: Vec<u32> = extra_dylibs
         .iter()
         .map(|(p, _)| align8(24 + p.len() as u32 + 1))

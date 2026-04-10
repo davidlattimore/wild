@@ -94,12 +94,18 @@ pub struct MachOArgs {
     has_pagezero_size: bool,
     /// -Z: don't search default library paths.
     no_default_search_paths: bool,
+    /// Whether -dead_strip_dylibs was passed.
+    pub(crate) dead_strip_dylibs: bool,
+    /// Maps symbol name → index in extra_dylibs (for dead-strip-dylibs tracking).
+    pub(crate) dylib_symbol_provenance: std::collections::HashMap<Vec<u8>, usize>,
+    /// Indices of extra_dylibs that should not be dead-stripped (from -needed_framework/-needed-l).
+    pub(crate) needed_dylib_indices: std::collections::HashSet<usize>,
     /// -oso_prefix: strip this prefix from OSO debug paths.
     pub(crate) oso_prefix: Option<String>,
     /// AST file paths from -add_ast_path (emitted as N_AST stab entries).
     pub(crate) ast_paths: Vec<String>,
-    /// Frameworks to resolve after all -F paths are collected.
-    pending_frameworks: Vec<String>,
+    /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
+    pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
     pending_tbd_inputs: Vec<PathBuf>,
 }
@@ -163,6 +169,9 @@ impl Default for MachOArgs {
             search_dylibs_first: false,
             has_pagezero_size: false,
             no_default_search_paths: false,
+            dead_strip_dylibs: false,
+            dylib_symbol_provenance: Default::default(),
+            needed_dylib_indices: Default::default(),
             oso_prefix: None,
             ast_paths: Vec::new(),
             pending_frameworks: Vec::new(),
@@ -298,8 +307,13 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     // Resolve deferred framework links now that all -F paths are collected.
     let pending = std::mem::take(&mut args.pending_frameworks);
-    for name in &pending {
+    for (name, needed) in &pending {
+        let dylib_count_before = args.extra_dylibs.len();
         link_framework(args, name)?;
+        // Mark as needed (immune to -dead_strip_dylibs).
+        if *needed && args.extra_dylibs.len() > dylib_count_before {
+            args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
+        }
     }
 
     // Validate flag combinations.
@@ -445,8 +459,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-framework" | "-weak_framework" | "-needed_framework" => {
             if let Some(name) = input.next() {
-                // Defer resolution: -F paths may come after -framework in cc invocations.
-                args.pending_frameworks.push(name.as_ref().to_string());
+                let needed = arg == "-needed_framework";
+                args.pending_frameworks.push((name.as_ref().to_string(), needed));
             }
             return Ok(());
         }
@@ -554,6 +568,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.gc_sections = true;
             return Ok(());
         }
+        "-dead_strip_dylibs" => {
+            args.dead_strip_dylibs = true;
+            return Ok(());
+        }
         "-search_dylibs_first" => {
             args.search_dylibs_first = true;
             return Ok(());
@@ -566,7 +584,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-dynamic"
         | "-no_deduplicate"
         | "-no_compact_unwind"
-        | "-dead_strip_dylibs"
         | "-headerpad_max_install_names"
         | "-application_extension"
         | "-no_objc_category_merging"
@@ -730,15 +747,18 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
 
     // Prefix link flags: -needed-l<name>, -weak-l<name>, -reexport-l<name>, -hidden-l<name>
     let mut dylib_kind = DylibLoadKind::Normal;
-    let lib_from_prefix = if let Some(name) = arg.strip_prefix("-weak-l") {
+    let mut is_needed = false;
+    let lib_from_prefix = if let Some(name) = arg.strip_prefix("-needed-l") {
+        is_needed = true;
+        Some(name)
+    } else if let Some(name) = arg.strip_prefix("-weak-l") {
         dylib_kind = DylibLoadKind::Weak;
         Some(name)
     } else if let Some(name) = arg.strip_prefix("-reexport-l") {
         dylib_kind = DylibLoadKind::Reexport;
         Some(name)
     } else {
-        arg.strip_prefix("-needed-l")
-            .or_else(|| arg.strip_prefix("-hidden-l"))
+        arg.strip_prefix("-hidden-l")
     };
 
     // -l<name> (link library) -- must come after -lto_library check above
@@ -832,6 +852,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                             search_first: None,
                             modifiers: *modifier_stack.last().unwrap(),
                         });
+                    }
+                    if is_needed && !args.extra_dylibs.is_empty() {
+                        args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
                     }
                     found = true;
                     break 'search;
@@ -1234,8 +1257,10 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
 
     let name = install_name.unwrap_or_else(|| path.to_string_lossy().as_bytes().to_vec());
     args.add_dylib(name, DylibLoadKind::Normal);
-    for sym in exported_symbols {
-        args.dylib_symbols.insert(sym);
+    let dylib_idx = args.extra_dylibs.len().saturating_sub(1);
+    for sym in &exported_symbols {
+        args.dylib_symbols.insert(sym.clone());
+        args.dylib_symbol_provenance.insert(sym.clone(), dylib_idx);
     }
 
     // Follow LC_REEXPORT_DYLIB chains recursively.

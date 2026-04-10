@@ -68,7 +68,7 @@ fn should_ignore(name: &str) -> bool {
         "merge-scope",    // visibility merging
         "hidden-l",       // -hidden-l
         // needed-l now passes (prefix link modifiers fall through to -l logic)
-        "needed-framework", // -needed_framework
+        // needed-framework now passes (dead_strip_dylibs + needed)
         "weak-l",           // -weak-l
         // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
         "reexport-library", // -reexport_library
@@ -152,8 +152,8 @@ fn should_ignore(name: &str) -> bool {
         "w",       // -w (needs -application_extension warning)
         // Z now passes (-Z no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
-        "dead-strip-dylibs",  // -dead_strip_dylibs
-        "dead-strip-dylibs2", // -dead_strip_dylibs
+        // dead-strip-dylibs now passes
+        // dead-strip-dylibs2 now passes
     ];
 
     DIRECT_LD64.contains(&name)
