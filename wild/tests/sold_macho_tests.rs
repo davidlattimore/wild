@@ -65,7 +65,7 @@ fn should_ignore(name: &str) -> bool {
         // exported-symbols-list now passes (export trie filtering via export_list)
         // unexported-symbols-list now passes (unexport_list filtering)
         // export-dynamic now passes (LTO support + EXPORT_DYNAMIC flag fix)
-        "merge-scope",    // .weak_def_can_be_hidden visibility merging
+        "merge-scope", // .weak_def_can_be_hidden visibility merging
         // hidden-l now passes (archive symbols added to unexport list)
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         // needed-framework now passes (dead_strip_dylibs + needed)
@@ -80,7 +80,7 @@ fn should_ignore(name: &str) -> bool {
         // search-paths-first now passes (default search order is paths-first)
         // search-dylibs-first now passes (pre-scan for global flags)
         // sectcreate now passes (-sectcreate data written to TEXT segment gap)
-        "order-file",          // -order_file
+        "order-file", // -order_file
         // stack-size now passes
         // map now passes (link map file writer)
         // dependency-info now passes
@@ -91,13 +91,16 @@ fn should_ignore(name: &str) -> bool {
         // strip now passes (LINKEDIT packing + linker-signed codesign)
         // no-function-starts now passes
         // data-in-code-info now passes
-        "subsections-via-symbols", // needs cached subsection map (O(n²) without)
-        // add-ast-path now passes (N_AST stab entries from -add_ast_path)
-        // add-empty-section now passes
-        // pagezero-size2 now passes (error when used with -dylib)
-        // oso-prefix now passes (-oso_prefix with canonicalized OSO paths)
-        // start-stop-symbol now passes (section$/segment$ synthetic symbols)
-        // framework now passes (-F/-framework support)
+        "subsections-via-symbols", /* needs cached subsection map (O(n²) without)
+                                    * add-ast-path now passes (N_AST stab entries from
+                                    * -add_ast_path)
+                                    * add-empty-section now passes
+                                    * pagezero-size2 now passes (error when used with -dylib)
+                                    * oso-prefix now passes (-oso_prefix with canonicalized OSO
+                                    * paths)
+                                    * start-stop-symbol now passes (section$/segment$ synthetic
+                                    * symbols) framework now
+                                    * passes (-F/-framework support) */
     ];
 
     // Tests requiring LTO
@@ -107,12 +110,14 @@ fn should_ignore(name: &str) -> bool {
     // Tests that need linking against a .dylib
     const NEEDS_DYLIB_INPUT: &[&str] = &[
         // dylib now passes (dylib input consumption)
-        "tls-dylib", // TLS across dylibs
-        // data-reloc now passes
-        // fixup-chains-addend now passes (implicit addend from data + import table addend)
-        // fixup-chains-addend64 now passes (DYLD_CHAINED_IMPORT_ADDEND64 format 3)
-        // weak-def-dylib now passes
-        // mark-dead-strippable-dylib now passes (MH_DEAD_STRIPPABLE_DYLIB + auto-strip)
+        "tls-dylib", /* TLS across dylibs
+                      * data-reloc now passes
+                      * fixup-chains-addend now passes (implicit addend from data + import table
+                      * addend) fixup-chains-addend64 now passes
+                      * (DYLD_CHAINED_IMPORT_ADDEND64 format 3)
+                      * weak-def-dylib now passes
+                      * mark-dead-strippable-dylib now passes (MH_DEAD_STRIPPABLE_DYLIB +
+                      * auto-strip) */
     ];
 
     // Validation/correctness bugs in Wild to fix
@@ -129,10 +134,10 @@ fn should_ignore(name: &str) -> bool {
         // indirect-symtab now passes (DYSYMTAB + indirect symbol table)
         // init-offsets now passes (__init_offsets section with S_INIT_FUNC_OFFSETS)
         // init-offsets-fixup-chains now passes (-fixup_chains implies -init_offsets)
-        "literals",                        // ARM64 cc doesn't emit __literal8 (x86-only)
-        "libunwind",                       // libunwind integration
-        "objc-selector",                   // ObjC selector refs
-        // debuginfo now passes (SO/BNSYM/FUN/ENSYM stab synthesis for dsymutil)
+        "literals",  // ARM64 cc doesn't emit __literal8 (x86-only)
+        "libunwind", // libunwind integration
+        "objc-selector", /* ObjC selector refs
+                      * debuginfo now passes (SO/BNSYM/FUN/ENSYM stab synthesis for dsymutil) */
     ];
 
     // x86_64-specific tests

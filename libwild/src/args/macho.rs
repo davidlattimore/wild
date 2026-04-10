@@ -362,7 +362,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             "-search_dylibs_first" => args.search_dylibs_first = true,
             "-init_offsets" => args.use_init_offsets = true,
             "-fixup_chains" => args.use_init_offsets = true,
-            "-no_fixup_chains" => {} // keep use_init_offsets as-is unless -init_offsets was explicit
+            "-no_fixup_chains" => {} /* keep use_init_offsets as-is unless -init_offsets was
+                                       * explicit */
             _ => {}
         }
     }
@@ -627,8 +628,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
-        "-headerpad"
-        | "-allowable_client" | "-client_name" | "-sub_library" | "-sub_umbrella"
+        "-headerpad" | "-allowable_client" | "-client_name" | "-sub_library" | "-sub_umbrella"
         | "-objc_abi_version" | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());

@@ -169,7 +169,9 @@ fn print_dependencies(layout: &Layout<'_, MachO>) {
 
     for group in &layout.group_layouts {
         for file_layout in &group.files {
-            let FileLayout::Object(obj) = file_layout else { continue };
+            let FileLayout::Object(obj) = file_layout else {
+                continue;
+            };
             let ref_path = obj.input.file.filename.to_string_lossy();
 
             for sym_idx in 0..obj.object.symbols.len() {
@@ -188,20 +190,34 @@ fn print_dependencies(layout: &Layout<'_, MachO>) {
                 }
 
                 // Find what defines this symbol.
-                let sym_id = obj.symbol_id_range.input_to_id(object::SymbolIndex(sym_idx));
+                let sym_id = obj
+                    .symbol_id_range
+                    .input_to_id(object::SymbolIndex(sym_idx));
                 let def_id = layout.symbol_db.definition(sym_id);
 
                 // Check if defined in a linked object file.
                 let mut def_path = String::new();
                 // First check if it resolves to a real address (object-defined).
-                if let Some(res) = layout.symbol_resolutions.iter().nth(def_id.as_usize()).and_then(|r| r.as_ref()) {
-                    if res.raw_value != 0 && !res.flags.contains(crate::value_flags::ValueFlags::DYNAMIC) {
+                if let Some(res) = layout
+                    .symbol_resolutions
+                    .iter()
+                    .nth(def_id.as_usize())
+                    .and_then(|r| r.as_ref())
+                {
+                    if res.raw_value != 0
+                        && !res.flags.contains(crate::value_flags::ValueFlags::DYNAMIC)
+                    {
                         let def_file_id = layout.symbol_db.file_id_for_symbol(def_id);
                         'outer: for g in &layout.group_layouts {
                             for fl in &g.files {
                                 if let FileLayout::Object(def_obj) = fl {
                                     if def_obj.file_id == def_file_id {
-                                        def_path = def_obj.input.file.filename.to_string_lossy().into_owned();
+                                        def_path = def_obj
+                                            .input
+                                            .file
+                                            .filename
+                                            .to_string_lossy()
+                                            .into_owned();
                                         break 'outer;
                                     }
                                 }
@@ -820,8 +836,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
     };
 
     let has_addends = bind_fixups.iter().any(|f| f.addend != 0);
-    let needs_64bit_addend =
-        bind_fixups.iter().any(|f| f.addend > i32::MAX as i64 || f.addend < i32::MIN as i64);
+    let needs_64bit_addend = bind_fixups
+        .iter()
+        .any(|f| f.addend > i32::MAX as i64 || f.addend < i32::MIN as i64);
     let import_entry_size = if needs_64bit_addend {
         16u32 // format 3: 8 (import64) + 8 (addend64)
     } else if has_addends {
@@ -1276,7 +1293,9 @@ fn write_exe_symtab(
                     let obj_path = std::path::Path::new(&path);
                     if let Some(dir) = obj_path.parent() {
                         let mut d = dir.to_string_lossy().into_owned();
-                        if !d.ends_with('/') { d.push('/'); }
+                        if !d.ends_with('/') {
+                            d.push('/');
+                        }
                         stab_entries.push((d.into_bytes(), 0x64, 0, 0, 0));
                     }
                     if let Some(stem) = obj_path.file_name() {
@@ -1307,22 +1326,44 @@ fn write_exe_symtab(
                                     .name(le, obj.object.symbols.strings())
                                     .unwrap_or(&[])
                                     .to_vec();
-                                stab_entries.push((name, n_type, sym.n_sect(), sym.n_desc(le), sym.n_value(le)));
+                                stab_entries.push((
+                                    name,
+                                    n_type,
+                                    sym.n_sect(),
+                                    sym.n_desc(le),
+                                    sym.n_value(le),
+                                ));
                                 continue;
                             }
                             // Synthesize FUN stabs for defined external functions in __text.
-                            if (n_type & 0x0F) != 0x0F { continue; } // N_SECT | N_EXT
+                            if (n_type & 0x0F) != 0x0F {
+                                continue;
+                            } // N_SECT | N_EXT
                             let n_sect = sym.n_sect();
-                            if n_sect == 0 { continue; }
+                            if n_sect == 0 {
+                                continue;
+                            }
                             let sec_idx = n_sect as usize - 1;
-                            let is_text = obj.object.sections.get(sec_idx)
+                            let is_text = obj
+                                .object
+                                .sections
+                                .get(sec_idx)
                                 .map(|s| crate::macho::trim_nul(s.sectname()) == b"__text")
                                 .unwrap_or(false);
-                            if !is_text { continue; }
-                            let sym_name = sym.name(le, obj.object.symbols.strings()).unwrap_or(&[]);
-                            let sym_id = obj.symbol_id_range.input_to_id(object::SymbolIndex(sym_idx));
-                            let Some(res) = layout.merged_symbol_resolution(sym_id) else { continue };
-                            if res.raw_value == 0 { continue; }
+                            if !is_text {
+                                continue;
+                            }
+                            let sym_name =
+                                sym.name(le, obj.object.symbols.strings()).unwrap_or(&[]);
+                            let sym_id = obj
+                                .symbol_id_range
+                                .input_to_id(object::SymbolIndex(sym_idx));
+                            let Some(res) = layout.merged_symbol_resolution(sym_id) else {
+                                continue;
+                            };
+                            if res.raw_value == 0 {
+                                continue;
+                            }
                             let addr = res.raw_value;
                             // n_sect for stab entries uses output section numbering.
                             // __text is always output section 1.
@@ -1668,8 +1709,7 @@ fn write_exe_symtab(
                 out[o + 16..o + 20].copy_from_slice(&iundefsym.to_le_bytes());
                 out[o + 20..o + 24].copy_from_slice(&n_undef.to_le_bytes());
                 if !indirect_syms.is_empty() {
-                    out[o + 48..o + 52]
-                        .copy_from_slice(&(indirectsymoff as u32).to_le_bytes());
+                    out[o + 48..o + 52].copy_from_slice(&(indirectsymoff as u32).to_le_bytes());
                     out[o + 52..o + 56]
                         .copy_from_slice(&(indirect_syms.len() as u32).to_le_bytes());
                 }
@@ -1839,10 +1879,17 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
             } else {
                 name.clone()
             };
-            let weak = if is_objc_stub { false } else { layout.symbol_db.is_weak_ref(symbol_id) };
+            let weak = if is_objc_stub {
+                false
+            } else {
+                layout.symbol_db.is_weak_ref(symbol_id)
+            };
             imports.push(ImportEntry {
                 name: import_name,
-                lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs, layout.symbol_db.args.flat_namespace),
+                lib_ordinal: lib_ordinal_for_symbol(
+                    has_extra_dylibs,
+                    layout.symbol_db.args.flat_namespace,
+                ),
                 weak_import: weak,
             });
             bind_fixups.push(BindFixup {
@@ -1940,7 +1987,10 @@ fn write_got_entries(
                     let import_index = imports.len() as u32;
                     imports.push(ImportEntry {
                         name,
-                        lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs, layout.symbol_db.args.flat_namespace),
+                        lib_ordinal: lib_ordinal_for_symbol(
+                            has_extra_dylibs,
+                            layout.symbol_db.args.flat_namespace,
+                        ),
                         weak_import: false,
                     });
                     bind_fixups.push(BindFixup {
@@ -2132,10 +2182,7 @@ fn write_filtered_eh_frame(
                 .collect();
 
             if !adjusted.is_empty() {
-                let eh_desc = format!(
-                    "{}(__TEXT,__eh_frame)",
-                    obj.input.file.filename.display()
-                );
+                let eh_desc = format!("{}(__TEXT,__eh_frame)", obj.input.file.filename.display());
                 apply_relocations(
                     out,
                     file_offset,
@@ -2777,7 +2824,10 @@ fn apply_relocations(
                         let import_index = imports.len() as u32;
                         imports.push(ImportEntry {
                             name,
-                            lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs, layout.symbol_db.args.flat_namespace),
+                            lib_ordinal: lib_ordinal_for_symbol(
+                                has_extra_dylibs,
+                                layout.symbol_db.args.flat_namespace,
+                            ),
                             weak_import: false,
                         });
                         bind_fixups.push(BindFixup {
@@ -2810,9 +2860,7 @@ fn apply_relocations(
                                 // Skip metadata sections (e.g. __llvm_addrsig)
                                 // that aren't part of the runtime data layout.
                                 if !section_desc.contains("__llvm") {
-                                    crate::bail!(
-                                        "{section_desc}: unaligned base relocation"
-                                    );
+                                    crate::bail!("{section_desc}: unaligned base relocation");
                                 }
                                 continue;
                             }
@@ -2882,9 +2930,12 @@ fn write_chained_fixups_header(
     let seg_starts_offset_in_image = starts_in_image_size as u32;
 
     let imports_table_offset = starts_offset + starts_in_image_size as u32 + seg_starts_size as u32;
-    // Format 1: no addend (4 bytes). Format 2: 32-bit addend (4+4=8). Format 3: 64-bit addend (4+4+8=16).
-    let needs_64bit_addend = import_addends
-        .map_or(false, |a| a.iter().any(|v| *v > i32::MAX as i64 || *v < i32::MIN as i64));
+    // Format 1: no addend (4 bytes). Format 2: 32-bit addend (4+4=8). Format 3: 64-bit addend
+    // (4+4+8=16).
+    let needs_64bit_addend = import_addends.map_or(false, |a| {
+        a.iter()
+            .any(|v| *v > i32::MAX as i64 || *v < i32::MIN as i64)
+    });
     let imports_format = if needs_64bit_addend {
         3u32 // DYLD_CHAINED_IMPORT_ADDEND64
     } else if import_addends.is_some() {
@@ -2968,7 +3019,8 @@ fn write_chained_fixups_header(
             0
         };
         if imports_format == 3 {
-            // DYLD_CHAINED_IMPORT_ADDEND64: lib_ordinal:16(signed), weak:1, reserved:15, name_offset:32
+            // DYLD_CHAINED_IMPORT_ADDEND64: lib_ordinal:16(signed), weak:1, reserved:15,
+            // name_offset:32
             let weak64: u64 = if import_weak.get(i).copied().unwrap_or(false) {
                 1u64 << 16
             } else {
@@ -2977,19 +3029,13 @@ fn write_chained_fixups_header(
             // Ordinal is a signed 16-bit value in format 3 (vs 8-bit in format 1/2).
             // Special ordinals like 0xFE (-2 as i8) must be sign-extended to i16.
             let ordinal16 = (ordinal as i8 as i16 as u16) as u64;
-            let import_val: u64 =
-                ordinal16 | weak64 | ((name_off as u64 & 0xFFFF_FFFF) << 32);
-            w[it + i * entry_sz..it + i * entry_sz + 8]
-                .copy_from_slice(&import_val.to_le_bytes());
-            let addend = import_addends
-                .and_then(|a| a.get(i).copied())
-                .unwrap_or(0);
-            w[it + i * entry_sz + 8..it + i * entry_sz + 16]
-                .copy_from_slice(&addend.to_le_bytes());
+            let import_val: u64 = ordinal16 | weak64 | ((name_off as u64 & 0xFFFF_FFFF) << 32);
+            w[it + i * entry_sz..it + i * entry_sz + 8].copy_from_slice(&import_val.to_le_bytes());
+            let addend = import_addends.and_then(|a| a.get(i).copied()).unwrap_or(0);
+            w[it + i * entry_sz + 8..it + i * entry_sz + 16].copy_from_slice(&addend.to_le_bytes());
         } else {
             let import_val: u32 = ordinal | weak_bit | ((name_off & 0x7F_FFFF) << 9);
-            w[it + i * entry_sz..it + i * entry_sz + 4]
-                .copy_from_slice(&import_val.to_le_bytes());
+            w[it + i * entry_sz..it + i * entry_sz + 4].copy_from_slice(&import_val.to_le_bytes());
             // Format 2: write 32-bit addend after each import entry.
             if let Some(addends) = import_addends {
                 let addend = addends.get(i).copied().unwrap_or(0) as i32;
@@ -4055,7 +4101,7 @@ fn write_headers(
             addr: init_offsets_vm_addr,
             size: init_offsets_size,
             offset: io_foff,
-            align: 2, // 4-byte aligned
+            align: 2,    // 4-byte aligned
             flags: 0x16, // S_INIT_FUNC_OFFSETS
         });
     }

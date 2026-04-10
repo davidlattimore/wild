@@ -4,14 +4,19 @@
 //! The linker loads libLTO.dylib and uses its C API to compile LLVM bitcode
 //! modules into native Mach-O object code.
 
+use crate::bail;
+use crate::error;
 use crate::error::Result;
 use crate::platform::Args;
-use crate::{bail, error};
-use libloading::{Library, Symbol};
-use std::ffi::{CStr, CString};
-use std::path::{Path, PathBuf};
+use libloading::Library;
+use libloading::Symbol;
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::path::Path;
+use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 // Opaque handles from the libLTO C API.
 type LtoModuleT = *mut std::ffi::c_void;
@@ -28,19 +33,16 @@ pub(crate) const LTO_SYMBOL_DEFINITION_UNDEFINED: u32 = 0x0000_0400;
 pub(crate) struct LibLto {
     _lib: Library,
     // Module functions
-    module_create_from_memory:
-        unsafe extern "C" fn(*const u8, usize) -> LtoModuleT,
+    module_create_from_memory: unsafe extern "C" fn(*const u8, usize) -> LtoModuleT,
     module_dispose: unsafe extern "C" fn(LtoModuleT),
     module_get_num_symbols: unsafe extern "C" fn(LtoModuleT) -> u32,
-    module_get_symbol_name:
-        unsafe extern "C" fn(LtoModuleT, u32) -> *const std::ffi::c_char,
+    module_get_symbol_name: unsafe extern "C" fn(LtoModuleT, u32) -> *const std::ffi::c_char,
     module_get_symbol_attribute: unsafe extern "C" fn(LtoModuleT, u32) -> u32,
     // Codegen functions
     codegen_create: unsafe extern "C" fn() -> LtoCodeGenT,
     codegen_dispose: unsafe extern "C" fn(LtoCodeGenT),
     codegen_add_module: unsafe extern "C" fn(LtoCodeGenT, LtoModuleT) -> bool,
-    codegen_add_must_preserve_symbol:
-        unsafe extern "C" fn(LtoCodeGenT, *const std::ffi::c_char),
+    codegen_add_must_preserve_symbol: unsafe extern "C" fn(LtoCodeGenT, *const std::ffi::c_char),
     codegen_set_pic_model: unsafe extern "C" fn(LtoCodeGenT, u32) -> bool,
     codegen_compile: unsafe extern "C" fn(LtoCodeGenT, *mut usize) -> *const u8,
     // Error reporting
@@ -49,8 +51,7 @@ pub(crate) struct LibLto {
     codegen_compile_to_file:
         unsafe extern "C" fn(LtoCodeGenT, *mut *const std::ffi::c_char) -> bool,
     // Debug options
-    codegen_debug_options:
-        unsafe extern "C" fn(LtoCodeGenT, *const std::ffi::c_char),
+    codegen_debug_options: unsafe extern "C" fn(LtoCodeGenT, *const std::ffi::c_char),
 }
 
 impl LibLto {
@@ -70,40 +71,28 @@ impl LibLto {
             };
 
             Ok(Self {
-                module_create_from_memory: std::mem::transmute(
-                    get(b"lto_module_create_from_memory\0")?,
-                ),
+                module_create_from_memory: std::mem::transmute(get(
+                    b"lto_module_create_from_memory\0",
+                )?),
                 module_dispose: std::mem::transmute(get(b"lto_module_dispose\0")?),
-                module_get_num_symbols: std::mem::transmute(
-                    get(b"lto_module_get_num_symbols\0")?,
-                ),
-                module_get_symbol_name: std::mem::transmute(
-                    get(b"lto_module_get_symbol_name\0")?,
-                ),
-                module_get_symbol_attribute: std::mem::transmute(
-                    get(b"lto_module_get_symbol_attribute\0")?,
-                ),
+                module_get_num_symbols: std::mem::transmute(get(b"lto_module_get_num_symbols\0")?),
+                module_get_symbol_name: std::mem::transmute(get(b"lto_module_get_symbol_name\0")?),
+                module_get_symbol_attribute: std::mem::transmute(get(
+                    b"lto_module_get_symbol_attribute\0",
+                )?),
                 codegen_create: std::mem::transmute(get(b"lto_codegen_create\0")?),
                 codegen_dispose: std::mem::transmute(get(b"lto_codegen_dispose\0")?),
-                codegen_add_module: std::mem::transmute(
-                    get(b"lto_codegen_add_module\0")?,
-                ),
-                codegen_add_must_preserve_symbol: std::mem::transmute(
-                    get(b"lto_codegen_add_must_preserve_symbol\0")?,
-                ),
-                codegen_set_pic_model: std::mem::transmute(
-                    get(b"lto_codegen_set_pic_model\0")?,
-                ),
+                codegen_add_module: std::mem::transmute(get(b"lto_codegen_add_module\0")?),
+                codegen_add_must_preserve_symbol: std::mem::transmute(get(
+                    b"lto_codegen_add_must_preserve_symbol\0",
+                )?),
+                codegen_set_pic_model: std::mem::transmute(get(b"lto_codegen_set_pic_model\0")?),
                 codegen_compile: std::mem::transmute(get(b"lto_codegen_compile\0")?),
-                get_error_message: std::mem::transmute(
-                    get(b"lto_get_error_message\0")?,
-                ),
-                codegen_compile_to_file: std::mem::transmute(
-                    get(b"lto_codegen_compile_to_file\0")?,
-                ),
-                codegen_debug_options: std::mem::transmute(
-                    get(b"lto_codegen_debug_options\0")?,
-                ),
+                get_error_message: std::mem::transmute(get(b"lto_get_error_message\0")?),
+                codegen_compile_to_file: std::mem::transmute(get(
+                    b"lto_codegen_compile_to_file\0",
+                )?),
+                codegen_debug_options: std::mem::transmute(get(b"lto_codegen_debug_options\0")?),
                 _lib: lib,
             })
         }
@@ -152,8 +141,7 @@ impl LibLto {
 
             // Add all bitcode modules.
             for (name, data) in inputs {
-                let module =
-                    (self.module_create_from_memory)(data.as_ptr(), data.len());
+                let module = (self.module_create_from_memory)(data.as_ptr(), data.len());
                 if module.is_null() {
                     (self.codegen_dispose)(cg);
                     bail!(
@@ -195,17 +183,11 @@ impl LibLto {
                 if !out_path.is_null() {
                     let tmp = CStr::from_ptr(out_path).to_string_lossy();
                     std::fs::copy(tmp.as_ref(), path).map_err(|e| {
-                        error!(
-                            "Failed to copy LTO object to {}: {e}",
-                            path.display()
-                        )
+                        error!("Failed to copy LTO object to {}: {e}", path.display())
                     })?;
                 }
                 let result = std::fs::read(path).map_err(|e| {
-                    error!(
-                        "Failed to read LTO object from {}: {e}",
-                        path.display()
-                    )
+                    error!("Failed to read LTO object from {}: {e}", path.display())
                 })?;
                 (self.codegen_dispose)(cg);
                 return Ok(result);
@@ -243,8 +225,7 @@ impl LibLto {
     /// Returns (name, attributes) pairs.
     pub(crate) fn get_symbols(&self, data: &[u8]) -> Result<Vec<(Vec<u8>, u32)>> {
         unsafe {
-            let module =
-                (self.module_create_from_memory)(data.as_ptr(), data.len());
+            let module = (self.module_create_from_memory)(data.as_ptr(), data.len());
             if module.is_null() {
                 bail!(
                     "lto_module_create_from_memory failed: {}",
@@ -303,17 +284,16 @@ pub(crate) fn compile_bitcode_to_file<A: Args>(
         std::env::temp_dir().join(format!("wild_lto_{}_{n}.o", std::process::id()))
     };
 
-    let native_bytes = lib_lto.compile(
-        &[(input_name, bitcode)],
-        &preserve,
-        &[],
-        Some(&object_path),
-    )?;
+    let native_bytes =
+        lib_lto.compile(&[(input_name, bitcode)], &preserve, &[], Some(&object_path))?;
 
     // compile_to_file writes directly; if bytes were returned, write them.
     if !object_path.exists() {
         std::fs::write(&object_path, &native_bytes).map_err(|e| {
-            error!("Failed to write LTO object to {}: {e}", object_path.display())
+            error!(
+                "Failed to write LTO object to {}: {e}",
+                object_path.display()
+            )
         })?;
     }
 

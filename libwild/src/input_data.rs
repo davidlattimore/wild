@@ -739,9 +739,10 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                     data: native_data.data(),
                     modifiers: input_ref.file.modifiers,
                 };
-                return Ok(InputRecord::Object(
-                    ParsedInputObject::new(&input_bytes, self.args),
-                ));
+                return Ok(InputRecord::Object(ParsedInputObject::new(
+                    &input_bytes,
+                    self.args,
+                )));
             }
 
             return Ok(InputRecord::LtoInput(Box::new(UnclaimedLtoInput {
