@@ -1171,6 +1171,13 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         false
     }
 
+    /// Returns the set of symbols known to be provided by linked dylibs (Mach-O .tbd parsing).
+    fn dylib_symbols(&self) -> &std::collections::HashSet<Vec<u8>> {
+        static EMPTY: std::sync::LazyLock<std::collections::HashSet<Vec<u8>>> =
+            std::sync::LazyLock::new(Default::default);
+        &EMPTY
+    }
+
     /// Returns whether multiple symbols with the same name should be permitted.
     fn allow_multiple_definitions(&self) -> bool {
         false

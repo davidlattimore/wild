@@ -142,13 +142,13 @@ fn should_ignore(name: &str) -> bool {
 
     // .tbd parsing features not yet supported
     const TBD: &[&str] = &[
-        "tbd",
-        "tbd-add",
-        "tbd-hide",
-        "tbd-install-name",
-        "tbd-previous",
-        "tbd-reexport",
-        "unkown-tbd-target",
+        // tbd now passes (framework .tbd with deferred resolution)
+        "tbd-add",          // $ld$add$ directive
+        "tbd-hide",         // $ld$hide$ directive
+        "tbd-install-name", // $ld$install_name$ directive
+        "tbd-previous",     // $ld$previous$ directive
+        // tbd-reexport now passes (multi-document .tbd)
+        // unkown-tbd-target now passes (unknown target arch in .tbd)
     ];
 
     // Load command / output format checks

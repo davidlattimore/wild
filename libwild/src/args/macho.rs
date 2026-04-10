@@ -90,6 +90,8 @@ pub struct MachOArgs {
     pub(crate) framework_search_paths: Vec<Box<Path>>,
     /// Use extension-first search order (dylibs before static libs across all paths).
     pub(crate) search_dylibs_first: bool,
+    /// Frameworks to resolve after all -F paths are collected.
+    pending_frameworks: Vec<String>,
 }
 
 impl MachOArgs {
@@ -149,6 +151,7 @@ impl Default for MachOArgs {
             sectcreate: Vec::new(),
             framework_search_paths: Vec::new(),
             search_dylibs_first: false,
+            pending_frameworks: Vec::new(),
         }
     }
 }
@@ -211,6 +214,10 @@ impl platform::Args for MachOArgs {
         self.unexported_symbols_list.as_deref()
     }
 
+    fn dylib_symbols(&self) -> &std::collections::HashSet<Vec<u8>> {
+        &self.dylib_symbols
+    }
+
     fn force_undefined_symbol_names(&self) -> &[String] {
         &self.force_undefined
     }
@@ -266,6 +273,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         }
 
         parse_one_arg(args, arg, &mut input, &mut modifier_stack)?;
+    }
+
+    // Resolve deferred framework links now that all -F paths are collected.
+    let pending = std::mem::take(&mut args.pending_frameworks);
+    for name in &pending {
+        link_framework(args, name)?;
     }
 
     Ok(())
@@ -368,8 +381,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-framework" | "-weak_framework" | "-needed_framework" => {
             if let Some(name) = input.next() {
-                let name = name.as_ref();
-                link_framework(args, name)?;
+                // Defer resolution: -F paths may come after -framework in cc invocations.
+                args.pending_frameworks.push(name.as_ref().to_string());
             }
             return Ok(());
         }
@@ -755,7 +768,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     // Check if it's a dylib/bundle -- if so, treat like a .tbd (extract install name
     // and symbols, emit LC_LOAD_DYLIB) rather than passing through object pipeline.
     let path = Path::new(arg);
-    if path.extension().map_or(false, |e| e == "dylib")
+    if path.extension().map_or(false, |e| e == "tbd") {
+        handle_tbd_input(args, path)?;
+    } else if path.extension().map_or(false, |e| e == "dylib")
         || is_macho_dylib(path)
     {
         handle_dylib_input(args, path)?;
@@ -899,6 +914,15 @@ fn is_macho_dylib(path: &Path) -> bool {
     }
     let filetype = u32::from_le_bytes(data[12..16].try_into().unwrap());
     matches!(filetype, 6 | 8) // MH_DYLIB | MH_BUNDLE
+}
+
+/// Handle a .tbd file as a positional input: extract install-name and symbols, register as dylib dep.
+fn handle_tbd_input(args: &mut MachOArgs, path: &Path) -> Result {
+    if let Some(dylib_path) = parse_tbd_install_name(path) {
+        args.add_dylib(dylib_path, DylibLoadKind::Normal);
+    }
+    collect_tbd_symbols(path, &mut args.dylib_symbols);
+    Ok(())
 }
 
 /// Handle a .dylib input: extract install name and exported symbols, register as dylib dep.

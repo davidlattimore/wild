@@ -3379,7 +3379,19 @@ fn should_emit_undefined_error<P: Platform>(
     match symbol_db.args.unresolved_symbols_behaviour() {
         crate::args::UnresolvedSymbols::IgnoreAll
         | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
-        _ => symbol_db.is_undefined(symbol_id),
+        _ => {
+            if !symbol_db.is_undefined(symbol_id) {
+                return false;
+            }
+            // Check if the symbol is provided by a linked dylib (via .tbd parsing).
+            // If so, it's not truly undefined.
+            if let Ok(name) = symbol_db.symbol_name(symbol_id) {
+                if symbol_db.args.dylib_symbols().contains(name.bytes()) {
+                    return false;
+                }
+            }
+            true
+        }
     }
 }
 
