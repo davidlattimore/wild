@@ -1072,6 +1072,7 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     // Parse install name from LC_ID_DYLIB
     let mut install_name: Option<Vec<u8>> = None;
     let mut exported_symbols: Vec<Vec<u8>> = Vec::new();
+    let mut reexported_dylib_paths: Vec<String> = Vec::new();
 
     if data.len() >= 32 {
         let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
@@ -1098,6 +1099,23 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
                         .map(|p| name_start + p)
                         .unwrap_or(offset + cmdsize);
                     install_name = Some(data[name_start..name_end].to_vec());
+                }
+            }
+            // LC_REEXPORT_DYLIB = 0x8000001F
+            if cmd == 0x8000_001F && cmdsize >= 24 {
+                let name_offset = u32::from_le_bytes(
+                    data[offset + 8..offset + 12].try_into().unwrap(),
+                ) as usize;
+                if name_offset < cmdsize {
+                    let name_start = offset + name_offset;
+                    let name_end = data[name_start..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| name_start + p)
+                        .unwrap_or(offset + cmdsize);
+                    if let Ok(s) = std::str::from_utf8(&data[name_start..name_end]) {
+                        reexported_dylib_paths.push(s.to_string());
+                    }
                 }
             }
             // LC_DYLD_EXPORTS_TRIE = 0x80000033 or LC_DYLD_INFO[_ONLY] = 0x22 / 0x80000022
@@ -1136,7 +1154,97 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     for sym in exported_symbols {
         args.dylib_symbols.insert(sym);
     }
+
+    // Follow LC_REEXPORT_DYLIB chains recursively.
+    let search_dirs: Vec<PathBuf> = path.parent().map(|d| d.to_path_buf()).into_iter()
+        .chain(args.lib_search_paths.iter().map(|d| d.to_path_buf()))
+        .collect();
+    for reexport_install_name in reexported_dylib_paths {
+        collect_dylib_reexport_symbols(
+            &reexport_install_name,
+            &search_dirs,
+            &mut args.dylib_symbols,
+            0,
+        );
+    }
+
     Ok(())
+}
+
+/// Recursively collect symbols from a re-exported dylib and its re-exports.
+fn collect_dylib_reexport_symbols(
+    install_name: &str,
+    search_dirs: &[PathBuf],
+    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return; // prevent infinite recursion
+    }
+    let file_name = Path::new(install_name).file_name().unwrap_or_default();
+    // Try absolute path, then each search directory.
+    let candidates = std::iter::once(PathBuf::from(install_name))
+        .chain(search_dirs.iter().map(|d| d.join(file_name)));
+    for candidate in candidates {
+        let Ok(data) = std::fs::read(&candidate) else {
+            continue;
+        };
+        if data.len() < 32 {
+            continue;
+        }
+        let mut exported = Vec::new();
+        let mut nested_reexports = Vec::new();
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut off = 32;
+        for _ in 0..ncmds {
+            if off + 8 > data.len() { break; }
+            let cmd = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+            let sz = u32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap()) as usize;
+            if sz < 8 || off + sz > data.len() { break; }
+            // LC_REEXPORT_DYLIB
+            if cmd == 0x8000_001F && sz >= 24 {
+                let n_off = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
+                if n_off < sz {
+                    let s = off + n_off;
+                    let e = data[s..].iter().position(|&b| b == 0).map(|p| s + p).unwrap_or(off + sz);
+                    if let Ok(name) = std::str::from_utf8(&data[s..e]) {
+                        nested_reexports.push(name.to_string());
+                    }
+                }
+            }
+            // LC_DYLD_EXPORTS_TRIE
+            if cmd == 0x8000_0033 && sz >= 16 {
+                let t_off = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
+                let t_sz = u32::from_le_bytes(data[off + 12..off + 16].try_into().unwrap()) as usize;
+                if t_off > 0 && t_sz > 0 && t_off + t_sz <= data.len() {
+                    parse_export_trie(&data[t_off..t_off + t_sz], &mut exported);
+                }
+            }
+            // LC_DYLD_INFO / LC_DYLD_INFO_ONLY
+            if (cmd == 0x22 || cmd == 0x8000_0022) && sz >= 48 {
+                let e_off = u32::from_le_bytes(data[off + 40..off + 44].try_into().unwrap()) as usize;
+                let e_sz = u32::from_le_bytes(data[off + 44..off + 48].try_into().unwrap()) as usize;
+                if e_off > 0 && e_sz > 0 && e_off + e_sz <= data.len() {
+                    parse_export_trie(&data[e_off..e_off + e_sz], &mut exported);
+                }
+            }
+            off += sz;
+        }
+        for sym in exported {
+            symbols.insert(sym);
+        }
+        // Also add the parent dir of this dylib as a search path for nested re-exports.
+        let mut dirs = search_dirs.to_vec();
+        if let Some(parent) = candidate.parent() {
+            if !dirs.contains(&parent.to_path_buf()) {
+                dirs.push(parent.to_path_buf());
+            }
+        }
+        for nested in nested_reexports {
+            collect_dylib_reexport_symbols(&nested, &dirs, symbols, depth + 1);
+        }
+        return; // found the file, stop searching candidates
+    }
 }
 
 /// Walk a Mach-O exports trie and collect all symbol names.

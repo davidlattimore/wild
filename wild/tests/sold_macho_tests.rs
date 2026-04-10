@@ -70,7 +70,7 @@ fn should_ignore(name: &str) -> bool {
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         "needed-framework",        // -needed_framework
         "weak-l",                  // -weak-l
-        "reexport-l",              // re-export tracing through dylib LC_REEXPORT_DYLIB
+        // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
         "reexport-library",        // -reexport_library
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
