@@ -231,11 +231,42 @@ fn build_mappings_and_size(
         .iter()
         .filter(|r| r.is_some())
         .count();
+    // Count stab (debug) symbols for size estimation: 1 N_OSO per object + any
+    // existing stabs in input objects.
+    let n_stabs = if !layout.symbol_db.args.should_strip_debug() {
+        layout
+            .group_layouts
+            .iter()
+            .flat_map(|g| &g.files)
+            .filter_map(|f| {
+                if let crate::layout::FileLayout::Object(obj) = f {
+                    Some(obj)
+                } else {
+                    None
+                }
+            })
+            .map(|obj| {
+                use object::read::macho::Nlist as _;
+                let input_stabs = (0..obj.object.symbols.len())
+                    .filter(|&i| {
+                        obj.object
+                            .symbols
+                            .symbol(object::SymbolIndex(i))
+                            .map(|s| s.n_type() & 0xE0 != 0)
+                            .unwrap_or(false)
+                    })
+                    .count();
+                1 + input_stabs // +1 for synthesized N_OSO
+            })
+            .sum::<usize>()
+    } else {
+        0
+    };
     // Each nlist64 = 16 bytes, Rust mangled symbol names average ~200 bytes.
     // Also account for chained fixups data (page starts, imports, symbol names).
     // Overestimating is cheap (buffer is truncated to actual size); underestimating
     // causes silent data loss and codesign failure.
-    let symtab_estimate = n_syms * (16 + 200);
+    let symtab_estimate = (n_syms + n_stabs) * (16 + 200);
     let n_fixups = n_syms;
     let fixups_estimate = 16384 + n_fixups * 12;
     let linkedit_estimate = fixups_estimate + n_exports * 256 + symtab_estimate;
@@ -872,6 +903,66 @@ fn write_exe_symtab(
 ) -> Result<usize> {
     use crate::symbol_db::SymbolId;
 
+    // Synthesize N_OSO stab entries for each input object (for dsymutil/debugger).
+    // Skip if -S (strip debug).
+    // Stab entries: (name, n_type, n_sect, n_desc, n_value)
+    let mut stab_entries: Vec<(Vec<u8>, u8, u8, u16, u64)> = Vec::new();
+    if !layout.symbol_db.args.should_strip_debug() {
+        for group in &layout.group_layouts {
+            for file_layout in &group.files {
+                if let crate::layout::FileLayout::Object(obj) = file_layout {
+                    let path = obj.input.file.filename.to_string_lossy().into_owned();
+                    if path.is_empty() {
+                        continue;
+                    }
+                    // Get mtime of the .o file for the OSO n_value field.
+                    let mtime = std::fs::metadata(path.as_str())
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    // N_OSO = 0x66, n_sect=0 (not in a section), n_desc=0
+                    stab_entries.push((
+                        path.into_bytes(),
+                        0x66, // N_OSO
+                        0,
+                        0,
+                        mtime,
+                    ));
+                    // Also copy any existing stab symbols from the input object
+                    // (compiler-generated stabs, if any).
+                    {
+                        use object::read::macho::Nlist as _;
+                        let le = object::Endianness::Little;
+                        for sym_idx in 0..obj.object.symbols.len() {
+                            let Ok(sym) =
+                                obj.object.symbols.symbol(object::SymbolIndex(sym_idx))
+                            else {
+                                continue;
+                            };
+                            let n_type = sym.n_type();
+                            if n_type & 0xE0 == 0 {
+                                continue;
+                            }
+                            let name = sym
+                                .name(le, obj.object.symbols.strings())
+                                .unwrap_or(&[])
+                                .to_vec();
+                            stab_entries.push((
+                                name,
+                                n_type,
+                                sym.n_sect(),
+                                sym.n_desc(le),
+                                sym.n_value(le),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Collect all defined symbols with non-zero addresses.
     let mut entries: Vec<(Vec<u8>, u64, u8)> = Vec::new(); // (name, value, n_type)
     let mut seen_names: std::collections::HashSet<Vec<u8>> = Default::default();
@@ -944,7 +1035,7 @@ fn write_exe_symtab(
         }
     }
 
-    if entries.is_empty() {
+    if entries.is_empty() && stab_entries.is_empty() {
         return Ok(start);
     }
 
@@ -956,7 +1047,18 @@ fn write_exe_symtab(
     });
 
     // Build string table: starts with \0
+    // Stab entries first, then regular entries.
     let mut strtab = vec![0u8];
+    let mut stab_str_offsets = Vec::new();
+    for (name, _, _, _, _) in &stab_entries {
+        if name.is_empty() {
+            stab_str_offsets.push(0u32); // empty name points to the leading \0
+        } else {
+            stab_str_offsets.push(strtab.len() as u32);
+            strtab.extend_from_slice(name);
+            strtab.push(0);
+        }
+    }
     let mut str_offsets = Vec::new();
     for (name, _, _) in &entries {
         str_offsets.push(strtab.len() as u32);
@@ -969,9 +1071,25 @@ fn write_exe_symtab(
 
     // Write nlist64 entries (16 bytes each). No alignment padding —
     // LINKEDIT must be fully packed for strip(1) compatibility.
+    // Stab entries come first (they're part of the local symbol range).
     let symoff = start;
-    let nsyms = entries.len();
+    let nsyms = stab_entries.len() + entries.len();
     let mut pos = symoff;
+
+    // Write stab entries
+    for (i, (_, n_type, n_sect, n_desc, n_value)) in stab_entries.iter().enumerate() {
+        if pos + 16 > out.len() {
+            break;
+        }
+        out[pos..pos + 4].copy_from_slice(&stab_str_offsets[i].to_le_bytes());
+        out[pos + 4] = *n_type;
+        out[pos + 5] = *n_sect;
+        out[pos + 6..pos + 8].copy_from_slice(&n_desc.to_le_bytes());
+        out[pos + 8..pos + 16].copy_from_slice(&n_value.to_le_bytes());
+        pos += 16;
+    }
+
+    // Write regular entries
     for (i, (_, value, n_type)) in entries.iter().enumerate() {
         if pos + 16 > out.len() {
             break;

@@ -87,7 +87,7 @@ fn should_ignore(name: &str) -> bool {
         "print-dependencies", // -print_dependency_info
         // macos-version-min now passes
         // platform-version now passes
-        "S", // -S (strip debug)
+        // S now passes (stab debug symbol pass-through + -S strip)
         // strip now passes (LINKEDIT packing + linker-signed codesign)
         // no-function-starts now passes
         // data-in-code-info now passes
