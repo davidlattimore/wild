@@ -56,10 +56,10 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "flat-namespace",         // -flat_namespace
-        "undefined",              // -undefined warning
+        "flat-namespace", // -flat_namespace
+        "undefined",      // -undefined warning
         // U now passes (-U emits undefined symbol in output symtab)
-        "umbrella",               // -umbrella
+        "umbrella", // -umbrella
         // application-extension now passes (-application_extension + TBD flags)
         // application-extension2 now passes (MH_APP_EXTENSION_SAFE check)
         // exported-symbols-list now passes (export trie filtering via export_list)
@@ -69,7 +69,7 @@ fn should_ignore(name: &str) -> bool {
         // hidden-l now passes (archive symbols added to unexport list)
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         // needed-framework now passes (dead_strip_dylibs + needed)
-        "weak-l",           // -weak-l
+        "weak-l", // -weak-l
         // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
         // reexport-library now passes (symtab alignment + reexport_library)
         // install-name now passes (-install_name support)
@@ -97,7 +97,7 @@ fn should_ignore(name: &str) -> bool {
         // pagezero-size2 now passes (error when used with -dylib)
         // oso-prefix now passes (-oso_prefix with canonicalized OSO paths)
         "start-stop-symbol", /* __start_/__stop_ sections
-                           * framework now passes (-F/-framework support) */
+                              * framework now passes (-F/-framework support) */
     ];
 
     // Tests requiring LTO
@@ -108,10 +108,11 @@ fn should_ignore(name: &str) -> bool {
         // dylib now passes (dylib input consumption)
         "tls-dylib", // TLS across dylibs
         // data-reloc now passes
-        "fixup-chains-addend",   // links dylib + object (fixup chains)
-        "fixup-chains-addend64", // links dylib + object (fixup chains)
-        // weak-def-dylib now passes
-        // mark-dead-strippable-dylib now passes (MH_DEAD_STRIPPABLE_DYLIB + auto-strip)
+        "fixup-chains-addend", // links dylib + object (fixup chains)
+        "fixup-chains-addend64", /* links dylib + object (fixup chains)
+                                * weak-def-dylib now passes
+                                * mark-dead-strippable-dylib now passes
+                                * (MH_DEAD_STRIPPABLE_DYLIB + auto-strip) */
     ];
 
     // Validation/correctness bugs in Wild to fix

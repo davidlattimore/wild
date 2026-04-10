@@ -100,7 +100,8 @@ pub struct MachOArgs {
     pub(crate) mark_dead_strippable: bool,
     /// Maps symbol name → index in extra_dylibs (for dead-strip-dylibs tracking).
     pub(crate) dylib_symbol_provenance: std::collections::HashMap<Vec<u8>, usize>,
-    /// Indices of extra_dylibs that should not be dead-stripped (from -needed_framework/-needed-l).
+    /// Indices of extra_dylibs that should not be dead-stripped (from
+    /// -needed_framework/-needed-l).
     pub(crate) needed_dylib_indices: std::collections::HashSet<usize>,
     /// Indices of extra_dylibs marked MH_DEAD_STRIPPABLE_DYLIB (auto-strip if unused).
     pub(crate) auto_strip_dylib_indices: std::collections::HashSet<usize>,
@@ -336,7 +337,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         link_framework(args, name)?;
         // Mark as needed (immune to -dead_strip_dylibs).
         if *needed && args.extra_dylibs.len() > dylib_count_before {
-            args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
+            args.needed_dylib_indices
+                .insert(args.extra_dylibs.len() - 1);
         }
     }
 
@@ -493,7 +495,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-framework" | "-weak_framework" | "-needed_framework" => {
             if let Some(name) = input.next() {
                 let needed = arg == "-needed_framework";
-                args.pending_frameworks.push((name.as_ref().to_string(), needed));
+                args.pending_frameworks
+                    .push((name.as_ref().to_string(), needed));
             }
             return Ok(());
         }
@@ -522,9 +525,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
-        | "-umbrella" | "-allowable_client"
-        | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
-        | "-image_base" => {
+        | "-umbrella" | "-allowable_client" | "-client_name" | "-sub_library" | "-sub_umbrella"
+        | "-objc_abi_version" | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());
         }
@@ -912,8 +914,12 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                             if let Ok(archive) = object::read::archive::ArchiveFile::parse(&*data) {
                                 for member in archive.members() {
                                     let Ok(member) = member else { continue };
-                                    let Ok(member_data) = member.data(&*data) else { continue };
-                                    let Ok(obj) = object::File::parse(member_data) else { continue };
+                                    let Ok(member_data) = member.data(&*data) else {
+                                        continue;
+                                    };
+                                    let Ok(obj) = object::File::parse(member_data) else {
+                                        continue;
+                                    };
                                     use object::Object;
                                     use object::ObjectSymbol;
                                     for sym in obj.symbols() {
@@ -928,7 +934,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         }
                     }
                     if is_needed && !args.extra_dylibs.is_empty() {
-                        args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
+                        args.needed_dylib_indices
+                            .insert(args.extra_dylibs.len() - 1);
                     }
                     found = true;
                     break 'search;
@@ -1249,7 +1256,8 @@ fn handle_tbd_input(args: &mut MachOArgs, path: &Path) -> Result {
                 if let text_stub_library::TbdVersionedRecord::V4(v4) = record {
                     if v4.flags.iter().any(|f| f == "not_app_extension_safe") {
                         let display = path.file_name().unwrap_or(path.as_os_str());
-                        args.non_extension_safe_dylibs.push(display.to_string_lossy().into_owned());
+                        args.non_extension_safe_dylibs
+                            .push(display.to_string_lossy().into_owned());
                     }
                     break;
                 }
@@ -1360,7 +1368,10 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     // Track dylibs not safe for app extensions.
     if (mh_flags & 0x0200_0000) == 0 {
         args.non_extension_safe_dylibs.push(
-            path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned(),
         );
     }
 

@@ -216,19 +216,26 @@ fn write_map_file(layout: &Layout<'_, MachO>, path: &std::path::Path) -> Result 
     // Sections — aggregate by (segname, sectname)
     writeln!(f, "\n# Sections:\n# Address\tSize\t\tSegment\tSection").unwrap();
     let le = object::Endianness::Little;
-    let mut section_map: std::collections::BTreeMap<(Vec<u8>, Vec<u8>), (u64, u64)> = Default::default();
+    let mut section_map: std::collections::BTreeMap<(Vec<u8>, Vec<u8>), (u64, u64)> =
+        Default::default();
     for group in &layout.group_layouts {
         for file_layout in &group.files {
             if let FileLayout::Object(obj) = file_layout {
                 for (sec_idx, _slot) in obj.sections.iter().enumerate() {
-                    if let Some(addr) = obj.section_resolutions.get(sec_idx).and_then(|r| r.address()) {
+                    if let Some(addr) = obj
+                        .section_resolutions
+                        .get(sec_idx)
+                        .and_then(|r| r.address())
+                    {
                         if let Some(sec) = obj.object.sections.get(sec_idx) {
                             use object::read::macho::Section as _;
                             let segname = crate::macho::trim_nul(sec.segname()).to_vec();
                             let sectname = crate::macho::trim_nul(sec.sectname()).to_vec();
                             let size = sec.size(le);
                             if size > 0 {
-                                let entry = section_map.entry((segname, sectname)).or_insert((u64::MAX, 0));
+                                let entry = section_map
+                                    .entry((segname, sectname))
+                                    .or_insert((u64::MAX, 0));
                                 entry.0 = entry.0.min(addr);
                                 entry.1 += size;
                             }
@@ -252,17 +259,28 @@ fn write_map_file(layout: &Layout<'_, MachO>, path: &std::path::Path) -> Result 
             if let FileLayout::Object(obj) = file_layout {
                 for (sym_idx, res) in layout.symbol_resolutions.iter().enumerate() {
                     let Some(res) = res else { continue };
-                    if res.raw_value == 0 { continue; }
+                    if res.raw_value == 0 {
+                        continue;
+                    }
                     let symbol_id = crate::symbol_db::SymbolId::from_usize(sym_idx);
                     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-                    if file_id != obj.file_id { continue; }
+                    if file_id != obj.file_id {
+                        continue;
+                    }
                     let name = match layout.symbol_db.symbol_name(symbol_id) {
                         Ok(n) => n.bytes(),
                         Err(_) => continue,
                     };
-                    if name.is_empty() { continue; }
+                    if name.is_empty() {
+                        continue;
+                    }
                     let name_str = String::from_utf8_lossy(name);
-                    writeln!(f, "0x{:08X}     0x{:08X}      [{sym_obj_idx:3}] {name_str}", res.raw_value, 0).unwrap();
+                    writeln!(
+                        f,
+                        "0x{:08X}     0x{:08X}      [{sym_obj_idx:3}] {name_str}",
+                        res.raw_value, 0
+                    )
+                    .unwrap();
                 }
                 sym_obj_idx += 1;
             }
@@ -824,7 +842,11 @@ fn write_macho<A: Arch<Platform = MachO>>(
                 &symbols_pool,
                 mappings,
                 layout.symbol_db.args.is_dylib,
-                if has_addends { Some(&import_addends) } else { None },
+                if has_addends {
+                    Some(&import_addends)
+                } else {
+                    None
+                },
             )?;
             cf_off as usize + cf_data_size as usize
         }
@@ -2499,8 +2521,7 @@ fn write_chained_fixups_header(
         // Format 2: write 32-bit addend after each import entry.
         if let Some(addends) = import_addends {
             let addend = addends.get(i).copied().unwrap_or(0);
-            w[it + i * entry_sz + 4..it + i * entry_sz + 8]
-                .copy_from_slice(&addend.to_le_bytes());
+            w[it + i * entry_sz + 4..it + i * entry_sz + 8].copy_from_slice(&addend.to_le_bytes());
         }
     }
 
@@ -3601,8 +3622,11 @@ fn write_headers(
                     // Unresolved — check if it's a dylib symbol.
                     let sym_id = crate::symbol_db::SymbolId::from_usize(sym_idx);
                     if let Ok(name) = layout.symbol_db.symbol_name(sym_id) {
-                        if let Some(&idx) =
-                            layout.symbol_db.args.dylib_symbol_provenance.get(name.bytes())
+                        if let Some(&idx) = layout
+                            .symbol_db
+                            .args
+                            .dylib_symbol_provenance
+                            .get(name.bytes())
                         {
                             used_indices.insert(idx);
                         }
