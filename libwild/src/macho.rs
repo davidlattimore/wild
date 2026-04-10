@@ -1107,8 +1107,7 @@ impl platform::Platform for MachO {
                     let in_dylib = sym_name.map_or(false, |n| {
                         resources.symbol_db.args.dylib_symbols.contains(n.bytes())
                     });
-                    let has_unparsed_dylibs = !resources.symbol_db.args.extra_dylibs.is_empty();
-                    if !in_dylib && !has_unparsed_dylibs {
+                    if !in_dylib {
                         let sym_display = resources.symbol_db.symbol_name_for_display(symbol_id);
                         resources.report_error(crate::error!(
                             "Undefined symbol {sym_display}, referenced by {}",

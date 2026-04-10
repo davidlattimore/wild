@@ -743,7 +743,14 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         if let Some(dylib_path) = parse_tbd_install_name(&path) {
                             args.add_dylib(dylib_path, dylib_kind);
                         }
+                        let before = args.dylib_symbols.len();
                         collect_tbd_symbols(&path, &mut args.dylib_symbols);
+                        let after = args.dylib_symbols.len();
+                        if lib == "c++" {
+                            tracing::error!("TRACE -lc++: found {} at {}, collected {} syms (has __ZdlPvm: {})",
+                                ext, path.display(), after - before,
+                                args.dylib_symbols.contains(&b"__ZdlPvm".to_vec()));
+                        }
                     } else if ext == ".dylib" {
                         // Parse exports trie + install name from the dylib.
                         handle_dylib_input(args, &path)?;
@@ -985,6 +992,9 @@ fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<
                     for sym in &exp.symbols {
                         symbols.insert(sym.as_bytes().to_vec());
                     }
+                    for sym in &exp.weak_symbols {
+                        symbols.insert(sym.as_bytes().to_vec());
+                    }
                 }
             }
             text_stub_library::TbdVersionedRecord::V3(v3) => {
@@ -1019,8 +1029,7 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
         }
         let dylib_path = fw_dir.join(name);
         if dylib_path.exists() {
-            let install = dylib_path.to_string_lossy().as_bytes().to_vec();
-            args.add_dylib(install, DylibLoadKind::Normal);
+            handle_dylib_input(args, &dylib_path)?;
             return Ok(());
         }
     }

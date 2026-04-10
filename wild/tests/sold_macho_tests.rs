@@ -70,7 +70,7 @@ fn should_ignore(name: &str) -> bool {
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         "needed-framework",        // -needed_framework
         "weak-l",                  // -weak-l
-        // reexport-l now passes (DylibLoadKind::Reexport + dylib input)
+        "reexport-l",              // re-export tracing through dylib LC_REEXPORT_DYLIB
         "reexport-library",        // -reexport_library
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
@@ -140,11 +140,8 @@ fn should_ignore(name: &str) -> bool {
     // Tests that invoke ld64 directly (not through cc --ld-path)
     const NO_LD_PATH: &[&str] = &[];
 
-    // .tbd parsing — most pass, $ld$add/$ld$hide need stricter undef checking
-    const TBD: &[&str] = &[
-        "tbd-add",  // $ld$add$ needs strict undefined error even with extra_dylibs
-        "tbd-hide", // $ld$hide$ needs strict undefined error even with extra_dylibs
-    ];
+    // .tbd parsing — all pass
+    const TBD: &[&str] = &[];
 
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
