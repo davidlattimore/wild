@@ -94,6 +94,8 @@ pub struct MachOArgs {
     has_pagezero_size: bool,
     /// -Z: don't search default library paths.
     no_default_search_paths: bool,
+    /// -oso_prefix: strip this prefix from OSO debug paths.
+    pub(crate) oso_prefix: Option<String>,
     /// Frameworks to resolve after all -F paths are collected.
     pending_frameworks: Vec<String>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -159,6 +161,7 @@ impl Default for MachOArgs {
             search_dylibs_first: false,
             has_pagezero_size: false,
             no_default_search_paths: false,
+            oso_prefix: None,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -444,11 +447,16 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-oso_prefix" => {
+            if let Some(val) = input.next() {
+                args.oso_prefix = Some(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
         "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
         | "-umbrella" | "-allowable_client"
         | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
-        | "-add_ast_path" | "-dependency_info" | "-map" | "-image_base"
-        | "-oso_prefix" => {
+        | "-add_ast_path" | "-dependency_info" | "-map" | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());
         }

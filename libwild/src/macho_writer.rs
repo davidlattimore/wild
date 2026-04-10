@@ -914,9 +914,26 @@ fn write_exe_symtab(
         for group in &layout.group_layouts {
             for file_layout in &group.files {
                 if let crate::layout::FileLayout::Object(obj) = file_layout {
-                    let path = obj.input.file.filename.to_string_lossy().into_owned();
-                    if path.is_empty() {
+                    let raw_path = obj.input.file.filename.to_string_lossy().into_owned();
+                    if raw_path.is_empty() {
                         continue;
+                    }
+                    // Canonicalize to absolute path for OSO (dsymutil needs this).
+                    let mut path = std::fs::canonicalize(&raw_path)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or(raw_path);
+                    // Apply -oso_prefix: strip the prefix from the path.
+                    if let Some(ref prefix) = layout.symbol_db.args.oso_prefix {
+                        let prefix_expanded = if prefix == "." {
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().into_owned() + "/")
+                                .unwrap_or_default()
+                        } else {
+                            prefix.clone()
+                        };
+                        if let Some(stripped) = path.strip_prefix(&prefix_expanded) {
+                            path = stripped.to_string();
+                        }
                     }
                     // Get mtime of the .o file for the OSO n_value field.
                     let mtime = std::fs::metadata(path.as_str())

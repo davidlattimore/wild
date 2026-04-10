@@ -95,7 +95,7 @@ fn should_ignore(name: &str) -> bool {
         "add-ast-path",            // -add_ast_path
         // add-empty-section now passes
         // pagezero-size2 now passes (error when used with -dylib)
-        "oso-prefix",     // -oso_prefix
+        // oso-prefix now passes (-oso_prefix with canonicalized OSO paths)
         "start-stop-symbol", /* __start_/__stop_ sections
                            * framework now passes (-F/-framework support) */
     ];
