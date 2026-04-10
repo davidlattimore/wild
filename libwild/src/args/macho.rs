@@ -110,6 +110,12 @@ pub struct MachOArgs {
     pub(crate) ast_paths: Vec<String>,
     /// Map file path from -map.
     pub(crate) map_file: Option<PathBuf>,
+    /// Whether -application_extension was passed.
+    pub(crate) application_extension: bool,
+    /// Dylib names that aren't marked extension-safe (for deferred warning).
+    non_extension_safe_dylibs: Vec<String>,
+    /// -w: suppress warnings.
+    suppress_warnings: bool,
     /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
     pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -183,6 +189,9 @@ impl Default for MachOArgs {
             oso_prefix: None,
             ast_paths: Vec::new(),
             map_file: None,
+            application_extension: false,
+            non_extension_safe_dylibs: Vec::new(),
+            suppress_warnings: false,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -322,6 +331,15 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         // Mark as needed (immune to -dead_strip_dylibs).
         if *needed && args.extra_dylibs.len() > dylib_count_before {
             args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
+        }
+    }
+
+    // Warn about non-extension-safe dylibs.
+    if args.application_extension && !args.suppress_warnings {
+        for name in &args.non_extension_safe_dylibs {
+            eprintln!(
+                "wild: warning: linking against dylib not safe for use in application extensions: {name}"
+            );
         }
     }
 
@@ -591,6 +609,14 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.mark_dead_strippable = true;
             return Ok(());
         }
+        "-application_extension" => {
+            args.application_extension = true;
+            return Ok(());
+        }
+        "-w" => {
+            args.suppress_warnings = true;
+            return Ok(());
+        }
         "-search_dylibs_first" => {
             args.search_dylibs_first = true;
             return Ok(());
@@ -608,7 +634,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_deduplicate"
         | "-no_compact_unwind"
         | "-headerpad_max_install_names"
-        | "-application_extension"
         | "-no_objc_category_merging"
         | "-ObjC"
         | "-no_implicit_dylibs"
@@ -622,7 +647,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_fixup_chains"
         | "-fixup_chains"
         | "-adhoc_codesign"
-        | "-w"
         | "-data_in_code_info"
         | "-function_starts"
         | "-subsections_via_symbols"
@@ -1205,6 +1229,20 @@ fn handle_tbd_input(args: &mut MachOArgs, path: &Path) -> Result {
         args.minos,
         &mut install_name,
     );
+    // Check app-extension safety from .tbd flags.
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(records) = text_stub_library::parse_str(&content) {
+            for record in &records {
+                if let text_stub_library::TbdVersionedRecord::V4(v4) = record {
+                    if v4.flags.iter().any(|f| f == "not_app_extension_safe") {
+                        let display = path.file_name().unwrap_or(path.as_os_str());
+                        args.non_extension_safe_dylibs.push(display.to_string_lossy().into_owned());
+                    }
+                    break;
+                }
+            }
+        }
+    }
     if let Some(name) = install_name {
         args.add_dylib(name, DylibLoadKind::Normal);
     }
@@ -1304,6 +1342,13 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     for sym in &exported_symbols {
         args.dylib_symbols.insert(sym.clone());
         args.dylib_symbol_provenance.insert(sym.clone(), dylib_idx);
+    }
+
+    // Track dylibs not safe for app extensions.
+    if (mh_flags & 0x0200_0000) == 0 {
+        args.non_extension_safe_dylibs.push(
+            path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
+        );
     }
 
     // Mark auto-strippable if MH_DEAD_STRIPPABLE_DYLIB is set.

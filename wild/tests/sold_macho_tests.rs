@@ -60,8 +60,8 @@ fn should_ignore(name: &str) -> bool {
         "undefined",              // -undefined warning
         "U",                      // -U (dynamic lookup)
         "umbrella",               // -umbrella
-        "application-extension",  // -application_extension
-        "application-extension2", // -application_extension
+        // application-extension now passes (-application_extension + TBD flags)
+        // application-extension2 now passes (MH_APP_EXTENSION_SAFE check)
         // exported-symbols-list now passes (export trie filtering via export_list)
         // unexported-symbols-list now passes (unexport_list filtering)
         "export-dynamic", // -export_dynamic
@@ -149,7 +149,7 @@ fn should_ignore(name: &str) -> bool {
         // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
         // version now passes (-v outputs Wild version)
-        "w",       // -w (needs -application_extension warning)
+        // w now passes (-w suppresses warnings)
         // Z now passes (-Z no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
         // dead-strip-dylibs now passes
