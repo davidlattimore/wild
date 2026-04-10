@@ -939,8 +939,7 @@ fn write_exe_symtab(
                         use object::read::macho::Nlist as _;
                         let le = object::Endianness::Little;
                         for sym_idx in 0..obj.object.symbols.len() {
-                            let Ok(sym) =
-                                obj.object.symbols.symbol(object::SymbolIndex(sym_idx))
+                            let Ok(sym) = obj.object.symbols.symbol(object::SymbolIndex(sym_idx))
                             else {
                                 continue;
                             };
@@ -1798,9 +1797,13 @@ fn apply_relocations(
                                     sec_out + sym.n_value(le).wrapping_sub(sec_in)
                                 } else if let Ok(Some(addr)) =
                                     crate::string_merging::get_merged_string_output_address::<MachO>(
-                                        sym_idx, 0, &obj.object, &obj.sections,
+                                        sym_idx,
+                                        0,
+                                        &obj.object,
+                                        &obj.sections,
                                         &layout.merged_strings,
-                                        &layout.merged_string_start_addresses, false,
+                                        &layout.merged_string_start_addresses,
+                                        false,
                                     )
                                 {
                                     addr
@@ -2030,14 +2033,16 @@ fn apply_relocations(
                                 0
                             };
                             let input_offset = in_place.wrapping_sub(input_sec_base);
-                            if let Ok(string_offset) =
-                                crate::string_merging::find_string(merge_slot, input_offset, strings_section)
-                            {
+                            if let Ok(string_offset) = crate::string_merging::find_string(
+                                merge_slot,
+                                input_offset,
+                                strings_section,
+                            ) {
                                 let bucket_addrs = layout
                                     .merged_string_start_addresses
                                     .bucket_addresses(section_id);
-                                let addr =
-                                    bucket_addrs[string_offset.bucket()] + string_offset.offset_in_bucket();
+                                let addr = bucket_addrs[string_offset.bucket()]
+                                    + string_offset.offset_in_bucket();
                                 (addr, None, None)
                             } else {
                                 continue;
@@ -2330,7 +2335,9 @@ fn write_merged_strings_macho(
         if merged.len() == 0 {
             return;
         }
-        let bucket_addrs = layout.merged_string_start_addresses.bucket_addresses(section_id);
+        let bucket_addrs = layout
+            .merged_string_start_addresses
+            .bucket_addresses(section_id);
         for (i, bucket) in merged.buckets.iter().enumerate() {
             let vm_addr = bucket_addrs[i];
             if vm_addr == 0 {
@@ -3650,7 +3657,7 @@ fn write_headers(
         use crate::args::macho::DylibLoadKind;
         let cmd = match kind {
             DylibLoadKind::Normal => LC_LOAD_DYLIB,
-            DylibLoadKind::Weak => 0x1800_0018,   // LC_LOAD_WEAK_DYLIB
+            DylibLoadKind::Weak => 0x1800_0018, // LC_LOAD_WEAK_DYLIB
             DylibLoadKind::Reexport => 0x8000_001F, // LC_REEXPORT_DYLIB
         };
         w.u32(cmd);

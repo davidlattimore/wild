@@ -56,22 +56,22 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "flat-namespace",          // -flat_namespace
-        "undefined",               // -undefined warning
-        "U",                       // -U (dynamic lookup)
-        "umbrella",                // -umbrella
-        "application-extension",   // -application_extension
-        "application-extension2",  // -application_extension
+        "flat-namespace",         // -flat_namespace
+        "undefined",              // -undefined warning
+        "U",                      // -U (dynamic lookup)
+        "umbrella",               // -umbrella
+        "application-extension",  // -application_extension
+        "application-extension2", // -application_extension
         // exported-symbols-list now passes (export trie filtering via export_list)
         // unexported-symbols-list now passes (unexport_list filtering)
-        "export-dynamic",          // -export_dynamic
-        "merge-scope",             // visibility merging
-        "hidden-l",                // -hidden-l
+        "export-dynamic", // -export_dynamic
+        "merge-scope",    // visibility merging
+        "hidden-l",       // -hidden-l
         // needed-l now passes (prefix link modifiers fall through to -l logic)
-        "needed-framework",        // -needed_framework
-        "weak-l",                  // -weak-l
+        "needed-framework", // -needed_framework
+        "weak-l",           // -weak-l
         // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
-        "reexport-library",        // -reexport_library
+        "reexport-library", // -reexport_library
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
         "install-name-loader-path",     // @loader_path
@@ -94,10 +94,10 @@ fn should_ignore(name: &str) -> bool {
         "subsections-via-symbols", // -subsections_via_symbols
         "add-ast-path",            // -add_ast_path
         // add-empty-section now passes
-        "pagezero-size2",    // -pagezero_size variations
-        "oso-prefix",        // -oso_prefix
-        "start-stop-symbol", // __start_/__stop_ sections
-        // framework now passes (-F/-framework support)
+        "pagezero-size2", // -pagezero_size variations
+        "oso-prefix",     // -oso_prefix
+        "start-stop-symbol", /* __start_/__stop_ sections
+                           * framework now passes (-F/-framework support) */
     ];
 
     // Tests requiring LTO
@@ -106,19 +106,19 @@ fn should_ignore(name: &str) -> bool {
     // Tests that need linking against a .dylib
     const NEEDS_DYLIB_INPUT: &[&str] = &[
         // dylib now passes (dylib input consumption)
-        "tls-dylib",                  // TLS across dylibs
+        "tls-dylib", // TLS across dylibs
         // data-reloc now passes
-        "fixup-chains-addend",        // links dylib + object (fixup chains)
-        "fixup-chains-addend64",      // links dylib + object (fixup chains)
+        "fixup-chains-addend",   // links dylib + object (fixup chains)
+        "fixup-chains-addend64", // links dylib + object (fixup chains)
         // weak-def-dylib now passes
         "mark-dead-strippable-dylib", // links against dylib (dead_strip_dylibs)
     ];
 
     // Validation/correctness bugs in Wild to fix
     const WILD_BUGS: &[&str] = &[
-        "tls",                             // TLV descriptor offset validation
-        "tls-mismatch",                    // TLS type mismatch errors
-        "tls-mismatch2",                   // TLS type mismatch errors
+        "tls",           // TLV descriptor offset validation
+        "tls-mismatch",  // TLS type mismatch errors
+        "tls-mismatch2", // TLS type mismatch errors
         // cstring now passes (S_CSTRING_LITERALS merge enabled)
         "duplicate-error",                 // duplicate symbol error format
         "missing-error",                   // undefined symbol error format

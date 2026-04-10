@@ -16,8 +16,7 @@ pub(crate) struct ExportList<'data>(MatchRules<'data>);
 impl<'data> ExportList<'data> {
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<Self> {
         // Detect format: ELF dynamic-list starts with `{`, Mach-O is one symbol per line.
-        let trimmed = data.raw.iter().copied()
-            .find(|b| !b.is_ascii_whitespace());
+        let trimmed = data.raw.iter().copied().find(|b| !b.is_ascii_whitespace());
         if trimmed == Some(b'{') {
             parse_export_list
                 .parse(BStr::new(data.raw))

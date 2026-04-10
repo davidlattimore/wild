@@ -17,9 +17,9 @@ use std::sync::Arc;
 /// What kind of LC_LOAD_* command to emit for a dylib dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DylibLoadKind {
-    Normal,     // LC_LOAD_DYLIB
-    Weak,       // LC_LOAD_WEAK_DYLIB
-    Reexport,   // LC_REEXPORT_DYLIB
+    Normal,   // LC_LOAD_DYLIB
+    Weak,     // LC_LOAD_WEAK_DYLIB
+    Reexport, // LC_REEXPORT_DYLIB
 }
 
 #[derive(Debug)]
@@ -395,32 +395,17 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
-        "-lto_library"
-        | "-mllvm"
-        | "-headerpad"
-        | "-object_path_lto"
-        | "-order_file"
-        | "-weak_library"
-        | "-reexport_library"
-        | "-umbrella"
-        | "-allowable_client"
-        | "-client_name"
-        | "-sub_library"
-        | "-sub_umbrella"
-        | "-objc_abi_version"
-        | "-add_ast_path"
-        | "-dependency_info"
-        | "-map"
-        | "-pagezero_size"
-        | "-image_base"
+        "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
+        | "-weak_library" | "-reexport_library" | "-umbrella" | "-allowable_client"
+        | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
+        | "-add_ast_path" | "-dependency_info" | "-map" | "-pagezero_size" | "-image_base"
         | "-oso_prefix" => {
             input.next(); // consume the argument
             return Ok(());
         }
         // -sectcreate takes 3 arguments: segname sectname file
         "-sectcreate" => {
-            if let (Some(seg), Some(sect), Some(file)) =
-                (input.next(), input.next(), input.next())
+            if let (Some(seg), Some(sect), Some(file)) = (input.next(), input.next(), input.next())
             {
                 let mut segname = [0u8; 16];
                 let mut sectname = [0u8; 16];
@@ -430,8 +415,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                     .copy_from_slice(&seg_bytes[..seg_bytes.len().min(16)]);
                 sectname[..sect_bytes.len().min(16)]
                     .copy_from_slice(&sect_bytes[..sect_bytes.len().min(16)]);
-                let data = std::fs::read(file.as_ref())
-                    .with_context(|| format!("Failed to read -sectcreate file `{}`", file.as_ref()))?;
+                let data = std::fs::read(file.as_ref()).with_context(|| {
+                    format!("Failed to read -sectcreate file `{}`", file.as_ref())
+                })?;
                 args.sectcreate.push((segname, sectname, data));
             }
             return Ok(());
@@ -656,8 +642,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     // -F<path> (framework search path)
     if let Some(path) = arg.strip_prefix("-F") {
         if !path.is_empty() {
-            args.framework_search_paths
-                .push(Box::from(Path::new(path)));
+            args.framework_search_paths.push(Box::from(Path::new(path)));
         } else if let Some(val) = input.next() {
             args.framework_search_paths
                 .push(Box::from(Path::new(val.as_ref())));
@@ -747,9 +732,13 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         collect_tbd_symbols(&path, &mut args.dylib_symbols);
                         let after = args.dylib_symbols.len();
                         if lib == "c++" {
-                            tracing::error!("TRACE -lc++: found {} at {}, collected {} syms (has __ZdlPvm: {})",
-                                ext, path.display(), after - before,
-                                args.dylib_symbols.contains(&b"__ZdlPvm".to_vec()));
+                            tracing::error!(
+                                "TRACE -lc++: found {} at {}, collected {} syms (has __ZdlPvm: {})",
+                                ext,
+                                path.display(),
+                                after - before,
+                                args.dylib_symbols.contains(&b"__ZdlPvm".to_vec())
+                            );
                         }
                     } else if ext == ".dylib" {
                         // Parse exports trie + install name from the dylib.
@@ -792,9 +781,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     if path.extension().map_or(false, |e| e == "tbd") {
         // Defer: $ld$ directives depend on -platform_version which may come later.
         args.pending_tbd_inputs.push(path.to_path_buf());
-    } else if path.extension().map_or(false, |e| e == "dylib")
-        || is_macho_dylib(path)
-    {
+    } else if path.extension().map_or(false, |e| e == "dylib") || is_macho_dylib(path) {
         handle_dylib_input(args, path)?;
     } else {
         args.common.save_dir.handle_file(arg);
@@ -873,7 +860,13 @@ fn collect_tbd_symbols_with_directives(
                         continue;
                     }
                     for sym in exp.symbols.iter().chain(exp.weak_symbols.iter()) {
-                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                        process_tbd_symbol(
+                            sym,
+                            symbols,
+                            target_version,
+                            install_name,
+                            &mut hide_list,
+                        );
                     }
                 }
                 for exp in &v4.re_exports {
@@ -881,14 +874,26 @@ fn collect_tbd_symbols_with_directives(
                         continue;
                     }
                     for sym in &exp.symbols {
-                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                        process_tbd_symbol(
+                            sym,
+                            symbols,
+                            target_version,
+                            install_name,
+                            &mut hide_list,
+                        );
                     }
                 }
             }
             text_stub_library::TbdVersionedRecord::V3(v3) => {
                 for exp in &v3.exports {
                     for sym in &exp.symbols {
-                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                        process_tbd_symbol(
+                            sym,
+                            symbols,
+                            target_version,
+                            install_name,
+                            &mut hide_list,
+                        );
                     }
                 }
             }
@@ -1053,10 +1058,16 @@ fn is_macho_dylib(path: &Path) -> bool {
     matches!(filetype, 6 | 8) // MH_DYLIB | MH_BUNDLE
 }
 
-/// Handle a .tbd file as a positional input: extract install-name and symbols, register as dylib dep.
+/// Handle a .tbd file as a positional input: extract install-name and symbols, register as dylib
+/// dep.
 fn handle_tbd_input(args: &mut MachOArgs, path: &Path) -> Result {
     let mut install_name = parse_tbd_install_name(path);
-    collect_tbd_symbols_with_directives(path, &mut args.dylib_symbols, args.minos, &mut install_name);
+    collect_tbd_symbols_with_directives(
+        path,
+        &mut args.dylib_symbols,
+        args.minos,
+        &mut install_name,
+    );
     if let Some(name) = install_name {
         args.add_dylib(name, DylibLoadKind::Normal);
     }
@@ -1082,15 +1093,15 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
                 break;
             }
             let cmd = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
-            let cmdsize = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let cmdsize =
+                u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
             if cmdsize < 8 || offset + cmdsize > data.len() {
                 break;
             }
             // LC_ID_DYLIB = 0x0D
             if cmd == 0x0D && cmdsize >= 24 {
-                let name_offset = u32::from_le_bytes(
-                    data[offset + 8..offset + 12].try_into().unwrap(),
-                ) as usize;
+                let name_offset =
+                    u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
                 if name_offset < cmdsize {
                     let name_start = offset + name_offset;
                     let name_end = data[name_start..]
@@ -1103,9 +1114,8 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
             }
             // LC_REEXPORT_DYLIB = 0x8000001F
             if cmd == 0x8000_001F && cmdsize >= 24 {
-                let name_offset = u32::from_le_bytes(
-                    data[offset + 8..offset + 12].try_into().unwrap(),
-                ) as usize;
+                let name_offset =
+                    u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
                 if name_offset < cmdsize {
                     let name_start = offset + name_offset;
                     let name_end = data[name_start..]
@@ -1120,24 +1130,20 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
             }
             // LC_DYLD_EXPORTS_TRIE = 0x80000033 or LC_DYLD_INFO[_ONLY] = 0x22 / 0x80000022
             if (cmd == 0x8000_0033) && cmdsize >= 16 {
-                let trie_off = u32::from_le_bytes(
-                    data[offset + 8..offset + 12].try_into().unwrap(),
-                ) as usize;
-                let trie_size = u32::from_le_bytes(
-                    data[offset + 12..offset + 16].try_into().unwrap(),
-                ) as usize;
+                let trie_off =
+                    u32::from_le_bytes(data[offset + 8..offset + 12].try_into().unwrap()) as usize;
+                let trie_size =
+                    u32::from_le_bytes(data[offset + 12..offset + 16].try_into().unwrap()) as usize;
                 if trie_off > 0 && trie_size > 0 && trie_off + trie_size <= data.len() {
                     parse_export_trie(&data[trie_off..trie_off + trie_size], &mut exported_symbols);
                 }
             }
             // LC_DYLD_INFO / LC_DYLD_INFO_ONLY: export info is at fields [40..48]
             if (cmd == 0x22 || cmd == 0x8000_0022) && cmdsize >= 48 {
-                let export_off = u32::from_le_bytes(
-                    data[offset + 40..offset + 44].try_into().unwrap(),
-                ) as usize;
-                let export_size = u32::from_le_bytes(
-                    data[offset + 44..offset + 48].try_into().unwrap(),
-                ) as usize;
+                let export_off =
+                    u32::from_le_bytes(data[offset + 40..offset + 44].try_into().unwrap()) as usize;
+                let export_size =
+                    u32::from_le_bytes(data[offset + 44..offset + 48].try_into().unwrap()) as usize;
                 if export_off > 0 && export_size > 0 && export_off + export_size <= data.len() {
                     parse_export_trie(
                         &data[export_off..export_off + export_size],
@@ -1156,7 +1162,10 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     }
 
     // Follow LC_REEXPORT_DYLIB chains recursively.
-    let search_dirs: Vec<PathBuf> = path.parent().map(|d| d.to_path_buf()).into_iter()
+    let search_dirs: Vec<PathBuf> = path
+        .parent()
+        .map(|d| d.to_path_buf())
+        .into_iter()
         .chain(args.lib_search_paths.iter().map(|d| d.to_path_buf()))
         .collect();
     for reexport_install_name in reexported_dylib_paths {
@@ -1197,16 +1206,25 @@ fn collect_dylib_reexport_symbols(
         let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
         let mut off = 32;
         for _ in 0..ncmds {
-            if off + 8 > data.len() { break; }
+            if off + 8 > data.len() {
+                break;
+            }
             let cmd = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
             let sz = u32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap()) as usize;
-            if sz < 8 || off + sz > data.len() { break; }
+            if sz < 8 || off + sz > data.len() {
+                break;
+            }
             // LC_REEXPORT_DYLIB
             if cmd == 0x8000_001F && sz >= 24 {
-                let n_off = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
+                let n_off =
+                    u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
                 if n_off < sz {
                     let s = off + n_off;
-                    let e = data[s..].iter().position(|&b| b == 0).map(|p| s + p).unwrap_or(off + sz);
+                    let e = data[s..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| s + p)
+                        .unwrap_or(off + sz);
                     if let Ok(name) = std::str::from_utf8(&data[s..e]) {
                         nested_reexports.push(name.to_string());
                     }
@@ -1214,16 +1232,20 @@ fn collect_dylib_reexport_symbols(
             }
             // LC_DYLD_EXPORTS_TRIE
             if cmd == 0x8000_0033 && sz >= 16 {
-                let t_off = u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
-                let t_sz = u32::from_le_bytes(data[off + 12..off + 16].try_into().unwrap()) as usize;
+                let t_off =
+                    u32::from_le_bytes(data[off + 8..off + 12].try_into().unwrap()) as usize;
+                let t_sz =
+                    u32::from_le_bytes(data[off + 12..off + 16].try_into().unwrap()) as usize;
                 if t_off > 0 && t_sz > 0 && t_off + t_sz <= data.len() {
                     parse_export_trie(&data[t_off..t_off + t_sz], &mut exported);
                 }
             }
             // LC_DYLD_INFO / LC_DYLD_INFO_ONLY
             if (cmd == 0x22 || cmd == 0x8000_0022) && sz >= 48 {
-                let e_off = u32::from_le_bytes(data[off + 40..off + 44].try_into().unwrap()) as usize;
-                let e_sz = u32::from_le_bytes(data[off + 44..off + 48].try_into().unwrap()) as usize;
+                let e_off =
+                    u32::from_le_bytes(data[off + 40..off + 44].try_into().unwrap()) as usize;
+                let e_sz =
+                    u32::from_le_bytes(data[off + 44..off + 48].try_into().unwrap()) as usize;
                 if e_off > 0 && e_sz > 0 && e_off + e_sz <= data.len() {
                     parse_export_trie(&data[e_off..e_off + e_sz], &mut exported);
                 }
