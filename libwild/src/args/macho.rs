@@ -602,17 +602,18 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         return Ok(());
     }
 
-    // Prefix link flags: -hidden-l<name>, -needed-l<name>, -reexport-l<name>, -weak-l<name>
-    if arg.starts_with("-hidden-l")
-        || arg.starts_with("-needed-l")
-        || arg.starts_with("-reexport-l")
-        || arg.starts_with("-weak-l")
-    {
-        return Ok(());
-    }
+    // Prefix link flags: -needed-l<name>, -weak-l<name>, -reexport-l<name>, -hidden-l<name>
+    // These are variations of -l with different load command semantics.
+    // For now, treat them all as regular -l (we always emit LC_LOAD_DYLIB).
+    let lib_from_prefix = arg
+        .strip_prefix("-needed-l")
+        .or_else(|| arg.strip_prefix("-weak-l"))
+        .or_else(|| arg.strip_prefix("-reexport-l"))
+        .or_else(|| arg.strip_prefix("-hidden-l"));
 
     // -l<name> (link library) -- must come after -lto_library check above
-    if let Some(lib) = arg.strip_prefix("-l") {
+    let lib_name = lib_from_prefix.or_else(|| arg.strip_prefix("-l"));
+    if let Some(lib) = lib_name {
         if !lib.is_empty() {
             // On macOS, libSystem is implicitly linked (we emit LC_LOAD_DYLIB for it).
             // Skip it and other system dylibs that we handle implicitly, but still

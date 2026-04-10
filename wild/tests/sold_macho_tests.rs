@@ -67,7 +67,7 @@ fn should_ignore(name: &str) -> bool {
         "export-dynamic",          // -export_dynamic
         "merge-scope",             // visibility merging
         "hidden-l",                // -hidden-l
-        "needed-l",                // -needed-l
+        // needed-l now passes (prefix link modifiers fall through to -l logic)
         "needed-framework",        // -needed_framework
         "weak-l",                  // -weak-l
         "reexport-l",              // -reexport-l

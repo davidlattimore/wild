@@ -30,6 +30,10 @@ These flags are now parsed and wired to the platform trait, reusing ELF backend 
   `LC_MAIN` (bundles have no entry point), keeps `LC_LOAD_DYLINKER`.
 - **`-sectcreate`** -- File data now read and stored in `MachOArgs.sectcreate` (was
   discarding the file path). Writer integration deferred -- needs segment layout work.
+- **`-F` / `-framework` / `-weak_framework` / `-needed_framework`** -- Framework search
+  paths stored, framework bundle resolution implemented. `sold-macho/framework` test
+  now passes (63 tests passing, was 62). Uses absolute path as install name for
+  locally-built frameworks, .tbd install-name for stub frameworks.
 
 ## Prior art reference
 
