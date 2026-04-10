@@ -53,8 +53,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
             })
             .with_ignored_flag(
                 // Known failures — ignore until fixed
-                test_name == "arm64-relocs"
-                    || test_name == "objc-category-merging-erase-objc-name-test",
+                test_name == "objc-category-merging-erase-objc-name-test",
             ),
         );
     }

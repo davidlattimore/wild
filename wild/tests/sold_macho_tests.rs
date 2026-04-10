@@ -72,28 +72,28 @@ fn should_ignore(name: &str) -> bool {
         "weak-l",                       // -weak-l
         "reexport-l",                   // -reexport-l
         "reexport-library",             // -reexport_library
-        "install-name",                 // -install_name
+        // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
         "install-name-loader-path",     // @loader_path
         "install-name-rpath",           // @rpath
-        "rpath",                        // -rpath
+        // rpath now passes (-rpath → LC_RPATH)
         "search-paths-first",           // -search_paths_first
         "search-dylibs-first",          // -search_dylibs_first
         "sectcreate",                   // -sectcreate
         "order-file",                   // -order_file
-        "stack-size",                   // -stack_size
+        // stack-size now passes
         "map",                          // -map
         "dependency-info",              // -dependency_info
         "print-dependencies",           // -print_dependency_info
-        "macos-version-min",            // -macos_version_min
-        "platform-version",             // -platform_version
+        // macos-version-min now passes
+        // platform-version now passes
         "S",                            // -S (strip debug)
-        "strip",                        // strip tool compatibility
-        "no-function-starts",           // -no_function_starts
-        "data-in-code-info",            // LC_DATA_IN_CODE
+        // strip now passes (LINKEDIT packing + linker-signed codesign)
+        // no-function-starts now passes
+        // data-in-code-info now passes
         "subsections-via-symbols",      // -subsections_via_symbols
         "add-ast-path",                 // -add_ast_path
-        "add-empty-section",            // -add_empty_section
+        // add-empty-section now passes
         "pagezero-size2",               // -pagezero_size variations
         "oso-prefix",                   // -oso_prefix
         "start-stop-symbol",            // __start_/__stop_ sections
@@ -154,12 +154,12 @@ fn should_ignore(name: &str) -> bool {
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
         "lc-build-version",   // LC_BUILD_VERSION tool field
-        "uuid",               // LC_UUID reproducibility (needs -final_output)
+        // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
         "version",            // -current_version / -compatibility_version
         "w",                  // -w (suppress warnings)
         "Z",                  // -Z (no default search paths)
-        "adhoc-codesign",     // codesign hash verification
+        // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
         "dead-strip-dylibs",  // -dead_strip_dylibs
         "dead-strip-dylibs2", // -dead_strip_dylibs
     ];

@@ -127,11 +127,14 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
             std::fs::set_permissions(output_path.as_ref(), std::fs::Permissions::from_mode(0o755));
     }
     #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("codesign")
-            .args(["-s", "-", "--force"])
-            .arg(output_path.as_ref())
-            .status();
+    if !layout.symbol_db.args.no_adhoc_codesign {
+        let mut codesign_cmd = std::process::Command::new("codesign");
+        codesign_cmd.args(["-s", "-", "--force", "-o", "linker-signed"]);
+        // Use -final_output as identifier for reproducible signing
+        if let Some(ref fo) = layout.symbol_db.args.final_output {
+            codesign_cmd.args(["-i", fo]);
+        }
+        let status = codesign_cmd.arg(output_path.as_ref()).status();
         if let Ok(s) = &status {
             if !s.success() {
                 tracing::warn!("codesign failed with status: {s}");
@@ -700,8 +703,9 @@ fn write_dylib_symtab(
     // Build section ranges from the already-written headers for n_sect lookup.
     let section_ranges = parse_section_ranges(out);
 
-    // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
-    let symoff = (start + 7) & !7; // align to 8
+    // Write nlist64 entries (16 bytes each). No alignment padding —
+    // LINKEDIT must be fully packed for strip(1) compatibility.
+    let symoff = start;
     let nsyms = entries.len();
     let mut pos = symoff;
     for (i, (_, value)) in entries.iter().enumerate() {
@@ -966,8 +970,9 @@ fn write_exe_symtab(
     // Build section ranges from the already-written headers for n_sect lookup.
     let section_ranges = parse_section_ranges(out);
 
-    // Write nlist64 entries (16 bytes each, must be 8-byte aligned)
-    let symoff = (start + 7) & !7;
+    // Write nlist64 entries (16 bytes each). No alignment padding —
+    // LINKEDIT must be fully packed for strip(1) compatibility.
+    let symoff = start;
     let nsyms = entries.len();
     let mut pos = symoff;
     for (i, (_, value, n_type)) in entries.iter().enumerate() {
@@ -1056,7 +1061,7 @@ fn write_exe_symtab(
                     .copy_from_slice(&0u32.to_le_bytes());
             }
             0x26 | 0x29 => {
-                // function_starts, data_in_code: right before symtab
+                // function_starts, data_in_code: contiguous with symtab (size 0)
                 out[off as usize + 8..off as usize + 12]
                     .copy_from_slice(&(symoff as u32).to_le_bytes());
                 out[off as usize + 12..off as usize + 16]
@@ -3001,12 +3006,16 @@ fn write_headers(
 
     let is_dylib = layout.symbol_db.args.is_dylib;
     let install_name = if is_dylib {
-        layout
-            .symbol_db
-            .args
-            .output()
-            .to_string_lossy()
-            .into_owned()
+        if let Some(ref name) = layout.symbol_db.args.install_name {
+            String::from_utf8_lossy(name).into_owned()
+        } else {
+            layout
+                .symbol_db
+                .args
+                .output()
+                .to_string_lossy()
+                .into_owned()
+        }
     } else {
         String::new()
     };
@@ -3133,8 +3142,24 @@ fn write_headers(
         let data_nsects = data_sections.len() as u32;
         add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * data_nsects);
     }
+    // Group empty sections by segment name
+    let empty_sections = &layout.symbol_db.args.empty_sections;
+    let mut empty_segs: Vec<(&[u8; 16], Vec<&[u8; 16]>)> = Vec::new();
+    for (segname, sectname) in empty_sections {
+        if let Some(seg) = empty_segs.iter_mut().find(|(s, _)| *s == segname) {
+            seg.1.push(sectname);
+        } else {
+            empty_segs.push((segname, vec![sectname]));
+        }
+    }
+    for (_, sects) in &empty_segs {
+        add_cmd(&mut ncmds, &mut cmdsize, 72 + 80 * sects.len() as u32);
+    }
     add_cmd(&mut ncmds, &mut cmdsize, 72); // LINKEDIT
-    add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_UUID
+    let emit_uuid = !layout.symbol_db.args.no_uuid;
+    if emit_uuid {
+        add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_UUID
+    }
     if is_dylib {
         add_cmd(&mut ncmds, &mut cmdsize, id_dylib_cmd_size); // LC_ID_DYLIB
     } else {
@@ -3152,13 +3177,27 @@ fn write_headers(
     for &sz in &extra_dylib_sizes {
         add_cmd(&mut ncmds, &mut cmdsize, sz);
     }
+    let rpaths = &layout.symbol_db.args.rpaths;
+    let rpath_sizes: Vec<u32> = rpaths
+        .iter()
+        .map(|p| align8(12 + p.len() as u32 + 1))
+        .collect();
+    for &sz in &rpath_sizes {
+        add_cmd(&mut ncmds, &mut cmdsize, sz);
+    }
     add_cmd(&mut ncmds, &mut cmdsize, 24); // SYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 80); // DYSYMTAB
     add_cmd(&mut ncmds, &mut cmdsize, 32); // LC_BUILD_VERSION
     add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DYLD_CHAINED_FIXUPS
     add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DYLD_EXPORTS_TRIE
-    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_FUNCTION_STARTS
-    add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DATA_IN_CODE
+    let emit_func_starts = !layout.symbol_db.args.no_function_starts;
+    if emit_func_starts {
+        add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_FUNCTION_STARTS
+    }
+    let emit_data_in_code = !layout.symbol_db.args.no_data_in_code;
+    if emit_data_in_code {
+        add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DATA_IN_CODE
+    }
 
     let filetype = if is_dylib { 6u32 } else { MH_EXECUTE }; // MH_DYLIB = 6
     w.u32(MH_MAGIC_64);
@@ -3244,6 +3283,39 @@ fn write_headers(
         }
     }
 
+    // Write empty sections (from -add_empty_section) as zero-size segments
+    for (segname, sects) in &empty_segs {
+        let n = sects.len() as u32;
+        w.u32(LC_SEGMENT_64);
+        w.u32(72 + 80 * n);
+        w.buf[w.pos..w.pos + 16].copy_from_slice(*segname);
+        w.pos += 16;
+        w.u64(0); // vmaddr
+        w.u64(0); // vmsize
+        w.u64(0); // fileoff
+        w.u64(0); // filesize
+        w.u32(0); // maxprot
+        w.u32(0); // initprot
+        w.u32(n);
+        w.u32(0); // flags
+        for sectname in sects {
+            w.buf[w.pos..w.pos + 16].copy_from_slice(*sectname);
+            w.pos += 16;
+            w.buf[w.pos..w.pos + 16].copy_from_slice(*segname);
+            w.pos += 16;
+            w.u64(0); // addr
+            w.u64(0); // size
+            w.u32(0); // offset
+            w.u32(0); // align
+            w.u32(0); // reloff
+            w.u32(0); // nreloc
+            w.u32(0); // flags
+            w.u32(0); // reserved1
+            w.u32(0); // reserved2
+            w.u32(0); // reserved3
+        }
+    }
+
     let (last_file_end, linkedit_vm) = if has_data {
         (data_fileoff + data_filesize, data_vmaddr + data_vmsize)
     } else {
@@ -3274,20 +3346,39 @@ fn write_headers(
     );
 
     // LC_UUID = 0x1B
-    w.u32(0x1B);
-    w.u32(24);
-    // Generate a deterministic UUID from the output content
-    let uuid_bytes: [u8; 16] = {
-        let mut h = [0u8; 16];
-        let output_name = layout.symbol_db.args.output();
-        for (i, b) in output_name.to_string_lossy().bytes().enumerate() {
-            h[i % 16] ^= b;
-        }
-        h[6] = (h[6] & 0x0F) | 0x40; // version 4
-        h[8] = (h[8] & 0x3F) | 0x80; // variant 1
-        h
-    };
-    w.bytes(&uuid_bytes);
+    if emit_uuid {
+        w.u32(0x1B);
+        w.u32(24);
+        let uuid_bytes: [u8; 16] = if layout.symbol_db.args.random_uuid {
+            let mut h = [0u8; 16];
+            // Use std::time for a simple source of entropy
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            h[..16].copy_from_slice(&t.to_le_bytes());
+            h[6] = (h[6] & 0x0F) | 0x40; // version 4
+            h[8] = (h[8] & 0x3F) | 0x80; // variant 1
+            h
+        } else {
+            // Deterministic UUID from -final_output name or output path
+            let mut h = [0u8; 16];
+            let output_lossy = layout.symbol_db.args.output().to_string_lossy().into_owned();
+            let name = layout
+                .symbol_db
+                .args
+                .final_output
+                .as_deref()
+                .unwrap_or(&output_lossy);
+            for (i, b) in name.bytes().enumerate() {
+                h[i % 16] ^= b;
+            }
+            h[6] = (h[6] & 0x0F) | 0x40; // version 4
+            h[8] = (h[8] & 0x3F) | 0x80; // variant 1
+            h
+        };
+        w.bytes(&uuid_bytes);
+    }
 
     if is_dylib {
         // LC_ID_DYLIB = 0x0D
@@ -3304,7 +3395,7 @@ fn write_headers(
         w.u32(LC_MAIN);
         w.u32(24);
         w.u64(entry_offset as u64);
-        w.u64(0);
+        w.u64(layout.symbol_db.args.stack_size.unwrap_or(0));
     }
 
     if !is_dylib {
@@ -3338,6 +3429,16 @@ fn write_headers(
         w.pad8();
     }
 
+    // LC_RPATH = 0x8000_001C
+    for (i, rpath) in rpaths.iter().enumerate() {
+        w.u32(0x8000_001C);
+        w.u32(rpath_sizes[i]);
+        w.u32(12); // path offset
+        w.bytes(rpath);
+        w.u8(0);
+        w.pad8();
+    }
+
     w.u32(LC_SYMTAB);
     w.u32(24);
     w.u32(0);
@@ -3353,8 +3454,8 @@ fn write_headers(
     w.u32(LC_BUILD_VERSION);
     w.u32(32);
     w.u32(PLATFORM_MACOS);
-    w.u32(0x000E_0000);
-    w.u32(0x000E_0000);
+    w.u32(layout.symbol_db.args.minos.unwrap_or(0x000E_0000));
+    w.u32(layout.symbol_db.args.sdk_version.unwrap_or(0x000E_0000));
     w.u32(1);
     w.u32(3);
     w.u32(0x0300_0100);
@@ -3368,15 +3469,19 @@ fn write_headers(
     w.u32(last_file_end as u32);
     w.u32(0);
     // LC_FUNCTION_STARTS = 0x26
-    w.u32(0x26);
-    w.u32(16);
-    w.u32(last_file_end as u32); // offset (patched later)
-    w.u32(0);                    // size 0
+    if emit_func_starts {
+        w.u32(0x26);
+        w.u32(16);
+        w.u32(last_file_end as u32); // offset (patched later)
+        w.u32(0);                    // size 0
+    }
     // LC_DATA_IN_CODE = 0x29
-    w.u32(0x29);
-    w.u32(16);
-    w.u32(last_file_end as u32); // offset (patched later)
-    w.u32(0);                    // size 0
+    if emit_data_in_code {
+        w.u32(0x29);
+        w.u32(16);
+        w.u32(last_file_end as u32); // offset (patched later)
+        w.u32(0);                    // size 0
+    }
 
     Ok(Some(cf_offset))
 }

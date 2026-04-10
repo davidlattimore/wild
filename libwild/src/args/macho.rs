@@ -34,6 +34,28 @@ pub struct MachOArgs {
     /// Symbols exported by linked dylibs (from .tbd parsing). Used to distinguish
     /// undefined symbols that are dylib imports from truly missing symbols.
     pub(crate) dylib_symbols: std::collections::HashSet<Vec<u8>>,
+    /// Whether to skip ad-hoc code signing (-no_adhoc_codesign).
+    pub(crate) no_adhoc_codesign: bool,
+    /// LC_RPATH entries from -rpath flags.
+    pub(crate) rpaths: Vec<Vec<u8>>,
+    /// Whether to omit LC_FUNCTION_STARTS (-no_function_starts).
+    pub(crate) no_function_starts: bool,
+    /// Custom stack size from -stack_size.
+    pub(crate) stack_size: Option<u64>,
+    /// Whether to omit LC_DATA_IN_CODE (-no_data_in_code_info).
+    pub(crate) no_data_in_code: bool,
+    /// Minimum OS version for LC_BUILD_VERSION (encoded as Mach-O packed version).
+    pub(crate) minos: Option<u32>,
+    /// SDK version for LC_BUILD_VERSION (encoded as Mach-O packed version).
+    pub(crate) sdk_version: Option<u32>,
+    /// The name used for UUID hashing (from -final_output). Falls back to output path.
+    pub(crate) final_output: Option<String>,
+    /// Whether to omit LC_UUID.
+    pub(crate) no_uuid: bool,
+    /// Whether to emit a random UUID instead of deterministic.
+    pub(crate) random_uuid: bool,
+    /// Additional empty sections from -add_empty_section (segname, sectname).
+    pub(crate) empty_sections: Vec<([u8; 16], [u8; 16])>,
 }
 
 impl MachOArgs {
@@ -62,6 +84,17 @@ impl Default for MachOArgs {
             extra_dylibs: Vec::new(),
             force_undefined: Vec::new(),
             dylib_symbols: Default::default(),
+            no_adhoc_codesign: false,
+            rpaths: Vec::new(),
+            no_function_starts: false,
+            stack_size: None,
+            no_data_in_code: false,
+            minos: None,
+            sdk_version: None,
+            final_output: None,
+            no_uuid: false,
+            random_uuid: false,
+            empty_sections: Vec::new(),
         }
     }
 }
@@ -211,13 +244,23 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         // Flags that take 1 argument, ignored
+        "-install_name" => {
+            if let Some(val) = input.next() {
+                args.install_name = Some(val.as_ref().as_bytes().to_vec());
+            }
+            return Ok(());
+        }
+        "-rpath" => {
+            if let Some(val) = input.next() {
+                args.rpaths.push(val.as_ref().as_bytes().to_vec());
+            }
+            return Ok(());
+        }
         "-lto_library"
         | "-mllvm"
         | "-headerpad"
-        | "-install_name"
         | "-compatibility_version"
         | "-current_version"
-        | "-rpath"
         | "-object_path_lto"
         | "-order_file"
         | "-exported_symbols_list"
@@ -233,13 +276,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-sub_umbrella"
         | "-objc_abi_version"
         | "-add_ast_path"
-        | "-macos_version_min"
         | "-dependency_info"
         | "-map"
-        | "-stack_size"
         | "-pagezero_size"
         | "-image_base"
-        | "-final_output"
         | "-oso_prefix"
         | "-needed_framework" => {
             input.next(); // consume the argument
@@ -254,15 +294,32 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         // -add_empty_section takes 2 arguments: segname sectname
         "-add_empty_section" => {
-            input.next(); // segname
-            input.next(); // sectname
+            if let (Some(seg), Some(sect)) = (input.next(), input.next()) {
+                let mut segname = [0u8; 16];
+                let mut sectname = [0u8; 16];
+                let seg_bytes = seg.as_ref().as_bytes();
+                let sect_bytes = sect.as_ref().as_bytes();
+                segname[..seg_bytes.len().min(16)].copy_from_slice(&seg_bytes[..seg_bytes.len().min(16)]);
+                sectname[..sect_bytes.len().min(16)].copy_from_slice(&sect_bytes[..sect_bytes.len().min(16)]);
+                args.empty_sections.push((segname, sectname));
+            }
             return Ok(());
         }
         // -platform_version takes 3 arguments: platform min_version sdk_version
         "-platform_version" => {
-            input.next(); // platform
-            input.next(); // min_version
-            input.next(); // sdk_version
+            input.next(); // platform (ignored, always macos)
+            if let Some(v) = input.next() {
+                args.minos = Some(parse_macho_version(v.as_ref()));
+            }
+            if let Some(v) = input.next() {
+                args.sdk_version = Some(parse_macho_version(v.as_ref()));
+            }
+            return Ok(());
+        }
+        "-macos_version_min" => {
+            if let Some(v) = input.next() {
+                args.minos = Some(parse_macho_version(v.as_ref()));
+            }
             return Ok(());
         }
         "-force_load" => {
@@ -306,16 +363,13 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-no_pie"
         | "-execute"
         | "-bundle"
-        | "-no_function_starts"
         | "-no_fixup_chains"
         | "-fixup_chains"
-        | "-no_adhoc_codesign"
         | "-adhoc_codesign"
         | "-S"
         | "-w"
         | "-Z"
         | "-data_in_code_info"
-        | "-no_data_in_code_info"
         | "-function_starts"
         | "-subsections_via_symbols"
         | "-reproducible" => {
@@ -336,6 +390,40 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-x" => {
             args.strip_locals = true;
+            return Ok(());
+        }
+        "-no_adhoc_codesign" => {
+            args.no_adhoc_codesign = true;
+            return Ok(());
+        }
+        "-no_function_starts" => {
+            args.no_function_starts = true;
+            return Ok(());
+        }
+        "-final_output" => {
+            if let Some(val) = input.next() {
+                args.final_output = Some(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
+        "-no_uuid" => {
+            args.no_uuid = true;
+            return Ok(());
+        }
+        "-random_uuid" => {
+            args.random_uuid = true;
+            return Ok(());
+        }
+        "-no_data_in_code_info" => {
+            args.no_data_in_code = true;
+            return Ok(());
+        }
+        "-stack_size" => {
+            if let Some(val) = input.next() {
+                let val = val.as_ref();
+                args.stack_size =
+                    Some(u64::from_str_radix(val.strip_prefix("0x").unwrap_or(val), 16).unwrap_or(0));
+            }
             return Ok(());
         }
         "-r" => {
@@ -540,6 +628,16 @@ fn parse_tbd_install_name(path: &Path) -> Option<Vec<u8>> {
         }
     }
     None
+}
+
+/// Parse a Mach-O version string like "10.9" or "13.5.1" into packed u32 format:
+/// major<<16 | minor<<8 | patch.
+fn parse_macho_version(s: &str) -> u32 {
+    let mut parts = s.split('.');
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let patch = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    (major << 16) | (minor << 8) | patch
 }
 
 /// Collect exported symbols from a .tbd file into the given set.
