@@ -982,6 +982,19 @@ fn write_exe_symtab(
         }
     }
 
+    // Emit N_AST entries for -add_ast_path flags.
+    if !layout.symbol_db.args.should_strip_debug() {
+        for ast_path in &layout.symbol_db.args.ast_paths {
+            stab_entries.push((
+                ast_path.as_bytes().to_vec(),
+                0x32, // N_AST
+                0,
+                0,
+                0,
+            ));
+        }
+    }
+
     // Collect all defined symbols with non-zero addresses.
     let mut entries: Vec<(Vec<u8>, u64, u8)> = Vec::new(); // (name, value, n_type)
     let mut seen_names: std::collections::HashSet<Vec<u8>> = Default::default();

@@ -92,7 +92,7 @@ fn should_ignore(name: &str) -> bool {
         // no-function-starts now passes
         // data-in-code-info now passes
         "subsections-via-symbols", // -subsections_via_symbols
-        "add-ast-path",            // -add_ast_path
+        // add-ast-path now passes (N_AST stab entries from -add_ast_path)
         // add-empty-section now passes
         // pagezero-size2 now passes (error when used with -dylib)
         // oso-prefix now passes (-oso_prefix with canonicalized OSO paths)
