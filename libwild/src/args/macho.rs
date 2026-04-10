@@ -90,6 +90,10 @@ pub struct MachOArgs {
     pub(crate) framework_search_paths: Vec<Box<Path>>,
     /// Use extension-first search order (dylibs before static libs across all paths).
     pub(crate) search_dylibs_first: bool,
+    /// Whether -pagezero_size was specified (only valid for executables).
+    has_pagezero_size: bool,
+    /// -Z: don't search default library paths.
+    no_default_search_paths: bool,
     /// Frameworks to resolve after all -F paths are collected.
     pending_frameworks: Vec<String>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -153,6 +157,8 @@ impl Default for MachOArgs {
             sectcreate: Vec::new(),
             framework_search_paths: Vec::new(),
             search_dylibs_first: false,
+            has_pagezero_size: false,
+            no_default_search_paths: false,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -290,6 +296,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         link_framework(args, name)?;
     }
 
+    // Validate flag combinations.
+    if args.has_pagezero_size && (args.is_dylib || args.is_bundle) {
+        crate::bail!(" -pagezero_size option can only be used when linking a main executable");
+    }
+
     Ok(())
 }
 
@@ -388,6 +399,44 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-pagezero_size" => {
+            if let Some(_val) = input.next() {
+                args.has_pagezero_size = true;
+            }
+            return Ok(());
+        }
+        "-reexport_library" => {
+            if let Some(val) = input.next() {
+                let path = Path::new(val.as_ref());
+                if path.extension().map_or(false, |e| e == "tbd") {
+                    handle_tbd_input(args, path)?;
+                    // Override kind to Reexport
+                    if let Some(last) = args.extra_dylibs.last_mut() {
+                        last.1 = DylibLoadKind::Reexport;
+                    }
+                } else {
+                    handle_dylib_input(args, path)?;
+                    if let Some(last) = args.extra_dylibs.last_mut() {
+                        last.1 = DylibLoadKind::Reexport;
+                    }
+                }
+            }
+            return Ok(());
+        }
+        "-weak_library" => {
+            if let Some(val) = input.next() {
+                let path = Path::new(val.as_ref());
+                if path.extension().map_or(false, |e| e == "tbd") {
+                    handle_tbd_input(args, path)?;
+                } else {
+                    handle_dylib_input(args, path)?;
+                }
+                if let Some(last) = args.extra_dylibs.last_mut() {
+                    last.1 = DylibLoadKind::Weak;
+                }
+            }
+            return Ok(());
+        }
         "-framework" | "-weak_framework" | "-needed_framework" => {
             if let Some(name) = input.next() {
                 // Defer resolution: -F paths may come after -framework in cc invocations.
@@ -396,9 +445,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             return Ok(());
         }
         "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
-        | "-weak_library" | "-reexport_library" | "-umbrella" | "-allowable_client"
+        | "-umbrella" | "-allowable_client"
         | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
-        | "-add_ast_path" | "-dependency_info" | "-map" | "-pagezero_size" | "-image_base"
+        | "-add_ast_path" | "-dependency_info" | "-map" | "-image_base"
         | "-oso_prefix" => {
             input.next(); // consume the argument
             return Ok(());
@@ -492,6 +541,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.search_dylibs_first = true;
             return Ok(());
         }
+        "-Z" => {
+            args.no_default_search_paths = true;
+            return Ok(());
+        }
         // No-argument flags, ignored
         "-dynamic"
         | "-no_deduplicate"
@@ -514,7 +567,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-fixup_chains"
         | "-adhoc_codesign"
         | "-w"
-        | "-Z"
         | "-data_in_code_info"
         | "-function_starts"
         | "-subsections_via_symbols"
@@ -652,7 +704,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
 
     // -U <symbol> (allow undefined, dynamic lookup)
     if arg == "-U" {
-        input.next();
+        if let Some(sym) = input.next() {
+            // Add to dylib_symbols so undefined check skips it.
+            args.dylib_symbols.insert(sym.as_ref().as_bytes().to_vec());
+        }
         return Ok(());
     }
 
@@ -677,6 +732,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             // Skip it and other system dylibs that we handle implicitly, but still
             // parse their .tbd to know which symbols they export.
             if lib == "System" || lib == "c" || lib == "m" || lib == "pthread" {
+                if args.no_default_search_paths {
+                    crate::bail!("library not found: -l{lib}");
+                }
                 let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
                 if let Some(ref root) = args.syslibroot {
                     search_paths.push(Box::from(root.join("usr/lib")));
@@ -707,9 +765,11 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             let mut found = false;
             let extensions = [".tbd", ".dylib", ".a"];
             let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
-            if let Some(ref root) = args.syslibroot {
-                search_paths.push(Box::from(root.join("usr/lib")));
-                search_paths.push(Box::from(root.join("usr/lib/swift")));
+            if !args.no_default_search_paths {
+                if let Some(ref root) = args.syslibroot {
+                    search_paths.push(Box::from(root.join("usr/lib")));
+                    search_paths.push(Box::from(root.join("usr/lib/swift")));
+                }
             }
             // search_paths_first (default): try all extensions per dir.
             // search_dylibs_first: try each extension across all dirs.

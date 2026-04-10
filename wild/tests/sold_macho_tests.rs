@@ -94,7 +94,7 @@ fn should_ignore(name: &str) -> bool {
         "subsections-via-symbols", // -subsections_via_symbols
         "add-ast-path",            // -add_ast_path
         // add-empty-section now passes
-        "pagezero-size2", // -pagezero_size variations
+        // pagezero-size2 now passes (error when used with -dylib)
         "oso-prefix",     // -oso_prefix
         "start-stop-symbol", /* __start_/__stop_ sections
                            * framework now passes (-F/-framework support) */
@@ -150,7 +150,7 @@ fn should_ignore(name: &str) -> bool {
         // uuid2 now passes
         "version", // -current_version / -compatibility_version
         "w",       // -w (needs -application_extension warning)
-        "Z",       // -Z (no default search paths)
+        // Z now passes (-Z no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
         "dead-strip-dylibs",  // -dead_strip_dylibs
         "dead-strip-dylibs2", // -dead_strip_dylibs
