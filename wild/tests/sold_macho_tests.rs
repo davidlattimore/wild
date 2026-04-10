@@ -66,7 +66,7 @@ fn should_ignore(name: &str) -> bool {
         // unexported-symbols-list now passes (unexport_list filtering)
         "export-dynamic", // -export_dynamic
         "merge-scope",    // visibility merging
-        "hidden-l",       // -hidden-l
+        // hidden-l now passes (archive symbols added to unexport list)
         // needed-l now passes (prefix link modifiers fall through to -l logic)
         // needed-framework now passes (dead_strip_dylibs + needed)
         "weak-l",           // -weak-l

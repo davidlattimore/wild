@@ -770,6 +770,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     // Prefix link flags: -needed-l<name>, -weak-l<name>, -reexport-l<name>, -hidden-l<name>
     let mut dylib_kind = DylibLoadKind::Normal;
     let mut is_needed = false;
+    let mut is_hidden = false;
     let lib_from_prefix = if let Some(name) = arg.strip_prefix("-needed-l") {
         is_needed = true;
         Some(name)
@@ -779,8 +780,11 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     } else if let Some(name) = arg.strip_prefix("-reexport-l") {
         dylib_kind = DylibLoadKind::Reexport;
         Some(name)
+    } else if let Some(name) = arg.strip_prefix("-hidden-l") {
+        is_hidden = true;
+        Some(name)
     } else {
-        arg.strip_prefix("-hidden-l")
+        None
     };
 
     // -l<name> (link library) -- must come after -lto_library check above
@@ -847,18 +851,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         if let Some(dylib_path) = parse_tbd_install_name(&path) {
                             args.add_dylib(dylib_path, dylib_kind);
                         }
-                        let before = args.dylib_symbols.len();
                         collect_tbd_symbols(&path, &mut args.dylib_symbols);
-                        let after = args.dylib_symbols.len();
-                        if lib == "c++" {
-                            tracing::error!(
-                                "TRACE -lc++: found {} at {}, collected {} syms (has __ZdlPvm: {})",
-                                ext,
-                                path.display(),
-                                after - before,
-                                args.dylib_symbols.contains(&b"__ZdlPvm".to_vec())
-                            );
-                        }
                     } else if ext == ".dylib" {
                         // Parse exports trie + install name from the dylib.
                         handle_dylib_input(args, &path)?;
@@ -874,6 +867,28 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                             search_first: None,
                             modifiers: *modifier_stack.last().unwrap(),
                         });
+                    }
+                    // -hidden-l: add archive global symbols to unexport list.
+                    if is_hidden && ext == ".a" {
+                        // Scan archive for global symbols to hide from dylib exports.
+                        if let Ok(data) = std::fs::read(&path) {
+                            if let Ok(archive) = object::read::archive::ArchiveFile::parse(&*data) {
+                                for member in archive.members() {
+                                    let Ok(member) = member else { continue };
+                                    let Ok(member_data) = member.data(&*data) else { continue };
+                                    let Ok(obj) = object::File::parse(member_data) else { continue };
+                                    use object::Object;
+                                    use object::ObjectSymbol;
+                                    for sym in obj.symbols() {
+                                        if sym.is_global() && sym.is_definition() {
+                                            if let Ok(name) = sym.name() {
+                                                args.unexported_symbols.push(name.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     if is_needed && !args.extra_dylibs.is_empty() {
                         args.needed_dylib_indices.insert(args.extra_dylibs.len() - 1);
