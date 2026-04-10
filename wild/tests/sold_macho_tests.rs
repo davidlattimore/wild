@@ -97,7 +97,7 @@ fn should_ignore(name: &str) -> bool {
         "pagezero-size2",    // -pagezero_size variations
         "oso-prefix",        // -oso_prefix
         "start-stop-symbol", // __start_/__stop_ sections
-        "framework",         // -framework (non-system)
+        // framework now passes (-F/-framework support)
     ];
 
     // Tests requiring LTO

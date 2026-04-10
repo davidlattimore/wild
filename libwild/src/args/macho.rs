@@ -74,6 +74,8 @@ pub struct MachOArgs {
     pub(crate) is_bundle: bool,
     /// Sections with embedded file content from -sectcreate (segname, sectname, data).
     pub(crate) sectcreate: Vec<([u8; 16], [u8; 16], Vec<u8>)>,
+    /// Framework search paths from -F flags.
+    pub(crate) framework_search_paths: Vec<Box<Path>>,
 }
 
 impl MachOArgs {
@@ -122,6 +124,7 @@ impl Default for MachOArgs {
             current_version: 0x01_0000,       // 1.0.0
             is_bundle: false,
             sectcreate: Vec::new(),
+            framework_search_paths: Vec::new(),
         }
     }
 }
@@ -319,13 +322,18 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-framework" | "-weak_framework" | "-needed_framework" => {
+            if let Some(name) = input.next() {
+                let name = name.as_ref();
+                link_framework(args, name)?;
+            }
+            return Ok(());
+        }
         "-lto_library"
         | "-mllvm"
         | "-headerpad"
         | "-object_path_lto"
         | "-order_file"
-        | "-framework"
-        | "-weak_framework"
         | "-weak_library"
         | "-reexport_library"
         | "-umbrella"
@@ -339,8 +347,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-map"
         | "-pagezero_size"
         | "-image_base"
-        | "-oso_prefix"
-        | "-needed_framework" => {
+        | "-oso_prefix" => {
             input.next(); // consume the argument
             return Ok(());
         }
@@ -577,8 +584,15 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         return Ok(());
     }
 
-    // -F<path> (framework search path) — ignore for now
-    if arg.strip_prefix("-F").is_some() {
+    // -F<path> (framework search path)
+    if let Some(path) = arg.strip_prefix("-F") {
+        if !path.is_empty() {
+            args.framework_search_paths
+                .push(Box::from(Path::new(path)));
+        } else if let Some(val) = input.next() {
+            args.framework_search_paths
+                .push(Box::from(Path::new(val.as_ref())));
+        }
         return Ok(());
     }
 
@@ -788,4 +802,38 @@ fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<
             _ => {}
         }
     }
+}
+
+/// Search framework search paths for a framework and register it as a dylib dependency.
+fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
+    // Search: <F-path>/<name>.framework/<name>[.tbd]
+    let framework_dir = format!("{name}.framework");
+    for dir in &args.framework_search_paths {
+        let fw_dir = dir.join(&framework_dir);
+        if !fw_dir.is_dir() {
+            continue;
+        }
+        // Try .tbd first, then bare name (dylib without extension)
+        let tbd_path = fw_dir.join(format!("{name}.tbd"));
+        if tbd_path.exists() {
+            if let Some(dylib_path) = parse_tbd_install_name(&tbd_path) {
+                if !args.extra_dylibs.contains(&dylib_path) {
+                    args.extra_dylibs.push(dylib_path);
+                }
+            }
+            collect_tbd_symbols(&tbd_path, &mut args.dylib_symbols);
+            return Ok(());
+        }
+        let dylib_path = fw_dir.join(name);
+        if dylib_path.exists() {
+            // Use the absolute path as the install name (like -l does for .dylib)
+            let install = dylib_path.to_string_lossy().as_bytes().to_vec();
+            if !args.extra_dylibs.contains(&install) {
+                args.extra_dylibs.push(install);
+            }
+            return Ok(());
+        }
+    }
+    tracing::warn!("framework not found: {name}");
+    Ok(())
 }
