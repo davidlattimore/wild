@@ -80,6 +80,8 @@ pub struct MachOArgs {
     pub(crate) sectcreate: Vec<([u8; 16], [u8; 16], Vec<u8>)>,
     /// Framework search paths from -F flags.
     pub(crate) framework_search_paths: Vec<Box<Path>>,
+    /// Use extension-first search order (dylibs before static libs across all paths).
+    pub(crate) search_dylibs_first: bool,
 }
 
 impl MachOArgs {
@@ -131,6 +133,7 @@ impl Default for MachOArgs {
             is_bundle: false,
             sectcreate: Vec::new(),
             framework_search_paths: Vec::new(),
+            search_dylibs_first: false,
         }
     }
 }
@@ -462,6 +465,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.gc_sections = true;
             return Ok(());
         }
+        "-search_dylibs_first" => {
+            args.search_dylibs_first = true;
+            return Ok(());
+        }
         // No-argument flags, ignored
         "-dynamic"
         | "-no_deduplicate"
@@ -474,7 +481,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-ObjC"
         | "-no_implicit_dylibs"
         | "-search_paths_first"
-        | "-search_dylibs_first"
         | "-two_levelnamespace"
         | "-flat_namespace"
         | "-bind_at_load"
@@ -673,8 +679,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 return Ok(());
             }
             // Try to find the library on the search path, including syslibroot.
-            // Use search_paths_first order (default for ld64): try all extensions
-            // in each directory before moving to the next directory.
             let mut found = false;
             let extensions = [".tbd", ".dylib", ".a"];
             let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
@@ -682,32 +686,40 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 search_paths.push(Box::from(root.join("usr/lib")));
                 search_paths.push(Box::from(root.join("usr/lib/swift")));
             }
-            'search: for dir in &search_paths {
-                for ext in &extensions {
-                    let path = dir.join(format!("lib{lib}{ext}"));
-                    if path.exists() {
-                        if *ext == ".tbd" {
-                            if let Some(dylib_path) = parse_tbd_install_name(&path) {
-                                if !args.extra_dylibs.contains(&dylib_path) {
-                                    args.extra_dylibs.push(dylib_path);
-                                }
+            // search_paths_first (default): try all extensions per dir.
+            // search_dylibs_first: try each extension across all dirs.
+            let search_dylibs_first = args.search_dylibs_first;
+            'search: for i in 0..extensions.len() * search_paths.len() {
+                let (dir_idx, ext_idx) = if search_dylibs_first {
+                    (i % search_paths.len(), i / search_paths.len())
+                } else {
+                    (i / extensions.len(), i % extensions.len())
+                };
+                let ext = extensions[ext_idx];
+                let dir = &search_paths[dir_idx];
+                let path = dir.join(format!("lib{lib}{ext}"));
+                if path.exists() {
+                    if ext == ".tbd" {
+                        if let Some(dylib_path) = parse_tbd_install_name(&path) {
+                            if !args.extra_dylibs.contains(&dylib_path) {
+                                args.extra_dylibs.push(dylib_path);
                             }
-                            collect_tbd_symbols(&path, &mut args.dylib_symbols);
-                        } else if *ext == ".dylib" {
-                            let install = path.to_string_lossy().as_bytes().to_vec();
-                            if !args.extra_dylibs.contains(&install) {
-                                args.extra_dylibs.push(install);
-                            }
-                        } else {
-                            args.common.inputs.push(Input {
-                                spec: InputSpec::File(Box::from(path.as_path())),
-                                search_first: None,
-                                modifiers: *modifier_stack.last().unwrap(),
-                            });
                         }
-                        found = true;
-                        break 'search;
+                        collect_tbd_symbols(&path, &mut args.dylib_symbols);
+                    } else if ext == ".dylib" {
+                        let install = path.to_string_lossy().as_bytes().to_vec();
+                        if !args.extra_dylibs.contains(&install) {
+                            args.extra_dylibs.push(install);
+                        }
+                    } else {
+                        args.common.inputs.push(Input {
+                            spec: InputSpec::File(Box::from(path.as_path())),
+                            search_first: None,
+                            modifiers: *modifier_stack.last().unwrap(),
+                        });
                     }
+                    found = true;
+                    break 'search;
                 }
             }
             // If not found, warn but don't error (might be a system dylib we handle implicitly)
