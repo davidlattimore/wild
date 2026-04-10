@@ -646,7 +646,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 }
                 return Ok(());
             }
-            // Try to find the library on the search path, including syslibroot
+            // Try to find the library on the search path, including syslibroot.
+            // Use search_paths_first order (default for ld64): try all extensions
+            // in each directory before moving to the next directory.
             let mut found = false;
             let extensions = [".tbd", ".dylib", ".a"];
             let mut search_paths: Vec<Box<Path>> = args.lib_search_paths.clone();
@@ -654,13 +656,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 search_paths.push(Box::from(root.join("usr/lib")));
                 search_paths.push(Box::from(root.join("usr/lib/swift")));
             }
-            for ext in &extensions {
-                let filename = format!("lib{lib}{ext}");
-                for dir in &search_paths {
-                    let path = dir.join(&filename);
+            'search: for dir in &search_paths {
+                for ext in &extensions {
+                    let path = dir.join(format!("lib{lib}{ext}"));
                     if path.exists() {
-                        // .tbd files are text-based dylib stubs. Parse the
-                        // install-name so we can emit LC_LOAD_DYLIB for it.
                         if *ext == ".tbd" {
                             if let Some(dylib_path) = parse_tbd_install_name(&path) {
                                 if !args.extra_dylibs.contains(&dylib_path) {
@@ -668,31 +667,21 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                                 }
                             }
                             collect_tbd_symbols(&path, &mut args.dylib_symbols);
-                            found = true;
-                            break;
-                        }
-                        if *ext == ".dylib" {
-                            // For .dylib files found via -l, emit LC_LOAD_DYLIB
-                            // using the file's install name (from LC_ID_DYLIB).
-                            // For simplicity, use the path as the install name.
+                        } else if *ext == ".dylib" {
                             let install = path.to_string_lossy().as_bytes().to_vec();
                             if !args.extra_dylibs.contains(&install) {
                                 args.extra_dylibs.push(install);
                             }
-                            found = true;
-                            break;
+                        } else {
+                            args.common.inputs.push(Input {
+                                spec: InputSpec::File(Box::from(path.as_path())),
+                                search_first: None,
+                                modifiers: *modifier_stack.last().unwrap(),
+                            });
                         }
-                        args.common.inputs.push(Input {
-                            spec: InputSpec::File(Box::from(path.as_path())),
-                            search_first: None,
-                            modifiers: *modifier_stack.last().unwrap(),
-                        });
                         found = true;
-                        break;
+                        break 'search;
                     }
-                }
-                if found {
-                    break;
                 }
             }
             // If not found, warn but don't error (might be a system dylib we handle implicitly)

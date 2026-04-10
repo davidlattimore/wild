@@ -77,8 +77,8 @@ fn should_ignore(name: &str) -> bool {
         "install-name-loader-path",     // @loader_path
         "install-name-rpath",           // @rpath
         // rpath now passes (-rpath → LC_RPATH)
-        "search-paths-first",  // -search_paths_first
-        "search-dylibs-first", // -search_dylibs_first
+        // search-paths-first now passes (default search order is paths-first)
+        "search-dylibs-first", // -search_dylibs_first (needs opposite search order)
         "sectcreate",          // -sectcreate
         "order-file",          // -order_file
         // stack-size now passes
