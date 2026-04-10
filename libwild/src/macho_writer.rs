@@ -143,11 +143,48 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
         }
     }
 
+    // Write dependency info file if requested.
+    if let Some(ref dep_path) = layout.symbol_db.args.dependency_info_path {
+        write_dependency_info(layout, dep_path)?;
+    }
+
     // Write map file if requested.
     if let Some(ref map_path) = layout.symbol_db.args.map_file {
         write_map_file(layout, map_path)?;
     }
 
+    Ok(())
+}
+
+/// Write a dependency info file (binary format) for Xcode build system.
+fn write_dependency_info(layout: &Layout<'_, MachO>, path: &std::path::Path) -> Result {
+    use crate::layout::FileLayout;
+    let mut data = Vec::new();
+
+    // Version record: \x00 + linker name
+    data.push(0x00);
+    data.extend_from_slice(b"Wild");
+    data.push(0);
+
+    // Input file records: \x10 + path
+    for group in &layout.group_layouts {
+        for file_layout in &group.files {
+            if let FileLayout::Object(obj) = file_layout {
+                data.push(0x10);
+                let input_path = obj.input.file.filename.to_string_lossy().into_owned();
+                data.extend_from_slice(input_path.as_bytes());
+                data.push(0);
+            }
+        }
+    }
+
+    // Output record: \x40 + output path
+    data.push(0x40);
+    data.extend_from_slice(layout.symbol_db.args.output.to_string_lossy().as_bytes());
+    data.push(0);
+
+    std::fs::write(path, &data)
+        .map_err(|e| crate::error!("Failed to write dependency info `{}`: {e}", path.display()))?;
     Ok(())
 }
 

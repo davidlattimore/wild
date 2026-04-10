@@ -83,7 +83,7 @@ fn should_ignore(name: &str) -> bool {
         "order-file",          // -order_file
         // stack-size now passes
         // map now passes (link map file writer)
-        "dependency-info",    // -dependency_info
+        // dependency-info now passes
         "print-dependencies", // -print_dependency_info
         // macos-version-min now passes
         // platform-version now passes
@@ -145,7 +145,7 @@ fn should_ignore(name: &str) -> bool {
 
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
-        "lc-build-version", // LC_BUILD_VERSION tool field
+        // lc-build-version now passes (accepts tool 3)
         // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
         // version now passes (-v outputs Wild version)

@@ -118,6 +118,8 @@ pub struct MachOArgs {
     suppress_warnings: bool,
     /// Symbols from -U to emit as undefined in output symtab.
     pub(crate) dynamic_undefined_symbols: Vec<Vec<u8>>,
+    /// Path for -dependency_info output.
+    pub(crate) dependency_info_path: Option<PathBuf>,
     /// Frameworks to resolve after all -F paths are collected. (name, is_needed)
     pending_frameworks: Vec<(String, bool)>,
     /// .tbd positional inputs to process after -platform_version is known.
@@ -195,6 +197,7 @@ impl Default for MachOArgs {
             non_extension_safe_dylibs: Vec::new(),
             suppress_warnings: false,
             dynamic_undefined_symbols: Vec::new(),
+            dependency_info_path: None,
             pending_frameworks: Vec::new(),
             pending_tbd_inputs: Vec::new(),
         }
@@ -512,10 +515,16 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-dependency_info" => {
+            if let Some(val) = input.next() {
+                args.dependency_info_path = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
         "-lto_library" | "-mllvm" | "-headerpad" | "-object_path_lto" | "-order_file"
         | "-umbrella" | "-allowable_client"
         | "-client_name" | "-sub_library" | "-sub_umbrella" | "-objc_abi_version"
-        | "-dependency_info" | "-image_base" => {
+        | "-image_base" => {
             input.next(); // consume the argument
             return Ok(());
         }
