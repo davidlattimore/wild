@@ -3655,9 +3655,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 && resources.symbol_db.args.should_export_all_dynamic_symbols();
         if export_all_dynamic
             || resources.symbol_db.output_kind.needs_dynsym()
-                && resources.symbol_db.export_list.is_some()
+                && (resources.symbol_db.export_list.is_some()
+                    || resources.symbol_db.unexport_list.is_some())
         {
-            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, scope)?;
         }
 
         Ok(())
@@ -4021,13 +4022,12 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         common: &mut CommonGroupState<'data, P>,
         resources: &'scope GraphResources<'data, 'scope, P>,
         queue: &mut LocalWorkQueue,
-        export_all_dynamic: bool,
         scope: &Scope<'scope>,
     ) -> Result {
         for (sym_index, sym) in self.object.enumerate_symbols() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-            if !can_export_symbol(sym, symbol_id, resources, export_all_dynamic) {
+            if !can_export_symbol(sym, symbol_id, resources) {
                 continue;
             }
 
@@ -4064,7 +4064,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
-        if !can_export_symbol(sym, symbol_id, resources, true) {
+        if !can_export_symbol(sym, symbol_id, resources) {
             return Ok(());
         }
 
@@ -4146,7 +4146,6 @@ fn can_export_symbol<'data, P: Platform>(
     sym: &P::SymtabEntry,
     symbol_id: SymbolId,
     resources: &GraphResources<'data, '_, P>,
-    export_all_dynamic: bool,
 ) -> bool {
     if sym.is_undefined() || sym.is_local() {
         return false;
@@ -4168,10 +4167,16 @@ fn can_export_symbol<'data, P: Platform>(
         return false;
     }
 
-    if !export_all_dynamic
-        && let Some(export_list) = &resources.symbol_db.export_list
+    if let Some(export_list) = &resources.symbol_db.export_list
         && let Ok(symbol_name) = resources.symbol_db.symbol_name(symbol_id)
         && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+    {
+        return false;
+    }
+
+    if let Some(unexport_list) = &resources.symbol_db.unexport_list
+        && let Ok(symbol_name) = resources.symbol_db.symbol_name(symbol_id)
+        && unexport_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
     {
         return false;
     }

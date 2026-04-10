@@ -66,6 +66,10 @@ pub struct MachOArgs {
     pub(crate) exported_symbols_list: Option<PathBuf>,
     /// Path to unexported symbols list file (-unexported_symbols_list).
     pub(crate) unexported_symbols_list: Option<PathBuf>,
+    /// Inline exported symbols from -exported_symbol flags.
+    pub(crate) exported_symbols: Vec<String>,
+    /// Inline unexported symbols from -unexported_symbol flags.
+    pub(crate) unexported_symbols: Vec<String>,
     /// Dylib compatibility version (packed u32 from -compatibility_version).
     pub(crate) compatibility_version: u32,
     /// Dylib current version (packed u32 from -current_version).
@@ -120,6 +124,8 @@ impl Default for MachOArgs {
             gc_sections: false,
             exported_symbols_list: None,
             unexported_symbols_list: None,
+            exported_symbols: Vec::new(),
+            unexported_symbols: Vec::new(),
             compatibility_version: 0x01_0000, // 1.0.0
             current_version: 0x01_0000,       // 1.0.0
             is_bundle: false,
@@ -189,6 +195,14 @@ impl platform::Args for MachOArgs {
 
     fn force_undefined_symbol_names(&self) -> &[String] {
         &self.force_undefined
+    }
+
+    fn force_export_symbol_names(&self) -> &[String] {
+        &self.exported_symbols
+    }
+
+    fn force_unexport_symbol_names(&self) -> &[String] {
+        &self.unexported_symbols
     }
 
     fn loadable_segment_alignment(&self) -> crate::alignment::Alignment {
@@ -301,6 +315,18 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-exported_symbols_list" => {
             if let Some(val) = input.next() {
                 args.exported_symbols_list = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-exported_symbol" => {
+            if let Some(val) = input.next() {
+                args.exported_symbols.push(val.as_ref().to_string());
+            }
+            return Ok(());
+        }
+        "-unexported_symbol" => {
+            if let Some(val) = input.next() {
+                args.unexported_symbols.push(val.as_ref().to_string());
             }
             return Ok(());
         }

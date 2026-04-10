@@ -62,8 +62,8 @@ fn should_ignore(name: &str) -> bool {
         "umbrella",                // -umbrella
         "application-extension",   // -application_extension
         "application-extension2",  // -application_extension
-        "exported-symbols-list",   // -exported_symbols_list
-        "unexported-symbols-list", // -unexported_symbols_list
+        // exported-symbols-list now passes (export trie filtering via export_list)
+        // unexported-symbols-list now passes (unexport_list filtering)
         "export-dynamic",          // -export_dynamic
         "merge-scope",             // visibility merging
         "hidden-l",                // -hidden-l

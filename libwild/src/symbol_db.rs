@@ -372,6 +372,13 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                 .add_symbol(symbol, true)?;
         }
 
+        for symbol in args.force_unexport_symbol_names() {
+            symbol_db
+                .unexport_list
+                .get_or_insert_default()
+                .add_symbol(symbol, true)?;
+        }
+
         Ok(symbol_db)
     }
 

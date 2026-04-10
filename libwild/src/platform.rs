@@ -1108,6 +1108,11 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         &[]
     }
 
+    /// Symbols to forcibly hide from exports (Mach-O -unexported_symbol).
+    fn force_unexport_symbol_names(&self) -> &[String] {
+        &[]
+    }
+
     fn symbol_names_to_wrap(&self) -> &[String] {
         &[]
     }
