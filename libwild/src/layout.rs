@@ -3384,10 +3384,12 @@ fn should_emit_undefined_error<P: Platform>(
                 return false;
             }
             // Check if the symbol is provided by a linked dylib (via .tbd parsing).
-            // If so, it's not truly undefined.
-            if let Ok(name) = symbol_db.symbol_name(symbol_id) {
-                if symbol_db.args.dylib_symbols().contains(name.bytes()) {
-                    return false;
+            let dylib_syms = symbol_db.args.dylib_symbols();
+            if !dylib_syms.is_empty() {
+                if let Ok(name) = symbol_db.symbol_name(symbol_id) {
+                    if dylib_syms.contains(name.bytes()) {
+                        return false;
+                    }
                 }
             }
             true

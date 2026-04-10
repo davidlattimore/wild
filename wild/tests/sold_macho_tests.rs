@@ -140,15 +140,10 @@ fn should_ignore(name: &str) -> bool {
     // Tests that invoke ld64 directly (not through cc --ld-path)
     const NO_LD_PATH: &[&str] = &[];
 
-    // .tbd parsing features not yet supported
+    // .tbd parsing — most pass, $ld$add/$ld$hide need stricter undef checking
     const TBD: &[&str] = &[
-        // tbd now passes (framework .tbd with deferred resolution)
-        "tbd-add",          // $ld$add$ directive
-        "tbd-hide",         // $ld$hide$ directive
-        "tbd-install-name", // $ld$install_name$ directive
-        "tbd-previous",     // $ld$previous$ directive
-        // tbd-reexport now passes (multi-document .tbd)
-        // unkown-tbd-target now passes (unknown target arch in .tbd)
+        "tbd-add",  // $ld$add$ needs strict undefined error even with extra_dylibs
+        "tbd-hide", // $ld$hide$ needs strict undefined error even with extra_dylibs
     ];
 
     // Load command / output format checks

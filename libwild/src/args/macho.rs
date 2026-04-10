@@ -92,6 +92,8 @@ pub struct MachOArgs {
     pub(crate) search_dylibs_first: bool,
     /// Frameworks to resolve after all -F paths are collected.
     pending_frameworks: Vec<String>,
+    /// .tbd positional inputs to process after -platform_version is known.
+    pending_tbd_inputs: Vec<PathBuf>,
 }
 
 impl MachOArgs {
@@ -152,6 +154,7 @@ impl Default for MachOArgs {
             framework_search_paths: Vec::new(),
             search_dylibs_first: false,
             pending_frameworks: Vec::new(),
+            pending_tbd_inputs: Vec::new(),
         }
     }
 }
@@ -273,6 +276,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         }
 
         parse_one_arg(args, arg, &mut input, &mut modifier_stack)?;
+    }
+
+    // Resolve deferred .tbd inputs now that -platform_version is known.
+    let pending_tbds = std::mem::take(&mut args.pending_tbd_inputs);
+    for path in &pending_tbds {
+        handle_tbd_input(args, path)?;
     }
 
     // Resolve deferred framework links now that all -F paths are collected.
@@ -737,8 +746,14 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                         }
                         collect_tbd_symbols(&path, &mut args.dylib_symbols);
                     } else if ext == ".dylib" {
-                        let install = path.to_string_lossy().as_bytes().to_vec();
-                        args.add_dylib(install, dylib_kind);
+                        // Parse exports trie + install name from the dylib.
+                        handle_dylib_input(args, &path)?;
+                        // Override the load kind if a prefix modifier was used.
+                        if dylib_kind != DylibLoadKind::Normal {
+                            if let Some(last) = args.extra_dylibs.last_mut() {
+                                last.1 = dylib_kind;
+                            }
+                        }
                     } else {
                         args.common.inputs.push(Input {
                             spec: InputSpec::File(Box::from(path.as_path())),
@@ -769,7 +784,8 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     // and symbols, emit LC_LOAD_DYLIB) rather than passing through object pipeline.
     let path = Path::new(arg);
     if path.extension().map_or(false, |e| e == "tbd") {
-        handle_tbd_input(args, path)?;
+        // Defer: $ld$ directives depend on -platform_version which may come later.
+        args.pending_tbd_inputs.push(path.to_path_buf());
     } else if path.extension().map_or(false, |e| e == "dylib")
         || is_macho_dylib(path)
     {
@@ -820,7 +836,120 @@ fn parse_macho_version(s: &str) -> u32 {
     (major << 16) | (minor << 8) | patch
 }
 
-/// Collect exported symbols from a .tbd file into the given set.
+/// Collect exported symbols from a .tbd file, processing $ld$ linker directives.
+fn collect_tbd_symbols_with_directives(
+    path: &Path,
+    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    minos: Option<u32>,
+    install_name: &mut Option<Vec<u8>>,
+) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let records = match text_stub_library::parse_str(&content) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let target_version = minos.unwrap_or(0);
+    let mut hide_list = Vec::new();
+    for record in &records {
+        match record {
+            text_stub_library::TbdVersionedRecord::V4(v4) => {
+                let is_arm64 = |targets: &[String]| -> bool {
+                    targets.is_empty()
+                        || targets
+                            .iter()
+                            .any(|t| t.starts_with("arm64-") || t.starts_with("arm64e-"))
+                };
+                for exp in &v4.exports {
+                    if !is_arm64(&exp.targets) {
+                        continue;
+                    }
+                    for sym in exp.symbols.iter().chain(exp.weak_symbols.iter()) {
+                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                    }
+                }
+                for exp in &v4.re_exports {
+                    if !is_arm64(&exp.targets) {
+                        continue;
+                    }
+                    for sym in &exp.symbols {
+                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                    }
+                }
+            }
+            text_stub_library::TbdVersionedRecord::V3(v3) => {
+                for exp in &v3.exports {
+                    for sym in &exp.symbols {
+                        process_tbd_symbol(sym, symbols, target_version, install_name, &mut hide_list);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // Apply hide directives after all symbols are collected.
+    for sym in &hide_list {
+        symbols.remove(sym);
+    }
+}
+
+/// Process a single symbol from a .tbd, handling $ld$ linker directives.
+/// Returns Some(sym_name) for $ld$hide$ directives to remove in a second pass.
+fn process_tbd_symbol(
+    sym: &str,
+    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    target_version: u32,
+    install_name: &mut Option<Vec<u8>>,
+    hide_list: &mut Vec<Vec<u8>>,
+) {
+    if let Some(rest) = sym.strip_prefix("$ld$add$os") {
+        // $ld$add$os<ver>$_<sym> — add symbol if target >= ver
+        if let Some((ver_str, _real_sym)) = rest.split_once('$') {
+            let ver = parse_macho_version(ver_str);
+            if target_version >= ver {
+                if let Some(real) = rest.rsplit_once('$') {
+                    symbols.insert(real.1.as_bytes().to_vec());
+                }
+            }
+        }
+    } else if let Some(rest) = sym.strip_prefix("$ld$hide$os") {
+        // $ld$hide$os<ver>$_<sym> — hide symbol if target >= ver (deferred)
+        if let Some((ver_str, real_sym)) = rest.split_once('$') {
+            let ver = parse_macho_version(ver_str);
+            if target_version >= ver {
+                hide_list.push(real_sym.as_bytes().to_vec());
+            }
+        }
+    } else if let Some(rest) = sym.strip_prefix("$ld$install_name$os") {
+        // $ld$install_name$os<ver>$<new_name> — change install name if target >= ver
+        if let Some((ver_str, new_name)) = rest.split_once('$') {
+            let ver = parse_macho_version(ver_str);
+            if target_version >= ver {
+                *install_name = Some(new_name.as_bytes().to_vec());
+            }
+        }
+    } else if let Some(rest) = sym.strip_prefix("$ld$previous$") {
+        // $ld$previous$<install_name>$$<compat_ver>$<min_os>$<max_os>$$
+        // Use <install_name> when target is in [min_os, max_os)
+        let parts: Vec<&str> = rest.split('$').collect();
+        // Format: <name> "" <compat> <min> <max> ""
+        if parts.len() >= 5 {
+            let new_name = parts[0];
+            let min_os = parse_macho_version(parts[3]);
+            let max_os = parse_macho_version(parts[4]);
+            if target_version >= min_os && (max_os == 0 || target_version < max_os) {
+                *install_name = Some(new_name.as_bytes().to_vec());
+            }
+        }
+    } else {
+        // Regular symbol
+        symbols.insert(sym.as_bytes().to_vec());
+    }
+}
+
+/// Collect exported symbols from a .tbd file into the given set (no directive processing).
 fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<u8>>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
@@ -918,10 +1047,11 @@ fn is_macho_dylib(path: &Path) -> bool {
 
 /// Handle a .tbd file as a positional input: extract install-name and symbols, register as dylib dep.
 fn handle_tbd_input(args: &mut MachOArgs, path: &Path) -> Result {
-    if let Some(dylib_path) = parse_tbd_install_name(path) {
-        args.add_dylib(dylib_path, DylibLoadKind::Normal);
+    let mut install_name = parse_tbd_install_name(path);
+    collect_tbd_symbols_with_directives(path, &mut args.dylib_symbols, args.minos, &mut install_name);
+    if let Some(name) = install_name {
+        args.add_dylib(name, DylibLoadKind::Normal);
     }
-    collect_tbd_symbols(path, &mut args.dylib_symbols);
     Ok(())
 }
 
