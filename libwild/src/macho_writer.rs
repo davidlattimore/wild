@@ -349,6 +349,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
         }
     }
 
+    // Write deduplicated merged strings (e.g. __cstring) into the output.
+    write_merged_strings_macho(out, layout, mappings);
+
     // Validate: no two section data writes should overlap.
     if validate && !write_ranges.is_empty() {
         write_ranges.sort_by_key(|r| r.0);
@@ -1781,18 +1784,29 @@ fn apply_relocations(
                             let n_sect = sym.n_sect();
                             if n_sect > 0 {
                                 let sec_idx = n_sect as usize - 1;
-                                let sec_out = obj
+                                if let Some(sec_out) = obj
                                     .section_resolutions
                                     .get(sec_idx)
                                     .and_then(|r| r.address())
-                                    .unwrap_or(0);
-                                let sec_in = obj
-                                    .object
-                                    .sections
-                                    .get(sec_idx)
-                                    .map(|s| s.addr.get(le))
-                                    .unwrap_or(0);
-                                sec_out + sym.n_value(le).wrapping_sub(sec_in)
+                                {
+                                    let sec_in = obj
+                                        .object
+                                        .sections
+                                        .get(sec_idx)
+                                        .map(|s| s.addr.get(le))
+                                        .unwrap_or(0);
+                                    sec_out + sym.n_value(le).wrapping_sub(sec_in)
+                                } else if let Ok(Some(addr)) =
+                                    crate::string_merging::get_merged_string_output_address::<MachO>(
+                                        sym_idx, 0, &obj.object, &obj.sections,
+                                        &layout.merged_strings,
+                                        &layout.merged_string_start_addresses, false,
+                                    )
+                                {
+                                    addr
+                                } else {
+                                    0
+                                }
                             } else {
                                 0
                             }
@@ -1883,6 +1897,20 @@ fn apply_relocations(
                                 return Some(tls_offset);
                             }
                             return Some(result);
+                        }
+                        // Try merged string resolution (for __cstring etc.)
+                        if let Ok(Some(addr)) =
+                            crate::string_merging::get_merged_string_output_address::<MachO>(
+                                sym_idx,
+                                0,
+                                &obj.object,
+                                &obj.sections,
+                                &layout.merged_strings,
+                                &layout.merged_string_start_addresses,
+                                false,
+                            )
+                        {
+                            return Some(addr);
                         }
                         // Section resolution missing — fall back to TDATA/TBSS for TLS.
                         use object::read::macho::Section as _;
@@ -2256,6 +2284,37 @@ struct SegmentMapping {
     vm_start: u64,
     vm_end: u64,
     file_offset: u64,
+}
+
+/// Write deduplicated merged string data (from __cstring etc.) into the output buffer.
+fn write_merged_strings_macho(
+    out: &mut [u8],
+    layout: &Layout<'_, MachO>,
+    mappings: &[SegmentMapping],
+) {
+    layout.merged_strings.for_each(|section_id, merged| {
+        if merged.len() == 0 {
+            return;
+        }
+        let bucket_addrs = layout.merged_string_start_addresses.bucket_addresses(section_id);
+        for (i, bucket) in merged.buckets.iter().enumerate() {
+            let vm_addr = bucket_addrs[i];
+            if vm_addr == 0 {
+                continue;
+            }
+            let Some(file_offset) = vm_addr_to_file_offset(vm_addr, mappings) else {
+                continue;
+            };
+            let mut pos = file_offset;
+            for string in &bucket.strings {
+                let end = pos + string.len();
+                if end <= out.len() {
+                    out[pos..end].copy_from_slice(string);
+                }
+                pos = end;
+            }
+        }
+    });
 }
 
 fn vm_addr_to_file_offset(vm_addr: u64, mappings: &[SegmentMapping]) -> Option<usize> {

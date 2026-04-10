@@ -1115,6 +1115,13 @@ impl MergedStringStartAddresses {
         });
         Self { addresses }
     }
+
+    pub(crate) fn bucket_addresses(
+        &self,
+        section_id: crate::output_section_id::OutputSectionId,
+    ) -> &[u64; MERGE_STRING_BUCKETS] {
+        self.addresses.get(section_id)
+    }
 }
 
 impl StringMergeInputSection<'_> {
