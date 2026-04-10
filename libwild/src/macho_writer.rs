@@ -18,6 +18,7 @@ const PAGEZERO_SIZE: u64 = 0x1_0000_0000;
 
 const MH_MAGIC_64: u32 = 0xfeed_facf;
 const MH_EXECUTE: u32 = 2;
+const MH_BUNDLE: u32 = 8;
 const MH_PIE: u32 = 0x0020_0000;
 const MH_TWOLEVEL: u32 = 0x80;
 const MH_DYLDLINK: u32 = 4;
@@ -3009,6 +3010,7 @@ fn write_headers(
     let dylib_cmd_size = align8((24 + LIBSYSTEM_PATH.len() + 1) as u32);
 
     let is_dylib = layout.symbol_db.args.is_dylib;
+    let is_bundle = layout.symbol_db.args.is_bundle;
     let install_name = if is_dylib {
         if let Some(ref name) = layout.symbol_db.args.install_name {
             String::from_utf8_lossy(name).into_owned()
@@ -3166,7 +3168,7 @@ fn write_headers(
     }
     if is_dylib {
         add_cmd(&mut ncmds, &mut cmdsize, id_dylib_cmd_size); // LC_ID_DYLIB
-    } else {
+    } else if !is_bundle {
         add_cmd(&mut ncmds, &mut cmdsize, 24); // LC_MAIN
     }
     if !is_dylib {
@@ -3203,7 +3205,13 @@ fn write_headers(
         add_cmd(&mut ncmds, &mut cmdsize, 16); // LC_DATA_IN_CODE
     }
 
-    let filetype = if is_dylib { 6u32 } else { MH_EXECUTE }; // MH_DYLIB = 6
+    let filetype = if is_dylib {
+        6u32 // MH_DYLIB
+    } else if is_bundle {
+        MH_BUNDLE
+    } else {
+        MH_EXECUTE
+    };
     w.u32(MH_MAGIC_64);
     w.u32(CPU_TYPE_ARM64);
     w.u32(CPU_SUBTYPE_ARM64_ALL);
@@ -3394,13 +3402,14 @@ fn write_headers(
         w.u32(0x0D);
         w.u32(id_dylib_cmd_size);
         w.u32(24);
-        w.u32(2);
-        w.u32(0x01_0000);
-        w.u32(0x01_0000);
+        w.u32(2); // timestamp
+        w.u32(layout.symbol_db.args.current_version);
+        w.u32(layout.symbol_db.args.compatibility_version);
         w.bytes(install_name.as_bytes());
         w.u8(0);
         w.pad8();
-    } else {
+    } else if !is_bundle {
+        // Bundles have neither LC_MAIN nor LC_ID_DYLIB
         w.u32(LC_MAIN);
         w.u32(24);
         w.u64(entry_offset as u64);

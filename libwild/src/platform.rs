@@ -1139,6 +1139,11 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
+    /// Path to a list of symbols that should NOT be exported (Mach-O -unexported_symbols_list).
+    fn unexport_list_path(&self) -> Option<&Path> {
+        None
+    }
+
     fn should_gc_sections(&self) -> bool {
         true
     }

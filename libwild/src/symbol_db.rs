@@ -89,6 +89,7 @@ pub struct SymbolDb<'data, P: Platform> {
 
     pub(crate) version_script: VersionScript<'data>,
     pub(crate) export_list: Option<ExportList<'data>>,
+    pub(crate) unexport_list: Option<ExportList<'data>>,
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
@@ -335,6 +336,11 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             .map(ExportList::parse)
             .transpose()?;
 
+        let unexport_list = auxiliary
+            .unexport_list_data
+            .map(ExportList::parse)
+            .transpose()?;
+
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();
         buckets.resize_with(num_buckets, || SymbolBucket {
@@ -353,6 +359,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             start_stop_symbol_names: Default::default(),
             version_script,
             export_list,
+            unexport_list,
             entry: None,
             output_kind,
             herd,

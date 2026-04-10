@@ -15,9 +15,32 @@ pub(crate) struct ExportList<'data>(MatchRules<'data>);
 
 impl<'data> ExportList<'data> {
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<Self> {
-        parse_export_list
-            .parse(BStr::new(data.raw))
-            .map_err(|err| error!("Failed to parse symbol export list:\n{err}"))
+        // Detect format: ELF dynamic-list starts with `{`, Mach-O is one symbol per line.
+        let trimmed = data.raw.iter().copied()
+            .find(|b| !b.is_ascii_whitespace());
+        if trimmed == Some(b'{') {
+            parse_export_list
+                .parse(BStr::new(data.raw))
+                .map_err(|err| error!("Failed to parse symbol export list:\n{err}"))
+        } else {
+            Self::parse_one_per_line(data)
+        }
+    }
+
+    /// Parse Mach-O style symbol list: one symbol per line, `#` comments.
+    fn parse_one_per_line(data: ScriptData<'data>) -> Result<Self> {
+        let mut out = Self::default();
+        for line in std::str::from_utf8(data.raw)
+            .map_err(|e| error!("Symbol list is not valid UTF-8: {e}"))?
+            .lines()
+        {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            out.add_symbol(line, true)?;
+        }
+        Ok(out)
     }
 
     // Based on Version Script counterpart

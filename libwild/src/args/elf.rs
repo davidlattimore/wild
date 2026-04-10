@@ -123,13 +123,7 @@ pub struct ElfArgs {
     rpath_set: IndexSet<String>,
 }
 
-#[derive(Debug)]
-pub(crate) enum Strip {
-    Nothing,
-    Debug,
-    All,
-    Retain(HashSet<Vec<u8>>),
-}
+use super::Strip;
 
 #[derive(Debug)]
 pub(crate) enum BuildIdOption {

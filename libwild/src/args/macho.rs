@@ -6,6 +6,7 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
+use crate::args::Strip;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::platform;
@@ -22,6 +23,7 @@ pub struct MachOArgs {
     pub(crate) syslibroot: Option<Box<Path>>,
     pub(crate) entry_symbol: Option<Vec<u8>>,
     pub(crate) explicit_entry: bool,
+    pub(crate) strip: Strip,
     pub(crate) strip_locals: bool,
     pub(crate) is_dylib: bool,
     pub(crate) is_relocatable: bool,
@@ -56,6 +58,22 @@ pub struct MachOArgs {
     pub(crate) random_uuid: bool,
     /// Additional empty sections from -add_empty_section (segname, sectname).
     pub(crate) empty_sections: Vec<([u8; 16], [u8; 16])>,
+    /// Whether -export_dynamic was passed.
+    pub(crate) export_dynamic: bool,
+    /// Whether -dead_strip was passed (GC unreachable sections).
+    pub(crate) gc_sections: bool,
+    /// Path to exported symbols list file (-exported_symbols_list).
+    pub(crate) exported_symbols_list: Option<PathBuf>,
+    /// Path to unexported symbols list file (-unexported_symbols_list).
+    pub(crate) unexported_symbols_list: Option<PathBuf>,
+    /// Dylib compatibility version (packed u32 from -compatibility_version).
+    pub(crate) compatibility_version: u32,
+    /// Dylib current version (packed u32 from -current_version).
+    pub(crate) current_version: u32,
+    /// Whether this is a bundle (MH_BUNDLE) output.
+    pub(crate) is_bundle: bool,
+    /// Sections with embedded file content from -sectcreate (segname, sectname, data).
+    pub(crate) sectcreate: Vec<([u8; 16], [u8; 16], Vec<u8>)>,
 }
 
 impl MachOArgs {
@@ -77,6 +95,7 @@ impl Default for MachOArgs {
             syslibroot: None,
             entry_symbol: Some(b"_main".to_vec()),
             explicit_entry: false,
+            strip: Strip::Nothing,
             strip_locals: false,
             is_dylib: false,
             is_relocatable: false,
@@ -95,6 +114,14 @@ impl Default for MachOArgs {
             no_uuid: false,
             random_uuid: false,
             empty_sections: Vec::new(),
+            export_dynamic: false,
+            gc_sections: false,
+            exported_symbols_list: None,
+            unexported_symbols_list: None,
+            compatibility_version: 0x01_0000, // 1.0.0
+            current_version: 0x01_0000,       // 1.0.0
+            is_bundle: false,
+            sectcreate: Vec::new(),
         }
     }
 }
@@ -109,10 +136,10 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_strip_debug(&self) -> bool {
-        false
+        !self.is_relocatable && matches!(self.strip, Strip::All | Strip::Debug)
     }
     fn should_strip_all(&self) -> bool {
-        false
+        !self.is_relocatable && matches!(self.strip, Strip::All)
     }
 
     fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
@@ -139,10 +166,22 @@ impl platform::Args for MachOArgs {
         &mut self.common
     }
     fn should_export_all_dynamic_symbols(&self) -> bool {
-        false
+        self.export_dynamic
     }
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
         false
+    }
+
+    fn should_gc_sections(&self) -> bool {
+        self.gc_sections
+    }
+
+    fn export_list_path(&self) -> Option<&Path> {
+        self.exported_symbols_list.as_deref()
+    }
+
+    fn unexport_list_path(&self) -> Option<&Path> {
+        self.unexported_symbols_list.as_deref()
     }
 
     fn force_undefined_symbol_names(&self) -> &[String] {
@@ -162,7 +201,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_output_executable(&self) -> bool {
-        !self.is_dylib && !self.is_relocatable
+        !self.is_dylib && !self.is_bundle && !self.is_relocatable
     }
 
     fn should_output_partial_object(&self) -> bool {
@@ -256,15 +295,35 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             }
             return Ok(());
         }
+        "-exported_symbols_list" => {
+            if let Some(val) = input.next() {
+                args.exported_symbols_list = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-unexported_symbols_list" => {
+            if let Some(val) = input.next() {
+                args.unexported_symbols_list = Some(PathBuf::from(val.as_ref()));
+            }
+            return Ok(());
+        }
+        "-compatibility_version" => {
+            if let Some(val) = input.next() {
+                args.compatibility_version = parse_macho_version(val.as_ref());
+            }
+            return Ok(());
+        }
+        "-current_version" => {
+            if let Some(val) = input.next() {
+                args.current_version = parse_macho_version(val.as_ref());
+            }
+            return Ok(());
+        }
         "-lto_library"
         | "-mllvm"
         | "-headerpad"
-        | "-compatibility_version"
-        | "-current_version"
         | "-object_path_lto"
         | "-order_file"
-        | "-exported_symbols_list"
-        | "-unexported_symbols_list"
         | "-framework"
         | "-weak_framework"
         | "-weak_library"
@@ -287,9 +346,21 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         // -sectcreate takes 3 arguments: segname sectname file
         "-sectcreate" => {
-            input.next(); // segname
-            input.next(); // sectname
-            input.next(); // file
+            if let (Some(seg), Some(sect), Some(file)) =
+                (input.next(), input.next(), input.next())
+            {
+                let mut segname = [0u8; 16];
+                let mut sectname = [0u8; 16];
+                let seg_bytes = seg.as_ref().as_bytes();
+                let sect_bytes = sect.as_ref().as_bytes();
+                segname[..seg_bytes.len().min(16)]
+                    .copy_from_slice(&seg_bytes[..seg_bytes.len().min(16)]);
+                sectname[..sect_bytes.len().min(16)]
+                    .copy_from_slice(&sect_bytes[..sect_bytes.len().min(16)]);
+                let data = std::fs::read(file.as_ref())
+                    .with_context(|| format!("Failed to read -sectcreate file `{}`", file.as_ref()))?;
+                args.sectcreate.push((segname, sectname, data));
+            }
             return Ok(());
         }
         // -add_empty_section takes 2 arguments: segname sectname
@@ -342,15 +413,28 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             input.next();
             return Ok(());
         }
+        "-S" => {
+            args.strip = Strip::Debug;
+            return Ok(());
+        }
+        "-demangle" => {
+            args.common.demangle = true;
+            return Ok(());
+        }
+        "-export_dynamic" => {
+            args.export_dynamic = true;
+            return Ok(());
+        }
+        "-dead_strip" => {
+            args.gc_sections = true;
+            return Ok(());
+        }
         // No-argument flags, ignored
-        "-demangle"
-        | "-dynamic"
+        "-dynamic"
         | "-no_deduplicate"
         | "-no_compact_unwind"
-        | "-dead_strip"
         | "-dead_strip_dylibs"
         | "-headerpad_max_install_names"
-        | "-export_dynamic"
         | "-application_extension"
         | "-no_objc_category_merging"
         | "-mark_dead_strippable_dylib"
@@ -364,11 +448,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-pie"
         | "-no_pie"
         | "-execute"
-        | "-bundle"
         | "-no_fixup_chains"
         | "-fixup_chains"
         | "-adhoc_codesign"
-        | "-S"
         | "-w"
         | "-Z"
         | "-data_in_code_info"
@@ -388,6 +470,11 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-dylib" | "-dynamiclib" => {
             args.is_dylib = true;
             args.entry_symbol = None; // dylibs have no entry point
+            return Ok(());
+        }
+        "-bundle" => {
+            args.is_bundle = true;
+            args.entry_symbol = None; // bundles have no entry point
             return Ok(());
         }
         "-x" => {

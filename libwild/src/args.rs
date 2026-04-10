@@ -207,6 +207,14 @@ pub enum CounterKind {
     L1dMiss,
 }
 
+#[derive(Debug)]
+pub(crate) enum Strip {
+    Nothing,
+    Debug,
+    All,
+    Retain(HashSet<Vec<u8>>),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelocationModel {
     NonRelocatable,

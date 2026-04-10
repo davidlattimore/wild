@@ -239,6 +239,7 @@ struct LoadedLinkerScript<'data> {
 pub(crate) struct AuxiliaryFiles<'data> {
     pub(crate) version_script_data: Option<ScriptData<'data>>,
     pub(crate) export_list_data: Option<ScriptData<'data>>,
+    pub(crate) unexport_list_data: Option<ScriptData<'data>>,
 }
 
 impl<'data> AuxiliaryFiles<'data> {
@@ -263,6 +264,10 @@ impl<'data> AuxiliaryFiles<'data> {
                 .transpose()?,
             export_list_data: args
                 .export_list_path()
+                .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
+                .transpose()?,
+            unexport_list_data: args
+                .unexport_list_path()
                 .map(|path| read_script_data(&resolve_script_path(path), inputs_arena))
                 .transpose()?,
         })
