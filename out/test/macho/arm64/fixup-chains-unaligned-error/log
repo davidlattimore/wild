@@ -1,0 +1,15 @@
+wild: error: undefined symbol: out/test/macho/arm64/fixup-chains-unaligned-error/a.o: bar
+clang: error: linker command failed with exit code 255 (use -v to see invocation)
+Apple clang version 17.0.0 (clang-1700.6.4.2)
+Target: arm64-apple-darwin25.4.0
+Thread model: posix
+InstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+clang: note: diagnostic msg: 
+********************
+
+PLEASE ATTACH THE FOLLOWING FILES TO THE BUG REPORT:
+Linker snapshot containing input(s) and associated run script(s) are located at:
+clang: note: diagnostic msg: /var/folders/_y/z1j7px9s3gg7252d4h_mrl5r0000gn/T/linker-crash-21e54e
+clang: note: diagnostic msg: 
+
+********************

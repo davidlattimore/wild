@@ -1124,7 +1124,10 @@ impl platform::Platform for MachO {
                     let in_dylib = sym_name.map_or(false, |n| {
                         resources.symbol_db.args.dylib_symbols.contains(n.bytes())
                     });
-                    if !in_dylib {
+                    // _objc_msgSend$<selector> stubs are synthesized by the linker.
+                    let is_objc_stub = sym_name
+                        .map_or(false, |n| n.bytes().starts_with(b"_objc_msgSend$"));
+                    if !in_dylib && !is_objc_stub {
                         let sym_display = resources.symbol_db.symbol_name_for_display(symbol_id);
                         resources.report_error(crate::error!(
                             "undefined symbol: {}: {}",

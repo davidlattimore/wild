@@ -1807,6 +1807,20 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
             continue;
         };
 
+        let symbol_id = SymbolId::from_usize(sym_idx);
+        let name = match layout.symbol_db.symbol_name(symbol_id) {
+            Ok(n) => n.bytes().to_vec(),
+            Err(_) => b"<unknown>".to_vec(),
+        };
+        let is_objc_stub = name.starts_with(b"_objc_msgSend$");
+
+        if is_objc_stub {
+            // ObjC stubs: the 12-byte stub calls _objc_msgSend via GOT.
+            // The selector isn't loaded in x1 (runtime does it via selref).
+            // For now, just bind to _objc_msgSend — a full implementation
+            // would synthesize 32-byte stubs with selector loading.
+        }
+
         if let Some(plt_file_off) = vm_addr_to_file_offset(plt_addr, mappings) {
             if plt_file_off + 12 <= out.len() {
                 A::write_plt_entry(
@@ -1819,14 +1833,15 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
 
         if let Some(got_file_off) = vm_addr_to_file_offset(got_addr, mappings) {
             let import_index = imports.len() as u32;
-            let symbol_id = SymbolId::from_usize(sym_idx);
-            let name = match layout.symbol_db.symbol_name(symbol_id) {
-                Ok(n) => n.bytes().to_vec(),
-                Err(_) => b"<unknown>".to_vec(),
+            // For ObjC stubs, bind the GOT entry to _objc_msgSend.
+            let import_name = if is_objc_stub {
+                b"_objc_msgSend".to_vec()
+            } else {
+                name.clone()
             };
-            let weak = layout.symbol_db.is_weak_ref(symbol_id);
+            let weak = if is_objc_stub { false } else { layout.symbol_db.is_weak_ref(symbol_id) };
             imports.push(ImportEntry {
-                name,
+                name: import_name,
                 lib_ordinal: lib_ordinal_for_symbol(has_extra_dylibs, layout.symbol_db.args.flat_namespace),
                 weak_import: weak,
             });
@@ -1838,6 +1853,50 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
         }
     }
     Ok(())
+}
+
+/// Write a 32-byte ObjC msgSend stub:
+///   adrp x1, selref@PAGE
+///   ldr  x1, [x1, selref@PAGEOFF]
+///   adrp x16, msgSend_got@PAGE
+///   ldr  x16, [x16, msgSend_got@PAGEOFF]
+///   br   x16
+///   brk  #1 (x3 padding)
+fn write_objc_stub(buf: &mut [u8], selref_addr: u64, msgsend_got_addr: u64, stub_addr: u64) {
+    // adrp x1, selref@PAGE
+    let stub_page = stub_addr & !0xFFF;
+    let sel_page = selref_addr & !0xFFF;
+    let sel_delta = sel_page.wrapping_sub(stub_page) as i64 >> 12;
+    let immlo = ((sel_delta & 0x3) as u32) << 29;
+    let immhi = (((sel_delta >> 2) & 0x7_FFFF) as u32) << 5;
+    let adrp1 = 0x9000_0001u32 | immhi | immlo; // adrp x1
+    buf[0..4].copy_from_slice(&adrp1.to_le_bytes());
+
+    // ldr x1, [x1, selref@PAGEOFF]
+    let sel_off = ((selref_addr & 0xFFF) >> 3) as u32;
+    let ldr1 = 0xF940_0021u32 | (sel_off << 10);
+    buf[4..8].copy_from_slice(&ldr1.to_le_bytes());
+
+    // adrp x16, msgSend_got@PAGE
+    let got_page = msgsend_got_addr & !0xFFF;
+    let got_delta = got_page.wrapping_sub((stub_addr + 8) & !0xFFF) as i64 >> 12;
+    let immlo2 = ((got_delta & 0x3) as u32) << 29;
+    let immhi2 = (((got_delta >> 2) & 0x7_FFFF) as u32) << 5;
+    let adrp2 = 0x9000_0010u32 | immhi2 | immlo2; // adrp x16
+    buf[8..12].copy_from_slice(&adrp2.to_le_bytes());
+
+    // ldr x16, [x16, msgSend_got@PAGEOFF]
+    let got_off = ((msgsend_got_addr & 0xFFF) >> 3) as u32;
+    let ldr2 = 0xF940_0210u32 | (got_off << 10);
+    buf[12..16].copy_from_slice(&ldr2.to_le_bytes());
+
+    // br x16
+    buf[16..20].copy_from_slice(&0xD61F_0200u32.to_le_bytes());
+
+    // Padding with brk #1
+    for i in (20..32).step_by(4) {
+        buf[i..i + 4].copy_from_slice(&0xD420_0020u32.to_le_bytes());
+    }
 }
 
 /// Fill GOT entries with target symbol addresses (for non-import symbols).
