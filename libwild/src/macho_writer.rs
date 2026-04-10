@@ -3296,7 +3296,7 @@ fn write_headers(
     let extra_dylibs = &layout.symbol_db.args.extra_dylibs;
     let extra_dylib_sizes: Vec<u32> = extra_dylibs
         .iter()
-        .map(|p| align8(24 + p.len() as u32 + 1))
+        .map(|(p, _)| align8(24 + p.len() as u32 + 1))
         .collect();
     for &sz in &extra_dylib_sizes {
         add_cmd(&mut ncmds, &mut cmdsize, sz);
@@ -3553,8 +3553,14 @@ fn write_headers(
     w.u8(0);
     w.pad8();
 
-    for (i, dylib_path) in extra_dylibs.iter().enumerate() {
-        w.u32(LC_LOAD_DYLIB);
+    for (i, (dylib_path, kind)) in extra_dylibs.iter().enumerate() {
+        use crate::args::macho::DylibLoadKind;
+        let cmd = match kind {
+            DylibLoadKind::Normal => LC_LOAD_DYLIB,
+            DylibLoadKind::Weak => 0x1800_0018,   // LC_LOAD_WEAK_DYLIB
+            DylibLoadKind::Reexport => 0x8000_001F, // LC_REEXPORT_DYLIB
+        };
+        w.u32(cmd);
         w.u32(extra_dylib_sizes[i]);
         w.u32(24);
         w.u32(2);

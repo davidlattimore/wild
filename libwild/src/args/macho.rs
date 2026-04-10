@@ -14,6 +14,14 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// What kind of LC_LOAD_* command to emit for a dylib dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DylibLoadKind {
+    Normal,     // LC_LOAD_DYLIB
+    Weak,       // LC_LOAD_WEAK_DYLIB
+    Reexport,   // LC_REEXPORT_DYLIB
+}
+
 #[derive(Debug)]
 pub struct MachOArgs {
     pub(crate) common: super::CommonArgs,
@@ -29,8 +37,8 @@ pub struct MachOArgs {
     pub(crate) is_relocatable: bool,
     #[allow(dead_code)]
     pub(crate) install_name: Option<Vec<u8>>,
-    /// Additional dylibs to emit LC_LOAD_DYLIB for (from -l flags resolving to .tbd stubs).
-    pub(crate) extra_dylibs: Vec<Vec<u8>>,
+    /// Additional dylibs to emit load commands for (from -l flags resolving to .tbd/.dylib).
+    pub(crate) extra_dylibs: Vec<(Vec<u8>, DylibLoadKind)>,
     /// Symbols to force as undefined (-u flag), triggering archive member loading.
     pub(crate) force_undefined: Vec<String>,
     /// Symbols exported by linked dylibs (from .tbd parsing). Used to distinguish
@@ -90,6 +98,13 @@ impl MachOArgs {
             common: CommonArgs::from_env()?,
             ..Default::default()
         })
+    }
+
+    /// Add a dylib dependency if not already present (by install name).
+    fn add_dylib(&mut self, name: Vec<u8>, kind: DylibLoadKind) {
+        if !self.extra_dylibs.iter().any(|(n, _)| n == &name) {
+            self.extra_dylibs.push((name, kind));
+        }
     }
 }
 
@@ -635,13 +650,17 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
     }
 
     // Prefix link flags: -needed-l<name>, -weak-l<name>, -reexport-l<name>, -hidden-l<name>
-    // These are variations of -l with different load command semantics.
-    // For now, treat them all as regular -l (we always emit LC_LOAD_DYLIB).
-    let lib_from_prefix = arg
-        .strip_prefix("-needed-l")
-        .or_else(|| arg.strip_prefix("-weak-l"))
-        .or_else(|| arg.strip_prefix("-reexport-l"))
-        .or_else(|| arg.strip_prefix("-hidden-l"));
+    let mut dylib_kind = DylibLoadKind::Normal;
+    let lib_from_prefix = if let Some(name) = arg.strip_prefix("-weak-l") {
+        dylib_kind = DylibLoadKind::Weak;
+        Some(name)
+    } else if let Some(name) = arg.strip_prefix("-reexport-l") {
+        dylib_kind = DylibLoadKind::Reexport;
+        Some(name)
+    } else {
+        arg.strip_prefix("-needed-l")
+            .or_else(|| arg.strip_prefix("-hidden-l"))
+    };
 
     // -l<name> (link library) -- must come after -lto_library check above
     let lib_name = lib_from_prefix.or_else(|| arg.strip_prefix("-l"));
@@ -701,16 +720,12 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 if path.exists() {
                     if ext == ".tbd" {
                         if let Some(dylib_path) = parse_tbd_install_name(&path) {
-                            if !args.extra_dylibs.contains(&dylib_path) {
-                                args.extra_dylibs.push(dylib_path);
-                            }
+                            args.add_dylib(dylib_path, dylib_kind);
                         }
                         collect_tbd_symbols(&path, &mut args.dylib_symbols);
                     } else if ext == ".dylib" {
                         let install = path.to_string_lossy().as_bytes().to_vec();
-                        if !args.extra_dylibs.contains(&install) {
-                            args.extra_dylibs.push(install);
-                        }
+                        args.add_dylib(install, dylib_kind);
                     } else {
                         args.common.inputs.push(Input {
                             spec: InputSpec::File(Box::from(path.as_path())),
@@ -854,20 +869,15 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
         let tbd_path = fw_dir.join(format!("{name}.tbd"));
         if tbd_path.exists() {
             if let Some(dylib_path) = parse_tbd_install_name(&tbd_path) {
-                if !args.extra_dylibs.contains(&dylib_path) {
-                    args.extra_dylibs.push(dylib_path);
-                }
+                args.add_dylib(dylib_path, DylibLoadKind::Normal);
             }
             collect_tbd_symbols(&tbd_path, &mut args.dylib_symbols);
             return Ok(());
         }
         let dylib_path = fw_dir.join(name);
         if dylib_path.exists() {
-            // Use the absolute path as the install name (like -l does for .dylib)
             let install = dylib_path.to_string_lossy().as_bytes().to_vec();
-            if !args.extra_dylibs.contains(&install) {
-                args.extra_dylibs.push(install);
-            }
+            args.add_dylib(install, DylibLoadKind::Normal);
             return Ok(());
         }
     }
@@ -960,9 +970,7 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     }
 
     let name = install_name.unwrap_or_else(|| path.to_string_lossy().as_bytes().to_vec());
-    if !args.extra_dylibs.contains(&name) {
-        args.extra_dylibs.push(name);
-    }
+    args.add_dylib(name, DylibLoadKind::Normal);
     for sym in exported_symbols {
         args.dylib_symbols.insert(sym);
     }
