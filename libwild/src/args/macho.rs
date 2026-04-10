@@ -96,10 +96,14 @@ pub struct MachOArgs {
     no_default_search_paths: bool,
     /// Whether -dead_strip_dylibs was passed.
     pub(crate) dead_strip_dylibs: bool,
+    /// Whether -mark_dead_strippable_dylib was passed (sets MH_DEAD_STRIPPABLE_DYLIB).
+    pub(crate) mark_dead_strippable: bool,
     /// Maps symbol name → index in extra_dylibs (for dead-strip-dylibs tracking).
     pub(crate) dylib_symbol_provenance: std::collections::HashMap<Vec<u8>, usize>,
     /// Indices of extra_dylibs that should not be dead-stripped (from -needed_framework/-needed-l).
     pub(crate) needed_dylib_indices: std::collections::HashSet<usize>,
+    /// Indices of extra_dylibs marked MH_DEAD_STRIPPABLE_DYLIB (auto-strip if unused).
+    pub(crate) auto_strip_dylib_indices: std::collections::HashSet<usize>,
     /// -oso_prefix: strip this prefix from OSO debug paths.
     pub(crate) oso_prefix: Option<String>,
     /// AST file paths from -add_ast_path (emitted as N_AST stab entries).
@@ -172,8 +176,10 @@ impl Default for MachOArgs {
             has_pagezero_size: false,
             no_default_search_paths: false,
             dead_strip_dylibs: false,
+            mark_dead_strippable: false,
             dylib_symbol_provenance: Default::default(),
             needed_dylib_indices: Default::default(),
+            auto_strip_dylib_indices: Default::default(),
             oso_prefix: None,
             ast_paths: Vec::new(),
             map_file: None,
@@ -581,6 +587,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.dead_strip_dylibs = true;
             return Ok(());
         }
+        "-mark_dead_strippable_dylib" => {
+            args.mark_dead_strippable = true;
+            return Ok(());
+        }
         "-search_dylibs_first" => {
             args.search_dylibs_first = true;
             return Ok(());
@@ -600,7 +610,6 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         | "-headerpad_max_install_names"
         | "-application_extension"
         | "-no_objc_category_merging"
-        | "-mark_dead_strippable_dylib"
         | "-ObjC"
         | "-no_implicit_dylibs"
         | "-search_paths_first"
@@ -1197,6 +1206,12 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     let mut install_name: Option<Vec<u8>> = None;
     let mut exported_symbols: Vec<Vec<u8>> = Vec::new();
     let mut reexported_dylib_paths: Vec<String> = Vec::new();
+    let mh_flags = if data.len() >= 28 {
+        u32::from_le_bytes(data[24..28].try_into().unwrap())
+    } else {
+        0
+    };
+    let is_dead_strippable = (mh_flags & 0x0040_0000) != 0;
 
     if data.len() >= 32 {
         let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
@@ -1274,6 +1289,11 @@ fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
     for sym in &exported_symbols {
         args.dylib_symbols.insert(sym.clone());
         args.dylib_symbol_provenance.insert(sym.clone(), dylib_idx);
+    }
+
+    // Mark auto-strippable if MH_DEAD_STRIPPABLE_DYLIB is set.
+    if is_dead_strippable {
+        args.auto_strip_dylib_indices.insert(dylib_idx);
     }
 
     // Follow LC_REEXPORT_DYLIB chains recursively.

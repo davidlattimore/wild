@@ -3516,8 +3516,9 @@ fn write_headers(
     // Filter extra_dylibs when -dead_strip_dylibs: only keep dylibs with referenced symbols.
     let all_extra_dylibs = &layout.symbol_db.args.extra_dylibs;
     let filtered_extra: Vec<&(Vec<u8>, crate::args::macho::DylibLoadKind)>;
+    let has_auto_strip = !layout.symbol_db.args.auto_strip_dylib_indices.is_empty();
     let extra_dylibs: &[&(Vec<u8>, crate::args::macho::DylibLoadKind)] =
-        if layout.symbol_db.args.dead_strip_dylibs {
+        if layout.symbol_db.args.dead_strip_dylibs || has_auto_strip {
             // Find which dylib indices have at least one referenced symbol.
             let mut used_indices = std::collections::HashSet::new();
             // Check which symbols from the symbol resolutions are from dylibs.
@@ -3538,8 +3539,11 @@ fn write_headers(
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| {
-                    used_indices.contains(i)
-                        || layout.symbol_db.args.needed_dylib_indices.contains(i)
+                    let is_used = used_indices.contains(i);
+                    let is_needed = layout.symbol_db.args.needed_dylib_indices.contains(i);
+                    let should_strip = layout.symbol_db.args.dead_strip_dylibs
+                        || layout.symbol_db.args.auto_strip_dylib_indices.contains(i);
+                    is_needed || is_used || !should_strip
                 })
                 .map(|(_, d)| d)
                 .collect();
@@ -3593,8 +3597,11 @@ fn write_headers(
     w.u32(cmdsize);
     let mut flags = MH_PIE | MH_TWOLEVEL | MH_DYLDLINK;
     if has_tlv {
-        flags |= 0x0080_0000;
-    } // MH_HAS_TLV_DESCRIPTORS
+        flags |= 0x0080_0000; // MH_HAS_TLV_DESCRIPTORS
+    }
+    if layout.symbol_db.args.mark_dead_strippable {
+        flags |= 0x0040_0000; // MH_DEAD_STRIPPABLE_DYLIB
+    }
     w.u32(flags);
     w.u32(0);
 

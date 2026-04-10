@@ -111,7 +111,7 @@ fn should_ignore(name: &str) -> bool {
         "fixup-chains-addend",   // links dylib + object (fixup chains)
         "fixup-chains-addend64", // links dylib + object (fixup chains)
         // weak-def-dylib now passes
-        "mark-dead-strippable-dylib", // links against dylib (dead_strip_dylibs)
+        // mark-dead-strippable-dylib now passes (MH_DEAD_STRIPPABLE_DYLIB + auto-strip)
     ];
 
     // Validation/correctness bugs in Wild to fix
