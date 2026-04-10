@@ -373,6 +373,7 @@ struct RebaseFixup {
 struct BindFixup {
     file_offset: usize,
     import_index: u32,
+    addend: i64,
 }
 
 /// An imported symbol name and its dylib ordinal.
@@ -623,6 +624,9 @@ fn write_macho<A: Arch<Platform = MachO>>(
         // Don't filter bind fixups for __thread_vars init pointers —
         // those ARE legitimate (bind to __tlv_bootstrap).
         // Only filter rebase fixups for key/offset fields.
+        // When using DYLD_CHAINED_IMPORT_ADDEND format, addend is in the
+        // import table, not in the pointer. Only encode 8-bit inline addend
+        // for format 1.
         let encoded = (1u64 << 63) | (f.import_index as u64 & 0xFF_FFFF);
         all_data_fixups.push((f.file_offset, encoded));
     }
@@ -680,11 +684,13 @@ fn write_macho<A: Arch<Platform = MachO>>(
         0
     };
 
+    let has_addends = bind_fixups.iter().any(|f| f.addend != 0);
+    let import_entry_size = if has_addends { 8u32 } else { 4u32 };
     let cf_data_size = if !has_fixups {
         (32 + 4 + 4 * seg_count + 8).max(48)
     } else {
         let seg_starts_size = 22 + 2 * page_count;
-        let imports_size = 4 * n_imports;
+        let imports_size = import_entry_size * n_imports;
         32 + starts_in_image_size + seg_starts_size + imports_size + symbols_pool.len() as u32
     };
 
@@ -762,6 +768,14 @@ fn write_macho<A: Arch<Platform = MachO>>(
         } else {
             let ordinals: Vec<u8> = imports.iter().map(|e| e.lib_ordinal).collect();
             let weak_flags: Vec<bool> = imports.iter().map(|e| e.weak_import).collect();
+            // Collect per-import addends for DYLD_CHAINED_IMPORT_ADDEND.
+            let mut import_addends: Vec<i32> = vec![0i32; imports.len()];
+            let has_addends = bind_fixups.iter().any(|f| f.addend != 0);
+            for f in &bind_fixups {
+                if f.addend != 0 && (f.import_index as usize) < import_addends.len() {
+                    import_addends[f.import_index as usize] = f.addend as i32;
+                }
+            }
             write_chained_fixups_header(
                 out,
                 cf_off as usize,
@@ -773,6 +787,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
                 &symbols_pool,
                 mappings,
                 layout.symbol_db.args.is_dylib,
+                if has_addends { Some(&import_addends) } else { None },
             )?;
             cf_off as usize + cf_data_size as usize
         }
@@ -1456,6 +1471,7 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
             bind_fixups.push(BindFixup {
                 file_offset: got_file_off,
                 import_index,
+                addend: 0,
             });
         }
     }
@@ -1509,6 +1525,7 @@ fn write_got_entries(
                     bind_fixups.push(BindFixup {
                         file_offset: file_off,
                         import_index,
+                        addend: 0,
                     });
                 }
             }
@@ -2278,6 +2295,7 @@ fn apply_relocations(
                         bind_fixups.push(BindFixup {
                             file_offset: patch_file_offset,
                             import_index,
+                            addend: target_addr as i64,
                         });
                     } else {
                         // Check if target is in TLS data — write offset, not rebase
@@ -2342,6 +2360,7 @@ fn write_chained_fixups_header(
     symbols_pool: &[u8],
     mappings: &[SegmentMapping],
     is_dylib: bool,
+    import_addends: Option<&[i32]>,
 ) -> Result {
     let has_data = mappings.len() > 1 && (mappings[1].vm_end > mappings[1].vm_start);
     let base_segs = if is_dylib { 2u32 } else { 3u32 };
@@ -2365,7 +2384,10 @@ fn write_chained_fixups_header(
     let seg_starts_offset_in_image = starts_in_image_size as u32;
 
     let imports_table_offset = starts_offset + starts_in_image_size as u32 + seg_starts_size as u32;
-    let imports_size = 4 * n_imports;
+    let imports_format = if import_addends.is_some() { 2u32 } else { 1u32 };
+    // Format 1: 4 bytes per import. Format 2: 4 + 4 (addend) = 8 bytes per import.
+    let import_entry_size = if imports_format == 2 { 8u32 } else { 4u32 };
+    let imports_size = import_entry_size * n_imports;
     let symbols_offset = imports_table_offset + imports_size;
 
     let w = &mut out[cf_offset..];
@@ -2375,7 +2397,7 @@ fn write_chained_fixups_header(
     w[8..12].copy_from_slice(&imports_table_offset.to_le_bytes());
     w[12..16].copy_from_slice(&symbols_offset.to_le_bytes());
     w[16..20].copy_from_slice(&n_imports.to_le_bytes());
-    w[20..24].copy_from_slice(&1u32.to_le_bytes());
+    w[20..24].copy_from_slice(&imports_format.to_le_bytes());
     w[24..28].copy_from_slice(&0u32.to_le_bytes());
 
     let si = starts_offset as usize;
@@ -2427,6 +2449,7 @@ fn write_chained_fixups_header(
     }
 
     let it = imports_table_offset as usize;
+    let entry_sz = import_entry_size as usize;
     for (i, &name_off) in import_name_offsets.iter().enumerate() {
         let ordinal = import_ordinals[i] as u32;
         let weak_bit = if import_weak.get(i).copied().unwrap_or(false) {
@@ -2435,7 +2458,13 @@ fn write_chained_fixups_header(
             0
         };
         let import_val: u32 = ordinal | weak_bit | ((name_off & 0x7F_FFFF) << 9);
-        w[it + i * 4..it + i * 4 + 4].copy_from_slice(&import_val.to_le_bytes());
+        w[it + i * entry_sz..it + i * entry_sz + 4].copy_from_slice(&import_val.to_le_bytes());
+        // Format 2: write 32-bit addend after each import entry.
+        if let Some(addends) = import_addends {
+            let addend = addends.get(i).copied().unwrap_or(0);
+            w[it + i * entry_sz + 4..it + i * entry_sz + 8]
+                .copy_from_slice(&addend.to_le_bytes());
+        }
     }
 
     let sp = symbols_offset as usize;
