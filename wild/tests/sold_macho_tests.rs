@@ -71,7 +71,7 @@ fn should_ignore(name: &str) -> bool {
         // needed-framework now passes (dead_strip_dylibs + needed)
         "weak-l",           // -weak-l
         // reexport-l now passes (recursive LC_REEXPORT_DYLIB chain tracing)
-        "reexport-library", // -reexport_library
+        // reexport-library now passes (symtab alignment + reexport_library)
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
         "install-name-loader-path",     // @loader_path

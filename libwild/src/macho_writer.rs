@@ -827,9 +827,9 @@ fn write_dylib_symtab(
     // Build section ranges from the already-written headers for n_sect lookup.
     let section_ranges = parse_section_ranges(out);
 
-    // Write nlist64 entries (16 bytes each). No alignment padding —
-    // LINKEDIT must be fully packed for strip(1) compatibility.
-    let symoff = start;
+    // Write nlist64 entries (16 bytes each).
+    // Align symtab start to 8 bytes (required by ld64 when consuming dylibs).
+    let symoff = (start + 7) & !7;
     let nsyms = entries.len();
     let mut pos = symoff;
     for (i, (_, value)) in entries.iter().enumerate() {
