@@ -25,3 +25,5 @@ fakes-debug/sde-cet-checker-out.txt
 .DS_Store
 *.rcgu.o
 .claude/settings.local.json
+out/
+ld64

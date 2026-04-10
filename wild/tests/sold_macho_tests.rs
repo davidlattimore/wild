@@ -91,7 +91,7 @@ fn should_ignore(name: &str) -> bool {
         // strip now passes (LINKEDIT packing + linker-signed codesign)
         // no-function-starts now passes
         // data-in-code-info now passes
-        "subsections-via-symbols", // -subsections_via_symbols
+        "subsections-via-symbols", // needs cached subsection map (O(n²) without)
         // add-ast-path now passes (N_AST stab entries from -add_ast_path)
         // add-empty-section now passes
         // pagezero-size2 now passes (error when used with -dylib)
