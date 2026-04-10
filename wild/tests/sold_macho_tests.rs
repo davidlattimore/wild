@@ -103,15 +103,15 @@ fn should_ignore(name: &str) -> bool {
     // Tests requiring LTO
     const LTO: &[&str] = &["lto", "lto-dead-strip-dylibs", "object-path-lto"];
 
-    // Tests that need linking against a .dylib (Wild can't yet consume dylib inputs)
+    // Tests that need linking against a .dylib
     const NEEDS_DYLIB_INPUT: &[&str] = &[
-        "dylib",                      // creates then links against dylib
+        // dylib now passes (dylib input consumption)
         "tls-dylib",                  // TLS across dylibs
-        "data-reloc",                 // links dylib + object
-        "fixup-chains-addend",        // links dylib + object
-        "fixup-chains-addend64",      // links dylib + object
-        "weak-def-dylib",             // weak defs from dylib
-        "mark-dead-strippable-dylib", // links against dylib
+        // data-reloc now passes
+        "fixup-chains-addend",        // links dylib + object (fixup chains)
+        "fixup-chains-addend64",      // links dylib + object (fixup chains)
+        // weak-def-dylib now passes
+        "mark-dead-strippable-dylib", // links against dylib (dead_strip_dylibs)
     ];
 
     // Validation/correctness bugs in Wild to fix
@@ -157,7 +157,7 @@ fn should_ignore(name: &str) -> bool {
         // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
         "version", // -current_version / -compatibility_version
-        "w",       // -w (suppress warnings)
+        "w",       // -w (needs -application_extension warning)
         "Z",       // -Z (no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
         "dead-strip-dylibs",  // -dead_strip_dylibs

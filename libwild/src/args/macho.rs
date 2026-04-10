@@ -736,13 +736,22 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         return Ok(());
     }
 
-    // Positional argument = input file
-    args.common.save_dir.handle_file(arg);
-    args.common.inputs.push(Input {
-        spec: InputSpec::File(Box::from(Path::new(arg))),
-        search_first: None,
-        modifiers: *modifier_stack.last().unwrap(),
-    });
+    // Positional argument = input file.
+    // Check if it's a dylib/bundle -- if so, treat like a .tbd (extract install name
+    // and symbols, emit LC_LOAD_DYLIB) rather than passing through object pipeline.
+    let path = Path::new(arg);
+    if path.extension().map_or(false, |e| e == "dylib")
+        || is_macho_dylib(path)
+    {
+        handle_dylib_input(args, path)?;
+    } else {
+        args.common.save_dir.handle_file(arg);
+        args.common.inputs.push(Input {
+            spec: InputSpec::File(Box::from(path)),
+            search_first: None,
+            modifiers: *modifier_stack.last().unwrap(),
+        });
+    }
 
     Ok(())
 }
@@ -864,4 +873,158 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
     }
     tracing::warn!("framework not found: {name}");
     Ok(())
+}
+
+/// Check if a file is a Mach-O dylib/bundle by reading its header.
+fn is_macho_dylib(path: &Path) -> bool {
+    let Ok(data) = std::fs::read(path) else {
+        return false;
+    };
+    if data.len() < 16 {
+        return false;
+    }
+    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    if magic != 0xfeed_facf {
+        return false;
+    }
+    let filetype = u32::from_le_bytes(data[12..16].try_into().unwrap());
+    matches!(filetype, 6 | 8) // MH_DYLIB | MH_BUNDLE
+}
+
+/// Handle a .dylib input: extract install name and exported symbols, register as dylib dep.
+fn handle_dylib_input(args: &mut MachOArgs, path: &Path) -> Result {
+    let data = std::fs::read(path)
+        .with_context(|| format!("Failed to read dylib `{}`", path.display()))?;
+    let le = object::Endianness::Little;
+
+    // Parse install name from LC_ID_DYLIB
+    let mut install_name: Option<Vec<u8>> = None;
+    let mut exported_symbols: Vec<Vec<u8>> = Vec::new();
+
+    if data.len() >= 32 {
+        let ncmds = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let mut offset = 32; // skip mach_header_64 (32 bytes)
+        for _ in 0..ncmds {
+            if offset + 8 > data.len() {
+                break;
+            }
+            let cmd = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+            let cmdsize = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if cmdsize < 8 || offset + cmdsize > data.len() {
+                break;
+            }
+            // LC_ID_DYLIB = 0x0D
+            if cmd == 0x0D && cmdsize >= 24 {
+                let name_offset = u32::from_le_bytes(
+                    data[offset + 8..offset + 12].try_into().unwrap(),
+                ) as usize;
+                if name_offset < cmdsize {
+                    let name_start = offset + name_offset;
+                    let name_end = data[name_start..]
+                        .iter()
+                        .position(|&b| b == 0)
+                        .map(|p| name_start + p)
+                        .unwrap_or(offset + cmdsize);
+                    install_name = Some(data[name_start..name_end].to_vec());
+                }
+            }
+            // LC_DYLD_EXPORTS_TRIE = 0x80000033 or LC_DYLD_INFO[_ONLY] = 0x22 / 0x80000022
+            if (cmd == 0x8000_0033) && cmdsize >= 16 {
+                let trie_off = u32::from_le_bytes(
+                    data[offset + 8..offset + 12].try_into().unwrap(),
+                ) as usize;
+                let trie_size = u32::from_le_bytes(
+                    data[offset + 12..offset + 16].try_into().unwrap(),
+                ) as usize;
+                if trie_off > 0 && trie_size > 0 && trie_off + trie_size <= data.len() {
+                    parse_export_trie(&data[trie_off..trie_off + trie_size], &mut exported_symbols);
+                }
+            }
+            // LC_DYLD_INFO / LC_DYLD_INFO_ONLY: export info is at fields [40..48]
+            if (cmd == 0x22 || cmd == 0x8000_0022) && cmdsize >= 48 {
+                let export_off = u32::from_le_bytes(
+                    data[offset + 40..offset + 44].try_into().unwrap(),
+                ) as usize;
+                let export_size = u32::from_le_bytes(
+                    data[offset + 44..offset + 48].try_into().unwrap(),
+                ) as usize;
+                if export_off > 0 && export_size > 0 && export_off + export_size <= data.len() {
+                    parse_export_trie(
+                        &data[export_off..export_off + export_size],
+                        &mut exported_symbols,
+                    );
+                }
+            }
+            offset += cmdsize;
+        }
+    }
+
+    let name = install_name.unwrap_or_else(|| path.to_string_lossy().as_bytes().to_vec());
+    if !args.extra_dylibs.contains(&name) {
+        args.extra_dylibs.push(name);
+    }
+    for sym in exported_symbols {
+        args.dylib_symbols.insert(sym);
+    }
+    Ok(())
+}
+
+/// Walk a Mach-O exports trie and collect all symbol names.
+fn parse_export_trie(trie: &[u8], symbols: &mut Vec<Vec<u8>>) {
+    fn walk(trie: &[u8], offset: usize, prefix: &[u8], symbols: &mut Vec<Vec<u8>>) {
+        if offset >= trie.len() {
+            return;
+        }
+        let mut pos = offset;
+        // Terminal info size (ULEB128)
+        let (terminal_size, n) = read_uleb128(&trie[pos..]);
+        pos += n;
+        if terminal_size > 0 {
+            // This node is a terminal — the prefix is an exported symbol
+            symbols.push(prefix.to_vec());
+        }
+        let terminal_end = pos + terminal_size as usize;
+        if terminal_end > trie.len() {
+            return;
+        }
+        pos = terminal_end;
+        // Child count
+        if pos >= trie.len() {
+            return;
+        }
+        let child_count = trie[pos] as usize;
+        pos += 1;
+        for _ in 0..child_count {
+            // Edge label (NUL-terminated string)
+            let label_start = pos;
+            while pos < trie.len() && trie[pos] != 0 {
+                pos += 1;
+            }
+            let label = &trie[label_start..pos];
+            if pos < trie.len() {
+                pos += 1; // skip NUL
+            }
+            // Child node offset (ULEB128)
+            let (child_offset, n) = read_uleb128(&trie[pos..]);
+            pos += n;
+            let mut child_prefix = prefix.to_vec();
+            child_prefix.extend_from_slice(label);
+            walk(trie, child_offset as usize, &child_prefix, symbols);
+        }
+    }
+
+    walk(trie, 0, &[], symbols);
+}
+
+fn read_uleb128(data: &[u8]) -> (u64, usize) {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            return (result, i + 1);
+        }
+        shift += 7;
+    }
+    (result, data.len())
 }

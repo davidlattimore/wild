@@ -18,6 +18,7 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    MachODylib,
     FatBinary,
     Archive,
     ThinArchive,
@@ -68,11 +69,14 @@ impl FileKind {
                 header.cputype(Endianness::Little) == macho::CPU_TYPE_ARM64,
                 "Only ARM64 is currently supported"
             );
-            ensure!(
-                header.filetype(Endianness::Little) == macho::MH_OBJECT,
-                "Expected object file"
-            );
-            Ok(FileKind::MachOObject)
+            let filetype = header.filetype(Endianness::Little);
+            match filetype {
+                macho::MH_OBJECT => Ok(FileKind::MachOObject),
+                macho::MH_DYLIB | macho::MH_DYLIB_STUB | 8 /* MH_BUNDLE */ => {
+                    Ok(FileKind::MachODylib)
+                }
+                _ => bail!("Unsupported Mach-O file type {filetype}"),
+            }
         } else if bytes.len() >= 8
             && (bytes.starts_with(&macho::FAT_MAGIC.to_be_bytes())
                 || bytes.starts_with(&macho::FAT_MAGIC_64.to_be_bytes()))
@@ -127,6 +131,7 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "MachO object",
+            FileKind::MachODylib => "MachO dylib",
             FileKind::FatBinary => "fat binary",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
