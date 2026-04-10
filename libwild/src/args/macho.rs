@@ -299,8 +299,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 let mut sectname = [0u8; 16];
                 let seg_bytes = seg.as_ref().as_bytes();
                 let sect_bytes = sect.as_ref().as_bytes();
-                segname[..seg_bytes.len().min(16)].copy_from_slice(&seg_bytes[..seg_bytes.len().min(16)]);
-                sectname[..sect_bytes.len().min(16)].copy_from_slice(&sect_bytes[..sect_bytes.len().min(16)]);
+                segname[..seg_bytes.len().min(16)]
+                    .copy_from_slice(&seg_bytes[..seg_bytes.len().min(16)]);
+                sectname[..sect_bytes.len().min(16)]
+                    .copy_from_slice(&sect_bytes[..sect_bytes.len().min(16)]);
                 args.empty_sections.push((segname, sectname));
             }
             return Ok(());
@@ -421,8 +423,9 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         "-stack_size" => {
             if let Some(val) = input.next() {
                 let val = val.as_ref();
-                args.stack_size =
-                    Some(u64::from_str_radix(val.strip_prefix("0x").unwrap_or(val), 16).unwrap_or(0));
+                args.stack_size = Some(
+                    u64::from_str_radix(val.strip_prefix("0x").unwrap_or(val), 16).unwrap_or(0),
+                );
             }
             return Ok(());
         }
@@ -634,9 +637,18 @@ fn parse_tbd_install_name(path: &Path) -> Option<Vec<u8>> {
 /// major<<16 | minor<<8 | patch.
 fn parse_macho_version(s: &str) -> u32 {
     let mut parts = s.split('.');
-    let major = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
-    let minor = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
-    let patch = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let major = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
     (major << 16) | (minor << 8) | patch
 }
 

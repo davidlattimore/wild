@@ -826,8 +826,7 @@ fn parse_section_ranges(out: &[u8]) -> Vec<(u64, u64)> {
         let cmd = u32::from_le_bytes(out[hoff..hoff + 4].try_into().unwrap());
         let cmdsize = u32::from_le_bytes(out[hoff + 4..hoff + 8].try_into().unwrap()) as usize;
         if cmd == LC_SEGMENT_64 && hoff + 72 <= out.len() {
-            let nsects =
-                u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
+            let nsects = u32::from_le_bytes(out[hoff + 64..hoff + 68].try_into().unwrap()) as usize;
             for j in 0..nsects {
                 let so = hoff + 72 + j * 80;
                 if so + 48 > out.len() {
@@ -844,10 +843,7 @@ fn parse_section_ranges(out: &[u8]) -> Vec<(u64, u64)> {
 }
 
 /// Check if a symbol was originally external (N_EXT) in its input object.
-fn is_symbol_external(
-    layout: &Layout<'_, MachO>,
-    symbol_id: crate::symbol_db::SymbolId,
-) -> bool {
+fn is_symbol_external(layout: &Layout<'_, MachO>, symbol_id: crate::symbol_db::SymbolId) -> bool {
     use object::read::macho::Nlist as _;
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     for group in &layout.group_layouts {
@@ -896,8 +892,8 @@ fn write_exe_symtab(
         }
         // Check if this symbol is external by looking at its original binding.
         // Local symbols (static functions, file-scoped data) should NOT get N_EXT.
-        let is_external = !res.flags.is_downgraded_to_local()
-            && is_symbol_external(layout, symbol_id);
+        let is_external =
+            !res.flags.is_downgraded_to_local() && is_symbol_external(layout, symbol_id);
         // -x: strip local (non-external) symbols from the output
         if layout.symbol_db.args.strip_locals && !is_external {
             continue;
@@ -1057,15 +1053,13 @@ fn write_exe_symtab(
                 // Must come right after fixups
                 out[off as usize + 8..off as usize + 12]
                     .copy_from_slice(&(start as u32).to_le_bytes());
-                out[off as usize + 12..off as usize + 16]
-                    .copy_from_slice(&0u32.to_le_bytes());
+                out[off as usize + 12..off as usize + 16].copy_from_slice(&0u32.to_le_bytes());
             }
             0x26 | 0x29 => {
                 // function_starts, data_in_code: contiguous with symtab (size 0)
                 out[off as usize + 8..off as usize + 12]
                     .copy_from_slice(&(symoff as u32).to_le_bytes());
-                out[off as usize + 12..off as usize + 16]
-                    .copy_from_slice(&0u32.to_le_bytes());
+                out[off as usize + 12..off as usize + 16].copy_from_slice(&0u32.to_le_bytes());
             }
             _ => {}
         }
@@ -1753,8 +1747,12 @@ fn apply_relocations(
                                 let tdata_start = tdata.mem_offset;
                                 let tbss = layout.section_layouts.get(output_section_id::TBSS);
                                 use object::read::macho::Section as _;
-                                let sec_type = obj.object.sections.get(sec_idx)
-                                    .map(|s| s.flags(le) & 0xFF).unwrap_or(0);
+                                let sec_type = obj
+                                    .object
+                                    .sections
+                                    .get(sec_idx)
+                                    .map(|s| s.flags(le) & 0xFF)
+                                    .unwrap_or(0);
                                 let tls_offset = if sec_type == 0x12 {
                                     // S_THREAD_LOCAL_ZEROFILL: offset = tdata_size + offset_in_tbss
                                     let tbss_start = tbss.mem_offset;
@@ -1780,11 +1778,17 @@ fn apply_relocations(
                         let tbss = layout.section_layouts.get(output_section_id::TBSS);
                         match sec_type {
                             0x11 if tdata.mem_size > 0 => {
-                                tracing::warn!("TLS fallback: tdata + {sym_offset:#x} -> {:#x}", tdata.mem_offset + sym_offset);
+                                tracing::warn!(
+                                    "TLS fallback: tdata + {sym_offset:#x} -> {:#x}",
+                                    tdata.mem_offset + sym_offset
+                                );
                                 Some(tdata.mem_offset + sym_offset)
                             }
                             0x12 if tbss.mem_size > 0 => {
-                                tracing::warn!("TLS fallback: tbss + {sym_offset:#x} -> {:#x}", tbss.mem_offset + sym_offset);
+                                tracing::warn!(
+                                    "TLS fallback: tbss + {sym_offset:#x} -> {:#x}",
+                                    tbss.mem_offset + sym_offset
+                                );
                                 Some(tbss.mem_offset + sym_offset)
                             }
                             _ => {
@@ -3363,7 +3367,12 @@ fn write_headers(
         } else {
             // Deterministic UUID from -final_output name or output path
             let mut h = [0u8; 16];
-            let output_lossy = layout.symbol_db.args.output().to_string_lossy().into_owned();
+            let output_lossy = layout
+                .symbol_db
+                .args
+                .output()
+                .to_string_lossy()
+                .into_owned();
             let name = layout
                 .symbol_db
                 .args
@@ -3473,14 +3482,14 @@ fn write_headers(
         w.u32(0x26);
         w.u32(16);
         w.u32(last_file_end as u32); // offset (patched later)
-        w.u32(0);                    // size 0
+        w.u32(0); // size 0
     }
     // LC_DATA_IN_CODE = 0x29
     if emit_data_in_code {
         w.u32(0x29);
         w.u32(16);
         w.u32(last_file_end as u32); // offset (patched later)
-        w.u32(0);                    // size 0
+        w.u32(0); // size 0
     }
 
     Ok(Some(cf_offset))

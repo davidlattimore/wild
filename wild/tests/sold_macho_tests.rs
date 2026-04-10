@@ -56,48 +56,48 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that use flags/features Wild doesn't support yet
     const UNSUPPORTED_FLAGS: &[&str] = &[
-        "flat-namespace",               // -flat_namespace
-        "undefined",                    // -undefined warning
-        "U",                            // -U (dynamic lookup)
-        "umbrella",                     // -umbrella
-        "application-extension",        // -application_extension
-        "application-extension2",       // -application_extension
-        "exported-symbols-list",        // -exported_symbols_list
-        "unexported-symbols-list",      // -unexported_symbols_list
-        "export-dynamic",               // -export_dynamic
-        "merge-scope",                  // visibility merging
-        "hidden-l",                     // -hidden-l
-        "needed-l",                     // -needed-l
-        "needed-framework",             // -needed_framework
-        "weak-l",                       // -weak-l
-        "reexport-l",                   // -reexport-l
-        "reexport-library",             // -reexport_library
+        "flat-namespace",          // -flat_namespace
+        "undefined",               // -undefined warning
+        "U",                       // -U (dynamic lookup)
+        "umbrella",                // -umbrella
+        "application-extension",   // -application_extension
+        "application-extension2",  // -application_extension
+        "exported-symbols-list",   // -exported_symbols_list
+        "unexported-symbols-list", // -unexported_symbols_list
+        "export-dynamic",          // -export_dynamic
+        "merge-scope",             // visibility merging
+        "hidden-l",                // -hidden-l
+        "needed-l",                // -needed-l
+        "needed-framework",        // -needed_framework
+        "weak-l",                  // -weak-l
+        "reexport-l",              // -reexport-l
+        "reexport-library",        // -reexport_library
         // install-name now passes (-install_name support)
         "install-name-executable-path", // @executable_path
         "install-name-loader-path",     // @loader_path
         "install-name-rpath",           // @rpath
         // rpath now passes (-rpath → LC_RPATH)
-        "search-paths-first",           // -search_paths_first
-        "search-dylibs-first",          // -search_dylibs_first
-        "sectcreate",                   // -sectcreate
-        "order-file",                   // -order_file
+        "search-paths-first",  // -search_paths_first
+        "search-dylibs-first", // -search_dylibs_first
+        "sectcreate",          // -sectcreate
+        "order-file",          // -order_file
         // stack-size now passes
-        "map",                          // -map
-        "dependency-info",              // -dependency_info
-        "print-dependencies",           // -print_dependency_info
+        "map",                // -map
+        "dependency-info",    // -dependency_info
+        "print-dependencies", // -print_dependency_info
         // macos-version-min now passes
         // platform-version now passes
-        "S",                            // -S (strip debug)
+        "S", // -S (strip debug)
         // strip now passes (LINKEDIT packing + linker-signed codesign)
         // no-function-starts now passes
         // data-in-code-info now passes
-        "subsections-via-symbols",      // -subsections_via_symbols
-        "add-ast-path",                 // -add_ast_path
+        "subsections-via-symbols", // -subsections_via_symbols
+        "add-ast-path",            // -add_ast_path
         // add-empty-section now passes
-        "pagezero-size2",               // -pagezero_size variations
-        "oso-prefix",                   // -oso_prefix
-        "start-stop-symbol",            // __start_/__stop_ sections
-        "framework",                    // -framework (non-system)
+        "pagezero-size2",    // -pagezero_size variations
+        "oso-prefix",        // -oso_prefix
+        "start-stop-symbol", // __start_/__stop_ sections
+        "framework",         // -framework (non-system)
     ];
 
     // Tests requiring LTO
@@ -105,12 +105,12 @@ fn should_ignore(name: &str) -> bool {
 
     // Tests that need linking against a .dylib (Wild can't yet consume dylib inputs)
     const NEEDS_DYLIB_INPUT: &[&str] = &[
-        "dylib",              // creates then links against dylib
-        "tls-dylib",         // TLS across dylibs
-        "data-reloc",        // links dylib + object
-        "fixup-chains-addend",   // links dylib + object
-        "fixup-chains-addend64", // links dylib + object
-        "weak-def-dylib",    // weak defs from dylib
+        "dylib",                      // creates then links against dylib
+        "tls-dylib",                  // TLS across dylibs
+        "data-reloc",                 // links dylib + object
+        "fixup-chains-addend",        // links dylib + object
+        "fixup-chains-addend64",      // links dylib + object
+        "weak-def-dylib",             // weak defs from dylib
         "mark-dead-strippable-dylib", // links against dylib
     ];
 
@@ -153,12 +153,12 @@ fn should_ignore(name: &str) -> bool {
 
     // Load command / output format checks
     const OUTPUT_FORMAT: &[&str] = &[
-        "lc-build-version",   // LC_BUILD_VERSION tool field
+        "lc-build-version", // LC_BUILD_VERSION tool field
         // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
-        "version",            // -current_version / -compatibility_version
-        "w",                  // -w (suppress warnings)
-        "Z",                  // -Z (no default search paths)
+        "version", // -current_version / -compatibility_version
+        "w",       // -w (suppress warnings)
+        "Z",       // -Z (no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
         "dead-strip-dylibs",  // -dead_strip_dylibs
         "dead-strip-dylibs2", // -dead_strip_dylibs
