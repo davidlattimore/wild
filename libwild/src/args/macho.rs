@@ -580,6 +580,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.no_default_search_paths = true;
             return Ok(());
         }
+        "-v" => {
+            args.common.version_mode = crate::args::VersionMode::Verbose;
+            return Ok(());
+        }
         // No-argument flags, ignored
         "-dynamic"
         | "-no_deduplicate"

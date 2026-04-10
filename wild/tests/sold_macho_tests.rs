@@ -148,7 +148,7 @@ fn should_ignore(name: &str) -> bool {
         "lc-build-version", // LC_BUILD_VERSION tool field
         // uuid now passes (-final_output, -no_uuid, -random_uuid)
         // uuid2 now passes
-        "version", // -current_version / -compatibility_version
+        // version now passes (-v outputs Wild version)
         "w",       // -w (needs -application_extension warning)
         // Z now passes (-Z no default search paths)
         // adhoc-codesign now passes (linker-signed + no_adhoc_codesign flag)
