@@ -81,6 +81,12 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                     payload.push(0x00);
                     write_leb128(&mut payload, *type_idx);
                 }
+                ImportKind::Table { min } => {
+                    payload.push(0x01); // table
+                    payload.push(0x70); // funcref
+                    payload.push(0x00); // no max
+                    write_leb128(&mut payload, *min);
+                }
                 ImportKind::Global { valtype, mutable } => {
                     payload.push(0x03);
                     payload.push(*valtype);
@@ -102,13 +108,33 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     }
 
     // Table section (spec §9.6: between function and memory).
-    if !merged.table_entries.is_empty() {
-        let table_size = merged.table_entries.len() as u32 + 1; // +1 for null entry at 0
+    // --import-table: table comes from host, emit as import instead of definition.
+    // --export-table: add table to exports.
+    let has_table = !merged.table_entries.is_empty()
+        || layout.symbol_db.args.import_table
+        || layout.symbol_db.args.export_table;
+    let table_size = if !merged.table_entries.is_empty() {
+        merged.table_entries.len() as u32 + 1
+    } else if has_table {
+        1 // empty table with just the null entry
+    } else {
+        0
+    };
+
+    // When --import-table, table is imported (handled in merge_inputs pass 4).
+    // Only emit TABLE section when defining our own table.
+    if has_table && !layout.symbol_db.args.import_table {
         let mut payload = Vec::new();
         write_leb128(&mut payload, 1); // 1 table
         payload.push(0x70); // funcref
-        payload.push(0x00); // no max
-        write_leb128(&mut payload, table_size);
+        if layout.symbol_db.args.growable_table {
+            payload.push(0x00); // no max (growable)
+            write_leb128(&mut payload, table_size);
+        } else {
+            payload.push(0x01); // has max (fixed size)
+            write_leb128(&mut payload, table_size); // min
+            write_leb128(&mut payload, table_size); // max = min
+        }
         write_section(&mut out, SECTION_TABLE, &payload);
     }
 
@@ -180,6 +206,15 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                     exports.push((entry_name.to_vec(), EXPORT_FUNC, func_idx));
                 }
             }
+        }
+
+        // --export-table: export the indirect function table.
+        if layout.symbol_db.args.export_table && has_table {
+            exports.push((
+                b"__indirect_function_table".to_vec(),
+                0x01, // table export kind
+                0,    // table index 0
+            ));
         }
 
         // Linker-defined global exports (__data_end, __heap_base).
@@ -338,6 +373,7 @@ struct OutputImport {
 
 enum ImportKind {
     Function(u32), // type index
+    Table { min: u32 },
     Global { valtype: u8, mutable: bool },
 }
 
@@ -1174,6 +1210,16 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 }
             }
         }
+    }
+
+    // --import-table: add table import (spec §9.6).
+    if layout.symbol_db.args.import_table && !table_entries.is_empty() {
+        let table_size = table_entries.len() as u32 + 1;
+        output_imports.push(OutputImport {
+            module: b"env".to_vec(),
+            field: b"__indirect_function_table".to_vec(),
+            kind: ImportKind::Table { min: table_size },
+        });
     }
 
     // If there are imported functions, all defined function indices shift

@@ -62,6 +62,8 @@ pub struct WasmArgs {
     pub(crate) export_table: bool,
     /// Suppress non-growable memory (--no-growable-memory).
     pub(crate) no_growable_memory: bool,
+    /// Allow table to grow (--growable-table).
+    pub(crate) growable_table: bool,
 }
 
 impl Default for WasmArgs {
@@ -94,6 +96,7 @@ impl Default for WasmArgs {
             import_table: false,
             export_table: false,
             no_growable_memory: false,
+            growable_table: false,
         }
     }
 }
@@ -274,6 +277,7 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             }
             "--stack-first" => args.stack_first = true,
             "--no-growable-memory" => args.no_growable_memory = true,
+            "--growable-table" => args.growable_table = true,
             "--import-memory" => args.import_memory = true,
             "--shared-memory" => args.shared_memory = true,
 

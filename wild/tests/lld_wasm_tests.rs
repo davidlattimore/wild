@@ -150,11 +150,12 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Tier 3: tables, indirect calls
-    if content.contains("--import-table")
-        || content.contains("--export-table")
-        || content.contains("call_indirect")
-        || content.contains("table.") {
+    // Tables: call_indirect / multi-table (complex table patterns)
+    if content.contains("call_indirect")
+        || content.contains("table.get")
+        || content.contains("table.set")
+        || content.contains("multi-table")
+    {
         return true;
     }
     // Tier 5: constructors — we synthesize __wasm_call_ctors but only
