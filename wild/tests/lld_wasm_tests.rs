@@ -139,20 +139,14 @@ fn should_skip(content: &str, path: &Path) -> bool {
         return true;
     }
     // Skip tests for features not yet implemented in wild's WASM support.
-    // Tier 2: data segments, memory layout, linker-defined data symbols
-    if content.contains("__data_end")
-        || content.contains("__heap_base")
-        || content.contains("__global_base")
+    // Tier 2: advanced memory layout options
+    if content.contains("__global_base")
         || content.contains("stack-size")
         || content.contains("stack-first")
         || content.contains("--initial-memory")
         || content.contains("--max-memory")
         || content.contains("--initial-heap")
         || content.contains("--global-base")
-        || content.contains(".section .data")
-        || content.contains(".section .bss")
-        || content.contains(".section .rodata")
-        || content.contains("Type:            DATA")
     {
         return true;
     }
