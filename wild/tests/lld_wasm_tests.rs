@@ -140,9 +140,7 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains("REQUIRES: llvm-64-bits") {
         return true;
     }
-    if content.contains("split-file") {
-        return true;
-    }
+    // split-file now handled natively in the test runner
     // .ll / .test files that need features we don't support yet
     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
         if matches!(
@@ -321,6 +319,46 @@ impl TestContext {
     }
 }
 
+/// Implement split-file: split test content into sub-files based on `#--- name` markers.
+fn do_split_file(content: &str, out_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("mkdir: {e}"))?;
+    let mut current_file: Option<(String, Vec<String>)> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Match #--- filename or //--- filename
+        let marker = trimmed
+            .strip_prefix("#--- ")
+            .or_else(|| trimmed.strip_prefix("//--- "))
+            .or_else(|| trimmed.strip_prefix(";--- "));
+
+        if let Some(name) = marker {
+            // Write previous file
+            if let Some((fname, lines)) = current_file.take() {
+                let path = out_dir.join(&fname);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&path, lines.join("\n"))
+                    .map_err(|e| format!("write {fname}: {e}"))?;
+            }
+            current_file = Some((name.trim().to_string(), Vec::new()));
+        } else if let Some((_, ref mut lines)) = current_file {
+            lines.push(line.to_string());
+        }
+    }
+    // Write last file
+    if let Some((fname, lines)) = current_file {
+        let path = out_dir.join(&fname);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&path, lines.join("\n"))
+            .map_err(|e| format!("write {fname}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Rewrite a RUN line, replacing tool names with full paths and wasm-ld with wild.
 fn rewrite_command(line: &str, ctx: &TestContext) -> String {
     let mut result = line.to_string();
@@ -358,6 +396,19 @@ fn run_wasm_test(ctx: &TestContext, test_path: &Path) -> Result<(), String> {
         } else {
             (false, line.clone())
         };
+
+        // Handle split-file natively.
+        if shell_line.starts_with("split-file ") {
+            let parts: Vec<&str> = shell_line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let src = ctx.expand(parts[1], test_path);
+                let dst = ctx.expand(parts[2], test_path);
+                let src_content =
+                    std::fs::read_to_string(&src).map_err(|e| format!("read {src}: {e}"))?;
+                do_split_file(&src_content, Path::new(&dst))?;
+            }
+            continue;
+        }
 
         let shell_cmd = rewrite_command(&shell_line, ctx);
 
