@@ -13,9 +13,11 @@ use crate::wasm::Wasm;
 const SECTION_TYPE: u8 = 1;
 const SECTION_IMPORT: u8 = 2;
 const SECTION_FUNCTION: u8 = 3;
+const SECTION_TABLE: u8 = 4;
 const SECTION_MEMORY: u8 = 5;
 const SECTION_GLOBAL: u8 = 6;
 const SECTION_EXPORT: u8 = 7;
+const SECTION_ELEMENT: u8 = 9;
 const SECTION_CODE: u8 = 10;
 const SECTION_DATA: u8 = 11;
 
@@ -99,6 +101,17 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_FUNCTION, &payload);
     }
 
+    // Table section (spec §9.6: between function and memory).
+    if !merged.table_entries.is_empty() {
+        let table_size = merged.table_entries.len() as u32 + 1; // +1 for null entry at 0
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 1); // 1 table
+        payload.push(0x70); // funcref
+        payload.push(0x00); // no max
+        write_leb128(&mut payload, table_size);
+        write_section(&mut out, SECTION_TABLE, &payload);
+    }
+
     // Memory section (spec §9.6): compute from stack + data size.
     let stack_size = layout
         .symbol_db
@@ -176,6 +189,24 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             write_leb128(&mut payload, *index);
         }
         write_section(&mut out, SECTION_EXPORT, &payload);
+    }
+
+    // Element section (spec §9.6: populates the indirect function table).
+    if !merged.table_entries.is_empty() {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 1); // 1 element segment
+        // Active element segment for table 0.
+        payload.push(0x00); // flags: active, table 0
+        // Init expression: i32.const 1 (start at index 1, 0 = null)
+        payload.push(0x41); // i32.const
+        write_sleb128(&mut payload, 1);
+        payload.push(0x0B); // end
+        // Function indices.
+        write_leb128(&mut payload, merged.table_entries.len() as u32);
+        for &func_idx in &merged.table_entries {
+            write_leb128(&mut payload, func_idx);
+        }
+        write_section(&mut out, SECTION_ELEMENT, &payload);
     }
 
     // Code section: merged function bodies with body-size prefix per function.
@@ -318,6 +349,11 @@ struct MergedModule {
     data_segments: Vec<OutputDataSegment>,
     /// Total data size (for memory section computation).
     data_size: u32,
+    /// Indirect function table: maps table index → function index.
+    /// Per spec §9.4: entries start at index 1 (0 = null/trap).
+    table_entries: Vec<u32>,
+    /// Map from function index to table index (for relocation patching).
+    func_to_table_index: std::collections::HashMap<u32, u32>,
     /// Imports for unresolved symbols.
     imports: Vec<OutputImport>,
     /// Number of imported functions (affects function index space).
@@ -353,6 +389,12 @@ fn gc_functions(merged: &mut MergedModule) {
     for idx in merged.explicit_export_indices.iter() {
         if (*idx as usize) < num_funcs {
             reachable[*idx as usize] = true;
+        }
+    }
+    // Functions referenced via indirect function table are roots.
+    for &func_idx in &merged.table_entries {
+        if (func_idx as usize) < num_funcs {
+            reachable[func_idx as usize] = true;
         }
     }
 
@@ -449,6 +491,19 @@ fn gc_functions(merged: &mut MergedModule) {
                 .flatten()
                 .map(|new_idx| (name.clone(), new_idx))
         })
+        .collect();
+
+    // Remap table entries.
+    merged.table_entries = merged
+        .table_entries
+        .iter()
+        .filter_map(|&old_idx| index_map.get(old_idx as usize).copied().flatten())
+        .collect();
+    merged.func_to_table_index = merged
+        .table_entries
+        .iter()
+        .enumerate()
+        .map(|(i, &func_idx)| (func_idx, (i + 1) as u32))
         .collect();
 
     // GC unused types — keep types referenced by functions AND imports.
@@ -647,6 +702,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
+    let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
+    // Store deferred table relocs: (function_output_idx, offset_in_body, reloc_type, sym→func_idx)
+    let mut deferred_table_relocs: Vec<(usize, usize, u8, u32)> = Vec::new();
 
     for (obj_idx, obj_info) in objects.iter().enumerate() {
         let parsed = &obj_info.parsed;
@@ -794,6 +852,31 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             write_padded_leb128(&mut body, off_in_body, output_idx);
                         }
                     }
+                    1 | 2 => {
+                        // R_WASM_TABLE_INDEX_SLEB (1) / _I32 (2)
+                        // Collect for table. Patching deferred to pass 2.5.
+                        let func_idx = symbol_to_output_func
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        table_needed_funcs.insert(func_idx);
+                        let out_func_idx = functions.len() + i;
+                        deferred_table_relocs.push((
+                            out_func_idx,
+                            off_in_body,
+                            reloc.reloc_type,
+                            func_idx,
+                        ));
+                    }
+                    8 => {
+                        // R_WASM_FUNCTION_OFFSET_I32 (spec §9.4)
+                        // "Values adjusted for new code section offsets."
+                        // Currently we don't reorder, so no adjustment needed.
+                    }
+                    9 => {
+                        // R_WASM_SECTION_OFFSET_I32 (spec §9.4)
+                        // Used in debug/custom sections — no adjustment yet.
+                    }
                     _ => {}
                 }
             }
@@ -802,6 +885,41 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 type_index: remapped_type,
                 body,
             });
+        }
+    }
+
+    // --- Pass 2.5: build indirect function table and patch TABLE_INDEX relocs ---
+    // Per spec §9.4: "Output contains synthesized table with entries for all
+    // referenced symbols. Table elements begin at non-zero offset."
+    let mut table_entries: Vec<u32> = Vec::new();
+    let mut func_to_table_index: std::collections::HashMap<u32, u32> = Default::default();
+
+    if !table_needed_funcs.is_empty() {
+        let mut sorted_funcs: Vec<u32> = table_needed_funcs.into_iter().collect();
+        sorted_funcs.sort();
+        for (i, &func_idx) in sorted_funcs.iter().enumerate() {
+            let table_idx = (i + 1) as u32; // start at 1, 0 = null/trap
+            func_to_table_index.insert(func_idx, table_idx);
+            table_entries.push(func_idx);
+        }
+
+        // Patch deferred TABLE_INDEX relocations.
+        for (func_out_idx, off_in_body, reloc_type, target_func_idx) in &deferred_table_relocs {
+            let table_idx = func_to_table_index.get(target_func_idx).copied().unwrap_or(0);
+            if let Some(func) = functions.get_mut(*func_out_idx) {
+                match reloc_type {
+                    1 => {
+                        // R_WASM_TABLE_INDEX_SLEB: 5-byte signed padded LEB128
+                        write_padded_sleb128(&mut func.body, *off_in_body, table_idx as i32);
+                    }
+                    2 => {
+                        // R_WASM_TABLE_INDEX_I32: uint32 LE
+                        func.body[*off_in_body..*off_in_body + 4]
+                            .copy_from_slice(&table_idx.to_le_bytes());
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -901,6 +1019,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         entry_function_index,
         function_name_map,
         explicit_export_indices,
+        table_entries,
+        func_to_table_index,
         globals,
         global_name_map,
         data_segments,
