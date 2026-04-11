@@ -3682,7 +3682,7 @@ pub(crate) struct SectionAttributes {
 /// Section flags that should be propagated from input sections to the output section in which they
 /// are placed. Note, the inversion, so we keep all flags other than the one listed here.
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+    SectionFlags::from_u64(!object::elf::SHF_GROUP);
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Elf;

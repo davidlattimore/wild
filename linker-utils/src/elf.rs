@@ -581,20 +581,20 @@ pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 pub mod shf {
     use super::SectionFlags;
 
-    pub const WRITE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_WRITE);
-    pub const ALLOC: SectionFlags = SectionFlags::from_u32(object::elf::SHF_ALLOC);
-    pub const EXECINSTR: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXECINSTR);
-    pub const MERGE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_MERGE);
-    pub const STRINGS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_STRINGS);
-    pub const INFO_LINK: SectionFlags = SectionFlags::from_u32(object::elf::SHF_INFO_LINK);
-    pub const LINK_ORDER: SectionFlags = SectionFlags::from_u32(object::elf::SHF_LINK_ORDER);
+    pub const WRITE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_WRITE);
+    pub const ALLOC: SectionFlags = SectionFlags::from_u64(object::elf::SHF_ALLOC);
+    pub const EXECINSTR: SectionFlags = SectionFlags::from_u64(object::elf::SHF_EXECINSTR);
+    pub const MERGE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_MERGE);
+    pub const STRINGS: SectionFlags = SectionFlags::from_u64(object::elf::SHF_STRINGS);
+    pub const INFO_LINK: SectionFlags = SectionFlags::from_u64(object::elf::SHF_INFO_LINK);
+    pub const LINK_ORDER: SectionFlags = SectionFlags::from_u64(object::elf::SHF_LINK_ORDER);
     pub const OS_NONCONFORMING: SectionFlags =
-        SectionFlags::from_u32(object::elf::SHF_OS_NONCONFORMING);
-    pub const GROUP: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GROUP);
-    pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
-    pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
-    pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
-    pub const EXCLUDE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXCLUDE);
+        SectionFlags::from_u64(object::elf::SHF_OS_NONCONFORMING);
+    pub const GROUP: SectionFlags = SectionFlags::from_u64(object::elf::SHF_GROUP);
+    pub const TLS: SectionFlags = SectionFlags::from_u64(object::elf::SHF_TLS);
+    pub const COMPRESSED: SectionFlags = SectionFlags::from_u64(object::elf::SHF_COMPRESSED);
+    pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u64(object::elf::SHF_GNU_RETAIN);
+    pub const EXCLUDE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_EXCLUDE);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -617,8 +617,8 @@ impl SectionFlags {
     }
 
     #[must_use]
-    pub const fn from_u32(raw: u32) -> SectionFlags {
-        SectionFlags(raw)
+    pub const fn from_u64(raw: u64) -> SectionFlags {
+        SectionFlags(raw as u32)
     }
 
     /// Returns self with the specified flags set.
