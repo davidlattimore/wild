@@ -188,7 +188,7 @@ fn verify_frames(
 
 fn eh_frame_segment(object: &crate::Binary) -> Option<ProgramHeader64<LittleEndian>> {
     for hdr in object.elf_file.elf_program_headers() {
-        if hdr.p_type.get(LittleEndian) == object::elf::PT_GNU_EH_FRAME {
+        if hdr.p_type(LittleEndian) == object::elf::PT_GNU_EH_FRAME {
             return Some(*hdr);
         }
     }

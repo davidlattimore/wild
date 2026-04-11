@@ -2,7 +2,6 @@ use crate::bit_misc::BitRange;
 use anyhow::Result;
 use object::LittleEndian;
 use object::read::elf::ProgramHeader as _;
-use object::read::elf::SectionHeader;
 use std::borrow::Cow;
 use std::fmt;
 
@@ -16,83 +15,71 @@ macro_rules! const_name_by_value {
 }
 
 macro_rules! const_or_literal {
-    ($prefix:ident $const:ident = $value:expr) => {
-        $value
+    ($name:ident $prefix:ident $const:ident = $value:expr) => {
+        $name($value)
     };
-    ($prefix:ident $const:ident) => {
+    ($name:ident $prefix:ident $const:ident) => {
         ::paste::paste! {
             ::object::elf::[<$prefix _ $const>]
         }
     };
 }
 
-/// Generates newtypes for the non-flag, enum constants exposed by [object].
-/// Each type has automatically generated [Debug] and [Display] implementations.
+/// Reexport newtypes for the non-flag, enum constants exposed by [object].
 /// Constants not (yet) defined by [object] can be given literal values.
+/// For each type, define a Display wrapper that has automatically generated
+/// [Debug] and [Display] implementations.
 macro_rules! elf_constant_newtype {
     (
         $name:ident,
-        $inner_type:ident,
+        $inner_type:ty,
         $constants_module:ident,
         $prefix:ident,
         $(
             $const:ident $(= $value:expr)?
         ),* $(,)?
     ) => {
-        #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
-        #[debug("{}", self.as_str())]
-        pub struct $name($inner_type);
-
-        impl $name {
-            #[must_use]
-            pub fn raw(&self) -> $inner_type {
-                self.0
-            }
-
-            #[allow(unreachable_patterns)] // rustc issues a spurious warning here
-            #[must_use]
-            pub fn as_str(&self) -> Cow<'static, str> {
-                    match self.0 {
-                        $(
-                            const_or_literal!($prefix $const $(= $value )?)
-                                => ::std::borrow::Cow::Borrowed(stringify!($const)),
-                        )*
-                        r => Cow::Owned(format!("Unknown({r})")),
-                    }
-            }
-
-            ::paste::paste! {
-                #[must_use]
-                pub const fn [<from_ $inner_type>](value: $inner_type) -> Self {
-                    Self(value)
-                }
-            }
-        }
-
-        impl From < $inner_type > for $name {
-            fn from(value: $inner_type) -> Self {
-                Self(value)
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.as_str())
-            }
-        }
+        pub use $inner_type as $name;
 
         pub mod $constants_module {
             #![allow(non_upper_case_globals)]
             use super::$name;
+            use std::borrow::Cow;
 
-            $(pub const $const: $name = $name(const_or_literal!($prefix $const $(= $value)?));)*
+            #[allow(unreachable_patterns)] // rustc issues a spurious warning here
+            #[must_use]
+            pub fn as_str(val: $name) -> Cow<'static, str> {
+                    match val {
+                        $(
+                            const_or_literal!($name $prefix $const $(= $value )?)
+                                => ::std::borrow::Cow::Borrowed(stringify!($const)),
+                        )*
+                        $name(r) => Cow::Owned(format!("Unknown({r})")),
+                    }
+            }
+
+            pub struct Display(pub $name);
+
+            impl std::fmt::Debug for Display {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", as_str(self.0))
+                }
+            }
+
+            impl std::fmt::Display for Display {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", as_str(self.0))
+                }
+            }
+
+            $(pub const $const: $name = const_or_literal!($name $prefix $const $(= $value)?);)*
         }
     };
 }
 
 elf_constant_newtype!(
     SegmentType,
-    u32,
+    object::elf::PhdrType,
     pt,
     PT,
     NULL,
@@ -111,16 +98,9 @@ elf_constant_newtype!(
     RISCV_ATTRIBUTES,
 );
 
-impl SegmentType {
-    #[must_use]
-    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
-        Self(header.p_type(LittleEndian))
-    }
-}
-
 elf_constant_newtype!(
     SectionType,
-    u32,
+    object::elf::ShdrType,
     sht,
     SHT,
     NULL,
@@ -141,35 +121,20 @@ elf_constant_newtype!(
     PREINIT_ARRAY,
     GROUP,
     SYMTAB_SHNDX,
-    LOOS,
     GNU_SFRAME,
     GNU_ATTRIBUTES,
     GNU_HASH,
     GNU_LIBLIST,
     CHECKSUM,
-    LOSUNW,
     SUNW_COMDAT,
     SUNW_syminfo,
     GNU_VERDEF,
     GNU_VERNEED,
     GNU_VERSYM,
-    HISUNW,
-    HIOS,
-    LOPROC,
-    HIPROC,
-    LOUSER,
-    HIUSER,
     RISCV_ATTRIBUTES,
 );
 
-impl SectionType {
-    #[must_use]
-    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_type(LittleEndian))
-    }
-}
-
-elf_constant_newtype!(SymbolType, u8, stt, STT, NOTYPE, TLS);
+elf_constant_newtype!(SymbolType, object::elf::SymType, stt, STT, NOTYPE, TLS);
 
 #[must_use]
 pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
@@ -577,122 +542,52 @@ pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+pub use object::elf::ShdrFlags as SectionFlags;
+
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
 
-    pub const WRITE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_WRITE);
-    pub const ALLOC: SectionFlags = SectionFlags::from_u64(object::elf::SHF_ALLOC);
-    pub const EXECINSTR: SectionFlags = SectionFlags::from_u64(object::elf::SHF_EXECINSTR);
-    pub const MERGE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_MERGE);
-    pub const STRINGS: SectionFlags = SectionFlags::from_u64(object::elf::SHF_STRINGS);
-    pub const INFO_LINK: SectionFlags = SectionFlags::from_u64(object::elf::SHF_INFO_LINK);
-    pub const LINK_ORDER: SectionFlags = SectionFlags::from_u64(object::elf::SHF_LINK_ORDER);
-    pub const OS_NONCONFORMING: SectionFlags =
-        SectionFlags::from_u64(object::elf::SHF_OS_NONCONFORMING);
-    pub const GROUP: SectionFlags = SectionFlags::from_u64(object::elf::SHF_GROUP);
-    pub const TLS: SectionFlags = SectionFlags::from_u64(object::elf::SHF_TLS);
-    pub const COMPRESSED: SectionFlags = SectionFlags::from_u64(object::elf::SHF_COMPRESSED);
-    pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u64(object::elf::SHF_GNU_RETAIN);
-    pub const EXCLUDE: SectionFlags = SectionFlags::from_u64(object::elf::SHF_EXCLUDE);
-}
+    pub const WRITE: SectionFlags = object::elf::SHF_WRITE;
+    pub const ALLOC: SectionFlags = object::elf::SHF_ALLOC;
+    pub const EXECINSTR: SectionFlags = object::elf::SHF_EXECINSTR;
+    pub const MERGE: SectionFlags = object::elf::SHF_MERGE;
+    pub const STRINGS: SectionFlags = object::elf::SHF_STRINGS;
+    pub const INFO_LINK: SectionFlags = object::elf::SHF_INFO_LINK;
+    pub const LINK_ORDER: SectionFlags = object::elf::SHF_LINK_ORDER;
+    pub const OS_NONCONFORMING: SectionFlags = object::elf::SHF_OS_NONCONFORMING;
+    pub const GROUP: SectionFlags = object::elf::SHF_GROUP;
+    pub const TLS: SectionFlags = object::elf::SHF_TLS;
+    pub const COMPRESSED: SectionFlags = object::elf::SHF_COMPRESSED;
+    pub const GNU_RETAIN: SectionFlags = object::elf::SHF_GNU_RETAIN;
+    pub const EXCLUDE: SectionFlags = object::elf::SHF_EXCLUDE;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct SectionFlags(u32);
+    pub struct Display(pub SectionFlags);
 
-impl SectionFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_flags(LittleEndian) as u32)
-    }
-
-    #[must_use]
-    pub fn contains(self, flag: SectionFlags) -> bool {
-        self.0 & flag.0 != 0
-    }
-
-    #[must_use]
-    pub const fn from_u64(raw: u64) -> SectionFlags {
-        SectionFlags(raw as u32)
-    }
-
-    /// Returns self with the specified flags set.
-    #[must_use]
-    pub const fn with(self, flags: SectionFlags) -> SectionFlags {
-        SectionFlags(self.0 | flags.0)
-    }
-
-    /// Returns self with the specified flags cleared.
-    #[must_use]
-    pub const fn without(self, flags: SectionFlags) -> SectionFlags {
-        SectionFlags(self.0 & !flags.0)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0 as u64
-    }
-
-    #[must_use]
-    pub fn should_exclude(&self) -> bool {
-        self.contains(shf::EXCLUDE)
-    }
-}
-
-impl From<u64> for SectionFlags {
-    fn from(value: u64) -> Self {
-        Self(value as u32)
-    }
-}
-
-impl std::fmt::Display for SectionFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (flag, ch) in [
-            (shf::WRITE, "W"),
-            (shf::ALLOC, "A"),
-            (shf::EXECINSTR, "X"),
-            (shf::MERGE, "M"),
-            (shf::STRINGS, "S"),
-            (shf::INFO_LINK, "I"),
-            (shf::LINK_ORDER, "L"),
-            (shf::OS_NONCONFORMING, "O"),
-            (shf::GROUP, "G"),
-            (shf::TLS, "T"),
-            (shf::COMPRESSED, "C"),
-            (shf::EXCLUDE, "E"),
-            // TODO: ld linker sometimes propagates the flag
-            // (shf::GNU_RETAIN, "R"),
-        ] {
-            if self.contains(flag) {
-                f.write_str(ch)?;
+    impl std::fmt::Display for Display {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            for (flag, ch) in [
+                (WRITE, "W"),
+                (ALLOC, "A"),
+                (EXECINSTR, "X"),
+                (MERGE, "M"),
+                (STRINGS, "S"),
+                (INFO_LINK, "I"),
+                (LINK_ORDER, "L"),
+                (OS_NONCONFORMING, "O"),
+                (GROUP, "G"),
+                (TLS, "T"),
+                (COMPRESSED, "C"),
+                (EXCLUDE, "E"),
+                // TODO: ld linker sometimes propagates the flag
+                // (shf::GNU_RETAIN, "R"),
+            ] {
+                if self.0.contains(flag) {
+                    f.write_str(ch)?;
+                }
             }
+            Ok(())
         }
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for SectionFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
-impl std::ops::BitOrAssign for SectionFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl std::ops::BitAnd for SectionFlags {
-    type Output = SectionFlags;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
     }
 }
 

@@ -435,8 +435,8 @@ impl platform::Platform for Elf {
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes {
-            flags: SectionFlags::from_header(header),
-            ty: SectionType::from_header(header),
+            flags: header.sh_flags(LittleEndian),
+            ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize.get(LittleEndian),
         }
     }
@@ -2006,7 +2006,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         // Find all the sections that we're interested in a single scan of the section table so
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
-            match SectionType::from_header(section) {
+            match section.sh_type(endian) {
                 sht::DYNSYM if is_dynamic => {
                     symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
                 }
@@ -2732,51 +2732,51 @@ fn compute_version_mapping(
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        SectionFlags::from_header(self).is_alloc()
+        self.sh_flags(LittleEndian).is_alloc()
     }
 
     fn is_writable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::WRITE)
+        self.sh_flags(LittleEndian).contains(shf::WRITE)
     }
 
     fn is_executable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::EXECINSTR)
+        self.sh_flags(LittleEndian).contains(shf::EXECINSTR)
     }
 
     fn is_tls(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::TLS)
+        self.sh_flags(LittleEndian).contains(shf::TLS)
     }
 
     fn is_merge_section(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::MERGE)
+        self.sh_flags(LittleEndian).contains(shf::MERGE)
     }
 
     fn is_strings(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::STRINGS)
+        self.sh_flags(LittleEndian).contains(shf::STRINGS)
     }
 
     fn should_retain(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GNU_RETAIN)
+        self.sh_flags(LittleEndian).contains(shf::GNU_RETAIN)
     }
 
     fn should_exclude(&self) -> bool {
-        SectionFlags::from_header(self).should_exclude()
+        self.sh_flags(LittleEndian).contains(shf::EXCLUDE)
     }
 
     fn is_group(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GROUP)
+        self.sh_flags(LittleEndian).contains(shf::GROUP)
     }
 
     fn is_note(&self) -> bool {
-        SectionType::from_header(self) == sht::NOTE
+        self.sh_type(LittleEndian) == sht::NOTE
     }
 
     fn is_prog_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::PROGBITS
+        self.sh_type(LittleEndian) == sht::PROGBITS
     }
 
     fn is_no_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::NOBITS
+        self.sh_type(LittleEndian) == sht::NOBITS
     }
 }
 
@@ -3682,7 +3682,7 @@ pub(crate) struct SectionAttributes {
 /// Section flags that should be propagated from input sections to the output section in which they
 /// are placed. Note, the inversion, so we keep all flags other than the one listed here.
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u64(!object::elf::SHF_GROUP);
+    object::elf::ShdrFlags(!object::elf::SHF_GROUP.0);
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Elf;
@@ -4295,7 +4295,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         TYPE_ORDER
             .iter()
             .position(|t| *t == self.segment_type)
-            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.0 as usize)
     }
 
     fn should_include_section(
@@ -4332,7 +4332,12 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}, {}", self.segment_type, self.segment_flags)
+        write!(
+            f,
+            "{}, {}",
+            pt::Display(self.segment_type),
+            self.segment_flags
+        )
     }
 }
 
@@ -4351,7 +4356,7 @@ pub(crate) struct BuiltInSectionDetails {
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
-    section_flags: SectionFlags::empty(),
+    section_flags: SectionFlags(0),
     link: &[],
     min_alignment: alignment::MIN,
     element_size: 0,
@@ -4759,7 +4764,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = SectionFlags::from_header(section);
+        let section_flags = section.sh_flags(LittleEndian);
 
         let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,

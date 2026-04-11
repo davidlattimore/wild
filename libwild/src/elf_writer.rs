@@ -98,7 +98,6 @@ use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
-use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -124,8 +123,10 @@ use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
+use object::elf::SymType;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
@@ -365,9 +366,7 @@ fn write_program_headers(
         let e = LittleEndian;
         let segment_details = layout.program_segments.segment_def(segment_id);
 
-        segment_header
-            .p_type
-            .set(e, segment_details.segment_type.raw());
+        segment_header.p_type.set(e, segment_details.segment_type);
 
         // Support executable stack (Wild defaults to non-executable stack)
         let mut segment_flags = segment_details.segment_flags;
@@ -1381,7 +1380,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
         entry.st_name.set(e, string_offset);
-        entry.st_info = 0;
+        entry.st_info = object::elf::SymInfo(0);
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
@@ -2122,7 +2121,7 @@ fn apply_relocations<
         .address()
         .context("Attempted to apply relocations to a section that we didn't load")?;
     let object_section = object.object.section(section_index)?;
-    let section_flags = SectionFlags::from_header(object_section);
+    let section_flags = object_section.sh_flags(LittleEndian);
     let mut modifier = RelocationModifier::Normal;
 
     let mut relocation_count = 0;
@@ -2291,7 +2290,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let section_flags = SectionFlags::from_header(eh_frame_section);
+    let section_flags = eh_frame_section.sh_flags(LittleEndian);
     let mut relocations = relocations.peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
@@ -4095,7 +4094,10 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(SymbolSection, u8)> {
+fn get_symbol_attributes(
+    layout: &ElfLayout,
+    symbol_id: SymbolId,
+) -> Result<(SymbolSection, SymType)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     let file = layout.symbol_db.file(file_id);
 
@@ -5029,15 +5031,14 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_type.raw());
+        entry.sh_type.set(e, section_type);
 
         // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
             output_sections
                 .section_flags(section_id)
-                .without(shf::COMPRESSED)
-                .raw(),
+                .without(shf::COMPRESSED),
         );
 
         let name = layout.output_sections.name(section_id).with_context(|| {

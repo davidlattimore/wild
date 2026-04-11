@@ -85,8 +85,7 @@ impl Converter {
                     let object::SectionFlags::Elf { sh_flags, .. } = section.flags() else {
                         unreachable!();
                     };
-                    let section_flags = SectionFlags::from(sh_flags);
-                    if section.address() == value && section_flags.contains(shf::ALLOC) {
+                    if section.address() == value && sh_flags.contains(shf::ALLOC) {
                         if section.data().map_or(0, <[u8]>::len) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
@@ -131,7 +130,7 @@ impl Converter {
                     .to_owned(),
             )),
             Converter::SectionFlags => Ok(ConvertedValue::Single(
-                SectionFlags::from(value).to_string(),
+                shf::Display(SectionFlags(value)).to_string(),
             )),
             Converter::BitFlags(items) => {
                 let mut bits = value;
@@ -239,13 +238,13 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
                 );
                 values.insert(
                     "flags",
-                    section_header.sh_flags.get(LittleEndian),
+                    section_header.sh_flags.get(LittleEndian).0,
                     Converter::SectionFlags,
                     object,
                 );
                 values.insert(
                     "type",
-                    section_header.sh_type.get(LittleEndian),
+                    section_header.sh_type.get(LittleEndian).0,
                     Converter::None,
                     object,
                 );

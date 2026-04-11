@@ -757,7 +757,7 @@ fn get_original_referent<'data, R: RType>(
 
             let flags = section.elf_section_header().sh_flags(LittleEndian);
 
-            if flags & object::elf::SHF_MERGE != 0 && flags & object::elf::SHF_STRINGS != 0 {
+            if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
                 let section_data = section.data()?;
                 let string_plus_rest = &section_data[symbol.address() as usize..];
                 if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
@@ -2619,7 +2619,10 @@ fn symbol_versions_by_name<'data>(
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
 fn is_merge_section(section: &ElfSection64<LittleEndian>) -> bool {
-    section.elf_section_header().sh_flags(LittleEndian) & object::elf::SHF_MERGE != 0
+    section
+        .elf_section_header()
+        .sh_flags(LittleEndian)
+        .contains(object::elf::SHF_MERGE)
 }
 
 /// Returns information about sections where we can uniquely locate that section in each input file

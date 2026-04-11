@@ -1,7 +1,6 @@
 use crate::Binary;
 use crate::Result;
 use anyhow::bail;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::Object as _;
@@ -25,7 +24,7 @@ fn validate(object: &Binary, dynamic: bool) -> Result {
         (sht::SYMTAB, object.elf_file.symbols())
     };
     for section in object.elf_file.elf_section_table().iter() {
-        if SectionType::from_header(section) == symtab_section_type {
+        if section.sh_type(LittleEndian) == symtab_section_type {
             symtab_info = section.sh_info(LittleEndian);
         }
     }

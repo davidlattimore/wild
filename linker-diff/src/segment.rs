@@ -3,7 +3,7 @@ use crate::header_diff::DiffMode;
 use crate::header_diff::FieldValues;
 use anyhow::Ok;
 use anyhow::Result;
-use linker_utils::elf::SegmentType;
+use linker_utils::elf::pt;
 use object::LittleEndian;
 use object::elf::PT_LOAD;
 use object::read::elf::ProgramHeader as _;
@@ -45,7 +45,7 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
                 object,
             );
         } else {
-            let segment_type = SegmentType::from_u32(p_type);
+            let segment_type = pt::Display(p_type);
 
             values.insert(
                 format!("{segment_type}.alignment"),
