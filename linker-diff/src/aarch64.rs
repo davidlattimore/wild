@@ -17,6 +17,8 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::utils::u32_from_slice;
+use linker_utils::utils::u64_from_slice;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -194,16 +196,15 @@ impl Arch for AArch64 {
 
     fn decode_thunk(bytes: &[u8], address: u64) -> Option<u64> {
         if bytes.len() >= 4 {
-            let insn0 = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+            let insn0 = u32_from_slice(&bytes[0..4]);
 
             // B <label> - a single unconditional branch used as a short-range thunk.
             // Encoding: bits[31:26]=000101, bits[25:0]=imm26 (signed, <<2 = byte offset).
             const B_MASK: u32 = 0xFC000000;
             const B_OPCODE: u32 = 0x14000000;
             if insn0 & B_MASK == B_OPCODE {
-                let imm26 = insn0 & 0x03FFFFFF;
-                let imm26_sext = ((imm26 << 6) as i32) >> 6;
-                return Some((address as i64 + i64::from(imm26_sext) * 4) as u64);
+                let (imm26_sext, _) = AArch64Instruction::JumpCall.read_value(&bytes[0..4]);
+                return Some((address as i64 + imm26_sext as i64 * 4) as u64);
             }
 
             // LDR x16, <pc_rel_literal> / BR x16.
@@ -213,18 +214,14 @@ impl Arch for AArch64 {
             const LDR_X16_LITERAL_MASK: u32 = 0xFF00001F;
             const LDR_X16_LITERAL: u32 = 0x58000010;
             if bytes.len() >= 16 {
-                let insn1 = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+                let insn1 = u32_from_slice(&bytes[4..8]);
                 if insn0 & LDR_X16_LITERAL_MASK == LDR_X16_LITERAL && insn1 == 0xD61F0200 {
-                    let imm19 = ((insn0 >> 5) & 0x7FFFF) as i32;
-                    let imm19_sext = (imm19 << 13) >> 13;
-                    let byte_offset = i64::from(imm19_sext) * 4;
-                    // `bytes` starts at `address`, so the literal buffer offset equals byte_offset.
+                    let (imm19_sext, _) = AArch64Instruction::Ldr.read_value(&bytes[0..4]);
+                    let byte_offset = imm19_sext as i64 * 4;
                     if let Ok(buf_offset) = usize::try_from(byte_offset)
                         && buf_offset + 8 <= bytes.len()
                     {
-                        let target =
-                            u64::from_le_bytes(bytes[buf_offset..buf_offset + 8].try_into().ok()?);
-                        return Some(target);
+                        return Some(u64_from_slice(&bytes[buf_offset..buf_offset + 8]));
                     }
                 }
             }
@@ -235,8 +232,8 @@ impl Arch for AArch64 {
             if bytes.len() >= 12 {
                 const BR_X16: u32 = 0xD61F0200;
 
-                let insn1 = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
-                let insn2 = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+                let insn1 = u32_from_slice(&bytes[4..8]);
+                let insn2 = u32_from_slice(&bytes[8..12]);
 
                 // Check ADRP x16 (Rd=16=0b10000): fixed bits [31]=1, [28:24]=10000, [4:0]=10000
                 const ADRP_MASK: u32 = 0x9F00001F;
@@ -250,19 +247,13 @@ impl Arch for AArch64 {
                     && insn1 & ADD_MASK == ADD_X16_X16
                     && insn2 == BR_X16
                 {
-                    // Decode ADRP immediate: immlo=[30:29], immhi=[23:5], imm = immhi:immlo
-                    let immlo = (insn0 >> 29) & 0x3;
-                    let immhi = (insn0 >> 5) & 0x7FFFF;
-                    let imm21 = ((immhi << 2) | immlo) as i32;
-                    // Sign-extend 21-bit value
-                    let imm21_sext = (imm21 << 11) >> 11;
-                    let page_offset = i64::from(imm21_sext) << 12;
+                    let (imm21_sext, _) = AArch64Instruction::Adr.read_value(&bytes[0..4]);
+                    let page_offset = (imm21_sext as i64) << 12;
                     let page_base = (address & !0xFFF) as i64;
                     let adrp_result = (page_base + page_offset) as u64;
 
-                    // Decode ADD immediate: imm12=[21:10]
-                    let add_imm = (insn1 >> 10) & 0xFFF;
-                    return Some(adrp_result + u64::from(add_imm));
+                    let (add_imm, _) = AArch64Instruction::Add.read_value(&bytes[4..8]);
+                    return Some(adrp_result + add_imm);
                 }
             }
         }

@@ -294,10 +294,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .map(|group| res_writer.take_shard(group.num_symbols))
         .collect_vec();
 
-    let thunk_block_addresses_out: Vec<Mutex<BTreeMap<SymbolId, u64>>> =
-        std::iter::repeat_with(Default::default)
-            .take(thunk_blocks.len())
-            .collect();
+    let thunk_block_addresses_out = std::iter::repeat_with(Default::default)
+        .take(thunk_blocks.len())
+        .collect();
 
     let resources = FinaliseLayoutResources {
         symbol_db: &symbol_db,
@@ -344,7 +343,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &resources.symbol_db.args.common().warning_callback,
     )?;
 
-    let thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>> = thunk_block_addresses_out
+    let thunk_block_addresses = thunk_block_addresses_out
         .into_iter()
         .map(|m| m.into_inner().unwrap())
         .collect();

@@ -172,10 +172,10 @@ pub(crate) trait Arch: Send + Sync + 'static {
         None
     }
 
-    /// Generate a thunk that jumps to the given target address. The thunk is placed at
-    /// `thunk_address`. Write the thunk bytes to the provided buffer. The buffer size equals
-    /// `ThunkConfig::thunk_size`. The thunk must be position-independent (PC-relative).
-    fn generate_thunk(_thunk_address: u64, _target_address: u64, _buf: &mut [u8]) {
+    /// Writes a thunk into the supplied buffer that jumps to the given target address. The thunk is
+    /// placed at `thunk_address`. The buffer size equals `ThunkConfig::thunk_size`. The thunk must
+    /// be position-independent (PC-relative).
+    fn write_thunk(_thunk_address: u64, _target_address: u64, _buf: &mut [u8]) {
         // Should only be called if thunk_config returns Some, in which case this must be
         // overridden.
         unimplemented!();

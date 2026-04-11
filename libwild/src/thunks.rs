@@ -38,6 +38,7 @@ use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use crossbeam_queue::SegQueue;
+use itertools::Itertools as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator as _;
@@ -356,7 +357,7 @@ fn assign_thunk_blocks_to_groups<'data, 'state, P: Platform>(
 ) -> Vec<ThunkBlockBuilder<'data, 'state, P>> {
     verbose_timing_phase!("Assign thunk blocks");
 
-    let post_gc_bounds: Vec<(FileId, u64, u64)> = group_states
+    let post_gc_bounds = group_states
         .iter()
         .enumerate()
         .flat_map(|(group_id, group)| {
@@ -372,7 +373,7 @@ fn assign_thunk_blocks_to_groups<'data, 'state, P: Platform>(
                     _ => None,
                 })
         })
-        .collect();
+        .collect_vec();
 
     let num_blocks = assign_thunk_blocks(
         post_gc_bounds.iter().copied(),
@@ -385,9 +386,9 @@ fn assign_thunk_blocks_to_groups<'data, 'state, P: Platform>(
         },
     );
 
-    let mut block_builders: Vec<ThunkBlockBuilder<'data, 'state, P>> = (0..num_blocks.max(1))
+    let mut block_builders = (0..num_blocks.max(1))
         .map(|_| ThunkBlockBuilder::default())
-        .collect();
+        .collect_vec();
 
     for group in group_states.iter() {
         for file in &group.files {

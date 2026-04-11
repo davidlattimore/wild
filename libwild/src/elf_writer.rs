@@ -1592,7 +1592,7 @@ fn write_thunks<'data, A: Arch<Platform = Elf>>(
             .split_off_mut(..thunk_size)
             .ok_or_else(|| crate::file_writer::insufficient_allocation("thunk space in .text"))?;
 
-        A::generate_thunk(thunk_address, target_address, thunk_buf);
+        A::write_thunk(thunk_address, target_address, thunk_buf);
 
         if emit_symbols {
             let orig_name = layout

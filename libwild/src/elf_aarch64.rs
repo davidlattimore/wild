@@ -31,6 +31,16 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x1f, 0x20, 0x03, 0xd5, // nop
 ];
 
+// ADRP+ADD+BR thunk template.
+const THUNK_TEMPLATE: &[u8] = &[
+    0x10, 0x00, 0x00, 0x90, // ADRP x16, 0
+    0x10, 0x02, 0x00, 0x91, // ADD  x16, x16, #0
+    0x00, 0x02, 0x1F, 0xD6, // BR   x16
+];
+
+/// The shortest range-limited branch for this arch.
+const MIN_BRANCH_RANGE: u64 = 128 * 1024 * 1024;
+
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
@@ -304,47 +314,26 @@ impl crate::platform::Arch for ElfAArch64 {
             primary_function_part_id: const {
                 output_section_id::TEXT.part_id_with_alignment(Alignment { exponent: 2 })
             },
-            min_branch_range: 128 * 1024 * 1024,
-            // ADRP x16 + ADD x16, x16 + BR x16 = 3 * 4 bytes, padded to 16 for alignment
-            thunk_size: 16,
+            min_branch_range: MIN_BRANCH_RANGE,
+            thunk_size: THUNK_TEMPLATE.len() as u64,
         })
     }
 
-    fn generate_thunk(thunk_address: u64, target_address: u64, buf: &mut [u8]) {
-        debug_assert_eq!(buf.len(), 16);
-
+    fn write_thunk(thunk_address: u64, target_address: u64, buf: &mut [u8]) {
         // Use ADRP+ADD+BR - a PC-relative thunk that works in PIE binaries.
-        //
-        // ADRP computes the page-aligned base address of the target, then ADD adds the
-        // page offset. Together they can reach any address within +/-4GB of the thunk.
+        buf.copy_from_slice(THUNK_TEMPLATE);
 
-        // Page-aligned addresses (each page is 4096 bytes)
-        let thunk_page = thunk_address & !0xFFF;
-        let target_page = target_address & !0xFFF;
-        let page_diff_bytes = (target_page as i64).wrapping_sub(thunk_page as i64);
-        // ADRP encodes (page_diff_bytes / 4096) as a 21-bit signed integer
-        let page_count = page_diff_bytes >> 12;
-        let imm21 = page_count as i32;
+        let thunk_page = thunk_address & !PAGE_MASK_4KB;
+        let target_page = target_address & !PAGE_MASK_4KB;
+        let page_diff = (target_page as i64).wrapping_sub(thunk_page as i64);
+        let page_count = (page_diff / SIZE_4KB as i64) as u64 & 0x1F_FFFF;
+        AArch64Instruction::Adr.write_to_value(page_count, false, &mut buf[0..4]);
 
-        // ADRP x16: encoding = 1|immhi(19bits)|10000|immlo(2bits)|Rd(5bits)
-        // where Rd = x16 = 16, immlo = imm21[1:0], immhi = imm21[20:2]
-        let immlo = (imm21 & 0x3) as u32;
-        let immhi = ((imm21 >> 2) & 0x7_FFFF) as u32;
-        let adrp: u32 = 0x9000_0010 | (immlo << 29) | (immhi << 5);
-
-        // ADD x16, x16, #(target & 0xFFF)
-        // Encoding: 1 0 0 10001 00 imm12 Rn Rd  (sf=1, no shift)
-        // = 0x91000000 | (imm12 << 10) | (x16_rn << 5) | x16_rd
-        let add_imm = (target_address & 0xFFF) as u32;
-        let add: u32 = 0x9100_0210 | (add_imm << 10);
-
-        // BR x16
-        let br: u32 = 0xD61F_0200;
-
-        buf[0..4].copy_from_slice(&adrp.to_le_bytes());
-        buf[4..8].copy_from_slice(&add.to_le_bytes());
-        buf[8..12].copy_from_slice(&br.to_le_bytes());
-        buf[12..16].fill(0);
+        AArch64Instruction::Add.write_to_value(
+            target_address & PAGE_MASK_4KB,
+            false,
+            &mut buf[4..8],
+        );
     }
 }
 
