@@ -139,19 +139,34 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     }
 
     // Memory section (spec §9.6): compute from stack + data size.
-    let stack_size = layout
-        .symbol_db
-        .args
-        .stack_size
-        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
-    let total_memory = stack_size + merged.data_size;
-    let pages = (total_memory + 65535) / 65536; // round up to pages
-    let pages = pages.max(1); // at least 1 page
+    // Respect --initial-memory, --max-memory, --no-growable-memory.
+    let args = layout.symbol_db.args;
+    let total_memory = {
+        let stack_size = args.stack_size.unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
+        let computed = stack_size + merged.data_size;
+        if let Some(initial) = args.initial_memory {
+            (initial as u32).max(computed)
+        } else {
+            computed
+        }
+    };
+    let pages = ((total_memory + 65535) / 65536).max(1);
     {
         let mut payload = Vec::new();
         write_leb128(&mut payload, 1); // 1 memory
-        payload.push(0x00); // no max
-        write_leb128(&mut payload, pages);
+        if let Some(max) = args.max_memory {
+            let max_pages = ((max + 65535) / 65536).max(pages as u64) as u32;
+            payload.push(0x01); // has max
+            write_leb128(&mut payload, pages);
+            write_leb128(&mut payload, max_pages);
+        } else if args.no_growable_memory {
+            payload.push(0x01); // has max = min (no growth)
+            write_leb128(&mut payload, pages);
+            write_leb128(&mut payload, pages);
+        } else {
+            payload.push(0x00); // no max
+            write_leb128(&mut payload, pages);
+        }
         write_section(&mut out, SECTION_MEMORY, &payload);
     }
 
@@ -788,7 +803,12 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         .args
         .stack_size
         .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
-    let mut data_offset = stack_size;
+    // --global-base: override where data starts in linear memory.
+    let mut data_offset = if let Some(base) = layout.symbol_db.args.global_base {
+        base as u32
+    } else {
+        stack_size
+    };
     let mut data_segments: Vec<OutputDataSegment> = Vec::new();
     // Per-object: map from data segment index to output memory offset.
     let mut segment_output_offsets: Vec<Vec<u32>> = Vec::new();

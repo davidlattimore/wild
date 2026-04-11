@@ -157,15 +157,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
         }
     }
     // Skip tests for features not yet implemented in wild's WASM support.
-    // Tier 2: advanced memory layout options
-    if content.contains("__global_base")
-        || content.contains("stack-size")
-        || content.contains("stack-first")
-        || content.contains("--initial-memory")
-        || content.contains("--max-memory")
-        || content.contains("--initial-heap")
-        || content.contains("--global-base")
-    {
+    // Stack-first layout (data before stack, not yet implemented)
+    if content.contains("stack-first") {
         return true;
     }
     // Multi-table / table manipulation / import-table CHECK patterns
