@@ -614,6 +614,7 @@ fn write_macho<A: Arch<Platform = MachO>>(
         out,
         layout,
         mappings,
+        &mut rebase_fixups,
         &mut bind_fixups,
         &mut imports,
         has_extra_dylibs,
@@ -1542,10 +1543,10 @@ fn write_exe_symtab(
     // Build section ranges from the already-written headers for n_sect lookup.
     let section_ranges = parse_section_ranges(out);
 
-    // Write nlist64 entries (16 bytes each). No alignment padding —
-    // LINKEDIT must be fully packed for strip(1) compatibility.
+    // Write nlist64 entries (16 bytes each).
+    // Align symoff to 8 bytes for nlist_64 natural alignment (n_value is u64).
     // Stab entries come first (they're part of the local symbol range).
-    let symoff = start;
+    let symoff = (start + 7) & !7;
     let nsyms = stab_entries.len() + entries.len();
     let mut pos = symoff;
 
@@ -1832,6 +1833,7 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
     out: &mut [u8],
     layout: &Layout<'_, MachO>,
     mappings: &[SegmentMapping],
+    rebase_fixups: &mut Vec<RebaseFixup>,
     bind_fixups: &mut Vec<BindFixup>,
     imports: &mut Vec<ImportEntry>,
     has_extra_dylibs: bool,
@@ -1872,6 +1874,18 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
         }
 
         if let Some(got_file_off) = vm_addr_to_file_offset(got_addr, mappings) {
+            // If the symbol is defined internally (raw_value != 0), write a
+            // rebase fixup instead of a bind fixup. A bind fixup for a defined
+            // symbol causes dyld to look for it in dylibs, crashing at launch.
+            if res.raw_value != 0 {
+                out[got_file_off..got_file_off + 8]
+                    .copy_from_slice(&res.raw_value.to_le_bytes());
+                rebase_fixups.push(RebaseFixup {
+                    file_offset: got_file_off,
+                    target: res.raw_value,
+                });
+                continue;
+            }
             let import_index = imports.len() as u32;
             // For ObjC stubs, bind the GOT entry to _objc_msgSend.
             let import_name = if is_objc_stub {
@@ -1979,7 +1993,18 @@ fn write_got_entries(
                 } else {
                     // Undefined symbol with GOT entry (e.g. personality pointer
                     // from __eh_frame): create a bind fixup so dyld fills the GOT.
+                    // But first check if the symbol is actually defined elsewhere
+                    // in this binary (broken definition chain).
                     let symbol_id = SymbolId::from_usize(sym_idx);
+                    if let Some(addr) = find_resolution_by_name(symbol_id, layout) {
+                        out[file_off..file_off + 8]
+                            .copy_from_slice(&addr.to_le_bytes());
+                        rebase_fixups.push(RebaseFixup {
+                            file_offset: file_off,
+                            target: addr,
+                        });
+                        continue;
+                    }
                     let name = match layout.symbol_db.symbol_name(symbol_id) {
                         Ok(n) => n.bytes().to_vec(),
                         Err(_) => continue,
@@ -2003,6 +2028,38 @@ fn write_got_entries(
         }
     }
     Ok(())
+}
+
+/// When a symbol's merged resolution has `raw_value == 0` (broken definition
+/// chain), search all resolutions for a symbol with the same name that has a
+/// non-zero address. This handles the case where archive members define
+/// symbols but the definition chain wasn't properly connected (e.g., sym-0
+/// points to itself instead of the actual definition).
+fn find_resolution_by_name(
+    sym_id: crate::symbol_db::SymbolId,
+    layout: &Layout<'_, MachO>,
+) -> Option<u64> {
+    let name = layout.symbol_db.symbol_name(sym_id).ok()?;
+    let name_bytes = name.bytes();
+    if name_bytes.is_empty() {
+        return None;
+    }
+    for (idx, res) in layout.symbol_resolutions.iter().enumerate() {
+        let Some(res) = res else { continue };
+        if res.raw_value == 0 {
+            continue;
+        }
+        let other_id = crate::symbol_db::SymbolId::from_usize(idx);
+        if other_id == sym_id {
+            continue;
+        }
+        if let Ok(other_name) = layout.symbol_db.symbol_name(other_id) {
+            if other_name.bytes() == name_bytes {
+                return Some(res.raw_value);
+            }
+        }
+    }
+    None
 }
 
 /// Copy an object's section data to the output and apply relocations.
@@ -2480,6 +2537,15 @@ fn apply_relocations(
                 ),
                 other => {
                     // Symbol has no global resolution (or raw_value=0).
+                    // Before falling back, check if there's another resolution
+                    // for the same name with a non-zero address. This handles
+                    // the case where the definition chain is broken (e.g., the
+                    // symbol is defined in an archive member but the chain
+                    // resolves to sym-0).
+                    if let Some(addr) = find_resolution_by_name(sym_id, layout) {
+                        (addr, None, None)
+                    } else
+                    {
                     // Try computing from section base + symbol offset
                     // (handles local labels like GCC_except_table*, ltmp*).
                     use object::read::macho::Nlist as _;
@@ -2587,6 +2653,7 @@ fn apply_relocations(
                     } else {
                         continue;
                     }
+                    } // close find_resolution_by_name else block
                 }
             }
         } else {
@@ -5444,6 +5511,16 @@ fn validate_macho_output(buf: &[u8]) -> Result {
     // rebase targets are within the image and strides stay within pages.
     validate_chained_fixups(buf)?;
 
+    // Validate that no chained fixup import references a symbol that is
+    // actually defined in this binary. Such entries cause dyld to look up
+    // the symbol from dylibs instead of using the internal definition,
+    // leading to "Symbol not found" crashes at runtime.
+    validate_no_self_imports(buf)?;
+
+    // Validate LINKEDIT alignment: LC_SYMTAB symoff must be 8-byte aligned
+    // for nlist_64 entries, and stroff must be 4-byte aligned.
+    validate_linkedit_alignment(buf)?;
+
     Ok(())
 }
 
@@ -5604,6 +5681,184 @@ fn validate_chained_fixups(buf: &[u8]) -> Result {
                     );
                 }
                 file_off = next_off;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that chained fixup imports don't reference symbols defined in
+/// this binary. When a symbol is both defined internally and listed as an
+/// import, dyld will try to resolve it from a dylib, causing a runtime
+/// "Symbol not found" crash.
+fn validate_no_self_imports(buf: &[u8]) -> Result {
+    use object::read::macho::MachHeader as _;
+    let le = object::Endianness::Little;
+    let header = match object::macho::MachHeader64::<object::Endianness>::parse(buf, 0) {
+        Ok(h) => h,
+        Err(_) => return Ok(()),
+    };
+    let mut cmds = match header.load_commands(le, buf, 0) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    // Collect defined symbol names from LC_SYMTAB.
+    let mut defined_syms: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+
+    while let Ok(Some(cmd)) = cmds.next() {
+        if let Ok(Some(symtab)) = cmd.symtab() {
+            let symoff = symtab.symoff.get(le) as usize;
+            let nsyms = symtab.nsyms.get(le) as usize;
+            let symtab_stroff = symtab.stroff.get(le) as usize;
+            for i in 0..nsyms {
+                let sym_off = symoff + i * 16;
+                if sym_off + 16 > buf.len() {
+                    break;
+                }
+                let n_strx = u32::from_le_bytes(buf[sym_off..sym_off + 4].try_into().unwrap());
+                let n_type = buf[sym_off + 4];
+                let n_sect = buf[sym_off + 5];
+
+                // Skip stab entries (high bits set) and undefined symbols.
+                if (n_type & 0xE0) != 0 {
+                    continue;
+                }
+                // N_SECT (0x0e) with a valid section means it's defined.
+                if (n_type & 0x0e) == 0x0e && n_sect != 0 {
+                    let name_start = symtab_stroff + n_strx as usize;
+                    if name_start < buf.len() {
+                        let name_end = buf[name_start..]
+                            .iter()
+                            .position(|&b| b == 0)
+                            .map(|p| name_start + p)
+                            .unwrap_or(name_start);
+                        let name = &buf[name_start..name_end];
+                        if !name.is_empty() {
+                            defined_syms.insert(name.to_vec());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if defined_syms.is_empty() {
+        return Ok(());
+    }
+
+    // Find LC_DYLD_CHAINED_FIXUPS and extract import symbol names.
+    let mut cf_off = 0u32;
+    let mut cf_size = 0u32;
+    {
+        let mut off = 32usize;
+        let ncmds = u32::from_le_bytes(buf[16..20].try_into().unwrap_or([0; 4])) as usize;
+        for _ in 0..ncmds {
+            if off + 8 > buf.len() {
+                break;
+            }
+            let cmd_val = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+            let cmdsize = u32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap()) as usize;
+            if cmd_val == 0x8000_0034 && off + 16 <= buf.len() {
+                cf_off = u32::from_le_bytes(buf[off + 8..off + 12].try_into().unwrap());
+                cf_size = u32::from_le_bytes(buf[off + 12..off + 16].try_into().unwrap());
+            }
+            off += cmdsize;
+        }
+    }
+
+    if cf_off == 0 || cf_size == 0 {
+        return Ok(());
+    }
+
+    let cf = match buf.get(cf_off as usize..(cf_off + cf_size) as usize) {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+    if cf.len() < 24 {
+        return Ok(());
+    }
+
+    let imports_offset = u32::from_le_bytes(cf[8..12].try_into().unwrap()) as usize;
+    let symbols_offset = u32::from_le_bytes(cf[12..16].try_into().unwrap()) as usize;
+    let imports_count = u32::from_le_bytes(cf[16..20].try_into().unwrap()) as usize;
+    let imports_format = u32::from_le_bytes(cf[20..24].try_into().unwrap());
+
+    let import_entry_size = match imports_format {
+        1 => 4usize,
+        2 => 8,
+        3 => 16,
+        _ => return Ok(()),
+    };
+
+    for i in 0..imports_count {
+        let entry_off = imports_offset + i * import_entry_size;
+        if entry_off + 4 > cf.len() {
+            break;
+        }
+        let entry_word = u32::from_le_bytes(cf[entry_off..entry_off + 4].try_into().unwrap());
+        // For format 1: bits [8:31] are name_offset (24 bits)
+        // For format 2: bits [8:31] are name_offset (24 bits)
+        // For format 3: bits from a u64, but name_offset is [32:63] — different layout
+        let name_offset = if imports_format == 3 {
+            if entry_off + 8 > cf.len() {
+                break;
+            }
+            let hi = u32::from_le_bytes(cf[entry_off + 4..entry_off + 8].try_into().unwrap());
+            hi as usize
+        } else {
+            (entry_word >> 9) as usize
+        };
+
+        let abs_name_off = symbols_offset + name_offset;
+        if abs_name_off >= cf.len() {
+            continue;
+        }
+        let name_end = cf[abs_name_off..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(abs_name_off, |p| abs_name_off + p);
+        let import_name = &cf[abs_name_off..name_end];
+
+        if defined_syms.contains(import_name) {
+            let name_str = String::from_utf8_lossy(import_name);
+            crate::bail!(
+                "validate: chained fixup import '{name_str}' is also defined in this binary. \
+                 This will cause dyld to look for it in dylibs instead of using the \
+                 internal definition, leading to a runtime crash."
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that LINKEDIT content is properly aligned.
+/// - LC_SYMTAB symoff must be 8-byte aligned (nlist_64 entries are 16 bytes,
+///   but the minimum natural alignment is 8 for the n_value field).
+/// - LC_SYMTAB stroff should be 4-byte aligned.
+fn validate_linkedit_alignment(buf: &[u8]) -> Result {
+    use object::read::macho::MachHeader as _;
+    let le = object::Endianness::Little;
+    let header = match object::macho::MachHeader64::<object::Endianness>::parse(buf, 0) {
+        Ok(h) => h,
+        Err(_) => return Ok(()),
+    };
+    let mut cmds = match header.load_commands(le, buf, 0) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    while let Ok(Some(cmd)) = cmds.next() {
+        if let Ok(Some(symtab)) = cmd.symtab() {
+            let symoff = symtab.symoff.get(le);
+            let nsyms = symtab.nsyms.get(le);
+            if nsyms > 0 && symoff % 8 != 0 {
+                crate::bail!(
+                    "validate: LC_SYMTAB symoff {symoff:#x} is not 8-byte aligned \
+                     (required for nlist_64 entries)"
+                );
             }
         }
     }

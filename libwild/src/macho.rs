@@ -1107,7 +1107,13 @@ impl platform::Platform for MachO {
             // not found in any input or linked dylib. Only check when we have
             // .tbd symbol data (meaning syslibroot was provided and we can
             // distinguish dylib imports from truly missing symbols).
+            // When -syslibroot was not explicitly set (SDK auto-discovered),
+            // skip symbols whose definition chain is self-referencing, as
+            // these may be defined by archive members whose definition
+            // chains haven't been connected yet.
+            let has_explicit_syslibroot = resources.symbol_db.args.syslibroot.is_some();
             if is_def_undef
+                && (has_explicit_syslibroot || symbol_id != local_symbol_id)
                 && !resources.symbol_db.args.dylib_symbols.is_empty()
                 && !crate::platform::Args::should_allow_object_undefined(
                     resources.symbol_db.args,

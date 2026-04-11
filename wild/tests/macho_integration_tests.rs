@@ -100,6 +100,7 @@ struct TestConfig {
     expect_error: Option<String>,
     run_enabled: bool,
     use_clang_driver: bool,
+    use_direct_linker: bool,
     contains: Vec<String>,
     does_not_contain: Vec<String>,
     expect_syms: Vec<String>,
@@ -153,6 +154,7 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
             "ExpectError" => cfg.expect_error = Some(value.to_string()),
             "RunEnabled" => cfg.run_enabled = value.trim() != "false",
             "LinkerDriver" if value.trim().starts_with("clang") => cfg.use_clang_driver = true,
+            "LinkerDriver" if value.trim() == "direct" => cfg.use_direct_linker = true,
             "Contains" => cfg.contains.push(value.to_string()),
             "DoesNotContain" => cfg.does_not_contain.push(value.to_string()),
             "ExpectSym" => cfg
@@ -211,11 +213,17 @@ fn run_test(
         // Rust files: compile + link via rustc with wild as linker.
         let output = build_dir.join(test_name);
         let mut cmd = Command::new("rustc");
-        cmd.arg(primary)
-            .arg("-o")
-            .arg(&output)
-            .arg("-Clinker=clang")
-            .arg(format!("-Clink-arg=-fuse-ld={}", wild_bin.display()));
+        cmd.arg(primary).arg("-o").arg(&output);
+        if config.use_direct_linker {
+            // Use wild as the linker directly (rustc -Clinker=wild).
+            // This is how cargo invokes the linker for build scripts.
+            cmd.arg(format!("-Clinker={}", wild_bin.display()));
+        } else {
+            // Use clang as driver with wild as the backing linker.
+            cmd.arg("-Clinker=clang")
+                .arg(format!("-Clink-arg=-fuse-ld={}", wild_bin.display()));
+        }
+        cmd.env("WILD_VALIDATE_OUTPUT", "1");
         for arg in &config.link_args {
             cmd.arg(format!("-Clink-arg={arg}"));
         }
@@ -232,6 +240,11 @@ fn run_test(
             }
             return Err(format!("rustc failed:\n{stderr}"));
         }
+
+        // Verify Mach-O structural invariants.
+        let binary = std::fs::read(&output).map_err(|e| format!("read output: {e}"))?;
+        verify_macho_invariants(&binary, &output)?;
+
         if config.run_enabled {
             let run = Command::new(&output)
                 .output()

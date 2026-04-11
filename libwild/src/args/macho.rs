@@ -392,6 +392,66 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         handle_tbd_input(args, path)?;
     }
 
+    // Add default framework search paths unless -Z suppresses them.
+    // ld64 searches /Library/Frameworks and /System/Library/Frameworks
+    // by default. On modern macOS, the actual framework binaries are in
+    // the dyld shared cache and the on-disk paths are broken symlinks;
+    // only the SDK .tbd stubs work. We try syslibroot first, then
+    // discover the SDK via `xcrun --show-sdk-path`, then fall back to
+    // the bare system paths.
+    // Discover SDK path when frameworks are pending and no -syslibroot was given.
+    let discovered_sdk = if !args.no_default_search_paths
+        && args.syslibroot.is_none()
+        && !args.pending_frameworks.is_empty()
+    {
+        discover_sdk_path()
+    } else {
+        None
+    };
+
+    if !args.no_default_search_paths && !args.pending_frameworks.is_empty() {
+        let sdk_root = args.syslibroot.clone().or(discovered_sdk.clone());
+        let mut add_fw_path = |p: &Path| {
+            if p.is_dir() && !args.framework_search_paths.iter().any(|e| **e == *p) {
+                args.framework_search_paths.push(Box::from(p));
+            }
+        };
+        if let Some(ref root) = sdk_root {
+            add_fw_path(&root.join("System/Library/Frameworks"));
+            add_fw_path(&root.join("Library/Frameworks"));
+        }
+        add_fw_path(Path::new("/System/Library/Frameworks"));
+        add_fw_path(Path::new("/Library/Frameworks"));
+
+        // When we discovered the SDK to resolve frameworks, also collect
+        // system library symbols so the undefined-symbol check has a
+        // complete picture. Without this, framework symbols populate
+        // dylib_symbols but system lib symbols don't, causing false
+        // "undefined symbol" errors.
+        if let Some(ref sdk) = sdk_root {
+            if args.dylib_symbols.is_empty() || args.syslibroot.is_none() {
+                let usr_lib = sdk.join("usr/lib");
+                if usr_lib.is_dir() {
+                    let system_tbd = usr_lib.join("libSystem.tbd");
+                    if system_tbd.exists() {
+                        collect_tbd_symbols(&system_tbd, &mut args.dylib_symbols);
+                        let system_dir = usr_lib.join("system");
+                        if system_dir.is_dir() {
+                            if let Ok(entries) = std::fs::read_dir(&system_dir) {
+                                for entry in entries.flatten() {
+                                    let p = entry.path();
+                                    if p.extension().map_or(false, |e| e == "tbd") {
+                                        collect_tbd_symbols(&p, &mut args.dylib_symbols);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Resolve deferred framework links now that all -F paths are collected.
     let pending = std::mem::take(&mut args.pending_frameworks);
     for (name, needed) in &pending {
@@ -1312,6 +1372,24 @@ fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<
             _ => {}
         }
     }
+}
+
+/// Discover the macOS SDK path via `xcrun --show-sdk-path`.
+/// Returns `None` if xcrun is unavailable or fails.
+fn discover_sdk_path() -> Option<Box<Path>> {
+    std::process::Command::new("xcrun")
+        .args(["--show-sdk-path"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| Box::from(Path::new(s.trim())))
+            } else {
+                None
+            }
+        })
 }
 
 /// Search framework search paths for a framework and register it as a dylib dependency.
