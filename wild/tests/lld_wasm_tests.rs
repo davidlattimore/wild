@@ -152,6 +152,7 @@ fn should_skip(content: &str, path: &Path) -> bool {
                 | "local-symbols"
                 | "name-section-mangling"
                 | "weak-undefined"
+                | "version"  // uses llvm-readobj
         ) {
             return true;
         }
@@ -159,6 +160,10 @@ fn should_skip(content: &str, path: &Path) -> bool {
     // Skip tests for features not yet implemented in wild's WASM support.
     // Stack-first layout (data before stack, not yet implemented)
     if content.contains("stack-first") {
+        return true;
+    }
+    // LTO bitcode inputs (need llvm-as/opt and LTO support)
+    if content.contains("llvm-as") || content.contains(".bc") || content.contains("RUN: opt ") {
         return true;
     }
     // Multi-table / table manipulation / import-table CHECK patterns
@@ -428,7 +433,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
         );
     }
 
-    // lto/ subdirectory tests (all ignored — need llc)
+    // lto/ subdirectory tests — run through should_skip like main tests.
     let lto_dir = test_dir.join("lto");
     if lto_dir.is_dir() {
         for entry in std::fs::read_dir(&lto_dir).unwrap() {
@@ -440,7 +445,9 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
                 _ => continue,
             }
 
+            let content = std::fs::read_to_string(&path).unwrap();
             let test_name = path.file_stem().unwrap().to_string_lossy().to_string();
+            let skip = should_skip(&content, &path);
             let ctx = ctx.clone();
             let test_path = path.clone();
 
@@ -448,7 +455,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
                 libtest_mimic::Trial::test(format!("lld-wasm/lto/{test_name}"), move || {
                     run_wasm_test(&ctx, &test_path).map_err(Into::into)
                 })
-                .with_ignored_flag(true),
+                .with_ignored_flag(skip),
             );
         }
     }
