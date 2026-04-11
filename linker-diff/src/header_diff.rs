@@ -82,7 +82,7 @@ impl Converter {
                 // if there is no non-empty sections at that address.
                 let mut empty_section_name = None;
                 for section in obj.elf_file.sections() {
-                    let object::SectionFlags::Elf { sh_flags } = section.flags() else {
+                    let object::SectionFlags::Elf { sh_flags, .. } = section.flags() else {
                         unreachable!();
                     };
                     let section_flags = SectionFlags::from(sh_flags);
