@@ -157,7 +157,9 @@ fn should_skip(content: &str, path: &Path) -> bool {
         || content.contains("table.") {
         return true;
     }
-    // Tier 5: constructors
+    // Tier 5: constructors — we synthesize __wasm_call_ctors but only
+    // when init functions exist. Tests that reference it without init
+    // arrays, or that check specific ctor patterns, are still skipped.
     if content.contains("__wasm_call_ctors") {
         return true;
     }

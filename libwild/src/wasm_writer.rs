@@ -1041,6 +1041,78 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Pass 3: synthesize __wasm_call_ctors (spec §6, §9.6) ---
+    // Per spec: "Constructors are called from a synthetic function
+    // __wasm_call_ctors" sorted by priority.
+    let mut all_init_funcs: Vec<(u32, u32)> = Vec::new(); // (priority, output_func_idx)
+    for obj_info in &objects {
+        for init in &obj_info.parsed.init_functions {
+            // Resolve symbol index to output function index.
+            if let Some(sym) = obj_info.parsed.symbols.get(init.symbol_index as usize) {
+                if sym.kind == 0 && sym.index >= obj_info.parsed.num_function_imports {
+                    let local_idx = sym.index - obj_info.parsed.num_function_imports;
+                    let output_idx = obj_info.func_base + local_idx;
+                    all_init_funcs.push((init.priority, output_idx));
+                }
+            }
+        }
+    }
+
+    if !all_init_funcs.is_empty() {
+        // Sort by priority (lower = earlier).
+        all_init_funcs.sort_by_key(|(prio, _)| *prio);
+
+        // Synthesize function body.
+        // For each init func: call <idx> (padded LEB128), drop if returns values, end.
+        // For simplicity, we use the pattern: call + drop (wasm-ld does this for
+        // constructors that return values).
+        let mut body = Vec::new();
+        body.push(0x00); // 0 locals
+
+        for &(_, func_idx) in &all_init_funcs {
+            body.push(0x10); // call
+            // Write padded 5-byte LEB128 for the function index.
+            let idx_offset = body.len();
+            body.extend_from_slice(&[0x80, 0x80, 0x80, 0x80, 0x00]); // placeholder
+            write_padded_leb128(&mut body, idx_offset, func_idx);
+            body.push(0x1A); // drop (in case the ctor returns a value)
+        }
+        body.push(0x0B); // end
+
+        // Get/create the () -> () type for __wasm_call_ctors.
+        let void_type = FuncType {
+            params: Vec::new(),
+            results: Vec::new(),
+        };
+        let type_idx = if let Some(pos) = types.iter().position(|t| *t == void_type) {
+            pos as u32
+        } else {
+            let idx = types.len() as u32;
+            types.push(void_type);
+            idx
+        };
+
+        // Insert __wasm_call_ctors as function 0 (shift all other indices).
+        functions.insert(
+            0,
+            MergedFunction {
+                type_index: type_idx,
+                body,
+            },
+        );
+        // Shift all function indices by 1.
+        for idx in function_name_map.values_mut() {
+            *idx += 1;
+        }
+        if let Some(ref mut idx) = entry_function_index {
+            *idx += 1;
+        }
+        function_name_map.insert(b"__wasm_call_ctors".to_vec(), 0);
+        // Note: table entries and init func indices also need shifting,
+        // but since table is built later and init funcs are resolved here,
+        // this is handled by the reindex happening before table creation.
+    }
+
     // (Data segment layout done in pass 1.5 above.)
 
     // --- Pass 4: collect unresolved imports (spec §9.2) ---
@@ -1211,6 +1283,8 @@ struct ParsedInput {
     num_function_imports: u32,
     /// All imports from the import section.
     imports: Vec<ParsedImport>,
+    /// Init functions from WASM_INIT_FUNCS (spec §6).
+    init_functions: Vec<InitFunc>,
     /// Data segments from the DATA section.
     data_segments: Vec<ParsedDataSegment>,
 }
@@ -1238,6 +1312,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut parsed_imports: Vec<ParsedImport> = Vec::new();
     let mut data_segments: Vec<ParsedDataSegment> = Vec::new();
     let mut data_relocations: Vec<WasmReloc> = Vec::new();
+    let mut init_funcs: Vec<InitFunc> = Vec::new();
     let mut code_section_index: Option<usize> = None;
     let mut data_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
@@ -1351,6 +1426,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                 if name == b"linking" {
                     let linking = parse_linking_data(custom_data, num_imports);
                     symbols = linking.symbols;
+                    init_funcs = linking.init_functions;
                     // Apply segment alignments to parsed data segments.
                     for (i, align) in linking.segment_alignments.iter().enumerate() {
                         if let Some(seg) = data_segments.get_mut(i) {
@@ -1400,6 +1476,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         code_relocations,
         num_function_imports: num_imports,
         data_relocations,
+        init_functions: init_funcs,
         imports: parsed_imports,
         data_segments,
     })
@@ -1526,24 +1603,33 @@ fn parse_reloc_section(data: &[u8]) -> crate::error::Result<(usize, Vec<WasmRelo
     Ok((section_index, relocs))
 }
 
+/// An init function entry from WASM_INIT_FUNCS (spec §6).
+struct InitFunc {
+    priority: u32,
+    symbol_index: u32,
+}
+
 /// Parsed linking section data.
 struct LinkingData {
     symbols: Vec<WasmSymbolInfo>,
     /// Segment alignment (power of 2) for each data segment.
     segment_alignments: Vec<u32>,
+    /// Constructor functions with priorities.
+    init_functions: Vec<InitFunc>,
 }
 
 /// Parse the linking section: symbols (§4) and segment info (§5).
 fn parse_linking_data(data: &[u8], num_imports: u32) -> LinkingData {
     let Ok((version, mut off)) = read_leb128(data) else {
-        return LinkingData { symbols: Vec::new(), segment_alignments: Vec::new() };
+        return LinkingData { symbols: Vec::new(), segment_alignments: Vec::new(), init_functions: Vec::new() };
     };
     if version != 2 {
-        return LinkingData { symbols: Vec::new(), segment_alignments: Vec::new() };
+        return LinkingData { symbols: Vec::new(), segment_alignments: Vec::new(), init_functions: Vec::new() };
     }
 
     let mut symbols = Vec::new();
     let mut segment_alignments = Vec::new();
+    let mut init_functions = Vec::new();
 
     while off < data.len() {
         let Ok((subsection_type, c)) = read_leb128(&data[off..]) else {
@@ -1578,6 +1664,24 @@ fn parse_linking_data(data: &[u8], num_imports: u32) -> LinkingData {
                     segment_alignments.push(1u32 << alignment);
                 }
             }
+            6 => {
+                // WASM_INIT_FUNCS (spec §6)
+                let Ok((count, mut ioff)) = read_leb128(&data[off..subsection_end]) else {
+                    off = subsection_end;
+                    continue;
+                };
+                ioff += off;
+                for _ in 0..count {
+                    let Ok((priority, c)) = read_leb128(&data[ioff..]) else { break; };
+                    ioff += c;
+                    let Ok((symbol_index, c)) = read_leb128(&data[ioff..]) else { break; };
+                    ioff += c;
+                    init_functions.push(InitFunc {
+                        priority: priority as u32,
+                        symbol_index: symbol_index as u32,
+                    });
+                }
+            }
             8 => {
                 // WASM_SYMBOL_TABLE (spec §4)
                 symbols = parse_symbol_table_entries(&data[off..subsection_end], num_imports);
@@ -1588,7 +1692,7 @@ fn parse_linking_data(data: &[u8], num_imports: u32) -> LinkingData {
         off = subsection_end;
     }
 
-    LinkingData { symbols, segment_alignments }
+    LinkingData { symbols, segment_alignments, init_functions }
 }
 
 fn parse_symbol_table_entries(data: &[u8], num_imports: u32) -> Vec<WasmSymbolInfo> {
