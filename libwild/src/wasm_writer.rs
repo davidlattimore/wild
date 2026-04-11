@@ -67,6 +67,28 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_TYPE, &payload);
     }
 
+    // Import section (spec §9.6: between type and function).
+    if !merged.imports.is_empty() {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, merged.imports.len() as u32);
+        for imp in &merged.imports {
+            write_name(&mut payload, &imp.module);
+            write_name(&mut payload, &imp.field);
+            match &imp.kind {
+                ImportKind::Function(type_idx) => {
+                    payload.push(0x00);
+                    write_leb128(&mut payload, *type_idx);
+                }
+                ImportKind::Global { valtype, mutable } => {
+                    payload.push(0x03);
+                    payload.push(*valtype);
+                    payload.push(if *mutable { 1 } else { 0 });
+                }
+            }
+        }
+        write_section(&mut out, SECTION_IMPORT, &payload);
+    }
+
     // Function section: type index for each function.
     if !merged.functions.is_empty() {
         let mut payload = Vec::new();
@@ -429,11 +451,18 @@ fn gc_functions(merged: &mut MergedModule) {
         })
         .collect();
 
-    // GC unused types.
+    // GC unused types — keep types referenced by functions AND imports.
     let mut type_used = vec![false; merged.types.len()];
     for func in &merged.functions {
         if (func.type_index as usize) < type_used.len() {
             type_used[func.type_index as usize] = true;
+        }
+    }
+    for imp in &merged.imports {
+        if let ImportKind::Function(type_idx) = &imp.kind {
+            if (*type_idx as usize) < type_used.len() {
+                type_used[*type_idx as usize] = true;
+            }
         }
     }
     let mut type_map: Vec<Option<u32>> = vec![None; merged.types.len()];
@@ -451,10 +480,17 @@ fn gc_functions(merged: &mut MergedModule) {
         .filter(|(i, _)| type_used[*i])
         .map(|(_, t)| t.clone())
         .collect();
-    // Remap type indices in functions.
+    // Remap type indices in functions and imports.
     for func in &mut merged.functions {
         if let Some(new_idx) = type_map.get(func.type_index as usize).copied().flatten() {
             func.type_index = new_idx;
+        }
+    }
+    for imp in &mut merged.imports {
+        if let ImportKind::Function(ref mut type_idx) = imp.kind {
+            if let Some(new_idx) = type_map.get(*type_idx as usize).copied().flatten() {
+                *type_idx = new_idx;
+            }
         }
     }
 }
@@ -724,6 +760,85 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         0
     };
 
+    // --- Pass 4: collect unresolved imports (spec §9.2) ---
+    // Per spec: "an import for each undefined strong symbol."
+    // Skip imports for memory (we define our own) and globals we define
+    // (like __stack_pointer). Dedup by (module, field, kind, type).
+    let mut output_imports: Vec<OutputImport> = Vec::new();
+    let mut num_imported_functions = 0u32;
+    let mut num_imported_globals = 0u32;
+    let mut seen_imports: std::collections::HashSet<(Vec<u8>, Vec<u8>, u8, u32)> =
+        Default::default();
+
+    for obj_info in &objects {
+        for imp in &obj_info.parsed.imports {
+            // Skip memory imports (we define our own memory).
+            if imp.kind == 2 {
+                continue;
+            }
+            // Skip function imports that are resolved by a definition.
+            if imp.kind == 0 && function_name_map.contains_key(imp.field.as_slice()) {
+                continue;
+            }
+            // Skip global imports that are resolved by linker-defined globals.
+            if imp.kind == 3 && global_name_map.contains_key(imp.field.as_slice()) {
+                continue;
+            }
+            // Dedup: same module+field+kind+type are merged, different types kept.
+            let key = (imp.module.clone(), imp.field.clone(), imp.kind, imp.type_index);
+            if !seen_imports.insert(key) {
+                continue;
+            }
+            match imp.kind {
+                0 => {
+                    // Remap type index through the object's type map.
+                    let remapped_type = obj_info
+                        .type_map
+                        .get(imp.type_index as usize)
+                        .copied()
+                        .unwrap_or(imp.type_index);
+                    output_imports.push(OutputImport {
+                        module: imp.module.clone(),
+                        field: imp.field.clone(),
+                        kind: ImportKind::Function(remapped_type),
+                    });
+                    num_imported_functions += 1;
+                }
+                3 => {
+                    let valtype = (imp.type_index >> 1) as u8;
+                    let mutable = (imp.type_index & 1) != 0;
+                    output_imports.push(OutputImport {
+                        module: imp.module.clone(),
+                        field: imp.field.clone(),
+                        kind: ImportKind::Global { valtype, mutable },
+                    });
+                    num_imported_globals += 1;
+                }
+                _ => {
+                    // Table imports etc — skip for now.
+                }
+            }
+        }
+    }
+
+    // If there are imported functions, all defined function indices shift
+    // by num_imported_functions. Update all maps.
+    if num_imported_functions > 0 {
+        for idx in function_name_map.values_mut() {
+            *idx += num_imported_functions;
+        }
+        if let Some(ref mut idx) = entry_function_index {
+            *idx += num_imported_functions;
+        }
+    }
+
+    // Similarly for imported globals.
+    if num_imported_globals > 0 {
+        for idx in global_name_map.values_mut() {
+            *idx += num_imported_globals;
+        }
+    }
+
     // Collect explicit export indices for GC roots.
     let args = layout.symbol_db.args;
     let mut explicit_export_indices = Vec::new();
@@ -743,9 +858,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map,
         data_segments,
         data_size,
-        imports: Vec::new(),
-        num_imported_functions: 0,
-        num_imported_globals: 0,
+        imports: output_imports,
+        num_imported_functions,
+        num_imported_globals,
     })
 }
 
@@ -777,6 +892,15 @@ struct WasmSymbolInfo {
     segment_offset: u32,
 }
 
+/// A parsed import from the input object.
+#[derive(Debug, Clone)]
+struct ParsedImport {
+    module: Vec<u8>,
+    field: Vec<u8>,
+    kind: u8,       // 0=func, 1=table, 2=memory, 3=global
+    type_index: u32, // for functions: type index; for globals: encoded as valtype<<1|mutable
+}
+
 /// A parsed data segment from the input object.
 struct ParsedDataSegment {
     data: Vec<u8>,
@@ -798,6 +922,8 @@ struct ParsedInput {
     code_relocations: Vec<WasmReloc>,
     /// Number of imported functions (offset for local function indices).
     num_function_imports: u32,
+    /// All imports from the import section.
+    imports: Vec<ParsedImport>,
     /// Data segments from the DATA section.
     data_segments: Vec<ParsedDataSegment>,
 }
@@ -822,6 +948,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut num_imports = 0u32;
     let mut import_function_names: Vec<Vec<u8>> = Vec::new();
     let mut import_global_names: Vec<Vec<u8>> = Vec::new();
+    let mut parsed_imports: Vec<ParsedImport> = Vec::new();
     let mut data_segments: Vec<ParsedDataSegment> = Vec::new();
     let mut code_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
@@ -850,7 +977,9 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                 for _ in 0..count {
                     // module name
                     let (mod_len, c) = read_leb128(&payload[off..])?;
-                    off += c + mod_len;
+                    off += c;
+                    let module_name = &payload[off..off + mod_len];
+                    off += mod_len;
                     // field name
                     let (field_len, c) = read_leb128(&payload[off..])?;
                     off += c;
@@ -861,10 +990,16 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                     off += 1;
                     match kind {
                         0x00 => {
-                            // function import — record the field name
+                            // function import
                             import_function_names.push(field_name.to_vec());
-                            let (_type_idx, c) = read_leb128(&payload[off..])?;
+                            let (type_idx, c) = read_leb128(&payload[off..])?;
                             off += c;
+                            parsed_imports.push(ParsedImport {
+                                module: module_name.to_vec(),
+                                field: field_name.to_vec(),
+                                kind: 0,
+                                type_index: type_idx as u32,
+                            });
                             num_imports += 1;
                         }
                         0x01 => {
@@ -891,10 +1026,18 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                             }
                         }
                         0x03 => {
-                            // global import — record the field name
+                            // global import
                             import_global_names.push(field_name.to_vec());
-                            off += 1; // valtype
-                            off += 1; // mutability
+                            let valtype = payload[off];
+                            off += 1;
+                            let mutable = payload[off];
+                            off += 1;
+                            parsed_imports.push(ParsedImport {
+                                module: module_name.to_vec(),
+                                field: field_name.to_vec(),
+                                kind: 3,
+                                type_index: ((valtype as u32) << 1) | (mutable as u32),
+                            });
                         }
                         _ => {}
                     }
@@ -960,6 +1103,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         symbols,
         code_relocations,
         num_function_imports: num_imports,
+        imports: parsed_imports,
         data_segments,
     })
 }

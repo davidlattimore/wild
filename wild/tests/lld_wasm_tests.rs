@@ -103,6 +103,7 @@ const KNOWN_PASSING: &[&str] = &[
     "import-attribute-mismatch",
     "invalid-mvp-table-use",
     "invalid-stack-size",
+    "mutable-globals",
     "relocation-bad-tls",
     "section-too-large",
     "shared-lazy",
@@ -221,10 +222,14 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Undefined symbol imports (need import section)
-    if content.contains("CHECK.*IMPORT")
-        || content.contains("Type:            IMPORT")
+    // Import dedup / advanced import features
+    if content.contains(".import_module")
+        || content.contains(".import_name")
     {
+        return true;
+    }
+    // Memory naming (--export-memory=<name> not yet supported)
+    if content.contains("--export-memory") || content.contains("--import-memory") {
         return true;
     }
     // .so inputs
