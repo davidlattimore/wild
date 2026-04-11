@@ -32,6 +32,9 @@ mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
+pub(crate) mod wasm;
+pub(crate) mod wasm_arch;
+pub(crate) mod wasm_writer;
 #[cfg(feature = "macho-lto")]
 pub(crate) mod macho_lto;
 pub(crate) mod macho_writer;
@@ -212,6 +215,7 @@ impl Linker {
         match args {
             Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
             Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
+            Args::Wasm(wasm_args) => wasm::Wasm::link_for_arch(self, wasm_args),
         }
     }
 

@@ -755,6 +755,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if input_ref.is_archive_entry()
             && kind != FileKind::ElfObject
             && kind != FileKind::MachOObject
+            && kind != FileKind::WasmObject
         {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }

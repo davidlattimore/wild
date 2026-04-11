@@ -25,6 +25,7 @@ pub(crate) enum FileKind {
     Text,
     LlvmIr,
     GccIr,
+    WasmObject,
 }
 
 impl FileKind {
@@ -84,6 +85,8 @@ impl FileKind {
             // Mach-O universal (fat) binary. Currently not fully supported.
             // TODO: extract the arm64 slice and process it.
             Ok(FileKind::FatBinary)
+        } else if bytes.starts_with(b"\0asm") {
+            Ok(FileKind::WasmObject)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") || bytes.starts_with(&0x0B17C0DEu32.to_le_bytes()) {
@@ -140,6 +143,7 @@ impl std::fmt::Display for FileKind {
             FileKind::Text => "text",
             FileKind::LlvmIr => "LLVM-IR",
             FileKind::GccIr => "GCC-IR",
+            FileKind::WasmObject => "WASM object",
         };
         std::fmt::Display::fmt(s, f)
     }

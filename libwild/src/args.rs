@@ -32,6 +32,7 @@ use std::path::PathBuf;
 
 pub mod elf;
 pub mod macho;
+pub mod wasm;
 
 use crate::error::Warning;
 use crate::platform;
@@ -109,14 +110,38 @@ impl Args {
     {
         let mut input = input();
 
-        // TODO: Select platform based on executable name and/or the first argument.
-        let _executable_name = input
+        let executable_name = input
             .next()
             .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
+
+        // Select platform based on executable name or --target argument.
+        let exe = executable_name.as_ref();
+        if exe.contains("wasm-ld") || exe.contains("wasm32") {
+            return Ok(Args::Wasm(wasm::WasmArgs::new()?));
+        }
+        // Scan remaining args for --target wasm32.
+        let mut next_is_target = false;
+        for arg in &mut input {
+            let s = arg.as_ref();
+            if next_is_target {
+                if s.contains("wasm") {
+                    return Ok(Args::Wasm(wasm::WasmArgs::new()?));
+                }
+                next_is_target = false;
+            } else if s == "--target" {
+                next_is_target = true;
+            } else if s
+                .strip_prefix("--target=")
+                .is_some_and(|t| t.contains("wasm"))
+            {
+                return Ok(Args::Wasm(wasm::WasmArgs::new()?));
+            }
+        }
 
         match PlatformKind::host() {
             PlatformKind::Elf => Ok(Args::Elf(elf::ElfArgs::new()?)),
             PlatformKind::MachO => Ok(Args::MachO(macho::MachOArgs::new()?)),
+            PlatformKind::Wasm => Ok(Args::Wasm(wasm::WasmArgs::new()?)),
         }
     }
 
@@ -137,6 +162,7 @@ impl Args {
         match self {
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
+            Args::Wasm(args) => args.parse(input),
         }
     }
 
@@ -158,6 +184,7 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &elf_args.common,
             Args::MachO(macho_args) => &macho_args.common,
+            Args::Wasm(wasm_args) => &wasm_args.common,
         }
     }
 
@@ -165,6 +192,7 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
+            Args::Wasm(wasm_args) => &mut wasm_args.common,
         }
     }
 }
@@ -172,6 +200,7 @@ impl Args {
 enum PlatformKind {
     Elf,
     MachO,
+    Wasm,
 }
 
 impl PlatformKind {
@@ -434,6 +463,7 @@ pub struct ThreadPool {
 pub enum Args {
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
+    Wasm(wasm::WasmArgs),
 }
 
 impl std::fmt::Debug for Args {
@@ -441,6 +471,7 @@ impl std::fmt::Debug for Args {
         match self {
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
+            Args::Wasm(args) => args.fmt(f),
         }
     }
 }

@@ -32,6 +32,11 @@ name = "sold_macho_tests"
 path = "tests/sold_macho_tests.rs"
 harness = false
 
+[[test]]
+name = "lld_wasm_tests"
+path = "tests/lld_wasm_tests.rs"
+harness = false
+
 [dependencies]
 libwild = { path = "../libwild", version = "0.8.0" }
 

@@ -65,6 +65,7 @@ mimalloc = { version = "0.1", default-features = false }
 object = { version = "0.39.0", default-features = false, features = [
     "elf",
     "macho",
+    "wasm",
     "read_core",
     "std",
     "unaligned",
