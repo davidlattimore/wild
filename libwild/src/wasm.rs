@@ -384,6 +384,10 @@ pub(crate) struct File<'data> {
     pub(crate) symbols: Vec<WasmSymbol>,
     pub(crate) symbol_names: Vec<&'data [u8]>,
     pub(crate) sections: Vec<SectionHeader>,
+    /// Raw section data indexed by our contiguous section index.
+    pub(crate) section_data: Vec<&'data [u8]>,
+    /// Section names (from the object crate).
+    pub(crate) section_names: Vec<&'data [u8]>,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -398,6 +402,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         // Build sections with a mapping from object crate indices to contiguous indices.
         let mut sections = Vec::new();
+        let mut section_data = Vec::new();
+        let mut section_names = Vec::new();
         let mut section_index_map = std::collections::HashMap::new();
         for section in wasm_file.sections() {
             let kind = section.kind();
@@ -410,6 +416,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
                 is_data: kind == object::SectionKind::Data
                     || kind == object::SectionKind::ReadOnlyData,
             });
+            section_data.push(section.data().unwrap_or(&[]));
+            section_names.push(section.name_bytes().unwrap_or(b""));
         }
 
         let mut symbols = Vec::new();
@@ -440,6 +448,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             symbols,
             symbol_names,
             sections,
+            section_data,
+            section_names,
         })
     }
 
@@ -573,9 +583,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn raw_section_data(
         &self,
-        _header: &SectionHeader,
+        header: &SectionHeader,
     ) -> crate::error::Result<&'data [u8]> {
-        Ok(&[])
+        self.section_data
+            .get(header.index)
+            .copied()
+            .ok_or_else(|| crate::error!("Section data index {} out of range", header.index))
     }
 
     fn section_data(
@@ -633,9 +646,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn section_name(
         &self,
-        _section_header: &'data SectionHeader,
+        section_header: &'data SectionHeader,
     ) -> crate::error::Result<&'data [u8]> {
-        Ok(b"")
+        self.section_names
+            .get(section_header.index)
+            .copied()
+            .ok_or_else(|| {
+                crate::error!("Section name index {} out of range", section_header.index)
+            })
     }
 
     fn apply_non_addressable_indexes_dynamic(

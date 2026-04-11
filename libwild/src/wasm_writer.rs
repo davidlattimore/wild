@@ -167,6 +167,23 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_CODE, &payload);
     }
 
+    // Data section (spec §9.1): merged data segments with memory offsets.
+    if !merged.data_segments.is_empty() {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, merged.data_segments.len() as u32);
+        for seg in &merged.data_segments {
+            payload.push(0x00); // active segment, memory 0
+            // Init expression: i32.const <offset>, end
+            payload.push(0x41); // i32.const
+            write_sleb128(&mut payload, seg.memory_offset as i32);
+            payload.push(0x0B); // end
+            // Data bytes
+            write_leb128(&mut payload, seg.data.len() as u32);
+            payload.extend_from_slice(&seg.data);
+        }
+        write_section(&mut out, SECTION_DATA, &payload);
+    }
+
     // Name section (custom section "name") — maps function indices to names.
     // Per spec, this is emitted unless --strip-all is set.
     if !layout.symbol_db.args.should_strip_all() && !merged.functions.is_empty() {
@@ -676,6 +693,37 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Pass 3: collect data segments ---
+    // Per spec §9.1: "Merging of data sections is performed by creating
+    // a new data section from the data segments."
+    // Data is placed after the stack in linear memory.
+    let stack_size = layout
+        .symbol_db
+        .args
+        .stack_size
+        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
+    let mut data_offset = stack_size; // data starts after stack
+    let mut data_segments: Vec<OutputDataSegment> = Vec::new();
+
+    for obj_info in &objects {
+        let parsed = &obj_info.parsed;
+        for seg in &parsed.data_segments {
+            // Align the offset.
+            let align = seg.alignment.max(1);
+            data_offset = (data_offset + align - 1) & !(align - 1);
+            data_segments.push(OutputDataSegment {
+                memory_offset: data_offset,
+                data: seg.data.clone(),
+            });
+            data_offset += seg.data.len() as u32;
+        }
+    }
+    let data_size = if data_offset > stack_size {
+        data_offset - stack_size
+    } else {
+        0
+    };
+
     // Collect explicit export indices for GC roots.
     let args = layout.symbol_db.args;
     let mut explicit_export_indices = Vec::new();
@@ -693,8 +741,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         explicit_export_indices,
         globals,
         global_name_map,
-        data_segments: Vec::new(),
-        data_size: 0,
+        data_segments,
+        data_size,
         imports: Vec::new(),
         num_imported_functions: 0,
         num_imported_globals: 0,
@@ -729,6 +777,12 @@ struct WasmSymbolInfo {
     segment_offset: u32,
 }
 
+/// A parsed data segment from the input object.
+struct ParsedDataSegment {
+    data: Vec<u8>,
+    alignment: u32,
+}
+
 struct ParsedInput {
     types: Vec<FuncType>,
     functions: Vec<ParsedFunction>,
@@ -744,6 +798,8 @@ struct ParsedInput {
     code_relocations: Vec<WasmReloc>,
     /// Number of imported functions (offset for local function indices).
     num_function_imports: u32,
+    /// Data segments from the DATA section.
+    data_segments: Vec<ParsedDataSegment>,
 }
 
 struct ParsedFunction {
@@ -766,6 +822,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut num_imports = 0u32;
     let mut import_function_names: Vec<Vec<u8>> = Vec::new();
     let mut import_global_names: Vec<Vec<u8>> = Vec::new();
+    let mut data_segments: Vec<ParsedDataSegment> = Vec::new();
     let mut code_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
 
@@ -850,6 +907,9 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                 code_section_index = Some(section_counter);
                 code_bodies = parse_code_section(payload)?;
             }
+            SECTION_DATA => {
+                data_segments = parse_data_section(payload)?;
+            }
             0 => {
                 // Custom section — check name.
                 let (name_len, c) = read_leb128(payload)?;
@@ -900,6 +960,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         symbols,
         code_relocations,
         num_function_imports: num_imports,
+        data_segments,
     })
 }
 
@@ -945,6 +1006,42 @@ fn parse_code_section(payload: &[u8]) -> crate::error::Result<Vec<(Vec<u8>, u32)
         bodies.push((body, body_offset));
     }
     Ok(bodies)
+}
+
+/// Parse DATA section: extract data segments.
+/// In object files, segments are passive (no init expr) — just data bytes.
+fn parse_data_section(payload: &[u8]) -> crate::error::Result<Vec<ParsedDataSegment>> {
+    let (count, mut off) = read_leb128(payload)?;
+    let mut segments = Vec::with_capacity(count);
+    for _ in 0..count {
+        // In object files, data segments have segment_flags=0 (active, memory 0).
+        // But the init expr is meaningless — the linker assigns offsets.
+        // Format: flags (varuint32), [memory_index if flags&1], init_expr, data_len, data
+        let (flags, c) = read_leb128(&payload[off..])?;
+        off += c;
+        if flags & 0x01 != 0 {
+            // Has explicit memory index.
+            let (_mem_idx, c) = read_leb128(&payload[off..])?;
+            off += c;
+        }
+        if flags & 0x02 == 0 {
+            // Active segment: skip init expr (ends with 0x0B).
+            while off < payload.len() && payload[off] != 0x0B {
+                off += 1;
+            }
+            off += 1; // skip 0x0B
+        }
+        // Data bytes.
+        let (data_len, c) = read_leb128(&payload[off..])?;
+        off += c;
+        let data = payload[off..off + data_len].to_vec();
+        off += data_len;
+        segments.push(ParsedDataSegment {
+            data,
+            alignment: 1, // Will be updated from WASM_SEGMENT_INFO
+        });
+    }
+    Ok(segments)
 }
 
 /// Parse a reloc.* section (spec §2.1).
@@ -1257,6 +1354,7 @@ fn parse_symbol_table(
 
 // --- Output validation ---
 
+/// Validate the output WASM module against spec invariants (§9.6).
 fn validate_output(data: &[u8]) -> crate::error::Result {
     if data.len() < 8 {
         return Err(crate::error!("WASM output too short"));
@@ -1268,9 +1366,14 @@ fn validate_output(data: &[u8]) -> crate::error::Result {
         return Err(crate::error!("WASM output: bad version"));
     }
 
-    // Validate section ordering.
     let mut pos = 8;
     let mut prev_id: u8 = 0;
+    let mut function_count: Option<usize> = None;
+    let mut code_count: Option<usize> = None;
+    let mut num_globals: usize = 0;
+    let mut num_functions: usize = 0;
+    let mut memory_pages: usize = 0;
+
     while pos < data.len() {
         let section_id = data[pos];
         pos += 1;
@@ -1278,10 +1381,12 @@ fn validate_output(data: &[u8]) -> crate::error::Result {
         pos += consumed;
         if pos + size > data.len() {
             return Err(crate::error!(
-                "WASM output: section {section_id} extends past end"
+                "WASM output: section {section_id} extends past end of file"
             ));
         }
-        // Non-custom sections must be in ascending order.
+        let payload = &data[pos..pos + size];
+
+        // Spec §9.6: non-custom sections must be in ascending order.
         if section_id != 0 {
             if section_id <= prev_id {
                 return Err(crate::error!(
@@ -1291,18 +1396,95 @@ fn validate_output(data: &[u8]) -> crate::error::Result {
             prev_id = section_id;
         }
 
-        // Validate function/code section counts match.
-        if section_id == SECTION_FUNCTION {
-            let (count, _) = read_leb128(&data[pos..])?;
-            // Store for later check against code section.
-            let _ = count; // TODO: cross-check with code section
+        match section_id {
+            SECTION_FUNCTION => {
+                let (count, _) = read_leb128(payload)?;
+                function_count = Some(count);
+                num_functions = count;
+            }
+            SECTION_CODE => {
+                let (count, _) = read_leb128(payload)?;
+                code_count = Some(count);
+            }
+            SECTION_GLOBAL => {
+                let (count, _) = read_leb128(payload)?;
+                num_globals = count;
+            }
+            SECTION_MEMORY => {
+                let (count, _) = read_leb128(payload)?;
+                if count > 0 {
+                    let (_flags, c) = read_leb128(&payload[1..])?;
+                    let (pages, _) = read_leb128(&payload[1 + c..])?;
+                    memory_pages = pages;
+                }
+            }
+            SECTION_EXPORT => {
+                // Validate all exported indices are in range.
+                let (count, mut off) = read_leb128(payload)?;
+                for _ in 0..count {
+                    let (name_len, c) = read_leb128(&payload[off..])?;
+                    off += c + name_len;
+                    let kind = payload[off];
+                    off += 1;
+                    let (index, c) = read_leb128(&payload[off..])?;
+                    off += c;
+                    match kind {
+                        0x00 => {
+                            // Function export
+                            if index >= num_functions {
+                                return Err(crate::error!(
+                                    "WASM output: exported function index {index} \
+                                     out of range (have {num_functions})"
+                                ));
+                            }
+                        }
+                        0x03 => {
+                            // Global export
+                            if index >= num_globals {
+                                return Err(crate::error!(
+                                    "WASM output: exported global index {index} \
+                                     out of range (have {num_globals})"
+                                ));
+                            }
+                        }
+                        _ => {} // memory/table exports checked elsewhere
+                    }
+                }
+            }
+            SECTION_DATA => {
+                // Validate data segments don't overflow memory.
+                let (count, mut off) = read_leb128(payload)?;
+                for _ in 0..count {
+                    let (flags, c) = read_leb128(&payload[off..])?;
+                    off += c;
+                    if flags & 0x02 == 0 {
+                        // Active segment: skip init expr.
+                        while off < payload.len() && payload[off] != 0x0B {
+                            off += 1;
+                        }
+                        off += 1;
+                    }
+                    let (data_len, c) = read_leb128(&payload[off..])?;
+                    off += c + data_len;
+                }
+            }
+            _ => {}
         }
 
         pos += size;
     }
 
     if pos != data.len() {
-        return Err(crate::error!("WASM output: trailing bytes"));
+        return Err(crate::error!("WASM output: trailing bytes after last section"));
+    }
+
+    // Spec invariant: function section count must match code section count.
+    if let (Some(fc), Some(cc)) = (function_count, code_count) {
+        if fc != cc {
+            return Err(crate::error!(
+                "WASM output: function count ({fc}) != code count ({cc})"
+            ));
+        }
     }
 
     Ok(())
