@@ -93,8 +93,35 @@ fn parse_run_lines(content: &str) -> Vec<String> {
     lines
 }
 
+/// Tests that are known to pass despite matching skip patterns.
+/// These are typically error-path tests or tests whose matching
+/// patterns are false positives.
+const KNOWN_PASSING: &[&str] = &[
+    "archive-local-sym",
+    "bad-archive-member",
+    "ctor-gc-setup",
+    "import-attribute-mismatch",
+    "invalid-mvp-table-use",
+    "invalid-stack-size",
+    "relocation-bad-tls",
+    "section-too-large",
+    "shared-lazy",
+    "signature-mismatch-unknown",
+    "symbol-type-mismatch",
+    "undef-shared",
+    "unsupported-pic-relocations",
+    "unsupported-pic-relocations64",
+    "whole-archive",
+];
+
 /// Check if this test should be skipped entirely.
 fn should_skip(content: &str, path: &Path) -> bool {
+    // Known-passing tests override pattern-based skipping.
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        if KNOWN_PASSING.contains(&stem) {
+            return false;
+        }
+    }
     if content.contains("REQUIRES: x86") {
         return true;
     }
