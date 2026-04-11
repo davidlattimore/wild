@@ -111,10 +111,9 @@ fn should_skip(content: &str, path: &Path) -> bool {
         return true;
     }
     // Skip tests for features not yet implemented in wild's WASM support.
-    // Tier 2: data segments, stack/memory layout
+    // Tier 2: data segments, memory layout, linker-defined data symbols
     if content.contains("__data_end")
         || content.contains("__heap_base")
-        || content.contains("__stack_pointer")
         || content.contains("__global_base")
         || content.contains("stack-size")
         || content.contains("stack-first")
@@ -163,7 +162,6 @@ fn should_skip(content: &str, path: &Path) -> bool {
     }
     // User-defined globals / advanced global features
     if content.contains("--export=foo_global")
-        || content.contains("GlobalNames")
         || content.contains("__table_base")
         || content.contains("externref")
         || content.contains("foo_global")
