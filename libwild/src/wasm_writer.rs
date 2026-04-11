@@ -199,6 +199,23 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             }
         }
 
+        // --export-dynamic / --export-all: export all non-hidden defined functions.
+        // Per spec §9.2: "export for each defined symbol with non-local linkage
+        // and non-hidden visibility."
+        if layout.symbol_db.args.should_export_all_dynamic_symbols() {
+            let mut names: Vec<(Vec<u8>, u32)> = merged
+                .function_name_map
+                .iter()
+                .map(|(name, &idx)| (name.clone(), idx))
+                .collect();
+            names.sort_by_key(|(_, idx)| *idx);
+            for (name, idx) in names {
+                if !exports.iter().any(|(n, _, _)| *n == name) {
+                    exports.push((name, EXPORT_FUNC, idx));
+                }
+            }
+        }
+
         // Entry function export (after explicit exports).
         if !entry_name.is_empty() {
             if let Some(func_idx) = merged.entry_function_index {
