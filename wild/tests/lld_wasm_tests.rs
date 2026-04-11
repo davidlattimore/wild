@@ -176,8 +176,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains(".init_array") {
         return true;
     }
-    // WASM_SYM_EXPORTED flag handling (--no-entry with .globl exports)
-    if content.contains("command-exports") {
+    // command-exports.s needs .init_array
+    if content.contains("command-exports") && content.contains(".init_array") {
         return true;
     }
     // GC of unused imports (need import-level GC)

@@ -199,6 +199,20 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             }
         }
 
+        // WASM_SYM_EXPORTED functions (spec §4.2, flag 0x20).
+        for &func_idx in &merged.exported_indices {
+            // Find the name for this function index.
+            if let Some((name, _)) = merged
+                .function_name_map
+                .iter()
+                .find(|(_, idx)| **idx == func_idx)
+            {
+                if !exports.iter().any(|(n, _, _)| n == name) {
+                    exports.push((name.clone(), EXPORT_FUNC, func_idx));
+                }
+            }
+        }
+
         // --export-dynamic / --export-all: export all non-hidden defined functions.
         // Per spec §9.2: "export for each defined symbol with non-local linkage
         // and non-hidden visibility."
@@ -404,6 +418,8 @@ struct MergedModule {
     explicit_export_indices: Vec<u32>,
     /// Functions with WASM_SYM_NO_STRIP flag (spec §4.2, flag 0x80).
     no_strip_indices: Vec<u32>,
+    /// Functions with WASM_SYM_EXPORTED flag (spec §4.2, flag 0x20).
+    exported_indices: Vec<u32>,
     /// Linker-defined globals (e.g. __stack_pointer).
     globals: Vec<OutputGlobal>,
     /// Map from global name to output global index.
@@ -452,6 +468,12 @@ fn gc_functions(merged: &mut MergedModule) {
     for idx in merged.explicit_export_indices.iter() {
         if (*idx as usize) < num_funcs {
             reachable[*idx as usize] = true;
+        }
+    }
+    // WASM_SYM_EXPORTED functions are roots (spec §4.2, flag 0x20).
+    for &func_idx in &merged.exported_indices {
+        if (func_idx as usize) < num_funcs {
+            reachable[func_idx as usize] = true;
         }
     }
     // WASM_SYM_NO_STRIP functions are roots (spec §4.2, flag 0x80).
@@ -562,6 +584,13 @@ fn gc_functions(merged: &mut MergedModule) {
         })
         .collect();
 
+    // Remap exported_indices.
+    merged.exported_indices = merged
+        .exported_indices
+        .iter()
+        .filter_map(|&old_idx| index_map.get(old_idx as usize).copied().flatten())
+        .collect();
+
     // Remap table entries.
     merged.table_entries = merged
         .table_entries
@@ -659,6 +688,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let mut function_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
     let mut entry_function_index: Option<u32> = None;
     let mut no_strip_indices: Vec<u32> = Vec::new();
+    // Functions with WASM_SYM_EXPORTED flag (spec §4.2, flag 0x20).
+    let mut exported_indices: Vec<u32> = Vec::new();
 
     // --- Pass 1: parse all objects, collect types and functions ---
     struct ObjectInfo {
@@ -706,13 +737,17 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     }
                 }
             }
-            // Check for NO_STRIP flag (spec §4.2, flag 0x80) on function symbols.
+            // Check flags on function symbols (spec §4.2).
             for sym in &parsed.symbols {
-                if sym.kind == 0 && (sym.flags & 0x80) != 0 {
-                    // Function with NO_STRIP.
-                    if sym.index >= parsed.num_function_imports {
-                        let local_idx = sym.index - parsed.num_function_imports;
-                        no_strip_indices.push(func_base + local_idx);
+                if sym.kind == 0 && sym.index >= parsed.num_function_imports {
+                    let output_idx = func_base + (sym.index - parsed.num_function_imports);
+                    // NO_STRIP (0x80): include in output regardless of usage.
+                    if (sym.flags & 0x80) != 0 {
+                        no_strip_indices.push(output_idx);
+                    }
+                    // EXPORTED (0x20): exported to host environment.
+                    if (sym.flags & 0x20) != 0 {
+                        exported_indices.push(output_idx);
                     }
                 }
             }
@@ -1326,6 +1361,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         function_name_map,
         explicit_export_indices,
         no_strip_indices,
+        exported_indices,
         table_entries,
         func_to_table_index,
         globals,
