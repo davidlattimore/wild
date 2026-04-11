@@ -111,11 +111,12 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_EXPORT, &payload);
     }
 
-    // Code section: merged function bodies.
+    // Code section: merged function bodies with body-size prefix per function.
     if !merged.functions.is_empty() {
         let mut payload = Vec::new();
         write_leb128(&mut payload, merged.functions.len() as u32);
         for func in &merged.functions {
+            write_leb128(&mut payload, func.body.len() as u32);
             payload.extend_from_slice(&func.body);
         }
         write_section(&mut out, SECTION_CODE, &payload);
@@ -141,7 +142,7 @@ struct FuncType {
 
 struct MergedFunction {
     type_index: u32,
-    body: Vec<u8>, // includes the body size LEB prefix
+    body: Vec<u8>, // the raw body bytes (NOT including the body size LEB prefix)
 }
 
 struct MergedModule {
@@ -159,28 +160,37 @@ impl MergedModule {
 }
 
 /// Merge all input objects into a single module description.
+/// Two-pass approach:
+/// 1. Parse all objects, assign output indices, build global name→index map
+/// 2. Apply relocations using the global map
 fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule> {
     let entry_name = layout.symbol_db.args.entry_symbol_name(None);
     let mut types: Vec<FuncType> = Vec::new();
-    let mut functions: Vec<MergedFunction> = Vec::new();
-    let mut entry_function_index: Option<u32> = None;
     let mut function_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+    let mut entry_function_index: Option<u32> = None;
+
+    // --- Pass 1: parse all objects, collect types and functions ---
+    struct ObjectInfo {
+        parsed: ParsedInput,
+        type_map: Vec<u32>,
+        func_base: u32,
+    }
+    let mut objects: Vec<ObjectInfo> = Vec::new();
+    let mut total_functions = 0u32;
 
     for group in &layout.group_layouts {
         for file in &group.files {
             let FileLayout::Object(obj) = file else {
                 continue;
             };
-
             let data = obj.object.data;
             if data.len() < 8 || &data[..4] != b"\0asm" {
                 continue;
             }
 
-            // Parse the input object's raw binary sections.
             let parsed = parse_wasm_sections(data)?;
 
-            // Build type index mapping: input type index → output type index.
+            // Type deduplication.
             let mut type_map: Vec<u32> = Vec::new();
             for input_type in &parsed.types {
                 let output_idx = if let Some(pos) = types.iter().position(|t| t == input_type) {
@@ -193,19 +203,10 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 type_map.push(output_idx);
             }
 
-            // Map functions: remap type indices.
-            let func_base = functions.len() as u32;
-            for (i, input_func) in parsed.functions.iter().enumerate() {
-                let remapped_type = type_map
-                    .get(input_func.type_index as usize)
-                    .copied()
-                    .unwrap_or(input_func.type_index);
-                functions.push(MergedFunction {
-                    type_index: remapped_type,
-                    body: input_func.body.clone(),
-                });
+            let func_base = total_functions;
 
-                // Record function name mapping and check for entry point.
+            // Record function names → output indices.
+            for (i, _) in parsed.functions.iter().enumerate() {
                 if let Some(name) = parsed.function_names.get(&(i as u32)) {
                     let output_idx = func_base + i as u32;
                     function_name_map.insert(name.clone(), output_idx);
@@ -214,6 +215,104 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     }
                 }
             }
+
+            total_functions += parsed.functions.len() as u32;
+            objects.push(ObjectInfo {
+                parsed,
+                type_map,
+                func_base,
+            });
+        }
+    }
+
+    // --- Pass 2: apply relocations with global symbol resolution ---
+    let mut functions: Vec<MergedFunction> = Vec::new();
+
+    for obj_info in &objects {
+        let parsed = &obj_info.parsed;
+
+        // Build per-object symbol → output function index map.
+        // For defined function symbols: use func_base + local index.
+        // For undefined function symbols: look up by name in the global map.
+        let mut symbol_to_output_func: std::collections::HashMap<u32, u32> =
+            Default::default();
+        for (sym_idx, sym) in parsed.symbols.iter().enumerate() {
+            if sym.kind == 0 {
+                // SYMTAB_FUNCTION
+                let is_undefined = sym.flags & 0x10 != 0;
+                if !is_undefined && sym.index >= parsed.num_function_imports {
+                    let local_func_idx = sym.index - parsed.num_function_imports;
+                    symbol_to_output_func
+                        .insert(sym_idx as u32, obj_info.func_base + local_func_idx);
+                } else {
+                    // Undefined or import-referencing — resolve by name.
+                    // Per spec §4.3: if undefined without EXPLICIT_NAME, name
+                    // comes from the import entry.
+                    let resolve_name = if !sym.name.is_empty() {
+                        Some(sym.name.as_slice())
+                    } else if is_undefined {
+                        parsed
+                            .import_function_names
+                            .get(sym.index as usize)
+                            .map(|v| v.as_slice())
+                    } else {
+                        None
+                    };
+                    if let Some(name) = resolve_name {
+                        if let Some(&output_idx) = function_name_map.get(name) {
+                            symbol_to_output_func
+                                .insert(sym_idx as u32, output_idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (i, input_func) in parsed.functions.iter().enumerate() {
+            let remapped_type = obj_info
+                .type_map
+                .get(input_func.type_index as usize)
+                .copied()
+                .unwrap_or(input_func.type_index);
+
+            let mut body = input_func.body.clone();
+
+            // Apply relocations that fall within this function body.
+            for reloc in &parsed.code_relocations {
+                let body_start = input_func.code_section_offset;
+                let body_end = body_start + body.len() as u32;
+                if reloc.offset < body_start || reloc.offset >= body_end {
+                    continue;
+                }
+                let off_in_body = (reloc.offset - body_start) as usize;
+
+                match reloc.reloc_type {
+                    0 => {
+                        // R_WASM_FUNCTION_INDEX_LEB (spec §2: 5-byte varuint32)
+                        if let Some(&output_idx) =
+                            symbol_to_output_func.get(&reloc.symbol_index)
+                        {
+                            write_padded_leb128(&mut body, off_in_body, output_idx);
+                        }
+                    }
+                    6 => {
+                        // R_WASM_TYPE_INDEX_LEB (spec §2: 5-byte varuint32)
+                        let old_type = read_padded_leb128(&body, off_in_body);
+                        let new_type = obj_info
+                            .type_map
+                            .get(old_type as usize)
+                            .copied()
+                            .unwrap_or(old_type);
+                        write_padded_leb128(&mut body, off_in_body, new_type);
+                    }
+                    _ => {}
+                }
+            }
+
+            functions.push(MergedFunction {
+                type_index: remapped_type,
+                body,
+            });
         }
     }
 
@@ -227,16 +326,54 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
 // --- Raw WASM binary parsing ---
 
+/// Per-spec §2: relocation entry from a reloc.* section.
+#[derive(Debug, Clone)]
+struct WasmReloc {
+    reloc_type: u8,
+    /// Offset relative to the start of the section being relocated.
+    offset: u32,
+    /// Index into the symbol table.
+    symbol_index: u32,
+    /// Addend (only for *_OFFSET_* and *_ADDR_* relocations).
+    addend: i32,
+}
+
+/// Per-spec §4: symbol from the linking section's WASM_SYMBOL_TABLE.
+#[derive(Debug, Clone)]
+struct WasmSymbolInfo {
+    kind: u8,
+    name: Vec<u8>,
+    flags: u32,
+    /// For function/global/table symbols: the element index.
+    index: u32,
+    /// For data symbols: segment index.
+    segment_index: u32,
+    /// For data symbols: offset within segment.
+    segment_offset: u32,
+}
+
 struct ParsedInput {
     types: Vec<FuncType>,
     functions: Vec<ParsedFunction>,
     /// Map from local function index to symbol name.
     function_names: std::collections::HashMap<u32, Vec<u8>>,
+    /// Import function names (indexed by import function index).
+    import_function_names: Vec<Vec<u8>>,
+    /// All symbols from the linking section.
+    symbols: Vec<WasmSymbolInfo>,
+    /// Relocations for the code section.
+    code_relocations: Vec<WasmReloc>,
+    /// Number of imported functions (offset for local function indices).
+    num_function_imports: u32,
 }
 
 struct ParsedFunction {
     type_index: u32,
+    /// Raw body bytes (without the body-size LEB prefix).
     body: Vec<u8>,
+    /// Byte offset of this function's body within the code section payload
+    /// (after the function count LEB).
+    code_section_offset: u32,
 }
 
 /// Parse raw WASM binary to extract types, functions, code, and symbol names.
@@ -245,7 +382,12 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut func_type_indices = Vec::new();
     let mut code_bodies = Vec::new();
     let mut function_names = std::collections::HashMap::new();
+    let mut symbols = Vec::new();
+    let mut code_relocations = Vec::new();
     let mut num_imports = 0u32;
+    let mut import_function_names: Vec<Vec<u8>> = Vec::new();
+    let mut code_section_index: Option<usize> = None;
+    let mut section_counter = 0usize;
 
     let mut pos = 8; // skip header
     while pos < data.len() {
@@ -270,17 +412,20 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                 let (count, mut off) = read_leb128(payload)?;
                 for _ in 0..count {
                     // module name
-                    let (len, c) = read_leb128(&payload[off..])?;
-                    off += c + len;
+                    let (mod_len, c) = read_leb128(&payload[off..])?;
+                    off += c + mod_len;
                     // field name
-                    let (len, c) = read_leb128(&payload[off..])?;
-                    off += c + len;
+                    let (field_len, c) = read_leb128(&payload[off..])?;
+                    off += c;
+                    let field_name = &payload[off..off + field_len];
+                    off += field_len;
                     // import kind
                     let kind = payload[off];
                     off += 1;
                     match kind {
                         0x00 => {
-                            // function import
+                            // function import — record the field name
+                            import_function_names.push(field_name.to_vec());
                             let (_type_idx, c) = read_leb128(&payload[off..])?;
                             off += c;
                             num_imports += 1;
@@ -326,32 +471,47 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                 func_type_indices = parse_function_section(payload)?;
             }
             SECTION_CODE => {
+                code_section_index = Some(section_counter);
                 code_bodies = parse_code_section(payload)?;
             }
             0 => {
-                // Custom section — check for "linking" to extract symbol names.
+                // Custom section — check name.
                 let (name_len, c) = read_leb128(payload)?;
                 let name = &payload[c..c + name_len];
+                let custom_data = &payload[c + name_len..];
                 if name == b"linking" {
+                    symbols = parse_linking_symbols(custom_data, num_imports);
                     parse_linking_section(
-                        &payload[c + name_len..],
+                        custom_data,
                         num_imports,
                         &mut function_names,
                     );
+                } else if name.starts_with(b"reloc.") {
+                    // Per spec §2: reloc section contains section_index, count, entries.
+                    if let Ok(relocs) = parse_reloc_section(custom_data) {
+                        // Check if this targets the code section.
+                        if let Some(code_idx) = code_section_index {
+                            if relocs.0 == code_idx {
+                                code_relocations = relocs.1;
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
         }
 
+        section_counter += 1;
         pos += size;
     }
 
     let functions: Vec<ParsedFunction> = func_type_indices
         .iter()
         .zip(code_bodies.iter())
-        .map(|(&type_index, body)| ParsedFunction {
+        .map(|(&type_index, (body, offset))| ParsedFunction {
             type_index,
             body: body.clone(),
+            code_section_offset: *offset,
         })
         .collect();
 
@@ -359,6 +519,10 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         types,
         functions,
         function_names,
+        import_function_names,
+        symbols,
+        code_relocations,
+        num_function_imports: num_imports,
     })
 }
 
@@ -392,18 +556,194 @@ fn parse_function_section(payload: &[u8]) -> crate::error::Result<Vec<u32>> {
     Ok(indices)
 }
 
-fn parse_code_section(payload: &[u8]) -> crate::error::Result<Vec<Vec<u8>>> {
+fn parse_code_section(payload: &[u8]) -> crate::error::Result<Vec<(Vec<u8>, u32)>> {
     let (count, mut off) = read_leb128(payload)?;
     let mut bodies = Vec::with_capacity(count);
     for _ in 0..count {
         let (body_size, c) = read_leb128(&payload[off..])?;
-        // Include the body size prefix in the stored body
-        // (the code section format is: count, then body_size+body for each function).
-        let body_start = off;
-        off += c + body_size;
-        bodies.push(payload[body_start..off].to_vec());
+        let body_offset = (off + c) as u32; // offset of body content within code section payload
+        off += c;
+        let body = payload[off..off + body_size].to_vec();
+        off += body_size;
+        bodies.push((body, body_offset));
     }
     Ok(bodies)
+}
+
+/// Parse a reloc.* section (spec §2.1).
+fn parse_reloc_section(data: &[u8]) -> crate::error::Result<(usize, Vec<WasmReloc>)> {
+    let (section_index, mut off) = read_leb128(data)?;
+    let (count, c) = read_leb128(&data[off..])?;
+    off += c;
+
+    let mut relocs = Vec::with_capacity(count);
+    for _ in 0..count {
+        if off >= data.len() {
+            break;
+        }
+        let reloc_type = data[off];
+        off += 1;
+        let (offset, c) = read_leb128(&data[off..])?;
+        off += c;
+        let (symbol_index, c) = read_leb128(&data[off..])?;
+        off += c;
+
+        // Per spec §2.1: addend is present for *_OFFSET_* and *_ADDR_* types.
+        let has_addend = matches!(
+            reloc_type,
+            3 | 4 | 5 | 8 | 9 | 14 | 15 | 16 | 22 | 23
+        );
+        let addend = if has_addend {
+            let (a, c) = read_sleb128(&data[off..])?;
+            off += c;
+            a
+        } else {
+            0
+        };
+
+        relocs.push(WasmReloc {
+            reloc_type,
+            offset: offset as u32,
+            symbol_index: symbol_index as u32,
+            addend,
+        });
+    }
+    Ok((section_index, relocs))
+}
+
+/// Parse symbol table from the linking section (spec §4).
+fn parse_linking_symbols(data: &[u8], num_imports: u32) -> Vec<WasmSymbolInfo> {
+    let Ok((version, mut off)) = read_leb128(data) else {
+        return Vec::new();
+    };
+    if version != 2 {
+        return Vec::new();
+    }
+
+    while off < data.len() {
+        let Ok((subsection_type, c)) = read_leb128(&data[off..]) else {
+            return Vec::new();
+        };
+        off += c;
+        let Ok((subsection_len, c)) = read_leb128(&data[off..]) else {
+            return Vec::new();
+        };
+        off += c;
+        let subsection_end = off + subsection_len;
+
+        if subsection_type == 8 {
+            return parse_symbol_table_entries(&data[off..subsection_end], num_imports);
+        }
+
+        off = subsection_end;
+    }
+    Vec::new()
+}
+
+fn parse_symbol_table_entries(data: &[u8], num_imports: u32) -> Vec<WasmSymbolInfo> {
+    let Ok((count, mut off)) = read_leb128(data) else {
+        return Vec::new();
+    };
+    let mut syms = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        if off >= data.len() {
+            return syms;
+        }
+        let kind = data[off];
+        off += 1;
+        let Ok((flags, c)) = read_leb128(&data[off..]) else {
+            return syms;
+        };
+        off += c;
+
+        let is_undefined = flags & 0x10 != 0;
+        let has_explicit_name = flags & 0x40 != 0;
+
+        match kind {
+            0 | 2 | 4 | 5 => {
+                // SYMTAB_FUNCTION (0), GLOBAL (2), EVENT (4), TABLE (5)
+                let Ok((index, c)) = read_leb128(&data[off..]) else {
+                    return syms;
+                };
+                off += c;
+
+                let name = if !is_undefined || has_explicit_name {
+                    let Ok((name_len, c)) = read_leb128(&data[off..]) else {
+                        return syms;
+                    };
+                    off += c;
+                    let n = data[off..off + name_len].to_vec();
+                    off += name_len;
+                    n
+                } else {
+                    Vec::new()
+                };
+
+                syms.push(WasmSymbolInfo {
+                    kind,
+                    name,
+                    flags: flags as u32,
+                    index: index as u32,
+                    segment_index: 0,
+                    segment_offset: 0,
+                });
+            }
+            1 => {
+                // SYMTAB_DATA
+                let Ok((name_len, c)) = read_leb128(&data[off..]) else {
+                    return syms;
+                };
+                off += c;
+                let name = data[off..off + name_len].to_vec();
+                off += name_len;
+
+                let (segment_index, segment_offset) = if !is_undefined {
+                    let Ok((seg, c)) = read_leb128(&data[off..]) else {
+                        return syms;
+                    };
+                    off += c;
+                    let Ok((seg_off, c)) = read_leb128(&data[off..]) else {
+                        return syms;
+                    };
+                    off += c;
+                    let Ok((_, c)) = read_leb128(&data[off..]) else {
+                        return syms;
+                    };
+                    off += c; // size
+                    (seg as u32, seg_off as u32)
+                } else {
+                    (0, 0)
+                };
+
+                syms.push(WasmSymbolInfo {
+                    kind,
+                    name,
+                    flags: flags as u32,
+                    index: 0,
+                    segment_index,
+                    segment_offset,
+                });
+            }
+            3 => {
+                // SYMTAB_SECTION
+                let Ok((section, c)) = read_leb128(&data[off..]) else {
+                    return syms;
+                };
+                off += c;
+                syms.push(WasmSymbolInfo {
+                    kind,
+                    name: Vec::new(),
+                    flags: flags as u32,
+                    index: section as u32,
+                    segment_index: 0,
+                    segment_offset: 0,
+                });
+            }
+            _ => return syms,
+        }
+    }
+    syms
 }
 
 /// Extract function names from the linking section's symbol table.
@@ -619,6 +959,50 @@ fn write_leb128(out: &mut Vec<u8>, mut value: u32) {
             break;
         }
     }
+}
+
+/// Write a 5-byte padded unsigned LEB128 value at a specific offset in a buffer.
+/// Per spec §9.5: "All LEB128 values to be relocated must be maximally padded."
+fn write_padded_leb128(buf: &mut [u8], offset: usize, value: u32) {
+    buf[offset] = (value & 0x7F) as u8 | 0x80;
+    buf[offset + 1] = ((value >> 7) & 0x7F) as u8 | 0x80;
+    buf[offset + 2] = ((value >> 14) & 0x7F) as u8 | 0x80;
+    buf[offset + 3] = ((value >> 21) & 0x7F) as u8 | 0x80;
+    buf[offset + 4] = ((value >> 28) & 0x0F) as u8;
+}
+
+/// Read a 5-byte padded unsigned LEB128 value at a specific offset.
+fn read_padded_leb128(buf: &[u8], offset: usize) -> u32 {
+    let mut result = 0u32;
+    for i in 0..5 {
+        let byte = buf[offset + i];
+        result |= ((byte & 0x7F) as u32) << (i * 7);
+        if byte < 0x80 {
+            break;
+        }
+    }
+    result
+}
+
+/// Read a signed LEB128 value. Returns (value, bytes_consumed).
+fn read_sleb128(data: &[u8]) -> crate::error::Result<(i32, usize)> {
+    let mut result: i32 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as i32) << shift;
+        shift += 7;
+        if byte < 0x80 {
+            // Sign extend if high bit of the last byte is set.
+            if shift < 32 && (byte & 0x40) != 0 {
+                result |= !0 << shift;
+            }
+            return Ok((result, i + 1));
+        }
+        if shift >= 35 {
+            return Err(crate::error!("SLEB128 overflow"));
+        }
+    }
+    Err(crate::error!("Unexpected end of SLEB128"))
 }
 
 /// Read an unsigned LEB128 value. Returns (value, bytes_consumed).
