@@ -1878,8 +1878,7 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
             // rebase fixup instead of a bind fixup. A bind fixup for a defined
             // symbol causes dyld to look for it in dylibs, crashing at launch.
             if res.raw_value != 0 {
-                out[got_file_off..got_file_off + 8]
-                    .copy_from_slice(&res.raw_value.to_le_bytes());
+                out[got_file_off..got_file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
                 rebase_fixups.push(RebaseFixup {
                     file_offset: got_file_off,
                     target: res.raw_value,
@@ -1997,8 +1996,7 @@ fn write_got_entries(
                     // in this binary (broken definition chain).
                     let symbol_id = SymbolId::from_usize(sym_idx);
                     if let Some(addr) = find_resolution_by_name(symbol_id, layout) {
-                        out[file_off..file_off + 8]
-                            .copy_from_slice(&addr.to_le_bytes());
+                        out[file_off..file_off + 8].copy_from_slice(&addr.to_le_bytes());
                         rebase_fixups.push(RebaseFixup {
                             file_offset: file_off,
                             target: addr,
@@ -2544,115 +2542,118 @@ fn apply_relocations(
                     // resolves to sym-0).
                     if let Some(addr) = find_resolution_by_name(sym_id, layout) {
                         (addr, None, None)
-                    } else
-                    {
-                    // Try computing from section base + symbol offset
-                    // (handles local labels like GCC_except_table*, ltmp*).
-                    use object::read::macho::Nlist as _;
-                    let fallback = obj.object.symbols.symbol(sym_idx).ok().and_then(|sym| {
-                        let n_sect = sym.n_sect();
-                        if n_sect == 0 {
-                            // Symbol is undefined (no section). Check if it has a name
-                            // that looks like a TLS init symbol.
-                            return None;
-                        }
-                        let sec_idx = n_sect as usize - 1;
-                        // Try section_resolutions first.
-                        let sec_res_addr = obj
-                            .section_resolutions
-                            .get(sec_idx)
-                            .and_then(|r| r.address());
-                        if let Some(sec_out) = sec_res_addr {
+                    } else {
+                        // Try computing from section base + symbol offset
+                        // (handles local labels like GCC_except_table*, ltmp*).
+                        use object::read::macho::Nlist as _;
+                        let fallback = obj.object.symbols.symbol(sym_idx).ok().and_then(|sym| {
+                            let n_sect = sym.n_sect();
+                            if n_sect == 0 {
+                                // Symbol is undefined (no section). Check if it has a name
+                                // that looks like a TLS init symbol.
+                                return None;
+                            }
+                            let sec_idx = n_sect as usize - 1;
+                            // Try section_resolutions first.
+                            let sec_res_addr = obj
+                                .section_resolutions
+                                .get(sec_idx)
+                                .and_then(|r| r.address());
+                            if let Some(sec_out) = sec_res_addr {
+                                let sec_in =
+                                    obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
+                                let result = sec_out + sym.n_value(le).wrapping_sub(sec_in);
+                                let name =
+                                    sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
+                                // For TLS init symbols ($tlv$init), compute a TLS-block-
+                                // relative offset instead of an absolute address. The TLV
+                                // descriptor offset field is read by dyld as an offset into
+                                // the thread-local storage template (tdata + tbss).
+                                if name.ends_with(b"$tlv$init") {
+                                    let tdata =
+                                        layout.section_layouts.get(output_section_id::TDATA);
+                                    let tdata_start = tdata.mem_offset;
+                                    let tbss = layout.section_layouts.get(output_section_id::TBSS);
+                                    use object::read::macho::Section as _;
+                                    let sec_type = obj
+                                        .object
+                                        .sections
+                                        .get(sec_idx)
+                                        .map(|s| s.flags(le) & 0xFF)
+                                        .unwrap_or(0);
+                                    let tls_offset = if sec_type == 0x12 {
+                                        // S_THREAD_LOCAL_ZEROFILL: offset = tdata_size +
+                                        // offset_in_tbss
+                                        let tbss_start = tbss.mem_offset;
+                                        tdata.mem_size + (result - tbss_start)
+                                    } else {
+                                        // S_THREAD_LOCAL_REGULAR: offset = offset_in_tdata
+                                        result - tdata_start
+                                    };
+                                    return Some(tls_offset);
+                                }
+                                return Some(result);
+                            }
+                            // Try merged string resolution (for __cstring etc.)
+                            if let Ok(Some(addr)) =
+                                crate::string_merging::get_merged_string_output_address::<MachO>(
+                                    sym_idx,
+                                    0,
+                                    &obj.object,
+                                    &obj.sections,
+                                    &layout.merged_strings,
+                                    &layout.merged_string_start_addresses,
+                                    false,
+                                )
+                            {
+                                return Some(addr);
+                            }
+                            // Section resolution missing — fall back to TDATA/TBSS for TLS.
+                            use object::read::macho::Section as _;
+                            let sec_type = obj
+                                .object
+                                .sections
+                                .get(sec_idx)
+                                .map(|s| s.flags(le) & 0xFF)?;
                             let sec_in =
                                 obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
-                            let result = sec_out + sym.n_value(le).wrapping_sub(sec_in);
-                            let name = sym.name(le, obj.object.symbols.strings()).unwrap_or(b"");
-                            // For TLS init symbols ($tlv$init), compute a TLS-block-
-                            // relative offset instead of an absolute address. The TLV
-                            // descriptor offset field is read by dyld as an offset into
-                            // the thread-local storage template (tdata + tbss).
-                            if name.ends_with(b"$tlv$init") {
-                                let tdata = layout.section_layouts.get(output_section_id::TDATA);
-                                let tdata_start = tdata.mem_offset;
-                                let tbss = layout.section_layouts.get(output_section_id::TBSS);
-                                use object::read::macho::Section as _;
-                                let sec_type = obj
-                                    .object
-                                    .sections
-                                    .get(sec_idx)
-                                    .map(|s| s.flags(le) & 0xFF)
-                                    .unwrap_or(0);
-                                let tls_offset = if sec_type == 0x12 {
-                                    // S_THREAD_LOCAL_ZEROFILL: offset = tdata_size + offset_in_tbss
-                                    let tbss_start = tbss.mem_offset;
-                                    tdata.mem_size + (result - tbss_start)
-                                } else {
-                                    // S_THREAD_LOCAL_REGULAR: offset = offset_in_tdata
-                                    result - tdata_start
-                                };
-                                return Some(tls_offset);
+                            let sym_offset = sym.n_value(le).wrapping_sub(sec_in);
+                            let tdata = layout.section_layouts.get(output_section_id::TDATA);
+                            let tbss = layout.section_layouts.get(output_section_id::TBSS);
+                            match sec_type {
+                                0x11 if tdata.mem_size > 0 => {
+                                    tracing::warn!(
+                                        "TLS fallback: tdata + {sym_offset:#x} -> {:#x}",
+                                        tdata.mem_offset + sym_offset
+                                    );
+                                    Some(tdata.mem_offset + sym_offset)
+                                }
+                                0x12 if tbss.mem_size > 0 => {
+                                    tracing::warn!(
+                                        "TLS fallback: tbss + {sym_offset:#x} -> {:#x}",
+                                        tbss.mem_offset + sym_offset
+                                    );
+                                    Some(tbss.mem_offset + sym_offset)
+                                }
+                                _ => {
+                                    tracing::warn!("TLS fallback MISS: sec_type={sec_type:#x}");
+                                    None
+                                }
                             }
-                            return Some(result);
-                        }
-                        // Try merged string resolution (for __cstring etc.)
-                        if let Ok(Some(addr)) =
-                            crate::string_merging::get_merged_string_output_address::<MachO>(
-                                sym_idx,
-                                0,
-                                &obj.object,
-                                &obj.sections,
-                                &layout.merged_strings,
-                                &layout.merged_string_start_addresses,
-                                false,
+                        });
+                        if let Some(addr) = fallback {
+                            let got = other.and_then(|r| r.format_specific.got_address);
+                            let plt = other.and_then(|r| r.format_specific.plt_address);
+                            (addr, got, plt)
+                        } else if let Some(res) = other {
+                            (
+                                res.raw_value,
+                                res.format_specific.got_address,
+                                res.format_specific.plt_address,
                             )
-                        {
-                            return Some(addr);
+                        } else {
+                            continue;
                         }
-                        // Section resolution missing — fall back to TDATA/TBSS for TLS.
-                        use object::read::macho::Section as _;
-                        let sec_type = obj
-                            .object
-                            .sections
-                            .get(sec_idx)
-                            .map(|s| s.flags(le) & 0xFF)?;
-                        let sec_in = obj.object.sections.get(sec_idx).map(|s| s.addr.get(le))?;
-                        let sym_offset = sym.n_value(le).wrapping_sub(sec_in);
-                        let tdata = layout.section_layouts.get(output_section_id::TDATA);
-                        let tbss = layout.section_layouts.get(output_section_id::TBSS);
-                        match sec_type {
-                            0x11 if tdata.mem_size > 0 => {
-                                tracing::warn!(
-                                    "TLS fallback: tdata + {sym_offset:#x} -> {:#x}",
-                                    tdata.mem_offset + sym_offset
-                                );
-                                Some(tdata.mem_offset + sym_offset)
-                            }
-                            0x12 if tbss.mem_size > 0 => {
-                                tracing::warn!(
-                                    "TLS fallback: tbss + {sym_offset:#x} -> {:#x}",
-                                    tbss.mem_offset + sym_offset
-                                );
-                                Some(tbss.mem_offset + sym_offset)
-                            }
-                            _ => {
-                                tracing::warn!("TLS fallback MISS: sec_type={sec_type:#x}");
-                                None
-                            }
-                        }
-                    });
-                    if let Some(addr) = fallback {
-                        let got = other.and_then(|r| r.format_specific.got_address);
-                        let plt = other.and_then(|r| r.format_specific.plt_address);
-                        (addr, got, plt)
-                    } else if let Some(res) = other {
-                        (
-                            res.raw_value,
-                            res.format_specific.got_address,
-                            res.format_specific.plt_address,
-                        )
-                    } else {
-                        continue;
-                    }
                     } // close find_resolution_by_name else block
                 }
             }
@@ -5835,8 +5836,8 @@ fn validate_no_self_imports(buf: &[u8]) -> Result {
 }
 
 /// Validate that LINKEDIT content is properly aligned.
-/// - LC_SYMTAB symoff must be 8-byte aligned (nlist_64 entries are 16 bytes,
-///   but the minimum natural alignment is 8 for the n_value field).
+/// - LC_SYMTAB symoff must be 8-byte aligned (nlist_64 entries are 16 bytes, but the minimum
+///   natural alignment is 8 for the n_value field).
 /// - LC_SYMTAB stroff should be 4-byte aligned.
 fn validate_linkedit_alignment(buf: &[u8]) -> Result {
     use object::read::macho::MachHeader as _;
