@@ -119,14 +119,19 @@ const KNOWN_PASSING: &[&str] = &[
     "growable-table",
     "relocatable-options",
     "undefined-data",
+    "export",
 ];
 
 /// Check if this test should be skipped entirely.
 fn should_skip(content: &str, path: &Path) -> bool {
     // Known-passing tests override pattern-based skipping.
-    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-        if KNOWN_PASSING.contains(&stem) {
-            return false;
+    // Only applies to main test directory (not lto/ subdirectory).
+    let is_lto = path.to_string_lossy().contains("/lto/");
+    if !is_lto {
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if KNOWN_PASSING.contains(&stem) {
+                return false;
+            }
         }
     }
     if content.contains("REQUIRES: x86") {
