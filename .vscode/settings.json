@@ -3,6 +3,9 @@
         "Cargo.toml",
     ],
     "search.exclude": {
-        "/external_test_suites/": true
+        "**/external_test_suites/": true
+    },
+    "files.watcherExclude": {
+        "**/external_test_suites/": true
     }
 }
