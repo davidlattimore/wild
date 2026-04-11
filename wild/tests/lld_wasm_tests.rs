@@ -111,10 +111,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
         return true;
     }
     // Skip tests for features not yet implemented in wild's WASM support.
-    // Tier 2: relocations, data segments, globals, stack/memory layout
-    if content.contains("R_WASM_")
-        || content.contains("reloc.")
-        || content.contains("__data_end")
+    // Tier 2: data segments, stack/memory layout
+    if content.contains("__data_end")
         || content.contains("__heap_base")
         || content.contains("__stack_pointer")
         || content.contains("__global_base")
@@ -124,9 +122,10 @@ fn should_skip(content: &str, path: &Path) -> bool {
         || content.contains("--max-memory")
         || content.contains("--initial-heap")
         || content.contains("--global-base")
-        || content.contains(".data")
-        || content.contains(".bss")
-        || content.contains(".rodata")
+        || content.contains(".section .data")
+        || content.contains(".section .bss")
+        || content.contains(".section .rodata")
+        || content.contains("Type:            DATA")
     {
         return true;
     }
@@ -162,37 +161,34 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains(".no_dead_strip") || content.contains("NO_STRIP") {
         return true;
     }
-    // Global section (not yet emitted — spec §9.1)
-    if content.contains("GLOBAL")
-        || content.contains("global.get")
-        || content.contains("global.set")
-        || content.contains(".globaltype")
+    // Global section in output (not yet emitted — spec §9.6)
+    if content.contains("Type:            GLOBAL")
         || content.contains("--export=foo_global")
     {
         return true;
     }
-    // Archives (Tier 4)
-    if content.contains("llvm-ar")
-        || content.contains(".a ")
-        || content.contains("--whole-archive")
-        || content.contains("--start-lib")
+    // Archive output validation (archives not yet fully supported)
+    // Keep error-path archive tests enabled since they may pass.
+    if (content.contains("llvm-ar") || content.contains("--whole-archive"))
+        && (content.contains("obj2yaml") || content.contains("FileCheck"))
+        && !content.contains("CHECK-UNDEFINED")  // error checks may pass
     {
         return true;
     }
-    // Custom sections / data in custom sections
-    if content.contains("custom-section")
-        || content.contains("CUSTOM")
-        || content.contains(".section .")  // custom named sections with data
-        || content.contains(".int32")
+    // Custom sections with data payloads
+    if content.contains(".int32")
         || content.contains(".int64")
     {
         return true;
     }
-    // Weak symbols / aliases (need proper resolution)
+    // Weak symbols / aliases (need proper resolution per spec §9.2)
     if content.contains("BINDING_WEAK")
         || content.contains(".weak")
         || content.contains("weak_")
-        || content.contains("alias")
+        || content.contains("weak-alias")
+        || content.contains("weakFn")
+        || content.contains("weakGlobal")
+        || content.contains("start_alias")
     {
         return true;
     }
@@ -206,11 +202,12 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains(".so ") || content.contains("libstub") {
         return true;
     }
-    // Name section (not yet emitted)
-    if content.contains("Name:    name")
-        || content.contains("name section")
-        || content.contains("FunctionNames")
-    {
+    // Name section mangling (demangling not yet implemented)
+    if content.contains("name-section-mangling") {
+        return true;
+    }
+    // --keep-section not yet implemented
+    if content.contains("--keep-section") {
         return true;
     }
     // Features not yet implemented
@@ -230,9 +227,9 @@ fn should_skip(content: &str, path: &Path) -> bool {
         || content.contains(" -y ")
         || content.contains("comdat")
         || content.contains("COMDAT")
-        || content.contains("--version")
         || content.contains("--fatal-warnings")
         || content.contains("-fatal-warnings")
+        || content.contains("CHECK: LLD")  // version string check
     {
         return true;
     }

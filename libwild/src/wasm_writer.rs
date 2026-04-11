@@ -128,6 +128,37 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_CODE, &payload);
     }
 
+    // Name section (custom section "name") — maps function indices to names.
+    // Per spec, this is emitted unless --strip-all is set.
+    if !layout.symbol_db.args.should_strip_all() && !merged.functions.is_empty() {
+        let mut name_payload = Vec::new();
+
+        // Function names subsection (id=1).
+        let mut func_names = Vec::new();
+        let mut name_entries: Vec<(u32, &[u8])> = Vec::new();
+        for (name, &idx) in &merged.function_name_map {
+            name_entries.push((idx, name));
+        }
+        name_entries.sort_by_key(|(idx, _)| *idx);
+
+        write_leb128(&mut func_names, name_entries.len() as u32);
+        for (idx, name) in &name_entries {
+            write_leb128(&mut func_names, *idx);
+            write_name(&mut func_names, name);
+        }
+
+        // Write subsection: id=1 (function names), then size + payload.
+        name_payload.push(1); // subsection id
+        write_leb128(&mut name_payload, func_names.len() as u32);
+        name_payload.extend_from_slice(&func_names);
+
+        // Custom section: id=0, then "name" + payload.
+        let mut custom_payload = Vec::new();
+        write_name(&mut custom_payload, b"name");
+        custom_payload.extend_from_slice(&name_payload);
+        write_section(&mut out, 0, &custom_payload);
+    }
+
     std::fs::write(output_path.as_ref(), &out)?;
 
     // Validate output if requested.
