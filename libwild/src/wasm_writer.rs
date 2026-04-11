@@ -28,7 +28,13 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     let entry_name = layout.symbol_db.args.entry_symbol_name(None);
 
     // Collect functions from all input objects.
-    let merged = merge_inputs(layout)?;
+    let mut merged = merge_inputs(layout)?;
+
+    // GC: remove unreferenced functions (spec §9.1 — output contains only
+    // entries for referenced symbols). wasm-ld GCs by default.
+    if layout.symbol_db.args.should_gc_sections() {
+        gc_functions(&mut merged);
+    }
 
     // Build the output module.
     let mut out = Vec::new();
@@ -151,11 +157,192 @@ struct MergedModule {
     entry_function_index: Option<u32>,
     /// Map from symbol name to output function index.
     function_name_map: std::collections::HashMap<Vec<u8>, u32>,
+    /// Function indices that are explicitly exported via --export/--export-if-defined.
+    explicit_export_indices: Vec<u32>,
 }
 
 impl MergedModule {
     fn function_by_name(&self, name: &[u8]) -> Option<u32> {
         self.function_name_map.get(name).copied()
+    }
+}
+
+/// GC: remove unreferenced functions and remap indices.
+/// Per spec §9.1, output only contains entries for referenced functions.
+fn gc_functions(merged: &mut MergedModule) {
+    let num_funcs = merged.functions.len();
+    if num_funcs == 0 {
+        return;
+    }
+
+    let mut reachable = vec![false; num_funcs];
+
+    // Mark exported functions as roots (per spec §9.2: only exported symbols
+    // and the entry point are roots for GC).
+    if let Some(idx) = merged.entry_function_index {
+        if (idx as usize) < num_funcs {
+            reachable[idx as usize] = true;
+        }
+    }
+    // --export and --export-if-defined symbols are roots.
+    for idx in merged.explicit_export_indices.iter() {
+        if (*idx as usize) < num_funcs {
+            reachable[*idx as usize] = true;
+        }
+    }
+
+    // BFS: scan reachable function bodies for call instructions.
+    // WASM call opcode is 0x10, followed by a function index (LEB128).
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for i in 0..num_funcs {
+            if !reachable[i] {
+                continue;
+            }
+            let body = &merged.functions[i].body;
+            let mut pos = 0;
+            // Skip local declarations at the start of the body.
+            if let Ok((local_count, c)) = read_leb128(body) {
+                pos += c;
+                for _ in 0..local_count {
+                    if let Ok((_, c)) = read_leb128(&body[pos..]) {
+                        pos += c;
+                    }
+                    pos += 1; // valtype
+                }
+            }
+            // Scan for call instructions.
+            while pos < body.len() {
+                let opcode = body[pos];
+                pos += 1;
+                if opcode == 0x10 {
+                    // call funcidx
+                    if let Ok((func_idx, c)) = read_leb128(&body[pos..]) {
+                        pos += c;
+                        if func_idx < num_funcs && !reachable[func_idx] {
+                            reachable[func_idx] = true;
+                            changed = true;
+                        }
+                    }
+                }
+                // We don't need to fully parse all opcodes — just scan for 0x10.
+                // This may produce false positives (0x10 as an immediate) but
+                // won't miss real calls. False positives just keep extra functions.
+            }
+        }
+    }
+
+    // Check if GC removes anything.
+    let keep_count = reachable.iter().filter(|&&r| r).count();
+    if keep_count == num_funcs {
+        return;
+    }
+
+    // Build old→new index mapping.
+    let mut index_map: Vec<Option<u32>> = vec![None; num_funcs];
+    let mut new_idx = 0u32;
+    for (old_idx, &keep) in reachable.iter().enumerate() {
+        if keep {
+            index_map[old_idx] = Some(new_idx);
+            new_idx += 1;
+        }
+    }
+
+    // Filter functions.
+    let mut new_functions = Vec::with_capacity(keep_count);
+    for (old_idx, keep) in reachable.iter().enumerate() {
+        if !keep {
+            continue;
+        }
+        let mut func = std::mem::replace(
+            &mut merged.functions[old_idx],
+            MergedFunction {
+                type_index: 0,
+                body: Vec::new(),
+            },
+        );
+        // Remap call targets in the body.
+        remap_call_targets(&mut func.body, &index_map);
+        new_functions.push(func);
+    }
+    merged.functions = new_functions;
+
+    // Remap entry function index.
+    if let Some(idx) = merged.entry_function_index {
+        merged.entry_function_index = index_map.get(idx as usize).copied().flatten();
+    }
+
+    // Remap function_name_map.
+    merged.function_name_map = merged
+        .function_name_map
+        .iter()
+        .filter_map(|(name, &old_idx)| {
+            index_map
+                .get(old_idx as usize)
+                .copied()
+                .flatten()
+                .map(|new_idx| (name.clone(), new_idx))
+        })
+        .collect();
+
+    // GC unused types.
+    let mut type_used = vec![false; merged.types.len()];
+    for func in &merged.functions {
+        if (func.type_index as usize) < type_used.len() {
+            type_used[func.type_index as usize] = true;
+        }
+    }
+    let mut type_map: Vec<Option<u32>> = vec![None; merged.types.len()];
+    let mut new_type_idx = 0u32;
+    for (old_idx, &used) in type_used.iter().enumerate() {
+        if used {
+            type_map[old_idx] = Some(new_type_idx);
+            new_type_idx += 1;
+        }
+    }
+    merged.types = merged
+        .types
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| type_used[*i])
+        .map(|(_, t)| t.clone())
+        .collect();
+    // Remap type indices in functions.
+    for func in &mut merged.functions {
+        if let Some(new_idx) = type_map.get(func.type_index as usize).copied().flatten() {
+            func.type_index = new_idx;
+        }
+    }
+}
+
+/// Remap function indices in call instructions within a function body.
+fn remap_call_targets(body: &mut [u8], index_map: &[Option<u32>]) {
+    let mut pos = 0;
+    // Skip local declarations.
+    if let Ok((local_count, c)) = read_leb128(body) {
+        pos += c;
+        for _ in 0..local_count {
+            if let Ok((_, c)) = read_leb128(&body[pos..]) {
+                pos += c;
+            }
+            pos += 1; // valtype
+        }
+    }
+    while pos < body.len() {
+        let opcode = body[pos];
+        pos += 1;
+        if opcode == 0x10 {
+            // call funcidx — read the current index and remap
+            let old_idx = read_padded_leb128(body, pos);
+            if let Some(Some(new_idx)) = index_map.get(old_idx as usize) {
+                write_padded_leb128(body, pos, *new_idx);
+            }
+            // Skip past the LEB128 (5 bytes padded)
+            if let Ok((_, c)) = read_leb128(&body[pos..]) {
+                pos += c;
+            }
+        }
     }
 }
 
@@ -316,11 +503,21 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // Collect explicit export indices for GC roots.
+    let args = layout.symbol_db.args;
+    let mut explicit_export_indices = Vec::new();
+    for name in args.exports.iter().chain(args.exports_if_defined.iter()) {
+        if let Some(&idx) = function_name_map.get(name.as_bytes()) {
+            explicit_export_indices.push(idx);
+        }
+    }
+
     Ok(MergedModule {
         types,
         functions,
         entry_function_index,
         function_name_map,
+        explicit_export_indices,
     })
 }
 

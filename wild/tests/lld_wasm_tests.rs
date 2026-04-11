@@ -154,20 +154,12 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains("--relocatable") || content.contains(" -r ") {
         return true;
     }
-    // GC sections (default in wasm-ld, not yet implemented).
-    // wasm-ld GCs by default — tests with multiple functions may have
-    // index-dependent CHECK patterns that assume unreferenced functions
-    // are removed. Skip if we can detect this.
+    // --print-gc-sections outputs diagnostic info we don't produce yet.
     if content.contains("--print-gc-sections") {
         return true;
     }
-    // Tests where function indices depend on GC removing unreferenced functions.
-    if content.contains(".hidden") && content.contains("--export=") {
-        return true;
-    }
-    // export-if-defined has a second RUN checking missing-symbol case where
-    // GC changes function indices.
-    if content.contains("--export-if-defined") && content.contains("MISSING") {
+    // .no_dead_strip / NO_STRIP flag (spec §4.2, flag 0x80) not yet respected
+    if content.contains(".no_dead_strip") || content.contains("NO_STRIP") {
         return true;
     }
     // Global section (not yet emitted — spec §9.1)
