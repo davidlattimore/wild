@@ -402,6 +402,8 @@ struct MergedModule {
     function_name_map: std::collections::HashMap<Vec<u8>, u32>,
     /// Function indices that are explicitly exported via --export/--export-if-defined.
     explicit_export_indices: Vec<u32>,
+    /// Functions with WASM_SYM_NO_STRIP flag (spec §4.2, flag 0x80).
+    no_strip_indices: Vec<u32>,
     /// Linker-defined globals (e.g. __stack_pointer).
     globals: Vec<OutputGlobal>,
     /// Map from global name to output global index.
@@ -450,6 +452,12 @@ fn gc_functions(merged: &mut MergedModule) {
     for idx in merged.explicit_export_indices.iter() {
         if (*idx as usize) < num_funcs {
             reachable[*idx as usize] = true;
+        }
+    }
+    // WASM_SYM_NO_STRIP functions are roots (spec §4.2, flag 0x80).
+    for &func_idx in &merged.no_strip_indices {
+        if (func_idx as usize) < num_funcs {
+            reachable[func_idx as usize] = true;
         }
     }
     // Functions referenced via indirect function table are roots.
@@ -650,6 +658,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let mut types: Vec<FuncType> = Vec::new();
     let mut function_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
     let mut entry_function_index: Option<u32> = None;
+    let mut no_strip_indices: Vec<u32> = Vec::new();
 
     // --- Pass 1: parse all objects, collect types and functions ---
     struct ObjectInfo {
@@ -687,13 +696,23 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
             let func_base = total_functions;
 
-            // Record function names → output indices.
+            // Record function names → output indices and check NO_STRIP flag.
             for (i, _) in parsed.functions.iter().enumerate() {
                 if let Some(name) = parsed.function_names.get(&(i as u32)) {
                     let output_idx = func_base + i as u32;
                     function_name_map.insert(name.clone(), output_idx);
                     if name == entry_name {
                         entry_function_index = Some(output_idx);
+                    }
+                }
+            }
+            // Check for NO_STRIP flag (spec §4.2, flag 0x80) on function symbols.
+            for sym in &parsed.symbols {
+                if sym.kind == 0 && (sym.flags & 0x80) != 0 {
+                    // Function with NO_STRIP.
+                    if sym.index >= parsed.num_function_imports {
+                        let local_idx = sym.index - parsed.num_function_imports;
+                        no_strip_indices.push(func_base + local_idx);
                     }
                 }
             }
@@ -1111,28 +1130,38 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
-    if !all_init_funcs.is_empty() {
+    // Determine if __wasm_call_ctors is needed:
+    // - init functions exist, OR
+    // - any input object references it (via import or entry point)
+    let ctors_name = b"__wasm_call_ctors";
+    let ctors_referenced = objects.iter().any(|obj| {
+        obj.parsed
+            .import_function_names
+            .iter()
+            .any(|n| n == ctors_name)
+    }) || entry_name == ctors_name;
+    let needs_ctors = !all_init_funcs.is_empty() || ctors_referenced;
+
+    if needs_ctors {
         // Sort by priority (lower = earlier).
         all_init_funcs.sort_by_key(|(prio, _)| *prio);
 
         // Synthesize function body.
-        // For each init func: call <idx> (padded LEB128), drop if returns values, end.
-        // For simplicity, we use the pattern: call + drop (wasm-ld does this for
-        // constructors that return values).
+        // For each init func: call <idx> + drop (if returns values), then end.
+        // wasm-ld always creates this function, even when empty.
         let mut body = Vec::new();
         body.push(0x00); // 0 locals
 
         for &(_, func_idx) in &all_init_funcs {
             body.push(0x10); // call
-            // Write padded 5-byte LEB128 for the function index.
             let idx_offset = body.len();
-            body.extend_from_slice(&[0x80, 0x80, 0x80, 0x80, 0x00]); // placeholder
+            body.extend_from_slice(&[0x80, 0x80, 0x80, 0x80, 0x00]);
             write_padded_leb128(&mut body, idx_offset, func_idx);
-            body.push(0x1A); // drop (in case the ctor returns a value)
+            body.push(0x1A); // drop
         }
         body.push(0x0B); // end
 
-        // Get/create the () -> () type for __wasm_call_ctors.
+        // Get/create the () -> () type.
         let void_type = FuncType {
             params: Vec::new(),
             results: Vec::new(),
@@ -1153,7 +1182,6 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 body,
             },
         );
-        // Shift all function indices by 1.
         for idx in function_name_map.values_mut() {
             *idx += 1;
         }
@@ -1161,10 +1189,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             *idx += 1;
         }
         function_name_map.insert(b"__wasm_call_ctors".to_vec(), 0);
-        // Note: table entries and init func indices also need shifting,
-        // but since table is built later and init funcs are resolved here,
-        // this is handled by the reindex happening before table creation.
-    }
+        // If entry point is __wasm_call_ctors, set it now.
+        if entry_name == ctors_name {
+            entry_function_index = Some(0);
+        }
+    } // needs_ctors
 
     // (Data segment layout done in pass 1.5 above.)
 
@@ -1272,6 +1301,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         entry_function_index,
         function_name_map,
         explicit_export_indices,
+        no_strip_indices,
         table_entries,
         func_to_table_index,
         globals,

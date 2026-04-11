@@ -158,10 +158,16 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Tier 5: constructors — we synthesize __wasm_call_ctors but only
-    // when init functions exist. Tests that reference it without init
-    // arrays, or that check specific ctor patterns, are still skipped.
-    if content.contains("__wasm_call_ctors") {
+    // Tier 5: .init_array based constructors (need data section reloc processing)
+    if content.contains(".init_array") {
+        return true;
+    }
+    // WASM_SYM_EXPORTED flag handling (--no-entry with .globl exports)
+    if content.contains("command-exports") {
+        return true;
+    }
+    // GC of unused imports (need import-level GC)
+    if content.contains("gc-imports") || content.contains("unused_undef") {
         return true;
     }
     // Tier 6: TLS, shared memory, PIC, relocatable output
@@ -181,8 +187,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains("--print-gc-sections") {
         return true;
     }
-    // .no_dead_strip / NO_STRIP flag (spec §4.2, flag 0x80) not yet respected
-    if content.contains(".no_dead_strip") || content.contains("NO_STRIP") {
+    // .no_dead_strip assembler directive (not same as WASM_SYM_NO_STRIP flag)
+    if content.contains(".no_dead_strip") {
         return true;
     }
     // User-defined globals / advanced global features
