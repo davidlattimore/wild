@@ -113,6 +113,10 @@ const KNOWN_PASSING: &[&str] = &[
     "unsupported-pic-relocations",
     "unsupported-pic-relocations64",
     "whole-archive",
+    "bad-data-relocs",
+    "export-table-explicit",
+    "relocatable-options",
+    "undefined-data",
 ];
 
 /// Check if this test should be skipped entirely.
@@ -132,11 +136,21 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains("split-file") {
         return true;
     }
-    if path.extension().is_some_and(|e| e == "ll") {
-        return true;
-    }
-    if content.contains("RUN: llc ") || content.contains("RUN: llc\n") {
-        return true;
+    // .ll / .test files that need features we don't support yet
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        if matches!(
+            stem,
+            "init-fini-no-gc"
+                | "export-name"
+                | "signature-mismatch-export"
+                | "import-name"
+                | "debuginfo"
+                | "export-all"
+                | "debug-removed-fn"
+                | "local-symbols"
+        ) {
+            return true;
+        }
     }
     // Skip tests for features not yet implemented in wild's WASM support.
     // Tier 2: advanced memory layout options
@@ -279,6 +293,7 @@ fn should_skip(content: &str, path: &Path) -> bool {
 struct TestContext {
     llvm_mc: PathBuf,
     llvm_ar: PathBuf,
+    llc: PathBuf,
     obj2yaml: PathBuf,
     filecheck: PathBuf,
     wild_bin: PathBuf,
@@ -314,6 +329,8 @@ fn rewrite_command(line: &str, ctx: &TestContext) -> String {
     result = result.replace("llvm-ar", &ctx.llvm_ar.to_string_lossy());
     result = result.replace("obj2yaml", &ctx.obj2yaml.to_string_lossy());
     result = result.replace("FileCheck", &ctx.filecheck.to_string_lossy());
+    // llc must be replaced AFTER llvm-mc to avoid partial match
+    result = result.replace("llc ", &format!("{} ", ctx.llc.to_string_lossy()));
 
     result
 }
@@ -373,6 +390,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
         }
     };
     let llvm_ar = find_llvm_tool("llvm-ar").unwrap_or_else(|| PathBuf::from("llvm-ar"));
+    let llc = find_llvm_tool("llc").unwrap_or_else(|| PathBuf::from("llc"));
     let obj2yaml = find_llvm_tool("obj2yaml").unwrap_or_else(|| PathBuf::from("obj2yaml"));
     let filecheck = find_llvm_tool("FileCheck").unwrap_or_else(|| PathBuf::from("FileCheck"));
 
@@ -384,6 +402,7 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
     let ctx = std::sync::Arc::new(TestContext {
         llvm_mc,
         llvm_ar,
+        llc,
         obj2yaml,
         filecheck,
         wild_bin,
