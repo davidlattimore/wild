@@ -753,6 +753,25 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
         segment_output_offsets.push(obj_seg_offsets);
     }
+    // Build global data symbol name → output address map for cross-object resolution.
+    let mut data_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+    for (obj_idx, obj_info) in objects.iter().enumerate() {
+        let obj_seg_offsets = &segment_output_offsets[obj_idx];
+        for sym in &obj_info.parsed.symbols {
+            if sym.kind == 1 && (sym.flags & 0x10) == 0 && !sym.name.is_empty() {
+                // Defined data symbol with a name.
+                if let Some(&seg_base) = obj_seg_offsets.get(sym.segment_index as usize) {
+                    data_name_map.insert(sym.name.clone(), seg_base + sym.segment_offset);
+                }
+            }
+        }
+    }
+
+    // Add linker-defined data symbols to the global map.
+    let data_end_addr = data_offset;
+    data_name_map.insert(b"__data_end".to_vec(), data_end_addr);
+    data_name_map.insert(b"__heap_base".to_vec(), data_end_addr);
+
     let data_size = if data_offset > stack_size {
         data_offset - stack_size
     } else {
@@ -868,6 +887,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             obj_seg_offsets.get(sym.segment_index as usize)
                         {
                             let addr = seg_base + sym.segment_offset;
+                            symbol_to_data_addr.insert(sym_idx as u32, addr);
+                        }
+                    } else if !sym.name.is_empty() {
+                        // Undefined data symbol — resolve by name from global map.
+                        if let Some(&addr) = data_name_map.get(&sym.name) {
                             symbol_to_data_addr.insert(sym_idx as u32, addr);
                         }
                     }
