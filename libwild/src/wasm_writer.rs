@@ -612,17 +612,53 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         exported: false,
     });
 
+    // --- Pass 1.5: layout data segments and build data symbol address map ---
+    // Per spec §9.1: data placed after stack in linear memory.
+    // Per spec §9.4: R_WASM_MEMORY_ADDR_* value = symbol offset in output segment + addend.
+    let stack_size = layout
+        .symbol_db
+        .args
+        .stack_size
+        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
+    let mut data_offset = stack_size;
+    let mut data_segments: Vec<OutputDataSegment> = Vec::new();
+    // Per-object: map from data segment index to output memory offset.
+    let mut segment_output_offsets: Vec<Vec<u32>> = Vec::new();
+
+    for obj_info in &objects {
+        let mut obj_seg_offsets = Vec::new();
+        for seg in &obj_info.parsed.data_segments {
+            let align = seg.alignment.max(1);
+            data_offset = (data_offset + align - 1) & !(align - 1);
+            obj_seg_offsets.push(data_offset);
+            data_segments.push(OutputDataSegment {
+                memory_offset: data_offset,
+                data: seg.data.clone(),
+            });
+            data_offset += seg.data.len() as u32;
+        }
+        segment_output_offsets.push(obj_seg_offsets);
+    }
+    let data_size = if data_offset > stack_size {
+        data_offset - stack_size
+    } else {
+        0
+    };
+
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
 
-    for obj_info in &objects {
+    for (obj_idx, obj_info) in objects.iter().enumerate() {
         let parsed = &obj_info.parsed;
 
-        // Build per-object symbol → output index maps.
+        // Build per-object symbol → output index/address maps.
         let mut symbol_to_output_func: std::collections::HashMap<u32, u32> =
             Default::default();
         let mut symbol_to_output_global: std::collections::HashMap<u32, u32> =
             Default::default();
+        // Data symbol → output memory address (spec §9.4: value = seg_offset + sym_offset + addend).
+        let mut symbol_to_data_addr: std::collections::HashMap<u32, u32> = Default::default();
+        let obj_seg_offsets = &segment_output_offsets[obj_idx];
         for (sym_idx, sym) in parsed.symbols.iter().enumerate() {
             if sym.kind == 0 {
                 // SYMTAB_FUNCTION
@@ -652,7 +688,18 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         }
                     }
                 }
-            } else if sym.kind == 2 {
+            } else if sym.kind == 1 {
+                    // SYMTAB_DATA — compute output memory address.
+                    let is_undefined = sym.flags & 0x10 != 0;
+                    if !is_undefined {
+                        if let Some(&seg_base) =
+                            obj_seg_offsets.get(sym.segment_index as usize)
+                        {
+                            let addr = seg_base + sym.segment_offset;
+                            symbol_to_data_addr.insert(sym_idx as u32, addr);
+                        }
+                    }
+                } else if sym.kind == 2 {
                     // SYMTAB_GLOBAL — resolve to linker-defined globals by name.
                     let is_undefined = sym.flags & 0x10 != 0;
                     let resolve_name = if !sym.name.is_empty() {
@@ -710,6 +757,35 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(old_type);
                         write_padded_leb128(&mut body, off_in_body, new_type);
                     }
+                    3 => {
+                        // R_WASM_MEMORY_ADDR_LEB (spec §9.4: 5-byte varuint32)
+                        // value = data symbol address + addend
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0); // undefined → 0 per spec
+                        let value = (addr as i64 + reloc.addend as i64) as u32;
+                        write_padded_leb128(&mut body, off_in_body, value);
+                    }
+                    4 => {
+                        // R_WASM_MEMORY_ADDR_SLEB (spec §9.4: 5-byte varint32)
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let value = (addr as i64 + reloc.addend as i64) as i32;
+                        write_padded_sleb128(&mut body, off_in_body, value);
+                    }
+                    5 => {
+                        // R_WASM_MEMORY_ADDR_I32 (spec §9.4: uint32 LE)
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let value = (addr as i64 + reloc.addend as i64) as u32;
+                        body[off_in_body..off_in_body + 4]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
                     7 => {
                         // R_WASM_GLOBAL_INDEX_LEB (spec §2: 5-byte varuint32)
                         if let Some(&output_idx) =
@@ -729,36 +805,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
-    // --- Pass 3: collect data segments ---
-    // Per spec §9.1: "Merging of data sections is performed by creating
-    // a new data section from the data segments."
-    // Data is placed after the stack in linear memory.
-    let stack_size = layout
-        .symbol_db
-        .args
-        .stack_size
-        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
-    let mut data_offset = stack_size; // data starts after stack
-    let mut data_segments: Vec<OutputDataSegment> = Vec::new();
-
-    for obj_info in &objects {
-        let parsed = &obj_info.parsed;
-        for seg in &parsed.data_segments {
-            // Align the offset.
-            let align = seg.alignment.max(1);
-            data_offset = (data_offset + align - 1) & !(align - 1);
-            data_segments.push(OutputDataSegment {
-                memory_offset: data_offset,
-                data: seg.data.clone(),
-            });
-            data_offset += seg.data.len() as u32;
-        }
-    }
-    let data_size = if data_offset > stack_size {
-        data_offset - stack_size
-    } else {
-        0
-    };
+    // (Data segment layout done in pass 1.5 above.)
 
     // --- Pass 4: collect unresolved imports (spec §9.2) ---
     // Per spec: "an import for each undefined strong symbol."
@@ -1688,6 +1735,17 @@ fn write_padded_leb128(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset + 2] = ((value >> 14) & 0x7F) as u8 | 0x80;
     buf[offset + 3] = ((value >> 21) & 0x7F) as u8 | 0x80;
     buf[offset + 4] = ((value >> 28) & 0x0F) as u8;
+}
+
+/// Write a 5-byte padded signed LEB128 value at a specific offset.
+fn write_padded_sleb128(buf: &mut [u8], offset: usize, value: i32) {
+    // Encode as unsigned but with sign extension in the high bits.
+    let uvalue = value as u32;
+    buf[offset] = (uvalue & 0x7F) as u8 | 0x80;
+    buf[offset + 1] = ((uvalue >> 7) & 0x7F) as u8 | 0x80;
+    buf[offset + 2] = ((uvalue >> 14) & 0x7F) as u8 | 0x80;
+    buf[offset + 3] = ((uvalue >> 21) & 0x7F) as u8 | 0x80;
+    buf[offset + 4] = ((uvalue >> 28) & 0x0F) as u8;
 }
 
 /// Read a 5-byte padded unsigned LEB128 value at a specific offset.
