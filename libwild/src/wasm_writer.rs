@@ -686,6 +686,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let entry_name = layout.symbol_db.args.entry_symbol_name(None);
     let mut types: Vec<FuncType> = Vec::new();
     let mut function_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+    // Track whether each function definition is weak (for strong/weak resolution per §9.2).
+    let mut function_is_weak: std::collections::HashMap<Vec<u8>, bool> = Default::default();
     let mut entry_function_index: Option<u32> = None;
     let mut no_strip_indices: Vec<u32> = Vec::new();
     // Functions with WASM_SYM_EXPORTED flag (spec §4.2, flag 0x20).
@@ -727,13 +729,30 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
             let func_base = total_functions;
 
-            // Record function names → output indices and check NO_STRIP flag.
+            // Record function names → output indices with weak/strong resolution (§9.2).
             for (i, _) in parsed.functions.iter().enumerate() {
                 if let Some(name) = parsed.function_names.get(&(i as u32)) {
                     let output_idx = func_base + i as u32;
-                    function_name_map.insert(name.clone(), output_idx);
-                    if name == entry_name {
-                        entry_function_index = Some(output_idx);
+                    // Check if this definition is weak (flag 0x01).
+                    let is_weak = parsed.symbols.iter().any(|sym| {
+                        sym.kind == 0
+                            && !sym.name.is_empty()
+                            && sym.name == *name
+                            && (sym.flags & 0x01) != 0
+                    });
+                    // Per spec §9.2: strong overrides weak. If existing is weak
+                    // and new is strong, override. If both strong, first wins.
+                    let should_insert = match function_is_weak.get(name) {
+                        None => true,                          // first definition
+                        Some(true) if !is_weak => true,        // strong overrides weak
+                        _ => false,                            // keep existing
+                    };
+                    if should_insert {
+                        function_name_map.insert(name.clone(), output_idx);
+                        function_is_weak.insert(name.clone(), is_weak);
+                        if name == entry_name {
+                            entry_function_index = Some(output_idx);
+                        }
                     }
                 }
             }

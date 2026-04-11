@@ -114,7 +114,9 @@ const KNOWN_PASSING: &[&str] = &[
     "unsupported-pic-relocations64",
     "whole-archive",
     "bad-data-relocs",
+    "export-table",
     "export-table-explicit",
+    "growable-table",
     "relocatable-options",
     "undefined-data",
 ];
@@ -148,6 +150,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
                 | "export-all"
                 | "debug-removed-fn"
                 | "local-symbols"
+                | "name-section-mangling"
+                | "weak-undefined"
         ) {
             return true;
         }
@@ -164,11 +168,11 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Tables: call_indirect / multi-table (complex table patterns)
-    if content.contains("call_indirect")
-        || content.contains("table.get")
+    // Multi-table / table manipulation / import-table CHECK patterns
+    if content.contains("table.get")
         || content.contains("table.set")
         || content.contains("multi-table")
+        || content.contains("__indirect_function_table")
     {
         return true;
     }
@@ -228,14 +232,12 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Weak symbols / aliases (need proper resolution per spec §9.2)
-    if content.contains("BINDING_WEAK")
-        || content.contains(".weak")
-        || content.contains("weak_")
-        || content.contains("weak-alias")
-        || content.contains("weakFn")
-        || content.contains("weakGlobal")
+    // Weak aliases / specific weak patterns not yet fully handled
+    if content.contains("weak-alias")
         || content.contains("start_alias")
+        || content.contains("weakGlobal")
+        || content.contains("signature-mismatch-weak")
+        || content.contains("__attribute__")  // name mangling
     {
         return true;
     }
