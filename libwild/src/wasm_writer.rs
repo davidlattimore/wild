@@ -9,16 +9,26 @@ use crate::platform::Arch;
 use crate::platform::Args as _;
 use crate::wasm::Wasm;
 
-/// WASM binary section IDs (must be emitted in this order).
+/// WASM binary section IDs (spec §9.6: must be emitted in this order).
 const SECTION_TYPE: u8 = 1;
+const SECTION_IMPORT: u8 = 2;
 const SECTION_FUNCTION: u8 = 3;
 const SECTION_MEMORY: u8 = 5;
+const SECTION_GLOBAL: u8 = 6;
 const SECTION_EXPORT: u8 = 7;
 const SECTION_CODE: u8 = 10;
+const SECTION_DATA: u8 = 11;
 
 /// WASM export kinds.
 const EXPORT_FUNC: u8 = 0x00;
 const EXPORT_MEMORY: u8 = 0x02;
+const EXPORT_GLOBAL: u8 = 0x03;
+
+/// WASM value types.
+const VALTYPE_I32: u8 = 0x7F;
+
+/// Default stack size (1MB, same as wasm-ld).
+const DEFAULT_STACK_SIZE: u32 = 1048576;
 
 /// Write a WASM module from the layout.
 pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
@@ -67,8 +77,37 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_FUNCTION, &payload);
     }
 
-    // Memory section: 1 page minimum.
-    write_section(&mut out, SECTION_MEMORY, &[0x01, 0x00, 0x01]);
+    // Memory section (spec §9.6): compute from stack + data size.
+    let stack_size = layout
+        .symbol_db
+        .args
+        .stack_size
+        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
+    let total_memory = stack_size + merged.data_size;
+    let pages = (total_memory + 65535) / 65536; // round up to pages
+    let pages = pages.max(1); // at least 1 page
+    {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 1); // 1 memory
+        payload.push(0x00); // no max
+        write_leb128(&mut payload, pages);
+        write_section(&mut out, SECTION_MEMORY, &payload);
+    }
+
+    // Global section (spec §9.1): linker-defined globals.
+    if !merged.globals.is_empty() {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, merged.globals.len() as u32);
+        for global in &merged.globals {
+            payload.push(global.valtype);
+            payload.push(if global.mutable { 1 } else { 0 });
+            // Init expression: i32.const <value>, end
+            payload.push(0x41); // i32.const
+            write_sleb128(&mut payload, global.init_value as i32);
+            payload.push(0x0B); // end
+        }
+        write_section(&mut out, SECTION_GLOBAL, &payload);
+    }
 
     // Export section (spec §9.2: export for each defined symbol with non-local
     // linkage and non-hidden visibility; plus explicit --export flags).
@@ -147,10 +186,23 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             write_name(&mut func_names, name);
         }
 
-        // Write subsection: id=1 (function names), then size + payload.
-        name_payload.push(1); // subsection id
+        // Subsection 1: function names.
+        name_payload.push(1);
         write_leb128(&mut name_payload, func_names.len() as u32);
         name_payload.extend_from_slice(&func_names);
+
+        // Subsection 7: global names.
+        if !merged.globals.is_empty() {
+            let mut global_names = Vec::new();
+            write_leb128(&mut global_names, merged.globals.len() as u32);
+            for (i, g) in merged.globals.iter().enumerate() {
+                write_leb128(&mut global_names, i as u32);
+                write_name(&mut global_names, &g.name);
+            }
+            name_payload.push(7);
+            write_leb128(&mut name_payload, global_names.len() as u32);
+            name_payload.extend_from_slice(&global_names);
+        }
 
         // Custom section: id=0, then "name" + payload.
         let mut custom_payload = Vec::new();
@@ -182,6 +234,35 @@ struct MergedFunction {
     body: Vec<u8>, // the raw body bytes (NOT including the body size LEB prefix)
 }
 
+/// A global variable in the output module.
+struct OutputGlobal {
+    name: Vec<u8>,
+    valtype: u8,
+    mutable: bool,
+    init_value: u64,
+    exported: bool,
+}
+
+/// A data segment in the output module.
+struct OutputDataSegment {
+    /// Byte offset in linear memory.
+    memory_offset: u32,
+    /// Segment data.
+    data: Vec<u8>,
+}
+
+/// An import in the output module (for unresolved symbols).
+struct OutputImport {
+    module: Vec<u8>,
+    field: Vec<u8>,
+    kind: ImportKind,
+}
+
+enum ImportKind {
+    Function(u32), // type index
+    Global { valtype: u8, mutable: bool },
+}
+
 struct MergedModule {
     types: Vec<FuncType>,
     functions: Vec<MergedFunction>,
@@ -190,6 +271,20 @@ struct MergedModule {
     function_name_map: std::collections::HashMap<Vec<u8>, u32>,
     /// Function indices that are explicitly exported via --export/--export-if-defined.
     explicit_export_indices: Vec<u32>,
+    /// Linker-defined globals (e.g. __stack_pointer).
+    globals: Vec<OutputGlobal>,
+    /// Map from global name to output global index.
+    global_name_map: std::collections::HashMap<Vec<u8>, u32>,
+    /// Merged data segments.
+    data_segments: Vec<OutputDataSegment>,
+    /// Total data size (for memory section computation).
+    data_size: u32,
+    /// Imports for unresolved symbols.
+    imports: Vec<OutputImport>,
+    /// Number of imported functions (affects function index space).
+    num_imported_functions: u32,
+    /// Number of imported globals (affects global index space).
+    num_imported_globals: u32,
 }
 
 impl MergedModule {
@@ -443,16 +538,37 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Create linker-defined globals (spec §9.6) ---
+    let mut globals: Vec<OutputGlobal> = Vec::new();
+    let mut global_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+
+    // __stack_pointer: mutable i32 global, initialized to top of stack.
+    // Per spec, the linker synthesizes this. wasm-ld defaults to 1MB stack.
+    let stack_size = layout
+        .symbol_db
+        .args
+        .stack_size
+        .unwrap_or(DEFAULT_STACK_SIZE as u64) as u32;
+    let sp_index = globals.len() as u32;
+    global_name_map.insert(b"__stack_pointer".to_vec(), sp_index);
+    globals.push(OutputGlobal {
+        name: b"__stack_pointer".to_vec(),
+        valtype: VALTYPE_I32,
+        mutable: true,
+        init_value: stack_size as u64, // will be adjusted after data layout
+        exported: false,
+    });
+
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
 
     for obj_info in &objects {
         let parsed = &obj_info.parsed;
 
-        // Build per-object symbol → output function index map.
-        // For defined function symbols: use func_base + local index.
-        // For undefined function symbols: look up by name in the global map.
+        // Build per-object symbol → output index maps.
         let mut symbol_to_output_func: std::collections::HashMap<u32, u32> =
+            Default::default();
+        let mut symbol_to_output_global: std::collections::HashMap<u32, u32> =
             Default::default();
         for (sym_idx, sym) in parsed.symbols.iter().enumerate() {
             if sym.kind == 0 {
@@ -483,7 +599,25 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         }
                     }
                 }
-            }
+            } else if sym.kind == 2 {
+                    // SYMTAB_GLOBAL — resolve to linker-defined globals by name.
+                    let is_undefined = sym.flags & 0x10 != 0;
+                    let resolve_name = if !sym.name.is_empty() {
+                        Some(sym.name.as_slice())
+                    } else if is_undefined {
+                        parsed
+                            .import_global_names
+                            .get(sym.index as usize)
+                            .map(|v| v.as_slice())
+                    } else {
+                        None
+                    };
+                    if let Some(name) = resolve_name {
+                        if let Some(&output_idx) = global_name_map.get(name) {
+                            symbol_to_output_global.insert(sym_idx as u32, output_idx);
+                        }
+                    }
+                }
         }
 
         for (i, input_func) in parsed.functions.iter().enumerate() {
@@ -523,6 +657,14 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(old_type);
                         write_padded_leb128(&mut body, off_in_body, new_type);
                     }
+                    7 => {
+                        // R_WASM_GLOBAL_INDEX_LEB (spec §2: 5-byte varuint32)
+                        if let Some(&output_idx) =
+                            symbol_to_output_global.get(&reloc.symbol_index)
+                        {
+                            write_padded_leb128(&mut body, off_in_body, output_idx);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -549,6 +691,13 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         entry_function_index,
         function_name_map,
         explicit_export_indices,
+        globals,
+        global_name_map,
+        data_segments: Vec::new(),
+        data_size: 0,
+        imports: Vec::new(),
+        num_imported_functions: 0,
+        num_imported_globals: 0,
     })
 }
 
@@ -587,6 +736,8 @@ struct ParsedInput {
     function_names: std::collections::HashMap<u32, Vec<u8>>,
     /// Import function names (indexed by import function index).
     import_function_names: Vec<Vec<u8>>,
+    /// Import global names (indexed by import global index).
+    import_global_names: Vec<Vec<u8>>,
     /// All symbols from the linking section.
     symbols: Vec<WasmSymbolInfo>,
     /// Relocations for the code section.
@@ -614,6 +765,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut code_relocations = Vec::new();
     let mut num_imports = 0u32;
     let mut import_function_names: Vec<Vec<u8>> = Vec::new();
+    let mut import_global_names: Vec<Vec<u8>> = Vec::new();
     let mut code_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
 
@@ -682,14 +834,10 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                             }
                         }
                         0x03 => {
-                            // global
+                            // global import — record the field name
+                            import_global_names.push(field_name.to_vec());
                             off += 1; // valtype
                             off += 1; // mutability
-                            // skip init expr (ends with 0x0B)
-                            while off < payload.len() && payload[off] != 0x0B {
-                                off += 1;
-                            }
-                            off += 1; // skip 0x0B
                         }
                         _ => {}
                     }
@@ -748,6 +896,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         functions,
         function_names,
         import_function_names,
+        import_global_names,
         symbols,
         code_relocations,
         num_function_imports: num_imports,
@@ -1184,6 +1333,22 @@ fn write_leb128(out: &mut Vec<u8>, mut value: u32) {
         }
         out.push(byte);
         if value == 0 {
+            break;
+        }
+    }
+}
+
+/// Write a signed LEB128 value.
+fn write_sleb128(out: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
+        if !done {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if done {
             break;
         }
     }

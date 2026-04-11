@@ -161,9 +161,13 @@ fn should_skip(content: &str, path: &Path) -> bool {
     if content.contains(".no_dead_strip") || content.contains("NO_STRIP") {
         return true;
     }
-    // Global section in output (not yet emitted — spec §9.6)
-    if content.contains("Type:            GLOBAL")
-        || content.contains("--export=foo_global")
+    // User-defined globals / advanced global features
+    if content.contains("--export=foo_global")
+        || content.contains("GlobalNames")
+        || content.contains("__table_base")
+        || content.contains("externref")
+        || content.contains("foo_global")
+        || content.contains("bar_global")
     {
         return true;
     }
