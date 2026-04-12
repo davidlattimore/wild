@@ -1095,45 +1095,59 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
         return;
     }
 
+    // Indices stored on `merged` (entry, name_map, exports, table, ...)
+    // are in the wasm-binary function namespace — imports occupy
+    // 0..num_imports, defined functions follow. `merged.functions`
+    // however holds only the defined ones, indexed from 0. Convert via
+    // `to_local`; imports (idx < num_imports) yield None and are skipped
+    // as GC roots — they're not GC-able.
+    let num_imports = merged.num_imported_functions;
+    let to_local = |wasm_idx: u32| -> Option<usize> {
+        wasm_idx
+            .checked_sub(num_imports)
+            .map(|n| n as usize)
+            .filter(|&n| n < num_funcs)
+    };
+
     let mut reachable = vec![false; num_funcs];
 
     // Mark exported functions as roots (per spec §9.2: only exported symbols
     // and the entry point are roots for GC).
-    if let Some(idx) = merged.entry_function_index {
-        if (idx as usize) < num_funcs {
-            reachable[idx as usize] = true;
-        }
+    if let Some(idx) = merged.entry_function_index
+        && let Some(local) = to_local(idx)
+    {
+        reachable[local] = true;
     }
     // --export and --export-if-defined symbols are roots.
-    for idx in merged.explicit_export_indices.iter() {
-        if (*idx as usize) < num_funcs {
-            reachable[*idx as usize] = true;
+    for &idx in merged.explicit_export_indices.iter() {
+        if let Some(local) = to_local(idx) {
+            reachable[local] = true;
         }
     }
     // When --export-dynamic (or shared mode), all named functions are roots.
     if export_all_dynamic {
-        for &func_idx in merged.function_name_map.values() {
-            if (func_idx as usize) < num_funcs {
-                reachable[func_idx as usize] = true;
+        for &idx in merged.function_name_map.values() {
+            if let Some(local) = to_local(idx) {
+                reachable[local] = true;
             }
         }
     }
     // WASM_SYM_EXPORTED functions are roots (spec §4.2, flag 0x20).
-    for &func_idx in &merged.exported_indices {
-        if (func_idx as usize) < num_funcs {
-            reachable[func_idx as usize] = true;
+    for &idx in &merged.exported_indices {
+        if let Some(local) = to_local(idx) {
+            reachable[local] = true;
         }
     }
     // WASM_SYM_NO_STRIP functions are roots (spec §4.2, flag 0x80).
-    for &func_idx in &merged.no_strip_indices {
-        if (func_idx as usize) < num_funcs {
-            reachable[func_idx as usize] = true;
+    for &idx in &merged.no_strip_indices {
+        if let Some(local) = to_local(idx) {
+            reachable[local] = true;
         }
     }
     // Functions referenced via indirect function table are roots.
-    for &func_idx in &merged.table_entries {
-        if (func_idx as usize) < num_funcs {
-            reachable[func_idx as usize] = true;
+    for &idx in &merged.table_entries {
+        if let Some(local) = to_local(idx) {
+            reachable[local] = true;
         }
     }
 
@@ -1168,9 +1182,12 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
                 break;
             }
             for func_idx in referenced {
-                let idx = func_idx as usize;
-                if idx < num_funcs && !reachable[idx] {
-                    reachable[idx] = true;
+                // Body carries wasm-binary indices; convert to local
+                // defined-function index and skip imports.
+                if let Some(local) = to_local(func_idx)
+                    && !reachable[local]
+                {
+                    reachable[local] = true;
                     changed = true;
                 }
             }
@@ -1183,24 +1200,31 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
         return;
     }
 
-    // Build old→new index mapping.
-    let mut index_map: Vec<Option<u32>> = vec![None; num_funcs];
-    let mut new_idx = 0u32;
-    for (old_idx, &keep) in reachable.iter().enumerate() {
+    // Build wasm-binary-index → new-wasm-binary-index map. Imports
+    // (indices 0..num_imports) are unchanged; defined functions remap
+    // to `num_imports + compacted_local_index`.
+    let total = (num_imports as usize) + num_funcs;
+    let mut index_map: Vec<Option<u32>> = vec![None; total];
+    for i in 0..num_imports {
+        index_map[i as usize] = Some(i);
+    }
+    let mut new_local = 0u32;
+    for (old_local, &keep) in reachable.iter().enumerate() {
         if keep {
-            index_map[old_idx] = Some(new_idx);
-            new_idx += 1;
+            let old_wasm = num_imports + old_local as u32;
+            index_map[old_wasm as usize] = Some(num_imports + new_local);
+            new_local += 1;
         }
     }
 
     // Filter functions.
     let mut new_functions = Vec::with_capacity(keep_count);
-    for (old_idx, keep) in reachable.iter().enumerate() {
+    for (old_local, keep) in reachable.iter().enumerate() {
         if !keep {
             continue;
         }
         let mut func = std::mem::replace(
-            &mut merged.functions[old_idx],
+            &mut merged.functions[old_local],
             MergedFunction {
                 type_index: 0,
                 body: Vec::new(),
