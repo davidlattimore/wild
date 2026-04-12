@@ -3444,52 +3444,81 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             // CustomSection.data, so offsets apply directly.
             let mut patched = cs.data.clone();
             if let Some(relocs) = obj_info.parsed.custom_relocations.get(&cs.name) {
+                // Shared helper: recover the kind-1/2 symbol's effective
+                // name, falling back to the referenced import field when
+                // the symbol table entry itself carries an empty name
+                // (undefined + no EXPLICIT_NAME flag).
+                let effective_name = |sym: &WasmSymbolInfo| -> Option<Vec<u8>> {
+                    if !sym.name.is_empty() {
+                        return Some(sym.name.clone());
+                    }
+                    if sym.flags & 0x10 == 0 {
+                        return None;
+                    }
+                    match sym.kind {
+                        0 => obj_info
+                            .parsed
+                            .import_function_names
+                            .get(sym.index as usize)
+                            .cloned(),
+                        2 => obj_info
+                            .parsed
+                            .import_global_names
+                            .get(sym.index as usize)
+                            .cloned(),
+                        _ => None,
+                    }
+                };
                 for reloc in relocs {
                     let off_in_data = reloc.offset as usize;
-                    match reloc.reloc_type {
-                        13 => {
-                            // R_WASM_GLOBAL_INDEX_I32: uint32 LE. Unresolved
-                            // global references emit the 0xFFFFFFFF sentinel
-                            // per wasm-ld debug-section convention.
-                            if off_in_data + 4 > patched.len() {
-                                continue;
-                            }
-                            // Undefined kind-2 symbols carry an empty name
-                            // in the symbol table; fall back to the
-                            // referenced import global's field name.
-                            let resolve_name: Option<Vec<u8>> = obj_info
-                                .parsed
-                                .symbols
-                                .get(reloc.symbol_index as usize)
-                                .and_then(|s| {
-                                    if s.kind != 2 {
-                                        return None;
-                                    }
-                                    if !s.name.is_empty() {
-                                        return Some(s.name.clone());
-                                    }
-                                    if s.flags & 0x10 != 0 {
-                                        obj_info
-                                            .parsed
-                                            .import_global_names
-                                            .get(s.index as usize)
-                                            .cloned()
-                                    } else {
-                                        None
-                                    }
-                                });
-                            let resolved = resolve_name
-                                .as_deref()
-                                .and_then(|n| global_name_map.get(n).copied());
-                            let value: u32 = resolved.unwrap_or(u32::MAX);
-                            patched[off_in_data..off_in_data + 4]
-                                .copy_from_slice(&value.to_le_bytes());
-                        }
-                        _ => {
-                            // Other reloc types aren't applied yet — leave
-                            // the compiler's placeholder bytes intact.
-                        }
+                    if off_in_data + 4 > patched.len() {
+                        continue;
                     }
+                    let sym = obj_info.parsed.symbols.get(reloc.symbol_index as usize);
+                    // Debug-section convention per wasm-ld: unresolved
+                    // references in custom sections emit the 0xFFFFFFFF
+                    // sentinel rather than 0.
+                    let unresolved: u32 = u32::MAX;
+                    let value: u32 = match reloc.reloc_type {
+                        13 => {
+                            // R_WASM_GLOBAL_INDEX_I32 — target is kind 2.
+                            sym.filter(|s| s.kind == 2)
+                                .and_then(effective_name)
+                                .and_then(|n| global_name_map.get(&n).copied())
+                                .unwrap_or(unresolved)
+                        }
+                        26 => {
+                            // R_WASM_FUNCTION_INDEX_I32 — target is kind 0.
+                            sym.filter(|s| s.kind == 0)
+                                .and_then(effective_name)
+                                .and_then(|n| function_name_map.get(&n).copied())
+                                .unwrap_or(unresolved)
+                        }
+                        5 => {
+                            // R_WASM_MEMORY_ADDR_I32 — target is kind 1.
+                            let addr = sym
+                                .filter(|s| s.kind == 1)
+                                .and_then(effective_name)
+                                .and_then(|n| data_name_map.get(&n).copied());
+                            if let Some(a) = addr {
+                                (a as i64 + reloc.addend as i64) as u32
+                            } else {
+                                unresolved
+                            }
+                        }
+                        // R_WASM_FUNCTION_OFFSET_I32 (8) and
+                        // R_WASM_SECTION_OFFSET_I32 (9) reference a byte
+                        // offset within the linker's code/custom sections.
+                        // Wild does not reorder, so the compiler's
+                        // placeholder bytes already hold the correct value
+                        // for single-object links. Multi-object debug info
+                        // would need per-input offset shifts — follow-up
+                        // work when a test depends on it.
+                        8 | 9 => continue,
+                        _ => continue,
+                    };
+                    patched[off_in_data..off_in_data + 4]
+                        .copy_from_slice(&value.to_le_bytes());
                 }
             }
             if let Some(&idx) = custom_section_index.get(&cs.name) {
