@@ -1322,33 +1322,242 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
     }
 }
 
-/// Remap function indices in call instructions within a function body.
-fn remap_call_targets(body: &mut [u8], index_map: &[Option<u32>]) {
+/// Walk a function body and report every operand that carries a function
+/// index, i.e. `call` (0x10), `return_call` (0x12), and `ref.func` (0xD2).
+/// The callback receives `(offset_of_leb_start, decoded_func_index)`.
+///
+/// Returns `Err` on an opcode the walker doesn't recognise so callers can
+/// refuse to mutate the body. This is deliberately stricter than a "skip
+/// unknown bytes" strategy — silently mis-stepping through immediates can
+/// corrupt unrelated bytes (e.g. an `i32.const 16` immediate contains a
+/// literal `0x10` byte that would otherwise be mistaken for a `call`).
+fn walk_funcidx_operands(
+    body: &[u8],
+    mut on_funcidx: impl FnMut(usize, u32),
+) -> crate::error::Result<()> {
     let mut pos = 0;
-    // Skip local declarations.
-    if let Ok((local_count, c)) = read_leb128(body) {
-        pos += c;
-        for _ in 0..local_count {
-            if let Ok((_, c)) = read_leb128(&body[pos..]) {
-                pos += c;
-            }
-            pos += 1; // valtype
-        }
+    // Skip local declarations: vec of (count: LEB, valtype: byte).
+    let (local_count, c) = read_leb128(body)?;
+    pos += c;
+    for _ in 0..local_count {
+        let (_, c) = read_leb128(&body[pos..])?;
+        pos += c + 1;
     }
     while pos < body.len() {
         let opcode = body[pos];
         pos += 1;
-        if opcode == 0x10 {
-            // call funcidx — read the current index and remap
-            let old_idx = read_padded_leb128(body, pos);
-            if let Some(Some(new_idx)) = index_map.get(old_idx as usize) {
-                write_padded_leb128(body, pos, *new_idx);
+        match opcode {
+            // No-immediate opcodes.
+            0x00 | 0x01 | 0x05 | 0x0B | 0x0F | 0x1A | 0x1B |
+            0x45..=0xC4 | 0xD1 => {}
+            // block / loop / if — blocktype: 0x40 (void), a valtype (single
+            // byte in 0x6B..=0x7F), or a signed LEB type index.
+            0x02 | 0x03 | 0x04 => {
+                if pos < body.len() {
+                    let b = body[pos];
+                    if b == 0x40 || (0x6B..=0x7F).contains(&b) {
+                        pos += 1;
+                    } else {
+                        let (_, c) = read_sleb128(&body[pos..])?;
+                        pos += c;
+                    }
+                }
             }
-            // Skip past the LEB128 (5 bytes padded)
-            if let Ok((_, c)) = read_leb128(&body[pos..]) {
+            // br, br_if, rethrow: labelidx
+            0x0C | 0x0D | 0x09 => {
+                let (_, c) = read_leb128(&body[pos..])?;
                 pos += c;
             }
+            // br_table: vec(labelidx) + labelidx
+            0x0E => {
+                let (count, c) = read_leb128(&body[pos..])?;
+                pos += c;
+                for _ in 0..=count {
+                    let (_, c) = read_leb128(&body[pos..])?;
+                    pos += c;
+                }
+            }
+            // call funcidx / return_call funcidx
+            0x10 | 0x12 => {
+                let start = pos;
+                let (func_idx, c) = read_leb128(&body[pos..])?;
+                on_funcidx(start, func_idx as u32);
+                pos += c;
+            }
+            // call_indirect / return_call_indirect: typeidx tableidx
+            0x11 | 0x13 => {
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+            }
+            // select with typed vector: vec<valtype>
+            0x1C => {
+                let (count, c) = read_leb128(&body[pos..])?;
+                pos += c + count;
+            }
+            // local/global.get/set/tee: idx
+            0x20..=0x24 => {
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+            }
+            // table.get / table.set: tableidx
+            0x25 | 0x26 => {
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+            }
+            // Memory loads/stores: align + offset
+            0x28..=0x3E => {
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+            }
+            // memory.size / memory.grow: memidx (1 byte in mvp, LEB in multi-memory)
+            0x3F | 0x40 => {
+                let (_, c) = read_leb128(&body[pos..])?;
+                pos += c;
+            }
+            0x41 => {
+                // i32.const
+                let (_, c) = read_sleb128(&body[pos..])?;
+                pos += c;
+            }
+            0x42 => {
+                // i64.const
+                let (_, c) = read_sleb128_i64_consumed(&body[pos..])?;
+                pos += c;
+            }
+            0x43 => {
+                if pos + 4 > body.len() {
+                    return Err(crate::error!("wasm walker: truncated f32.const"));
+                }
+                pos += 4;
+            }
+            0x44 => {
+                if pos + 8 > body.len() {
+                    return Err(crate::error!("wasm walker: truncated f64.const"));
+                }
+                pos += 8;
+            }
+            // ref.null t — single-byte reftype
+            0xD0 => {
+                if pos < body.len() {
+                    pos += 1;
+                }
+            }
+            // ref.func funcidx
+            0xD2 => {
+                let start = pos;
+                let (func_idx, c) = read_leb128(&body[pos..])?;
+                on_funcidx(start, func_idx as u32);
+                pos += c;
+            }
+            // Bulk-memory and saturating-truncation (0xFC prefix).
+            0xFC => {
+                let (sub, c) = read_leb128(&body[pos..])?;
+                pos += c;
+                match sub {
+                    // i{32,64}.trunc_sat_f{32,64}_{s,u} — no further operands.
+                    0x00..=0x07 => {}
+                    // memory.init dataidx memidx
+                    0x08 => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // data.drop dataidx
+                    0x09 => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // memory.copy src dst
+                    0x0A => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // memory.fill memidx
+                    0x0B => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // table.init elemidx tableidx
+                    0x0C => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // elem.drop elemidx
+                    0x0D => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // table.copy dst src
+                    0x0E => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    // table.grow / table.size / table.fill: tableidx
+                    0x0F | 0x10 | 0x11 => {
+                        let (_, c) = read_leb128(&body[pos..])?; pos += c;
+                    }
+                    other => {
+                        return Err(crate::error!(
+                            "wasm walker: unknown 0xFC sub-opcode {other:#x}"
+                        ));
+                    }
+                }
+            }
+            other => {
+                return Err(crate::error!(
+                    "wasm walker: unknown opcode {other:#x} at offset {}",
+                    pos - 1
+                ));
+            }
         }
+    }
+    Ok(())
+}
+
+/// Consume an SLEB128 i64 and return (value, bytes_consumed).
+fn read_sleb128_i64_consumed(data: &[u8]) -> crate::error::Result<(i64, usize)> {
+    let mut result: i64 = 0;
+    let mut shift = 0u32;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as i64) << shift;
+        shift += 7;
+        if byte < 0x80 {
+            if shift < 64 && (byte & 0x40) != 0 {
+                result |= !0i64 << shift;
+            }
+            return Ok((result, i + 1));
+        }
+        if shift >= 70 {
+            return Err(crate::error!("SLEB64 overflow"));
+        }
+    }
+    Err(crate::error!("Unexpected end of SLEB64"))
+}
+
+/// Remap function indices in `call`, `return_call`, and `ref.func`
+/// instructions within a function body. Uses a comprehensive opcode walker
+/// so bytes inside immediates (like a literal `0x10` in an `i32.const`
+/// payload) don't get mis-patched as calls.
+fn remap_call_targets(body: &mut [u8], index_map: &[Option<u32>]) {
+    // Collect (offset, new_idx) pairs first to avoid aliasing the body
+    // during the walk.
+    let mut patches: Vec<(usize, u32)> = Vec::new();
+    let walk = walk_funcidx_operands(body, |off, old_idx| {
+        if let Some(Some(new_idx)) = index_map.get(old_idx as usize) {
+            patches.push((off, *new_idx));
+        }
+    });
+    if walk.is_err() {
+        // Unknown opcode. Refuse to mutate — mis-patching is worse than
+        // leaving stale call targets in a body we don't understand.
+        tracing::warn!(
+            "wasm: GC encountered an opcode outside the walker's vocabulary; \
+             call-target remap skipped for this function"
+        );
+        return;
+    }
+    for (off, new_idx) in patches {
+        write_padded_leb128(body, off, new_idx);
     }
 }
 
@@ -4854,6 +5063,60 @@ mod tests {
     /// Exercise the active-data-segment offset emission subset: under mem64
     /// the offset must be `i64.const <SLEB64>` not `i32.const <SLEB32>`.
     /// Covers both widths independent of the Addr alias.
+    /// A function body containing an `i32.const 16` immediate has a literal
+    /// `0x10` byte inside the SLEB128 payload. The old naive `remap_call_targets`
+    /// would mis-identify that `0x10` as a `call` opcode and corrupt the
+    /// following bytes. Verify the new opcode-aware walker leaves it alone.
+    #[test]
+    fn remap_call_targets_does_not_misread_const_16() {
+        // Body: 0 locals; i32.const 16; drop; end.
+        // Bytes: 0x00 (locals=0), 0x41 (i32.const), 0x10 (16 as SLEB), 0x1A
+        // (drop), 0x0B (end).
+        let mut body = vec![0x00, 0x41, 0x10, 0x1A, 0x0B];
+        let original = body.clone();
+        // index_map says "func 16 now lives at 99" — if the walker
+        // mis-triggers, it would overwrite the 0x10 byte with 99's LEB.
+        let mut index_map = vec![None; 17];
+        index_map[16] = Some(99);
+        remap_call_targets(&mut body, &index_map);
+        assert_eq!(body, original, "walker must not mis-patch i32.const 16");
+    }
+
+    /// A real `call 16` *should* get remapped. This pins the positive case.
+    #[test]
+    fn remap_call_targets_rewrites_call_funcidx() {
+        // Body: 0 locals; call 16; end.
+        // Padded LEB128 of 16 is [0x90, 0x80, 0x80, 0x80, 0x00] — 5 bytes.
+        let mut body = vec![
+            0x00, // 0 locals
+            0x10, // call
+            0x90, 0x80, 0x80, 0x80, 0x00, // padded LEB128 of 16
+            0x0B,
+        ];
+        let mut index_map = vec![None; 17];
+        index_map[16] = Some(5);
+        remap_call_targets(&mut body, &index_map);
+        // Padded LEB128 of 5 is [0x85, 0x80, 0x80, 0x80, 0x00].
+        assert_eq!(
+            body,
+            vec![0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x0B]
+        );
+    }
+
+    /// A body exercising the 0xFC bulk-memory prefix: memory.copy 0 0.
+    /// Ensure the walker successfully steps over the sub-opcode and the
+    /// two memidx immediates without bailing.
+    #[test]
+    fn remap_call_targets_walks_through_bulk_memory() {
+        // Body: 0 locals; memory.copy 0 0; end.
+        // Bytes: 0x00, 0xFC, 0x0A, 0x00, 0x00, 0x0B.
+        let mut body = vec![0x00, 0xFC, 0x0A, 0x00, 0x00, 0x0B];
+        let original = body.clone();
+        let index_map: Vec<Option<u32>> = vec![];
+        remap_call_targets(&mut body, &index_map);
+        assert_eq!(body, original, "bulk-memory body should be untouched");
+    }
+
     /// Synthesise a minimal memory64 wasm module using the same emission
     /// primitives the writer uses (SECTION_MEMORY with 0x04, i64 global,
     /// i64.const data offset), then run the output validator over it. This
