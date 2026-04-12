@@ -570,9 +570,11 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     // Custom sections: user sections first, then name, then target_features.
     // This matches wasm-ld ordering.
     if !layout.symbol_db.args.should_strip_all() {
-        // User custom sections (not name, not target_features).
+        // User custom sections (not name, not producers, not target_features).
+        // `producers` and `target_features` are emitted after `name` per the
+        // wasm tool-conventions ordering that LLVM's wasm reader enforces.
         for cs in &merged.custom_sections {
-            if cs.name != b"target_features" {
+            if cs.name != b"target_features" && cs.name != b"producers" {
                 let mut custom_payload = Vec::new();
                 write_name(&mut custom_payload, &cs.name);
                 custom_payload.extend_from_slice(&cs.data);
@@ -654,6 +656,18 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_name(&mut custom_payload, b"name");
         custom_payload.extend_from_slice(&name_payload);
         write_section(&mut out, 0, &custom_payload);
+    }
+
+    // `producers` follows `name` and precedes `target_features`.
+    if !layout.symbol_db.args.should_strip_all() {
+        for cs in &merged.custom_sections {
+            if cs.name == b"producers" {
+                let mut custom_payload = Vec::new();
+                write_name(&mut custom_payload, &cs.name);
+                custom_payload.extend_from_slice(&cs.data);
+                write_section(&mut out, 0, &custom_payload);
+            }
+        }
     }
 
     // target_features custom section — last.
