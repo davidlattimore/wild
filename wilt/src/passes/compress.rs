@@ -135,19 +135,45 @@ fn compress_body(body: &[u8]) -> Option<Vec<u8>> {
                     pos += 8;
                 }
             }
-            // 0xFC prefix (misc ops): saturating truncations + memory ops
+            // 0xFC prefix (misc ops): saturating truncations + bulk memory.
+            // Read the sub-opcode first (so we know how many further
+            // immediates follow), then compress the LEB-encoded operands.
             0xFC => {
-                if pos < body.len() {
-                    // Sub-opcode as LEB128
+                let Some((sub, _)) = leb128::read_u32(&body[pos..]) else {
+                    return None;
+                };
+                compress_leb(&body, &mut pos, &mut out, &mut compressed);
+                let leb_immediates: usize = match sub {
+                    // i{32,64}.trunc_sat_f{32,64}_{s,u}.
+                    0x00..=0x07 => 0,
+                    // memory.init dataidx memidx
+                    0x08 => 2,
+                    // data.drop dataidx
+                    0x09 => 1,
+                    // memory.copy dst src
+                    0x0A => 2,
+                    // memory.fill memidx
+                    0x0B => 1,
+                    // table.init elemidx tableidx
+                    0x0C => 2,
+                    // elem.drop elemidx
+                    0x0D => 1,
+                    // table.copy dst src
+                    0x0E => 2,
+                    // table.grow / table.size / table.fill: tableidx
+                    0x0F | 0x10 | 0x11 => 1,
+                    // Unknown sub-opcode — refuse to compress so we don't
+                    // silently corrupt the body.
+                    _ => return None,
+                };
+                for _ in 0..leb_immediates {
                     compress_leb(&body, &mut pos, &mut out, &mut compressed);
-                    // Some 0xFC ops have additional immediates.
-                    // memory.init (8), data.drop (9), memory.copy (10), memory.fill (11)
-                    // table.init (12), elem.drop (13), table.copy (14), table.grow/size/fill (15-17)
-                    // The sub-opcode value determines the immediates.
-                    // For safety, we don't compress further — the sub-opcode
-                    // has already been compacted.
                 }
             }
+            // SIMD (0xFD) and atomics (0xFE) have wildly varying operand
+            // shapes; compressing them safely is a separate project, so
+            // any body carrying one is left uncompressed.
+            0xFD | 0xFE => return None,
             // All other opcodes: no immediates to compress
             _ => {}
         }
@@ -345,6 +371,80 @@ mod tests {
             0x0B, // end
         ];
         assert!(compress_body(&body).is_none(), "already compact");
+    }
+
+    #[test]
+    fn compress_bulk_memory_copy() {
+        // memory.copy 0 0 with both memory indices padded to 5 bytes.
+        // Opcode sequence: 0xFC 0x0A <dst_mem> <src_mem>.
+        let body = vec![
+            0x00, // 0 locals
+            0xFC, 0x8A, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x0A (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00,       // dst memidx = 0 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00,       // src memidx = 0 (padded)
+            0x0B, // end
+        ];
+        let compressed = compress_body(&body).expect("should compress");
+        assert_eq!(
+            compressed,
+            vec![
+                0x00,       // 0 locals
+                0xFC, 0x0A, // memory.copy (compact sub-opcode)
+                0x00, 0x00, // dst=0, src=0 (compact)
+                0x0B,
+            ]
+        );
+    }
+
+    #[test]
+    fn compress_bulk_memory_init() {
+        // memory.init dataidx=3 memidx=0, both padded.
+        let body = vec![
+            0x00, // 0 locals
+            0xFC, 0x88, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x08 (padded)
+            0x83, 0x80, 0x80, 0x80, 0x00,       // dataidx=3 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00,       // memidx=0 (padded)
+            0x0B,
+        ];
+        let compressed = compress_body(&body).expect("should compress");
+        assert_eq!(
+            compressed,
+            vec![0x00, 0xFC, 0x08, 0x03, 0x00, 0x0B]
+        );
+    }
+
+    #[test]
+    fn bulk_memory_trunc_sat_has_no_immediates() {
+        // i32.trunc_sat_f32_s (0xFC 0x00) — no extra operands.
+        let body = vec![
+            0x00,
+            0xFC, 0x80, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x00 (padded)
+            0x0B,
+        ];
+        let compressed = compress_body(&body).expect("should compress");
+        assert_eq!(compressed, vec![0x00, 0xFC, 0x00, 0x0B]);
+    }
+
+    #[test]
+    fn unknown_bulk_sub_opcode_refuses_to_compress() {
+        // Made-up 0xFC sub-opcode 0x42 — walker must bail rather than
+        // silently mis-compress the remainder of the body.
+        let body = vec![
+            0x00,
+            0xFC, 0x42,
+            0x0B,
+        ];
+        assert!(compress_body(&body).is_none());
+    }
+
+    #[test]
+    fn simd_and_atomics_bodies_are_left_alone() {
+        // A single SIMD opcode (0xFD) — refuse to compress the body.
+        let body = vec![0x00, 0xFD, 0x00, 0x0B];
+        assert!(compress_body(&body).is_none());
+        // Same for atomics (0xFE).
+        let body = vec![0x00, 0xFE, 0x00, 0x0B];
+        assert!(compress_body(&body).is_none());
     }
 
     #[test]
