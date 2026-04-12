@@ -8,7 +8,7 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 
 ### Core linking
 
-- §2 (partial): 20 of 22 `R_WASM_*` relocation types — see gap list below
+- §2 (partial): 26 of 27 `R_WASM_*` relocation types — see gap list below
 - §4.2: Symbol flags `BINDING_WEAK`, `UNDEFINED`, `EXPORTED`, `NO_STRIP`,
   `VISIBILITY_HIDDEN`
 - §4.3: Import name resolution for unnamed undefined symbols
@@ -61,16 +61,21 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 
 ### High severity
 
-- **Relocation coverage at 20/22.** Unhandled types emit a deduplicated
-  `tracing::warn!`. Remaining gaps:
-  - `R_WASM_EVENT_INDEX_LEB` (10) — blocked on event/tag symbol kind
-  - `R_WASM_MEMORY_ADDR_LOCREL_I32` (23) — PIC pointer-relative
-  - `R_WASM_TABLE_INDEX_REL_SLEB64` (24) — memory64 PIC
+- **Relocation coverage at 26/27.** Only `R_WASM_TAG_INDEX_LEB` (10,
+  formerly `EVENT_INDEX_LEB`) is unhandled — blocked on event/tag
+  symbol kind (`SYMTAB_EVENT`, kind 4) and exception-handling section
+  support. Unhandled types emit a deduplicated `tracing::warn!`.
 
-  Memory64 relocs (14/15/16/18/19/22) are wired but the wider wasm64
-  pipeline (memory page indices, `i64` address arithmetic through
-  layout) is not; inputs that depend on memory64 at runtime will still
-  need the broader memory64 work before they link end-to-end.
+  PIC-relative relocs (11/12/17/24) currently degrade to their
+  non-REL siblings on the assumption of non-PIC output
+  (`__memory_base = __table_base = 0`). When the PIC pipeline lands
+  they need to switch to base-relative arithmetic.
+
+  Memory64 relocs (14/15/16/18/19/22/25) are wired but the wider
+  wasm64 pipeline (memory page indices, `i64` address arithmetic
+  through layout) is not; inputs that depend on memory64 at runtime
+  will still need the broader memory64 work before they link
+  end-to-end.
 - **memory64 / wasm64** blocked on the 64-bit relocation types above.
 - **Exception handling** blocked — `SYMTAB_EVENT` (kind 4) and
   `R_WASM_EVENT_INDEX_LEB` are stubs; EH tags unparsed.

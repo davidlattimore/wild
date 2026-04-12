@@ -2252,6 +2252,77 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // R_WASM_FUNCTION_OFFSET_I64 (spec §2: uint64 LE)
                         // Like type 8 (I32): no adjustment — wild does not reorder.
                     }
+                    11 => {
+                        // R_WASM_MEMORY_ADDR_REL_SLEB (PIC, 5-byte varint32)
+                        // value = S + A - __memory_base. In non-PIC builds
+                        // __memory_base = 0, so this degrades to SLEB.
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let v = (addr as i64 + reloc.addend as i64) as i32;
+                        write_padded_sleb128(&mut body, off_in_body, v);
+                    }
+                    17 => {
+                        // R_WASM_MEMORY_ADDR_REL_SLEB64 (PIC + memory64,
+                        // 10-byte varint64). Degrades to SLEB64 under
+                        // __memory_base = 0.
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let v = addr as i64 + reloc.addend as i64;
+                        write_padded_sleb128_i64(&mut body, off_in_body, v);
+                    }
+                    25 => {
+                        // R_WASM_MEMORY_ADDR_TLS_SLEB64 (spec §9.4, §10;
+                        // 10-byte varint64). memory64 TLS — mirrors type 21.
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let tls_base = tls_base_offset.unwrap_or(0);
+                        let tls_rel = if addr >= tls_base {
+                            (addr - tls_base) as i64
+                        } else {
+                            0
+                        };
+                        let v = tls_rel + reloc.addend as i64;
+                        write_padded_sleb128_i64(&mut body, off_in_body, v);
+                    }
+                    12 => {
+                        // R_WASM_TABLE_INDEX_REL_SLEB (PIC, 5-byte varint32)
+                        // value = table_idx - __table_base; __table_base = 0
+                        // in non-PIC, so defer like type 1.
+                        let func_idx = symbol_to_output_func
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        table_needed_funcs.insert(func_idx);
+                        let out_func_idx = functions.len() + i;
+                        deferred_table_relocs.push((
+                            out_func_idx,
+                            off_in_body,
+                            reloc.reloc_type,
+                            func_idx,
+                        ));
+                    }
+                    24 => {
+                        // R_WASM_TABLE_INDEX_REL_SLEB64 (PIC + memory64,
+                        // 10-byte varint64). Defer like 18.
+                        let func_idx = symbol_to_output_func
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        table_needed_funcs.insert(func_idx);
+                        let out_func_idx = functions.len() + i;
+                        deferred_table_relocs.push((
+                            out_func_idx,
+                            off_in_body,
+                            reloc.reloc_type,
+                            func_idx,
+                        ));
+                    }
                     other => {
                         if warned_reloc_types.insert(other) {
                             tracing::warn!(
@@ -2352,6 +2423,17 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                         out_seg.data[buf_off..buf_off + 8]
                                             .copy_from_slice(&v64.to_le_bytes());
                                     }
+                                    23 if buf_off + 4 <= out_seg.data.len() => {
+                                        // R_WASM_MEMORY_ADDR_LOCREL_I32:
+                                        // value = S + A - P, where P is the
+                                        // absolute memory address of the reloc
+                                        // site (out_seg.memory_offset + buf_off).
+                                        let site = out_seg.memory_offset
+                                            .wrapping_add(buf_off as u32);
+                                        let rel = value.wrapping_sub(site);
+                                        out_seg.data[buf_off..buf_off + 4]
+                                            .copy_from_slice(&rel.to_le_bytes());
+                                    }
                                     19 if buf_off + 8 <= out_seg.data.len() => {
                                         // R_WASM_TABLE_INDEX_I64 — function index
                                         // in a data initializer. No table-index
@@ -2425,6 +2507,19 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             func.body[*off_in_body..*off_in_body + 8]
                                 .copy_from_slice(&(table_idx as u64).to_le_bytes());
                         }
+                    }
+                    12 => {
+                        // R_WASM_TABLE_INDEX_REL_SLEB: degrades to SLEB under
+                        // __table_base = 0 (non-PIC).
+                        write_padded_sleb128(&mut func.body, *off_in_body, table_idx as i32);
+                    }
+                    24 => {
+                        // R_WASM_TABLE_INDEX_REL_SLEB64: degrades to SLEB64.
+                        write_padded_sleb128_i64(
+                            &mut func.body,
+                            *off_in_body,
+                            table_idx as i64,
+                        );
                     }
                     _ => {}
                 }
