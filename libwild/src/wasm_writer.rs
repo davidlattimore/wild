@@ -5253,6 +5253,27 @@ mod tests {
         }
     }
 
+    /// Under a static (non-PIC) link, wild handles REL_SLEB by writing the
+    /// absolute symbol address in the 5-byte slot. This is correct because
+    /// the compiler's surrounding `global.get __memory_base` + `i32.add`
+    /// sequence degrades to a no-op when `__memory_base == 0`, which is
+    /// the static link's contract. Pin the byte pattern so that a change
+    /// to the "shared-or-static" decision gets a test failure.
+    #[test]
+    fn rel_sleb_static_writes_absolute_address() {
+        // Build a 5-byte padded SLEB128 slot for the value 0x2000 and
+        // confirm write_padded_sleb128 emits the expected bytes.
+        let mut buf = [0u8; 5];
+        write_padded_sleb128(&mut buf, 0, 0x2000);
+        // SLEB128 of 0x2000: bits = 0010 0000 0000 0000 (14 bits).
+        //   byte 0: 0x00 | cont = 0x80
+        //   byte 1: 0x40 | cont = 0xC0
+        //   byte 2: 0x00 | cont = 0x80
+        //   byte 3: 0x00 | cont = 0x80
+        //   byte 4: 0x00 (terminator, no sign bit since 0x2000 > 0)
+        assert_eq!(buf, [0x80, 0xC0, 0x80, 0x80, 0x00]);
+    }
+
     #[test]
     fn pic_flags_parsing() {
         use crate::platform::Args as _;

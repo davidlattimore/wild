@@ -107,10 +107,31 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
   imports, linking section with symtab + segment info, and custom sections
   work, but relocation sections and COMDAT group records are omitted.
   Downstream linkers see a degraded object.
-- **PIC / shared libraries are header-level only.**
-  `WASM_DYLINK_NEEDED` is hardcoded empty (`wasm_writer.rs:95`); no
-  relocation adjustment for code-section offsets under PIC; `--shared`,
-  `-pie`, `--experimental-pic` flags accepted but only partly honoured.
+- **PIC / shared libraries are partially wired.**
+  - `-pie`, `--pie`, `--experimental-pic` now set `WasmArgs.is_pic`
+    (previously silently ignored).
+  - Element segment init expression uses `global.get __table_base`
+    under PIC (previously always `i32.const 1`, overriding the
+    dynamic linker's runtime base).
+  - Data segment init expression uses `global.get __memory_base`
+    under `is_shared`.
+  - Remaining gaps:
+    - `WASM_DYLINK_NEEDED` subsection hardcoded empty
+      (`wasm_writer.rs:95`); no `DYLINK_EXPORT_INFO` or
+      `DYLINK_IMPORT_INFO`.
+    - `@GOT` / `@TBREL` symbol pipeline: inputs using PIC globals
+      like `GOT.func.foo` still need dedicated handling to
+      internalise them on static links and pass them through on
+      shared links. All five currently-ignored LLD PIC tests
+      depend on this.
+    - `_is_pic` alone (without `is_shared`) doesn't yet propagate
+      to the "import `__memory_base` / `__table_base` /
+      `__stack_pointer`" machinery — a pure `-pie` link today
+      falls back to the static code path. Unifying the two
+      requires a careful pass over the ~12 `is_shared` gates in
+      the writer.
+    - `R_WASM_MEMORY_ADDR_LOCREL_I32` in code sections (currently
+      handled for data-section relocs only).
 - **Symbol kinds `SYMTAB_SECTION` (3) and `SYMTAB_TABLE` (5)
   unimplemented.** Multi-table and section-symbol relocations degrade.
 - **Shared memory / atomics.** `--shared-memory` flag exists but
