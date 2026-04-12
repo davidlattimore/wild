@@ -42,8 +42,8 @@ link the Linux kernel.
 | `KEEP(...)` to prevent garbage collection | Supported | |
 | `PROVIDE(sym = expr)` inside sections | Supported | |
 | `PROVIDE_HIDDEN(sym = expr)` inside sections | Supported | |
-| Symbol assignment inside sections (`sym = .`) | Supported | |
-| Location counter assignment (`. = expr`) | Partial | Only hex literals supported (e.g. `. = 0x1000`); arbitrary expressions not yet parsed |
+| Symbol assignment inside sections (`sym = .`) | Partial | Only assignment of the location counter (`sym = .`) is supported; arbitrary expressions on the right-hand side are not |
+| Location counter assignment (`. = expr`) | Partial | Hex address literals (e.g. `. = 0x1000`) supported between output sections only; not inside section contents |
 | `ALIGN(n)` on the location counter (`. = ALIGN(n)`) | Supported | |
 | Per-section `ALIGN(n)` specifier | Supported | |
 | `ASSERT(expr, "msg")` inside `SECTIONS` | Supported | |
