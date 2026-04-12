@@ -1372,6 +1372,16 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
             let parsed = parse_wasm_sections(data)?;
 
+            // Spec §8 / memory64: reject mem64 inputs when the link isn't
+            // configured for memory64 (pass `--features=+memory64`,
+            // `-mwasm64`, or `--target=wasm64-…`).
+            if parsed.is_memory64 && !layout.symbol_db.args.memory64 {
+                crate::bail!(
+                    "input object has a memory64 memory import but the link \
+                     is 32-bit; pass --features=+memory64 (or -mwasm64) to enable"
+                );
+            }
+
             // Type deduplication.
             let mut type_map: Vec<u32> = Vec::new();
             for input_type in &parsed.types {
@@ -3188,6 +3198,10 @@ struct ParsedInput {
     import_function_names: Vec<Vec<u8>>,
     /// Import global names (indexed by import global index).
     import_global_names: Vec<Vec<u8>>,
+    /// True if any memory import in this object has the 0x04 (memory64)
+    /// limits flag. Used to detect mem64 inputs that require
+    /// `--features=+memory64` at link time.
+    is_memory64: bool,
     /// Local tag definitions: one entry per tag, value = type index.
     tags: Vec<u32>,
     /// Number of imported tags (offset for local tag indices).
@@ -3252,6 +3266,10 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut code_section_index: Option<usize> = None;
     let mut data_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
+    // True if this input declares a 64-bit memory (import or local) via the
+    // limits 0x04 flag. Forwarded to layout so it can reject a mix of mem64
+    // inputs with `--features=+memory64` absent.
+    let mut is_memory64 = false;
 
     let mut pos = 8; // skip header
     while pos < data.len() {
@@ -3318,6 +3336,9 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                             // memory
                             let (flags, c) = read_leb128(&payload[off..])?;
                             off += c;
+                            if flags & 0x04 != 0 {
+                                is_memory64 = true;
+                            }
                             let (_min, c) = read_leb128(&payload[off..])?;
                             off += c;
                             if flags & 1 != 0 {
@@ -3530,6 +3551,7 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         tags,
         num_tag_imports,
         import_tag_names,
+        is_memory64,
     })
 }
 
@@ -4758,6 +4780,58 @@ mod tests {
         );
         // Same input without shared_memory is fine.
         merge_target_features([a.as_slice()], false).unwrap();
+    }
+
+    #[test]
+    fn memory64_import_flag_detected() {
+        fn section(id: u8, payload: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.push(id);
+            let mut len = Vec::new();
+            write_leb128(&mut len, payload.len() as u32);
+            v.extend_from_slice(&len);
+            v.extend_from_slice(payload);
+            v
+        }
+
+        fn build(flags: u8) -> Vec<u8> {
+            let mut wasm = Vec::new();
+            wasm.extend_from_slice(b"\0asm");
+            wasm.extend_from_slice(&[1, 0, 0, 0]);
+            let mut imp = Vec::new();
+            write_leb128(&mut imp, 1);
+            write_name(&mut imp, b"env");
+            write_name(&mut imp, b"memory");
+            imp.push(0x02); // kind: memory
+            imp.push(flags);
+            write_leb128(&mut imp, 1); // min pages
+            wasm.extend_from_slice(&section(SECTION_IMPORT, &imp));
+            wasm
+        }
+
+        // 32-bit memory import: is_memory64 should remain false.
+        let p32 = parse_wasm_sections(&build(0x00)).unwrap();
+        assert!(!p32.is_memory64);
+
+        // memory64 memory import (limits flag 0x04): is_memory64 true.
+        let p64 = parse_wasm_sections(&build(0x04)).unwrap();
+        assert!(p64.is_memory64);
+
+        // shared memory64 (0x02 shared + 0x04 mem64 + 0x01 has-max).
+        let mut shared = Vec::new();
+        shared.extend_from_slice(b"\0asm");
+        shared.extend_from_slice(&[1, 0, 0, 0]);
+        let mut imp = Vec::new();
+        write_leb128(&mut imp, 1);
+        write_name(&mut imp, b"env");
+        write_name(&mut imp, b"memory");
+        imp.push(0x02);
+        imp.push(0x07); // max | shared | mem64
+        write_leb128(&mut imp, 1);
+        write_leb128(&mut imp, 10);
+        shared.extend_from_slice(&section(SECTION_IMPORT, &imp));
+        let ps = parse_wasm_sections(&shared).unwrap();
+        assert!(ps.is_memory64);
     }
 
     #[test]

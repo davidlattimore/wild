@@ -69,6 +69,10 @@ pub struct WasmArgs {
     pub(crate) growable_table: bool,
     /// Compress LEB128 in code section (--compress-relocations).
     pub(crate) compress_relocations: bool,
+    /// Target is memory64 / wasm64 (`--features=+memory64`, `-mwasm64`,
+    /// `--target=wasm64-…`). When true, memory/data/imports carry the
+    /// 0x04 limits bit and active data segments use `i64.const` offsets.
+    pub(crate) memory64: bool,
 }
 
 impl Default for WasmArgs {
@@ -104,6 +108,7 @@ impl Default for WasmArgs {
             no_growable_memory: false,
             growable_table: false,
             compress_relocations: false,
+            memory64: false,
         }
     }
 }
@@ -363,19 +368,48 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             "--start-lib" => modifiers.archive_semantics = true,
             "--end-lib" => modifiers.archive_semantics = false,
 
-            // --- Target/arch (already consumed by platform selection) ---
-            "--target" => { iter.next(); }
-            _ if arg.starts_with("--target=") => {}
-            "-m" => { iter.next(); } // e.g. -m wasm32
-            _ if arg.starts_with("-m") => {} // e.g. -mwasm64
+            // --- Target/arch ---
+            "--target" => {
+                if let Some(t) = iter.next() {
+                    if t.as_ref().starts_with("wasm64") {
+                        args.memory64 = true;
+                    }
+                }
+            }
+            _ if arg.starts_with("--target=") => {
+                if arg["--target=".len()..].starts_with("wasm64") {
+                    args.memory64 = true;
+                }
+            }
+            "-m" => {
+                if let Some(t) = iter.next()
+                    && t.as_ref() == "wasm64"
+                {
+                    args.memory64 = true;
+                }
+            }
+            "-mwasm64" => args.memory64 = true,
+            _ if arg.starts_with("-m") => {} // e.g. other -m variants
 
             // --- Misc flags we accept but don't fully implement yet ---
             "--experimental-pic" | "-pie" | "--pie" => {}
             _ if arg.starts_with("--unresolved-symbols=") => {}
             "--fatal-warnings" => {}
             "--no-fatal-warnings" => {}
-            _ if arg.starts_with("--features=") => {}
-            _ if arg.starts_with("--extra-features=") => {}
+            _ if arg.starts_with("--features=") => {
+                for feat in arg["--features=".len()..].split(',') {
+                    if feat == "+memory64" {
+                        args.memory64 = true;
+                    }
+                }
+            }
+            _ if arg.starts_with("--extra-features=") => {
+                for feat in arg["--extra-features=".len()..].split(',') {
+                    if feat == "+memory64" {
+                        args.memory64 = true;
+                    }
+                }
+            }
             "--no-check-features" => {}
             "-t" | "--trace" => {}
             _ if arg.starts_with("-y") => {} // trace symbol
