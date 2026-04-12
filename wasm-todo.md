@@ -142,18 +142,29 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
         and `__memory_base` / `__table_base` / `__tls_base`
         imports to avoid duplicates.
 
-      Remaining gaps to flip `pic-static` itself:
-      - Output name for internalised GOT globals: wild emits
-        `GOT.func.<name>` / `GOT.mem.<name>` / `GOT.data.<name>`
-        (module.field). wasm-ld emits `GOT.func.internal.<name>`
-        / `GOT.data.internal.<name>` for hidden-visibility
-        targets. This is a naming-convention diff.
-      - Some GOT init values still don't match. For instance
-        wasm-ld's `GOT.func.internal.ret32` expects the
-        indirect-table slot of `ret32` (1), but wild's position
-        for `ret32` lands on a different slot due to GOT
-        collection order (iterates input imports, whereas wasm-ld
-        groups by kind).
+      Further pic-static progress this session:
+      - GOT globals now emit as `GOT.func.internal.<sym>` /
+        `GOT.data.internal.<sym>`, matching wasm-ld's naming.
+      - GOT globals ordered func-first then data.
+      - Indirect function table slots now assigned in insertion
+        order rather than sorted — matches wasm-ld's behaviour so
+        `ret32` (first-referenced) takes slot 1.
+      - Element-segment init expression uses
+        `global.get __table_base` whenever wild has a
+        `__table_base` global (imported under shared, synthesised
+        under static-PIC).
+
+      Remaining gap (one concrete item): GOT.func entries that
+      reference *imported* functions (e.g. `missing_function`)
+      don't get table slots allocated. wild's `table_needed_funcs`
+      population uses `function_name_map` which only covers
+      *defined* functions. Imports need a parallel name map,
+      populated as part of Pass 4 (import collection), with GOT
+      patch-up deferred correspondingly. Without this,
+      `pic-static`'s expected value of 2 for
+      `GOT.func.internal.missing_function` comes out as 0.
+      Every other FileCheck line in `pic-static` matches.
+
       - `@MBREL` / `@TBREL` SLEB values under static-PIC still
         degrade to absolute — with `__table_base = 1` they need
         to subtract 1 rather than leaving the raw table index.

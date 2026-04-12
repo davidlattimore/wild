@@ -460,11 +460,12 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_leb128(&mut payload, 1); // 1 element segment
         // Active element segment for table 0.
         payload.push(0x00); // flags: active, table 0
-        // Init expression: under PIC, the element base is the imported
-        // __table_base global (the dynamic linker assigns the runtime
-        // value). Statically, it's a fixed `i32.const 1` — entry 0 is
-        // reserved as null/trap.
-        if _is_pic && let Some(tb_idx) = merged.table_base_global_idx {
+        // Init expression: when wild has a `__table_base` global — either
+        // imported under shared/PIE mode or synthesised under static-PIC —
+        // reference it via `global.get` so the element segment honours
+        // the runtime base. Falls back to the absolute `i32.const 1`
+        // when no such global exists (plain static, no PIC).
+        if let Some(tb_idx) = merged.table_base_global_idx {
             payload.push(0x23); // global.get
             write_leb128(&mut payload, tb_idx);
         } else {
@@ -1939,6 +1940,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         let aligned_data_end = (data_offset + 15) & !15;
         aligned_data_end + stack_size
     };
+    // Forward-declare these so Pass 1.72's static-PIC synthesis can
+    // record the local global index; the PIC-import path (Pass 4) may
+    // also assign a value later under shared mode.
+    let mut memory_base_global_idx: Option<u32> = None;
+    let mut table_base_global_idx: Option<u32> = None;
     // Address-typed linker-defined globals use i64 under memory64 so their
     // value encodes at the full width of a linear-memory address.
     let addr_vt = if layout.symbol_db.args.memory64 {
@@ -2021,6 +2027,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             if !global_name_map.contains_key(name) {
                 let idx = globals.len() as u32;
                 global_name_map.insert(name.to_vec(), idx);
+                if name == b"__table_base" {
+                    table_base_global_idx = Some(idx);
+                }
                 globals.push(OutputGlobal {
                     name: name.to_vec(),
                     valtype: VALTYPE_I32,
@@ -2230,61 +2239,88 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     // aren't known yet. We stash (global_idx, func_name) pairs for the
     // patch pass and add the referenced functions to `table_needed_funcs`
     // so the table actually gets a slot for them.
+    // Functions that need an entry in the indirect function table.
+    // Insertion order is tracked in `table_needed_order` so Pass 2.6
+    // assigns table slots in the order symbols were first encountered
+    // (wasm-ld's convention), rather than sorting by function index.
+    // The HashSet is still used as the authoritative membership test.
     let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
+    let mut table_needed_order: Vec<u32> = Vec::new();
     let mut got_func_globals: Vec<(u32, Vec<u8>)> = Vec::new();
     if !layout.symbol_db.args.is_shared {
-        // llvm-mc encodes GOT globals with module ∈ {GOT.func, GOT.mem,
-        // GOT.data} and field = referenced symbol name. For naming in
-        // wild's output we fuse them back into `GOT.func.<name>` /
-        // `GOT.mem.<name>` so consumers match wasm-ld's conventions.
+        // wasm-ld emission convention for internalised GOT globals:
+        //   `GOT.func.internal.<sym>` for GOT.func imports
+        //   `GOT.data.internal.<sym>` for GOT.mem or GOT.data imports
+        // and it orders them: all func GOTs first, then all data GOTs.
         let mut seen_got: std::collections::HashSet<(Vec<u8>, Vec<u8>)> =
             Default::default();
+
+        // --- First sub-pass: GOT.func.* entries. ---
         for obj_info in &objects {
             for imp in &obj_info.parsed.imports {
-                if imp.kind != 3 {
-                    continue;
-                }
-                let is_func = imp.module == b"GOT.func";
-                let is_mem = imp.module == b"GOT.mem" || imp.module == b"GOT.data";
-                if !(is_func || is_mem) {
+                if imp.kind != 3 || imp.module != b"GOT.func" {
                     continue;
                 }
                 let key = (imp.module.clone(), imp.field.clone());
                 if !seen_got.insert(key) {
                     continue;
                 }
-                let mut got_name = Vec::new();
-                got_name.extend_from_slice(&imp.module);
-                got_name.push(b'.');
-                got_name.extend_from_slice(&imp.field);
-                if is_func {
-                    let func_name = imp.field.clone();
-                    let global_idx = globals.len() as u32;
-                    global_name_map.insert(got_name.clone(), global_idx);
-                    globals.push(OutputGlobal {
-                        name: got_name,
-                        valtype: VALTYPE_I32,
-                        mutable: false,
-                        init_value: 0, // patched after Pass 2.6
-                        exported: false,
-                    });
-                    got_func_globals.push((global_idx, func_name.clone()));
-                    if let Some(&func_idx) = function_name_map.get(&func_name) {
-                        table_needed_funcs.insert(func_idx);
+                let func_name = imp.field.clone();
+                let mut got_name = b"GOT.func.internal.".to_vec();
+                got_name.extend_from_slice(&func_name);
+                let global_idx = globals.len() as u32;
+                global_name_map.insert(got_name.clone(), global_idx);
+                // Also register under the raw `GOT.func.<name>` form so
+                // GLOBAL_INDEX_LEB relocs whose symbol resolves to the
+                // module-concatenated name still find the output index.
+                let mut aliased = b"GOT.func.".to_vec();
+                aliased.extend_from_slice(&func_name);
+                global_name_map.insert(aliased, global_idx);
+                globals.push(OutputGlobal {
+                    name: got_name,
+                    valtype: VALTYPE_I32,
+                    mutable: false,
+                    init_value: 0, // patched after Pass 2.6
+                    exported: false,
+                });
+                got_func_globals.push((global_idx, func_name.clone()));
+                if let Some(&func_idx) = function_name_map.get(&func_name) {
+                    if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
                     }
-                } else {
-                    let data_name = imp.field.clone();
-                    let init = data_name_map.get(&data_name).copied().unwrap_or(0);
-                    let global_idx = globals.len() as u32;
-                    global_name_map.insert(got_name.clone(), global_idx);
-                    globals.push(OutputGlobal {
-                        name: got_name,
-                        valtype: VALTYPE_I32,
-                        mutable: false,
-                        init_value: init as u64,
-                        exported: false,
-                    });
                 }
+            }
+        }
+
+        // --- Second sub-pass: GOT.mem.* / GOT.data.* entries. ---
+        for obj_info in &objects {
+            for imp in &obj_info.parsed.imports {
+                if imp.kind != 3
+                    || (imp.module != b"GOT.mem" && imp.module != b"GOT.data")
+                {
+                    continue;
+                }
+                let key = (imp.module.clone(), imp.field.clone());
+                if !seen_got.insert(key) {
+                    continue;
+                }
+                let data_name = imp.field.clone();
+                let init = data_name_map.get(&data_name).copied().unwrap_or(0);
+                let mut got_name = b"GOT.data.internal.".to_vec();
+                got_name.extend_from_slice(&data_name);
+                let global_idx = globals.len() as u32;
+                global_name_map.insert(got_name.clone(), global_idx);
+                let mut alt = imp.module.clone();
+                alt.push(b'.');
+                alt.extend_from_slice(&data_name);
+                global_name_map.insert(alt, global_idx);
+                globals.push(OutputGlobal {
+                    name: got_name,
+                    valtype: VALTYPE_I32,
+                    mutable: false,
+                    init_value: init as u64,
+                    exported: false,
+                });
             }
         }
     }
@@ -2708,7 +2744,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .get(&reloc.symbol_index)
                             .copied()
                             .unwrap_or(0);
-                        table_needed_funcs.insert(func_idx);
+                        if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
+                    }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
                             out_func_idx,
@@ -2806,7 +2844,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .get(&reloc.symbol_index)
                             .copied()
                             .unwrap_or(0);
-                        table_needed_funcs.insert(func_idx);
+                        if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
+                    }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
                             out_func_idx,
@@ -2821,7 +2861,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .get(&reloc.symbol_index)
                             .copied()
                             .unwrap_or(0);
-                        table_needed_funcs.insert(func_idx);
+                        if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
+                    }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
                             out_func_idx,
@@ -2880,7 +2922,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .get(&reloc.symbol_index)
                             .copied()
                             .unwrap_or(0);
-                        table_needed_funcs.insert(func_idx);
+                        if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
+                    }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
                             out_func_idx,
@@ -2896,7 +2940,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .get(&reloc.symbol_index)
                             .copied()
                             .unwrap_or(0);
-                        table_needed_funcs.insert(func_idx);
+                        if table_needed_funcs.insert(func_idx) {
+                        table_needed_order.push(func_idx);
+                    }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
                             out_func_idx,
@@ -3063,10 +3109,10 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let mut table_entries: Vec<u32> = Vec::new();
     let mut func_to_table_index: std::collections::HashMap<u32, u32> = Default::default();
 
-    if !table_needed_funcs.is_empty() {
-        let mut sorted_funcs: Vec<u32> = table_needed_funcs.into_iter().collect();
-        sorted_funcs.sort();
-        for (i, &func_idx) in sorted_funcs.iter().enumerate() {
+    if !table_needed_order.is_empty() {
+        // Insertion order matches wasm-ld's slot assignment: the first
+        // symbol that triggered the table entry takes slot 1, etc.
+        for (i, &func_idx) in table_needed_order.iter().enumerate() {
             let table_idx = (i + 1) as u32; // start at 1, 0 = null/trap
             func_to_table_index.insert(func_idx, table_idx);
             table_entries.push(func_idx);
@@ -3310,8 +3356,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     }
 
     // Shared/PIC mode: import __memory_base and __stack_pointer.
-    let mut memory_base_global_idx: Option<u32> = None;
-    let mut table_base_global_idx: Option<u32> = None;
+    // (Declarations are hoisted near Pass 1.72 so the static-PIC synthesis
+    // can populate them too.)
     if layout.symbol_db.args.is_shared {
         // Import memory.
         output_imports.push(OutputImport {
