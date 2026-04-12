@@ -8,7 +8,7 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 
 ### Core linking
 
-- §2 (partial): 11 of 19 `R_WASM_*` relocation types — see gap list below
+- §2 (partial): 14 of 22 `R_WASM_*` relocation types — see gap list below
 - §4.2: Symbol flags `BINDING_WEAK`, `UNDEFINED`, `EXPORTED`, `NO_STRIP`,
   `VISIBILITY_HIDDEN`
 - §4.3: Import name resolution for unnamed undefined symbols
@@ -61,15 +61,17 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 
 ### High severity
 
-- **Relocation coverage is ~58%, not complete.** The match arm in
-  `wasm_writer.rs:2062-2160` silently falls through on 8 of 19
-  `R_WASM_*` variants — no diagnostic, quietly miscompiled output:
-  - `R_WASM_EVENT_INDEX_LEB` (10)
-  - `R_WASM_MEMORY_ADDR_LEB64` (14), `SLEB64` (15), `I64` (16)
-  - `R_WASM_TABLE_NUMBER_LEB` (20)
-  - `R_WASM_FUNCTION_OFFSET_I64` (22)
-  - `R_WASM_TABLE_INDEX_REL_SLEB` (23), `REL_I32` (24), `REL_SLEB64` (25)
-  - `R_WASM_GLOBAL_INDEX_I32` (26), `R_WASM_FUNCTION_INDEX_I32` (27)
+- **Relocation coverage still incomplete.** The match arms in
+  `wasm_writer.rs` now handle 14 of the 22 specified `R_WASM_*`
+  variants. Unhandled types emit a deduplicated `tracing::warn!` so
+  silent miscompiles are visible. Remaining gaps:
+  - `R_WASM_EVENT_INDEX_LEB` (10) — blocked on event/tag symbol kind
+  - `R_WASM_MEMORY_ADDR_LEB64` (14), `SLEB64` (15), `I64` (16) —
+    memory64
+  - `R_WASM_TABLE_INDEX_SLEB64` (18), `I64` (19) — memory64 tables
+  - `R_WASM_FUNCTION_OFFSET_I64` (22) — memory64 debug info
+  - `R_WASM_MEMORY_ADDR_LOCREL_I32` (23) — PIC pointer-relative
+  - `R_WASM_TABLE_INDEX_REL_SLEB64` (24) — memory64 PIC
 - **memory64 / wasm64** blocked on the 64-bit relocation types above.
 - **Exception handling** blocked — `SYMTAB_EVENT` (kind 4) and
   `R_WASM_EVENT_INDEX_LEB` are stubs; EH tags unparsed.

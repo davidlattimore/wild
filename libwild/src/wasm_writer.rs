@@ -2160,6 +2160,33 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // R_WASM_SECTION_OFFSET_I32 (spec §9.4)
                         // Used in debug/custom sections — no adjustment yet.
                     }
+                    13 => {
+                        // R_WASM_GLOBAL_INDEX_I32 (spec §2: uint32 LE)
+                        if let Some(&output_idx) =
+                            symbol_to_output_global.get(&reloc.symbol_index)
+                            && off_in_body + 4 <= body.len()
+                        {
+                            body[off_in_body..off_in_body + 4]
+                                .copy_from_slice(&output_idx.to_le_bytes());
+                        }
+                    }
+                    20 => {
+                        // R_WASM_TABLE_NUMBER_LEB (spec §2: 5-byte varuint32)
+                        // Wild emits a single indirect function table (index 0);
+                        // multi-table is unimplemented, so always patch to 0.
+                        write_padded_leb128(&mut body, off_in_body, 0);
+                    }
+                    26 => {
+                        // R_WASM_FUNCTION_INDEX_I32 (spec §2: uint32 LE)
+                        // Used in custom-section annotations.
+                        if let Some(&output_idx) =
+                            symbol_to_output_func.get(&reloc.symbol_index)
+                            && off_in_body + 4 <= body.len()
+                        {
+                            body[off_in_body..off_in_body + 4]
+                                .copy_from_slice(&output_idx.to_le_bytes());
+                        }
+                    }
                     other => {
                         if warned_reloc_types.insert(other) {
                             tracing::warn!(
@@ -2204,6 +2231,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     if let Some(&seg_base) = obj_seg_offsets.get(sym.segment_index as usize) {
                         sym_to_addr.insert(sym_idx as u32, seg_base + sym.segment_offset);
                     }
+                } else if sym.kind == 2 {
+                    // Global symbol → output global index (for R_WASM_GLOBAL_INDEX_I32).
+                    if let Some(&g) = global_name_map.get(sym.name.as_slice()) {
+                        sym_to_addr.insert(sym_idx as u32, g);
+                    }
                 }
             }
             // Also resolve data symbols by name (cross-object).
@@ -2235,18 +2267,30 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             let seg_mem_end = seg_mem_start + out_seg.data.len() as u32;
                             if mem_off >= seg_mem_start && mem_off < seg_mem_end {
                                 let buf_off = (mem_off - seg_mem_start + off_in_seg) as usize;
-                                if reloc.reloc_type == 5 && buf_off + 4 <= out_seg.data.len() {
-                                    // R_WASM_MEMORY_ADDR_I32
-                                    out_seg.data[buf_off..buf_off + 4]
-                                        .copy_from_slice(&value.to_le_bytes());
-                                } else if reloc.reloc_type != 5
-                                    && warned_reloc_types.insert(reloc.reloc_type)
-                                {
-                                    tracing::warn!(
-                                        "wasm: unhandled data-section relocation type {} \
-                                         (spec §9.4) — output will be silently incorrect",
-                                        reloc.reloc_type
-                                    );
+                                if buf_off + 4 <= out_seg.data.len() {
+                                    match reloc.reloc_type {
+                                        // All four are uint32 LE; sym_to_addr holds:
+                                        //   kind 0 → output func index
+                                        //   kind 1 → output memory address
+                                        //   kind 2 → output global index
+                                        // so the correct payload for each reloc type
+                                        // drops out automatically via the symbol kind.
+                                        5 |  // R_WASM_MEMORY_ADDR_I32
+                                        13 | // R_WASM_GLOBAL_INDEX_I32
+                                        26   // R_WASM_FUNCTION_INDEX_I32
+                                        => {
+                                            out_seg.data[buf_off..buf_off + 4]
+                                                .copy_from_slice(&value.to_le_bytes());
+                                        }
+                                        other => {
+                                            if warned_reloc_types.insert(other) {
+                                                tracing::warn!(
+                                                    "wasm: unhandled data-section \
+                                                     relocation type {other} (spec §9.4)"
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                                 break;
                             }
