@@ -2149,12 +2149,28 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     // kind-2 symbol with that exact name), otherwise the output would carry
     // unreachable globals.
     if !layout.symbol_db.args.is_shared && !layout.symbol_db.args.is_pic {
+        // "Referenced" for synthesis-trigger purposes means referenced by
+        // code or data relocations — matches wasm-ld, which doesn't
+        // synthesise the base globals when the only references live in
+        // custom sections like .debug_info (those should fall through to
+        // the 0xFFFFFFFF sentinel in the reloc apply pass).
         let references = |name: &[u8]| -> bool {
             objects.iter().any(|obj| {
+                let sym_matches = |sym_idx: u32| -> bool {
+                    obj.parsed
+                        .symbols
+                        .get(sym_idx as usize)
+                        .is_some_and(|s| s.kind == 2 && s.name == name)
+                };
                 obj.parsed
-                    .symbols
+                    .code_relocations
                     .iter()
-                    .any(|s| s.kind == 2 && s.name == name)
+                    .any(|r| sym_matches(r.symbol_index))
+                    || obj
+                        .parsed
+                        .data_relocations
+                        .iter()
+                        .any(|r| sym_matches(r.symbol_index))
             })
         };
         if references(b"__memory_base")
@@ -3421,13 +3437,68 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 // Handled above via merge_target_features.
                 continue;
             }
+            // Apply any custom-section relocations before passthrough.
+            // LLVM's assembler emits reloc offsets relative to the custom
+            // section's *post-name data* (not the full payload including
+            // the name prefix), which matches what wild stores in
+            // CustomSection.data, so offsets apply directly.
+            let mut patched = cs.data.clone();
+            if let Some(relocs) = obj_info.parsed.custom_relocations.get(&cs.name) {
+                for reloc in relocs {
+                    let off_in_data = reloc.offset as usize;
+                    match reloc.reloc_type {
+                        13 => {
+                            // R_WASM_GLOBAL_INDEX_I32: uint32 LE. Unresolved
+                            // global references emit the 0xFFFFFFFF sentinel
+                            // per wasm-ld debug-section convention.
+                            if off_in_data + 4 > patched.len() {
+                                continue;
+                            }
+                            // Undefined kind-2 symbols carry an empty name
+                            // in the symbol table; fall back to the
+                            // referenced import global's field name.
+                            let resolve_name: Option<Vec<u8>> = obj_info
+                                .parsed
+                                .symbols
+                                .get(reloc.symbol_index as usize)
+                                .and_then(|s| {
+                                    if s.kind != 2 {
+                                        return None;
+                                    }
+                                    if !s.name.is_empty() {
+                                        return Some(s.name.clone());
+                                    }
+                                    if s.flags & 0x10 != 0 {
+                                        obj_info
+                                            .parsed
+                                            .import_global_names
+                                            .get(s.index as usize)
+                                            .cloned()
+                                    } else {
+                                        None
+                                    }
+                                });
+                            let resolved = resolve_name
+                                .as_deref()
+                                .and_then(|n| global_name_map.get(n).copied());
+                            let value: u32 = resolved.unwrap_or(u32::MAX);
+                            patched[off_in_data..off_in_data + 4]
+                                .copy_from_slice(&value.to_le_bytes());
+                        }
+                        _ => {
+                            // Other reloc types aren't applied yet — leave
+                            // the compiler's placeholder bytes intact.
+                        }
+                    }
+                }
+            }
             if let Some(&idx) = custom_section_index.get(&cs.name) {
-                merged_custom_sections[idx].data.extend_from_slice(&cs.data);
+                merged_custom_sections[idx].data.extend_from_slice(&patched);
             } else {
                 custom_section_index.insert(cs.name.clone(), merged_custom_sections.len());
                 merged_custom_sections.push(CustomSection {
                     name: cs.name.clone(),
-                    data: cs.data.clone(),
+                    data: patched,
                 });
             }
         }
@@ -3543,6 +3614,12 @@ struct ParsedInput {
     /// limits flag. Used to detect mem64 inputs that require
     /// `--features=+memory64` at link time.
     is_memory64: bool,
+    /// Relocations keyed by the target custom section's name. Emitted by
+    /// compilers for `.debug_info` / `.debug_line` etc. Wild applies them
+    /// during the custom-section passthrough so debug readers see patched
+    /// bytes; unresolved global/function references get the 0xFFFFFFFF
+    /// sentinel convention.
+    custom_relocations: std::collections::HashMap<Vec<u8>, Vec<WasmReloc>>,
     /// Local tag definitions: one entry per tag, value = type index.
     tags: Vec<u32>,
     /// Number of imported tags (offset for local tag indices).
@@ -3607,6 +3684,15 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut code_section_index: Option<usize> = None;
     let mut data_section_index: Option<usize> = None;
     let mut section_counter = 0usize;
+    // Track custom sections' position in the section stream so reloc.*
+    // sections targeting a custom section by index can resolve to its name.
+    let mut custom_section_position: std::collections::HashMap<usize, Vec<u8>> =
+        Default::default();
+    // Reloc.* sections whose target isn't code or data are deferred until
+    // after the parse loop, when custom_section_position is complete.
+    let mut pending_custom_relocs: Vec<(usize, Vec<WasmReloc>)> = Vec::new();
+    let mut custom_relocations: std::collections::HashMap<Vec<u8>, Vec<WasmReloc>> =
+        Default::default();
     // True if this input declares a 64-bit memory (import or local) via the
     // limits 0x04 flag. Forwarded to layout so it can reject a mix of mem64
     // inputs with `--features=+memory64` absent.
@@ -3832,10 +3918,16 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                             code_relocations = relocs;
                         } else if data_section_index == Some(target_idx) {
                             data_relocations = relocs;
+                        } else {
+                            // Must target a custom section — resolve after
+                            // the parse loop when all positions are known.
+                            pending_custom_relocs.push((target_idx, relocs));
                         }
                     }
                 } else {
                     // Pass through other custom sections (e.g. target_features).
+                    custom_section_position
+                        .insert(section_counter, name.to_vec());
                     custom_sections.push(CustomSection {
                         name: name.to_vec(),
                         data: custom_data.to_vec(),
@@ -3893,6 +3985,17 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         num_tag_imports,
         import_tag_names,
         is_memory64,
+        custom_relocations: {
+            // Resolve deferred reloc.* sections whose target is a custom
+            // section, using the position→name map built during the parse
+            // loop. Relocs with no matching target are discarded.
+            for (target_idx, relocs) in pending_custom_relocs {
+                if let Some(sec_name) = custom_section_position.get(&target_idx) {
+                    custom_relocations.insert(sec_name.clone(), relocs);
+                }
+            }
+            custom_relocations
+        },
     })
 }
 

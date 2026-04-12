@@ -132,6 +132,7 @@ const KNOWN_PASSING: &[&str] = &[
     "comdat-sections",
     "globals",
     "function-index",
+    "pic-static-unused",
 ];
 
 /// Tests in lto/ subdirectory known to pass despite matching skip patterns.

@@ -139,12 +139,16 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
       then `i32.add` sequence resolve at runtime (previously the
       `global.get` would fail because the referenced global didn't
       exist in the output).
-    - Custom-section relocations (e.g. `reloc..debug_info`) are
-      parsed but not applied. `pic-static-unused` expects
-      `0xFFFFFFFF` sentinels for unresolved GLOBAL_INDEX_I32
-      relocs in debug sections — plumbing that requires storing
-      per-custom-section relocation lists and rewriting the
-      passthrough bytes.
+    - Custom-section relocations: plumbing landed. wild parses
+      `reloc.<custom_name>` sections, stores them per target custom
+      section in `ParsedInput.custom_relocations`, and applies
+      `R_WASM_GLOBAL_INDEX_I32` (13) during passthrough. Unresolved
+      global references emit the `0xFFFFFFFF` sentinel per wasm-ld
+      debug-section convention. `pic-static-unused` now passes.
+      Other reloc types in custom sections (SECTION_OFFSET_I32 (9),
+      FUNCTION_OFFSET_I32 (8), etc.) are still left as the
+      compiler's placeholder bytes — add cases as downstream tests
+      require them.
     - `_is_pic` alone (without `is_shared`) doesn't yet propagate
       to the "import `__memory_base` / `__table_base` /
       `__stack_pointer`" machinery — a pure `-pie` link today
