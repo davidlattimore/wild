@@ -5329,6 +5329,55 @@ mod tests {
         }
     }
 
+    /// A GOT.func.<name> global import in a compiled object gets picked up
+    /// by parse_wasm_sections as a kind-3 (global) ParsedImport with the
+    /// exact field name. The GOT internalisation pass in merge_inputs keys
+    /// on `imp.field.strip_prefix(b"GOT.func.")`, so this test pins that
+    /// the imported field survives parsing unchanged.
+    #[test]
+    fn got_func_import_parses_with_field_name() {
+        fn section(id: u8, payload: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.push(id);
+            let mut len = Vec::new();
+            write_leb128(&mut len, payload.len() as u32);
+            v.extend_from_slice(&len);
+            v.extend_from_slice(payload);
+            v
+        }
+
+        let mut wasm = Vec::new();
+        wasm.extend_from_slice(b"\0asm");
+        wasm.extend_from_slice(&[1, 0, 0, 0]);
+
+        // Type section: one type (void -> void).
+        let mut t = Vec::new();
+        write_leb128(&mut t, 1);
+        t.push(0x60);
+        t.push(0);
+        t.push(0);
+        wasm.extend_from_slice(&section(SECTION_TYPE, &t));
+
+        // Import section: a single kind-3 (global) import of "GOT.func.foo".
+        let mut imp = Vec::new();
+        write_leb128(&mut imp, 1);
+        write_name(&mut imp, b"env");
+        write_name(&mut imp, b"GOT.func.foo");
+        imp.push(0x03); // global
+        imp.push(0x7F); // i32
+        imp.push(1); // mutable
+        wasm.extend_from_slice(&section(SECTION_IMPORT, &imp));
+
+        let parsed = parse_wasm_sections(&wasm).expect("parse ok");
+        let got = parsed
+            .imports
+            .iter()
+            .find(|i| i.kind == 3)
+            .expect("global import present");
+        assert_eq!(got.field, b"GOT.func.foo");
+        assert!(got.field.starts_with(b"GOT.func."));
+    }
+
     /// Under a static (non-PIC) link, wild handles REL_SLEB by writing the
     /// absolute symbol address in the 5-byte slot. This is correct because
     /// the compiler's surrounding `global.get __memory_base` + `i32.add`

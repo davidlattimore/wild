@@ -119,11 +119,25 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
     - `WASM_DYLINK_NEEDED` subsection hardcoded empty
       (`wasm_writer.rs:95`); no `DYLINK_EXPORT_INFO` or
       `DYLINK_IMPORT_INFO`.
-    - `@GOT` / `@TBREL` symbol pipeline: inputs using PIC globals
-      like `GOT.func.foo` still need dedicated handling to
-      internalise them on static links and pass them through on
-      shared links. All five currently-ignored LLD PIC tests
-      depend on this.
+    - `@GOT` symbol pipeline: partial. Static/PIE links now
+      internalise `GOT.func.<sym>` as a local immutable i32 global
+      with init = target's indirect-table slot, and `GOT.mem.<sym>`
+      with init = target's memory address. Shared output still
+      passes these through. Unit test
+      `got_func_import_parses_with_field_name` pins the parse path.
+      Still missing end-to-end: debug-section relocations against
+      linker globals expect `0xFFFFFFFF` sentinel when unresolved
+      (pic-static-unused), and pic-static expects a specific
+      global-section byte pattern for internalised GOTs — closing
+      the gap to those tests needs both the 0xFFFFFFFF convention
+      and a matching expected-output audit.
+    - `@TBREL` / `@MBREL` static behaviour: under static link the
+      compiler's `global.get __table_base` / `__memory_base`
+      sequences either need the base globals synthesised as local
+      immutable i32 globals (init = 1 / 0) or the SLEB values
+      pre-adjusted so the `i32.add` comes out absolute. Wild does
+      neither today; the existing REL_SLEB handler just writes the
+      absolute address and relies on `global.get` returning 0.
     - `_is_pic` alone (without `is_shared`) doesn't yet propagate
       to the "import `__memory_base` / `__table_base` /
       `__stack_pointer`" machinery — a pure `-pie` link today
