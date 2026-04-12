@@ -90,8 +90,9 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
   `merge_target_features`. `+` (0x2b, USED) and legacy `=` (0x3d,
   REQUIRED) unify into USED; `-` (0x2d, DISALLOWED) survives only
   when no input uses the feature; the USED-vs-DISALLOWED conflict
-  case errors out. Covered by five unit tests. Still to do: plumb
-  shared-memory vs `atomics` DISALLOWED check per spec §8.
+  case errors out. The spec §8 shared-memory/`atomics` guardrail
+  also fires when `--shared-memory` is combined with any input
+  listing `-atomics`. Covered by six unit tests.
 
 ### Medium severity
 

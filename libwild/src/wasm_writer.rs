@@ -3042,6 +3042,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let mut custom_section_index: std::collections::HashMap<Vec<u8>, usize> = Default::default();
     let merged_tf_payload = merge_target_features(
         objects.iter().map(|o| o.parsed.custom_sections.as_slice()),
+        layout.symbol_db.args.shared_memory,
     )?;
     if !merged_tf_payload.is_empty() {
         custom_section_index.insert(b"target_features".to_vec(), merged_custom_sections.len());
@@ -4408,6 +4409,7 @@ fn read_leb128(data: &[u8]) -> crate::error::Result<(usize, usize)> {
 ///   DISALLOWED by at least one input that no input uses.
 fn merge_target_features<'a>(
     per_object_custom: impl IntoIterator<Item = &'a [CustomSection]>,
+    shared_memory: bool,
 ) -> crate::error::Result<Vec<u8>> {
     use std::collections::BTreeSet;
     let mut used: BTreeSet<Vec<u8>> = BTreeSet::new();
@@ -4460,6 +4462,16 @@ fn merge_target_features<'a>(
         crate::bail!(
             "target_features: feature {:?} is USED by one input and DISALLOWED by another",
             String::from_utf8_lossy(name)
+        );
+    }
+
+    // Spec §8: "The linker will error out if a shared memory is requested
+    // but the atomics target feature is disallowed in the target features
+    // section of any input objects."
+    if shared_memory && disallowed.contains(b"atomics".as_slice()) {
+        crate::bail!(
+            "--shared-memory requires the atomics feature, \
+             but an input object's target_features lists '-atomics'"
         );
     }
 
@@ -4636,7 +4648,7 @@ mod tests {
     fn target_features_union_of_used() {
         let a = tf(&[(b'+', b"atomics"), (b'+', b"simd128")]);
         let b = tf(&[(b'+', b"atomics"), (b'+', b"bulk-memory")]);
-        let merged = merge_target_features([a.as_slice(), b.as_slice()]).unwrap();
+        let merged = merge_target_features([a.as_slice(), b.as_slice()], false).unwrap();
         let mut got = parse_tf(&merged);
         got.sort();
         assert_eq!(
@@ -4653,7 +4665,7 @@ mod tests {
     fn target_features_disallowed_without_use_survives() {
         let a = tf(&[(b'+', b"simd128")]);
         let b = tf(&[(b'-', b"atomics")]);
-        let merged = merge_target_features([a.as_slice(), b.as_slice()]).unwrap();
+        let merged = merge_target_features([a.as_slice(), b.as_slice()], false).unwrap();
         let mut got = parse_tf(&merged);
         got.sort_by(|(_, n1), (_, n2)| n1.cmp(n2));
         assert_eq!(
@@ -4669,7 +4681,7 @@ mod tests {
     fn target_features_conflict_errors() {
         let a = tf(&[(b'+', b"atomics")]);
         let b = tf(&[(b'-', b"atomics")]);
-        let err = merge_target_features([a.as_slice(), b.as_slice()])
+        let err = merge_target_features([a.as_slice(), b.as_slice()], false)
             .expect_err("expected conflict error");
         let msg = format!("{err:?}");
         assert!(
@@ -4683,15 +4695,31 @@ mod tests {
         // '=' (0x3d) is the deprecated REQUIRED prefix; wild folds it into '+'.
         let a = tf(&[(b'=', b"multivalue")]);
         let b = tf(&[(b'-', b"multivalue")]);
-        merge_target_features([a.as_slice(), b.as_slice()])
+        merge_target_features([a.as_slice(), b.as_slice()], false)
             .expect_err("'=' in one input and '-' in another must conflict");
     }
 
     #[test]
     fn target_features_empty_when_no_inputs_carry_section() {
         let empty: Vec<CustomSection> = Vec::new();
-        let payload = merge_target_features([empty.as_slice()]).unwrap();
+        let payload = merge_target_features([empty.as_slice()], false).unwrap();
         assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn target_features_shared_memory_requires_atomics() {
+        // An input that disallows atomics combined with --shared-memory
+        // must error per spec §8.
+        let a = tf(&[(b'-', b"atomics")]);
+        let err = merge_target_features([a.as_slice()], true)
+            .expect_err("shared_memory + '-atomics' must error");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("shared-memory") && msg.contains("atomics"),
+            "unexpected error: {msg}"
+        );
+        // Same input without shared_memory is fine.
+        merge_target_features([a.as_slice()], false).unwrap();
     }
 
     #[test]
