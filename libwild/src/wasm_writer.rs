@@ -460,9 +460,17 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_leb128(&mut payload, 1); // 1 element segment
         // Active element segment for table 0.
         payload.push(0x00); // flags: active, table 0
-        // Init expression: i32.const 1 (start at index 1, 0 = null)
-        payload.push(0x41); // i32.const
-        write_sleb128(&mut payload, 1);
+        // Init expression: under PIC, the element base is the imported
+        // __table_base global (the dynamic linker assigns the runtime
+        // value). Statically, it's a fixed `i32.const 1` — entry 0 is
+        // reserved as null/trap.
+        if _is_pic && let Some(tb_idx) = merged.table_base_global_idx {
+            payload.push(0x23); // global.get
+            write_leb128(&mut payload, tb_idx);
+        } else {
+            payload.push(0x41); // i32.const
+            write_sleb128(&mut payload, 1);
+        }
         payload.push(0x0B); // end
         // Function indices.
         write_leb128(&mut payload, merged.table_entries.len() as u32);
@@ -1031,6 +1039,9 @@ struct MergedModule {
     num_imported_globals: u32,
     /// Index of __memory_base imported global (for PIC data segments).
     memory_base_global_idx: Option<u32>,
+    /// Index of __table_base imported global (for PIC element segment
+    /// init expression).
+    table_base_global_idx: Option<u32>,
     /// Whether to use passive data segments (--shared-memory with data).
     use_passive_segments: bool,
     /// Function index of __wasm_init_memory (for start section).
@@ -3117,6 +3128,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
     // Shared/PIC mode: import __memory_base and __stack_pointer.
     let mut memory_base_global_idx: Option<u32> = None;
+    let mut table_base_global_idx: Option<u32> = None;
     if layout.symbol_db.args.is_shared {
         // Import memory.
         output_imports.push(OutputImport {
@@ -3161,6 +3173,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             kind: ImportKind::Table { min: 0 },
         });
         // Import __table_base (immutable i32).
+        table_base_global_idx = Some(num_imported_globals);
         output_imports.push(OutputImport {
             module: b"env".to_vec(),
             field: b"__table_base".to_vec(),
@@ -3323,6 +3336,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         num_imported_functions,
         num_imported_globals,
         memory_base_global_idx,
+        table_base_global_idx,
         use_passive_segments: use_passive,
         init_memory_func_idx,
         custom_sections: merged_custom_sections,
