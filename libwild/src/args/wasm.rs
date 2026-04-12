@@ -73,6 +73,10 @@ pub struct WasmArgs {
     /// `--target=wasm64-…`). When true, memory/data/imports carry the
     /// 0x04 limits bit and active data segments use `i64.const` offsets.
     pub(crate) memory64: bool,
+    /// Position-independent code / executable. Distinct from `is_shared`:
+    /// a shared library implies PIC, but a PIE executable does too. Set
+    /// by `-pie`, `--pie`, or `--experimental-pic`.
+    pub(crate) is_pic: bool,
 }
 
 impl Default for WasmArgs {
@@ -109,6 +113,7 @@ impl Default for WasmArgs {
             growable_table: false,
             compress_relocations: false,
             memory64: false,
+            is_pic: false,
         }
     }
 }
@@ -391,8 +396,8 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             "-mwasm64" => args.memory64 = true,
             _ if arg.starts_with("-m") => {} // e.g. other -m variants
 
-            // --- Misc flags we accept but don't fully implement yet ---
-            "--experimental-pic" | "-pie" | "--pie" => {}
+            // --- PIC ---
+            "--experimental-pic" | "-pie" | "--pie" => args.is_pic = true,
             _ if arg.starts_with("--unresolved-symbols=") => {}
             "--fatal-warnings" => {}
             "--no-fatal-warnings" => {}

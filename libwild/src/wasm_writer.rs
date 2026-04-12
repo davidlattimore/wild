@@ -70,7 +70,9 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     if layout.symbol_db.args.should_gc_sections() {
         gc_functions(&mut merged, layout.symbol_db.args.should_export_all_dynamic_symbols());
     }
-    let is_pic = is_shared; // PIE also uses PIC
+    // A shared library always implies PIC; a PIE executable does too.
+    // Consumed by phase B (element segment init expression) and beyond.
+    let _is_pic = is_shared || layout.symbol_db.args.is_pic;
 
     // For shared/PIE: disable GC (all defined functions are potentially needed),
     // and export all by default.
@@ -5235,6 +5237,24 @@ mod tests {
             write_sleb128_i64(&mut buf, *v);
             assert_eq!(&buf, expected, "sleb64 for {v}");
         }
+    }
+
+    #[test]
+    fn pic_flags_parsing() {
+        use crate::platform::Args as _;
+        fn mk(argv: &[&str]) -> crate::args::wasm::WasmArgs {
+            let mut args = crate::args::wasm::WasmArgs::new().expect("wasm args");
+            args.parse(argv.iter().copied()).expect("parse");
+            args
+        }
+        assert!(!mk(&[]).is_pic);
+        assert!(mk(&["-pie"]).is_pic);
+        assert!(mk(&["--pie"]).is_pic);
+        assert!(mk(&["--experimental-pic"]).is_pic);
+        // -shared still sets is_shared, independent of is_pic.
+        let a = mk(&["-shared"]);
+        assert!(a.is_shared);
+        assert!(!a.is_pic);
     }
 
     #[test]
