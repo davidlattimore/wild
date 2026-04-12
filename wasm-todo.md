@@ -171,6 +171,17 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
       under static-PIC degrade to absolute — with
       `__table_base = 1` they should subtract 1 rather than
       leaving the raw table index.
+
+      Four LLD PIC tests remain ignored; each needs its own
+      feature chunk:
+      - `weak-undefined-pic`: wasm-ld suppresses the import for
+        weak-undefined functions, synthesises a trapping stub to
+        own the call target, and names the GOT global
+        `undefined_weak:<name>` (not `GOT.func.internal.<name>`)
+        with init 0 (marker for "null function pointer").
+      - `emit-relocs-fpic`: needs `--emit-relocs` support — wild
+        doesn't preserve the reloc sections in the output.
+      - `pic-empty` (lto/): LTO pipeline integration.
     - `@TBREL` / `@MBREL` static behaviour: under static link wild
       now synthesises `__memory_base` (init 0) and `__table_base`
       (init 1) as local immutable i32 globals, but only when an
