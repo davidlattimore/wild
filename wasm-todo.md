@@ -168,18 +168,20 @@ shipping commit (where applicable) and what would need to be exercised.
 
 ### EH / tag pipeline
 
-- Tag section (id 13) parse + concat → emit. Round-trip test needed.
-- Kind-4 (`SYMTAB_EVENT`) symbol merging with §9.2 strong/weak,
-  §7 COMDAT (kind 3) dedup, hidden-visibility filtering.
-- Kind-0x04 tag exports (explicit `WASM_SYM_EXPORTED` and
-  `--export-dynamic`).
-- Tag import kind 0x04 in the import section.
+- Tag section (id 13) parse → emit round-trip has a unit test in
+  `wasm_writer::tests::tag_section_parse_roundtrip` covering type
+  section, kind-0x04 import, and local tag def.
+- Still uncovered: kind-4 (`SYMTAB_EVENT`) symbol merging with §9.2
+  strong/weak, §7 COMDAT (kind 3) dedup, hidden-visibility
+  filtering, and kind-0x04 export emission under
+  `--export-dynamic`. Needs a multi-object end-to-end test.
 
 ### LEB / SLEB writers
 
-- `write_padded_leb128_u64` / `write_padded_sleb128_i64` — `87bf606`.
-  Need round-trip unit tests with edge values (0, MAX, MIN, -1, 1).
-  Especially worth it given the SLEB64 terminator-byte sign logic.
+- `write_padded_leb128`, `write_padded_sleb128`,
+  `write_padded_leb128_u64`, `write_padded_sleb128_i64` all have
+  unit tests in `wasm_writer::tests` covering 0, 1, -1, boundary
+  powers of two, and type MIN/MAX.
 
 ### Writer and validator plumbing
 

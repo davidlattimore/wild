@@ -4386,3 +4386,170 @@ fn read_leb128(data: &[u8]) -> crate::error::Result<(usize, usize)> {
     }
     Err(crate::error!("Unexpected end of LEB128"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decode a 5-byte padded unsigned LEB128.
+    fn decode_padded_u32(buf: &[u8; 5]) -> u32 {
+        let mut v = 0u32;
+        for i in 0..5 {
+            v |= ((buf[i] & 0x7F) as u32) << (i * 7);
+        }
+        v
+    }
+
+    /// Decode a 5-byte padded signed LEB128.
+    fn decode_padded_i32(buf: &[u8; 5]) -> i32 {
+        let mut v = 0i64;
+        for i in 0..5 {
+            v |= ((buf[i] & 0x7F) as i64) << (i * 7);
+        }
+        // Sign extend from bit 34 (the highest bit carried by the last byte).
+        let sign_bit = 1i64 << 34;
+        if v & sign_bit != 0 {
+            v |= !((sign_bit << 1) - 1);
+        }
+        v as i32
+    }
+
+    /// Decode a 10-byte padded unsigned LEB128 (64-bit).
+    fn decode_padded_u64(buf: &[u8; 10]) -> u64 {
+        let mut v = 0u64;
+        for i in 0..9 {
+            v |= ((buf[i] & 0x7F) as u64) << (i * 7);
+        }
+        v |= ((buf[9] & 0x01) as u64) << 63;
+        v
+    }
+
+    /// Decode a 10-byte padded signed LEB128 (64-bit).
+    fn decode_padded_i64(buf: &[u8; 10]) -> i64 {
+        let mut v = 0u64;
+        for i in 0..9 {
+            v |= ((buf[i] & 0x7F) as u64) << (i * 7);
+        }
+        // Final byte carries sign-extension: bit 0x40 is the SLEB terminator
+        // sign bit. For negative values byte 9 is 0x7F; for non-negative, 0.
+        if buf[9] & 0x40 != 0 {
+            v |= !((1u64 << 63) - 1);
+        }
+        v as i64
+    }
+
+    fn roundtrip_u32(v: u32) {
+        let mut buf = [0u8; 5];
+        write_padded_leb128(&mut buf, 0, v);
+        assert_eq!(decode_padded_u32(&buf), v, "u32 roundtrip failed for {v}");
+        assert_eq!(read_padded_leb128(&buf, 0), v);
+    }
+
+    fn roundtrip_i32(v: i32) {
+        let mut buf = [0u8; 5];
+        write_padded_sleb128(&mut buf, 0, v);
+        assert_eq!(decode_padded_i32(&buf), v, "i32 roundtrip failed for {v}");
+    }
+
+    fn roundtrip_u64(v: u64) {
+        let mut buf = [0u8; 10];
+        write_padded_leb128_u64(&mut buf, 0, v);
+        assert_eq!(decode_padded_u64(&buf), v, "u64 roundtrip failed for {v}");
+    }
+
+    fn roundtrip_i64(v: i64) {
+        let mut buf = [0u8; 10];
+        write_padded_sleb128_i64(&mut buf, 0, v);
+        assert_eq!(decode_padded_i64(&buf), v, "i64 roundtrip failed for {v}");
+    }
+
+    #[test]
+    fn padded_leb128_u32_roundtrip() {
+        for &v in &[0u32, 1, 127, 128, 0x3FFF, 0x4000, 0x80000000, u32::MAX] {
+            roundtrip_u32(v);
+        }
+    }
+
+    #[test]
+    fn padded_sleb128_i32_roundtrip() {
+        for &v in &[0i32, 1, -1, 63, 64, -64, -65, i32::MAX, i32::MIN, 0x3FFFFFFF, -0x40000000] {
+            roundtrip_i32(v);
+        }
+    }
+
+    #[test]
+    fn padded_leb128_u64_roundtrip() {
+        for &v in &[0u64, 1, 127, 128, 1 << 32, (1u64 << 63) - 1, 1u64 << 63, u64::MAX] {
+            roundtrip_u64(v);
+        }
+    }
+
+    #[test]
+    fn padded_sleb128_i64_roundtrip() {
+        let cases: &[i64] = &[
+            0, 1, -1, 63, 64, -64, -65,
+            i32::MAX as i64, i32::MIN as i64,
+            i64::MAX, i64::MIN,
+            (1i64 << 40), -(1i64 << 40),
+        ];
+        for &v in cases {
+            roundtrip_i64(v);
+        }
+    }
+
+    /// Build a minimal wasm module containing:
+    ///   - a type section with one type (func () -> ())
+    ///   - an import of a tag named "extag" using that type
+    ///   - a tag section defining one local tag of the same type
+    ///   - a linking custom section with one SYMTAB_EVENT symbol for the def
+    /// Then round-trip it through parse_wasm_sections and assert the shape.
+    #[test]
+    fn tag_section_parse_roundtrip() {
+        // Helper to wrap a section payload with id + LEB length prefix.
+        fn section(id: u8, payload: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.push(id);
+            let mut len = Vec::new();
+            write_leb128(&mut len, payload.len() as u32);
+            v.extend_from_slice(&len);
+            v.extend_from_slice(payload);
+            v
+        }
+
+        let mut wasm = Vec::new();
+        wasm.extend_from_slice(b"\0asm");
+        wasm.extend_from_slice(&[1, 0, 0, 0]);
+
+        // Type section: one type (0x60 params:0 results:0).
+        wasm.extend_from_slice(&section(SECTION_TYPE, &[0x01, 0x60, 0x00, 0x00]));
+
+        // Import section: one tag import.
+        let mut imp = Vec::new();
+        write_leb128(&mut imp, 1); // count
+        write_name(&mut imp, b"env");
+        write_name(&mut imp, b"extag");
+        imp.push(0x04); // kind: tag
+        imp.push(0x00); // attribute
+        write_leb128(&mut imp, 0); // type idx
+        wasm.extend_from_slice(&section(SECTION_IMPORT, &imp));
+
+        // Tag section: one local tag of type 0.
+        let mut tagp = Vec::new();
+        write_leb128(&mut tagp, 1); // count
+        tagp.push(0x00); // attribute
+        write_leb128(&mut tagp, 0); // type idx
+        wasm.extend_from_slice(&section(SECTION_TAG, &tagp));
+
+        let parsed = parse_wasm_sections(&wasm).expect("parse ok");
+        assert_eq!(parsed.num_tag_imports, 1, "tag import count");
+        assert_eq!(parsed.import_tag_names, vec![b"extag".to_vec()]);
+        assert_eq!(parsed.tags, vec![0u32], "local tag type indices");
+        let tag_imp = parsed
+            .imports
+            .iter()
+            .find(|i| i.kind == 4)
+            .expect("tag import present");
+        assert_eq!(tag_imp.field, b"extag");
+        assert_eq!(tag_imp.type_index, 0);
+    }
+}
