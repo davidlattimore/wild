@@ -78,6 +78,12 @@ macho-lto = ["libloading"]
 # WASM optimization via wilt (DCE, type GC, constant folding).
 wasm-opt = ["wilt"]
 
+# Widen the wasm writer's internal address arithmetic from u32 to u64 so
+# the linker can plan memory64 layouts larger than 4 GiB. Off by default —
+# when off, `Addr = u32` and address computations stay narrow; the memory64
+# reloc encoders still work for values that fit in 32 bits.
+wasm-addr64 = []
+
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]
 

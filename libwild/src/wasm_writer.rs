@@ -24,6 +24,18 @@ const SECTION_DATA: u8 = 11;
 const SECTION_DATACOUNT: u8 = 12;
 const SECTION_TAG: u8 = 13;
 
+/// Linear-memory address width used by the wasm writer's layout math.
+///
+/// Defaults to `u32`. When the `wasm-addr64` Cargo feature is on, widens to
+/// `u64` so memory64 layouts larger than 4 GiB can be planned end-to-end.
+/// The memory64 relocation encoders (`R_WASM_MEMORY_ADDR_*64`) already emit
+/// the full 64-bit payload; this alias controls only wild's *internal*
+/// arithmetic.
+#[cfg(not(feature = "wasm-addr64"))]
+pub(crate) type Addr = u32;
+#[cfg(feature = "wasm-addr64")]
+pub(crate) type Addr = u64;
+
 /// WASM export kinds.
 const EXPORT_FUNC: u8 = 0x00;
 const EXPORT_MEMORY: u8 = 0x02;
@@ -84,7 +96,7 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         } else {
             0
         };
-        write_leb128(&mut mem_info, merged.data_size);            // MemorySize
+        write_leb128_addr(&mut mem_info, merged.data_size);       // MemorySize
         write_leb128(&mut mem_info, mem_align_log2);              // MemoryAlignment (log2)
         write_leb128(&mut mem_info, merged.table_entries.len() as u32); // TableSize
         write_leb128(&mut mem_info, 0);                           // TableAlignment (log2)
@@ -921,7 +933,7 @@ struct OutputGlobal {
 /// A data segment in the output module.
 struct OutputDataSegment {
     /// Byte offset in linear memory.
-    memory_offset: u32,
+    memory_offset: Addr,
     /// Segment data.
     data: Vec<u8>,
 }
@@ -969,9 +981,9 @@ struct MergedModule {
     /// Merged data segments.
     data_segments: Vec<OutputDataSegment>,
     /// Total data size (for memory section computation).
-    data_size: u32,
+    data_size: Addr,
     /// __stack_pointer initial value (for --no-stack-first memory calc).
-    stack_pointer_value: u32,
+    stack_pointer_value: Addr,
     /// Max data segment alignment (for dylink.0 MemoryAlignment).
     max_data_alignment: u32,
     /// Indirect function table: maps table index → function index.
@@ -1651,7 +1663,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 if rel_end > rel_start && rel_end <= merged_data.len() {
                     let data = merged_data[rel_start..rel_end].to_vec();
                     segments.push(OutputDataSegment {
-                        memory_offset: s,
+                        memory_offset: s as Addr,
                         data,
                     });
                 }
@@ -2618,9 +2630,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // Find the output segment that contains this memory offset.
                         for out_seg in data_segments.iter_mut() {
                             let seg_mem_start = out_seg.memory_offset;
-                            let seg_mem_end = seg_mem_start + out_seg.data.len() as u32;
-                            if mem_off >= seg_mem_start && mem_off < seg_mem_end {
-                                let buf_off = (mem_off - seg_mem_start + off_in_seg) as usize;
+                            let seg_mem_end = seg_mem_start + out_seg.data.len() as Addr;
+                            let mem_off_a = mem_off as Addr;
+                            let off_in_seg_a = off_in_seg as Addr;
+                            if mem_off_a >= seg_mem_start && mem_off_a < seg_mem_end {
+                                let buf_off = (mem_off_a - seg_mem_start + off_in_seg_a) as usize;
                                 match reloc.reloc_type {
                                     // 32-bit LE; sym_to_addr holds:
                                     //   kind 0 → output func index
@@ -2646,7 +2660,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                         // value = S + A - P, where P is the
                                         // absolute memory address of the reloc
                                         // site (out_seg.memory_offset + buf_off).
-                                        let site = out_seg.memory_offset
+                                        let site = (out_seg.memory_offset as u32)
                                             .wrapping_add(buf_off as u32);
                                         let rel = value.wrapping_sub(site);
                                         out_seg.data[buf_off..buf_off + 4]
@@ -3083,8 +3097,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         globals,
         global_name_map,
         data_segments,
-        data_size,
-        stack_pointer_value: stack_pointer_value,
+        data_size: data_size as Addr,
+        stack_pointer_value: stack_pointer_value as Addr,
         max_data_alignment: {
             let mut max = 1u32;
             for obj in &objects {
@@ -4300,6 +4314,30 @@ fn write_padded_leb128(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset + 2] = ((value >> 14) & 0x7F) as u8 | 0x80;
     buf[offset + 3] = ((value >> 21) & 0x7F) as u8 | 0x80;
     buf[offset + 4] = ((value >> 28) & 0x0F) as u8;
+}
+
+/// Write an unsigned LEB128 value up to 64 bits wide. Emits 1–10 bytes.
+fn write_leb128_u64(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+/// Write an unsigned LEB128 for an `Addr`. Picks the right width depending
+/// on the Cargo feature.
+fn write_leb128_addr(out: &mut Vec<u8>, value: Addr) {
+    #[cfg(not(feature = "wasm-addr64"))]
+    write_leb128(out, value);
+    #[cfg(feature = "wasm-addr64")]
+    write_leb128_u64(out, value);
 }
 
 /// Write a 10-byte padded unsigned LEB128 value (64-bit) at a specific offset.
