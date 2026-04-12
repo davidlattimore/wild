@@ -3908,10 +3908,19 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             data: merged_tf_payload,
         });
     }
+    let merged_producers_payload =
+        merge_producers(objects.iter().map(|o| o.parsed.custom_sections.as_slice()))?;
+    if !merged_producers_payload.is_empty() {
+        custom_section_index.insert(b"producers".to_vec(), merged_custom_sections.len());
+        merged_custom_sections.push(CustomSection {
+            name: b"producers".to_vec(),
+            data: merged_producers_payload,
+        });
+    }
     for obj_info in &objects {
         for cs in &obj_info.parsed.custom_sections {
-            if cs.name == b"target_features" {
-                // Handled above via merge_target_features.
+            if cs.name == b"target_features" || cs.name == b"producers" {
+                // Handled above via merge_target_features / merge_producers.
                 continue;
             }
             // Apply any custom-section relocations before passthrough.
@@ -5519,6 +5528,78 @@ fn merge_target_features<'a>(
         payload.push(b'-');
         write_leb128(&mut payload, name.len() as u32);
         payload.extend_from_slice(name);
+    }
+    Ok(payload)
+}
+
+/// Merge the `producers` custom section across all input objects.
+///
+/// Format: count of fields, each `{name, count, values: {name, version}}`.
+/// Concatenating raw payloads produces malformed output; instead, collect
+/// unique `(value_name, version)` pairs per field across all inputs and
+/// re-emit a single well-formed record. Insertion order is preserved so
+/// output is deterministic.
+fn merge_producers<'a>(
+    per_object_custom: impl IntoIterator<Item = &'a [CustomSection]>,
+) -> crate::error::Result<Vec<u8>> {
+    use indexmap::IndexMap;
+
+    // Map of field_name -> map of value_name -> version. Each producer name
+    // within a field must be unique; keep the first version seen.
+    let mut fields: IndexMap<Vec<u8>, IndexMap<Vec<u8>, Vec<u8>>> = IndexMap::new();
+    let mut saw_any = false;
+
+    fn read_vec<'b>(data: &'b [u8], off: &mut usize) -> crate::error::Result<&'b [u8]> {
+        let (len, c) = read_leb128(&data[*off..])?;
+        *off += c;
+        if *off + len > data.len() {
+            crate::bail!("producers: truncated vec");
+        }
+        let v = &data[*off..*off + len];
+        *off += len;
+        Ok(v)
+    }
+
+    for obj in per_object_custom {
+        for cs in obj {
+            if cs.name != b"producers" {
+                continue;
+            }
+            saw_any = true;
+            let data = &cs.data;
+            let mut off = 0usize;
+            let (field_count, c) = read_leb128(data)?;
+            off += c;
+            for _ in 0..field_count {
+                let fname = read_vec(data, &mut off)?.to_vec();
+                let (value_count, c2) = read_leb128(&data[off..])?;
+                off += c2;
+                let entry = fields.entry(fname).or_default();
+                for _ in 0..value_count {
+                    let vname = read_vec(data, &mut off)?.to_vec();
+                    let vver = read_vec(data, &mut off)?.to_vec();
+                    entry.entry(vname).or_insert(vver);
+                }
+            }
+        }
+    }
+
+    if !saw_any {
+        return Ok(Vec::new());
+    }
+
+    let mut payload = Vec::new();
+    write_leb128(&mut payload, fields.len() as u32);
+    for (fname, values) in &fields {
+        write_leb128(&mut payload, fname.len() as u32);
+        payload.extend_from_slice(fname);
+        write_leb128(&mut payload, values.len() as u32);
+        for (vname, vver) in values {
+            write_leb128(&mut payload, vname.len() as u32);
+            payload.extend_from_slice(vname);
+            write_leb128(&mut payload, vver.len() as u32);
+            payload.extend_from_slice(vver);
+        }
     }
     Ok(payload)
 }
