@@ -563,12 +563,25 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     if !layout.symbol_db.args.should_strip_all() && !merged.functions.is_empty() {
         let mut name_payload = Vec::new();
 
-        // Function names subsection (id=1).
+        // Function names subsection (id=1). When multiple symbol names
+        // point at the same function (e.g. `.set alias, target`), the
+        // wasm name section may only list one name per function index;
+        // emit the alphabetically first to be deterministic and to
+        // match wasm-ld's convention of keeping the canonical
+        // (shorter, typically leading-underscore) name.
         let mut func_names = Vec::new();
-        let mut name_entries: Vec<(u32, &[u8])> = Vec::new();
+        let mut per_idx: std::collections::HashMap<u32, &[u8]> = Default::default();
         for (name, &idx) in &merged.function_name_map {
-            name_entries.push((idx, name));
+            per_idx
+                .entry(idx)
+                .and_modify(|existing| {
+                    if name.as_slice() < *existing {
+                        *existing = name.as_slice();
+                    }
+                })
+                .or_insert(name.as_slice());
         }
+        let mut name_entries: Vec<(u32, &[u8])> = per_idx.into_iter().collect();
         name_entries.sort_by_key(|(idx, _)| *idx);
 
         write_leb128(&mut func_names, name_entries.len() as u32);
@@ -1690,17 +1703,33 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     }
                 }
             }
-            // Check flags on function symbols (spec §4.2).
+            // Check flags on function symbols (spec §4.2), and register
+            // alias names — any named symbol pointing at a defined
+            // function whose canonical name is already in
+            // `function_name_map` should also be reachable under the
+            // alias name (covers `.set <alias>, <target>`).
             for sym in &parsed.symbols {
-                if sym.kind == 0 && sym.index >= parsed.num_function_imports {
+                if sym.kind == 0
+                    && (sym.flags & 0x10) == 0
+                    && sym.index >= parsed.num_function_imports
+                {
                     let output_idx = func_base + (sym.index - parsed.num_function_imports);
-                    // NO_STRIP (0x80): include in output regardless of usage.
                     if (sym.flags & 0x80) != 0 {
                         no_strip_indices.push(output_idx);
                     }
-                    // EXPORTED (0x20): exported to host environment.
                     if (sym.flags & 0x20) != 0 {
                         exported_indices.push(output_idx);
+                    }
+                    if !sym.name.is_empty()
+                        && !function_name_map.contains_key(&sym.name)
+                    {
+                        function_name_map.insert(sym.name.clone(), output_idx);
+                        // Aliases inherit the weak/hidden state of the
+                        // canonical name; default to strong + visible.
+                        function_is_weak.entry(sym.name.clone()).or_insert(false);
+                        if sym.name == entry_name {
+                            entry_function_index = Some(output_idx);
+                        }
                     }
                 }
             }
