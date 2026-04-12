@@ -1104,8 +1104,12 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
         }
     }
 
-    // BFS: scan reachable function bodies for call instructions.
-    // WASM call opcode is 0x10, followed by a function index (LEB128).
+    // BFS: scan reachable function bodies for every opcode that carries a
+    // function index — call, return_call, ref.func. Uses the same opcode
+    // walker remap_call_targets uses so bulk-memory bodies and 0x10-valued
+    // immediates don't confuse us into marking phantom functions reachable.
+    // An opcode the walker can't decode conservatively marks *all* funcs
+    // reachable (safe over-retention) rather than silently skipping.
     let mut changed = true;
     while changed {
         changed = false;
@@ -1114,92 +1118,27 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
                 continue;
             }
             let body = &merged.functions[i].body;
-            let mut pos = 0;
-            // Skip local declarations at the start of the body.
-            if let Ok((local_count, c)) = read_leb128(body) {
-                pos += c;
-                for _ in 0..local_count {
-                    if let Ok((_, c)) = read_leb128(&body[pos..]) {
-                        pos += c;
-                    }
-                    pos += 1; // valtype
+            let mut referenced: Vec<u32> = Vec::new();
+            let walk = walk_funcidx_operands(body, |_off, func_idx| {
+                referenced.push(func_idx);
+            });
+            if walk.is_err() {
+                // Unknown opcode — retain everything to stay safe.
+                tracing::warn!(
+                    "wasm: GC walker hit an unrecognised opcode in function {i}; \
+                     keeping all functions to avoid dropping a reachable one"
+                );
+                for r in reachable.iter_mut() {
+                    *r = true;
                 }
+                changed = false;
+                break;
             }
-            // Scan for call instructions with basic opcode awareness.
-            // Skip known immediate operands to reduce false positives.
-            while pos < body.len() {
-                let opcode = body[pos];
-                pos += 1;
-                match opcode {
-                    0x10 => {
-                        // call funcidx
-                        if let Ok((func_idx, c)) = read_leb128(&body[pos..]) {
-                            pos += c;
-                            if func_idx < num_funcs && !reachable[func_idx] {
-                                reachable[func_idx] = true;
-                                changed = true;
-                            }
-                        }
-                    }
-                    0x11 => {
-                        // call_indirect: typeidx + tableidx (two LEB128s)
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // Block/loop/if with block type
-                    0x02 | 0x03 | 0x04 => {
-                        if pos < body.len() {
-                            if body[pos] == 0x40 {
-                                pos += 1; // void block type
-                            } else if body[pos] < 0x80 {
-                                pos += 1; // value type
-                            } else {
-                                // Signed LEB128 type index
-                                if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                            }
-                        }
-                    }
-                    // br, br_if: labelidx
-                    0x0C | 0x0D => {
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // br_table: vec(labelidx) + labelidx
-                    0x0E => {
-                        if let Ok((count, c)) = read_leb128(&body[pos..]) {
-                            pos += c;
-                            for _ in 0..=count {
-                                if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                            }
-                        }
-                    }
-                    // local.get/set/tee, global.get/set
-                    0x20..=0x24 => {
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // Memory load/store: align + offset (two LEB128s)
-                    0x28..=0x3E => {
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // memory.size, memory.grow: memory index
-                    0x3F | 0x40 => {
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // i32.const
-                    0x41 => {
-                        // Signed LEB128
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // i64.const
-                    0x42 => {
-                        if let Ok((_, c)) = read_leb128(&body[pos..]) { pos += c; }
-                    }
-                    // f32.const
-                    0x43 => { pos += 4; }
-                    // f64.const
-                    0x44 => { pos += 8; }
-                    // All other opcodes have no immediates
-                    _ => {}
+            for func_idx in referenced {
+                let idx = func_idx as usize;
+                if idx < num_funcs && !reachable[idx] {
+                    reachable[idx] = true;
+                    changed = true;
                 }
             }
         }
