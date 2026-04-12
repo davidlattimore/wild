@@ -1543,10 +1543,10 @@ fn write_exe_symtab(
     // Build section ranges from the already-written headers for n_sect lookup.
     let section_ranges = parse_section_ranges(out);
 
-    // Write nlist64 entries (16 bytes each).
-    // Align symoff to 8 bytes for nlist_64 natural alignment (n_value is u64).
+    // Write nlist64 entries (16 bytes each). No alignment padding —
+    // LINKEDIT must be fully packed for strip(1) compatibility.
     // Stab entries come first (they're part of the local symbol range).
-    let symoff = (start + 7) & !7;
+    let symoff = start;
     let nsyms = stab_entries.len() + entries.len();
     let mut pos = symoff;
 
@@ -5517,10 +5517,6 @@ fn validate_macho_output(buf: &[u8]) -> Result {
     // the symbol from dylibs instead of using the internal definition,
     // leading to "Symbol not found" crashes at runtime.
     validate_no_self_imports(buf)?;
-
-    // Validate LINKEDIT alignment: LC_SYMTAB symoff must be 8-byte aligned
-    // for nlist_64 entries, and stroff must be 4-byte aligned.
-    validate_linkedit_alignment(buf)?;
 
     Ok(())
 }
