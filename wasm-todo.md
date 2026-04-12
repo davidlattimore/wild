@@ -124,13 +124,25 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
       with init = target's indirect-table slot, and `GOT.mem.<sym>`
       with init = target's memory address. Shared output still
       passes these through. Unit test
-      `got_func_import_parses_with_field_name` pins the parse path.
-      Still missing end-to-end: debug-section relocations against
-      linker globals expect `0xFFFFFFFF` sentinel when unresolved
-      (pic-static-unused), and pic-static expects a specific
-      global-section byte pattern for internalised GOTs — closing
-      the gap to those tests needs both the 0xFFFFFFFF convention
-      and a matching expected-output audit.
+      `got_func_import_parses_with_field_name` pins the parse
+      path. `pic-static-unused` passes.
+    - `pic-static` still ignored: expects a very specific global
+      section layout (`__stack_pointer`, `__memory_base`,
+      `__table_base`, `__tls_base`, then GOTs) with `__data_end` /
+      `__heap_base` suppressed under static-PIC. Wild currently
+      emits `__data_end` / `__heap_base` unconditionally when
+      data segments exist. Closing the gap needs:
+      - A static-PIC mode that reorders / gates the linker-synth
+        globals to match wasm-ld.
+      - `__tls_base` synthesised as a local global (init 0) under
+        static-PIC when referenced.
+      - GOT global names formatted as `GOT.func.internal.<sym>` /
+        `GOT.data.internal.<sym>` for hidden-visibility targets
+        (wild currently uses the raw input import name).
+      - `@MBREL` / `@TBREL` SLEB values adjusted: currently
+        degrades to absolute under `__memory_base = 0` /
+        `__table_base = 0`, but under static-PIC they are 0 and 1
+        and values need to subtract that base.
     - `@TBREL` / `@MBREL` static behaviour: under static link wild
       now synthesises `__memory_base` (init 0) and `__table_base`
       (init 1) as local immutable i32 globals, but only when an
