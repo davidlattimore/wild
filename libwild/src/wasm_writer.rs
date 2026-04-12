@@ -1956,6 +1956,82 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         exported: false,
     });
 
+    // Detect "static-PIC" mode: inputs were compiled with -fPIC but we're
+    // linking to a non-shared, non-PIE executable. The giveaway is either a
+    // `GOT.func.*` / `GOT.mem.*` global import or a kind-2 symbol named
+    // `__memory_base` / `__table_base` / `__tls_base` in any input. Under
+    // this mode wasm-ld places the three base globals right after
+    // `__stack_pointer` and suppresses `__data_end` / `__heap_base` from the
+    // linker-synth set.
+    // Static-PIC detection is stricter than "any PIC-ish marker":
+    // `.globaltype __memory_base, i32, immutable` alone (which emits a
+    // `__memory_base` env import) only means "PIC-capable input"; without
+    // code actually using the base global or a GOT reference, wasm-ld
+    // leaves the base global *unsynthesised* so that the debug-section
+    // reloc apply path emits the 0xFFFFFFFF sentinel.
+    let static_pic = !layout.symbol_db.args.is_shared
+        && !layout.symbol_db.args.is_pic
+        && objects.iter().any(|obj| {
+            // llvm-mc emits GOT imports with module = "GOT.func" /
+            // "GOT.mem" / "GOT.data" and the symbol name as the field.
+            let has_got_import = obj.parsed.imports.iter().any(|imp| {
+                imp.kind == 3
+                    && (imp.module == b"GOT.func"
+                        || imp.module == b"GOT.mem"
+                        || imp.module == b"GOT.data")
+            });
+            // A code or data relocation actually targets a kind-2 symbol
+            // that resolves (via import_global_names when sym.name is
+            // empty) to `__memory_base` / `__table_base` / `__tls_base`.
+            let base_names: &[&[u8]] =
+                &[b"__memory_base", b"__table_base", b"__tls_base"];
+            let effective_global_name = |sym_idx: u32| -> Option<Vec<u8>> {
+                let s = obj.parsed.symbols.get(sym_idx as usize)?;
+                if s.kind != 2 {
+                    return None;
+                }
+                if !s.name.is_empty() {
+                    return Some(s.name.clone());
+                }
+                if s.flags & 0x10 != 0 {
+                    obj.parsed
+                        .import_global_names
+                        .get(s.index as usize)
+                        .cloned()
+                } else {
+                    None
+                }
+            };
+            let code_touches_base = obj.parsed.code_relocations.iter().any(|r| {
+                effective_global_name(r.symbol_index)
+                    .is_some_and(|n| base_names.iter().any(|b| *b == n.as_slice()))
+            });
+            let data_touches_base = obj.parsed.data_relocations.iter().any(|r| {
+                effective_global_name(r.symbol_index)
+                    .is_some_and(|n| base_names.iter().any(|b| *b == n.as_slice()))
+            });
+            has_got_import || code_touches_base || data_touches_base
+        });
+    if static_pic {
+        for (name, init) in [
+            (&b"__memory_base"[..], 0u64),
+            (&b"__table_base"[..], 1),
+            (&b"__tls_base"[..], 0),
+        ] {
+            if !global_name_map.contains_key(name) {
+                let idx = globals.len() as u32;
+                global_name_map.insert(name.to_vec(), idx);
+                globals.push(OutputGlobal {
+                    name: name.to_vec(),
+                    valtype: VALTYPE_I32,
+                    mutable: false,
+                    init_value: init,
+                    exported: false,
+                });
+            }
+        }
+    }
+
     // TLS globals: created when TLS data exists OR --shared-memory is used.
     let has_tls = tls_base_offset.is_some() || tls_size > 0
         || layout.symbol_db.args.shared_memory;
@@ -2015,7 +2091,11 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         .iter()
         .any(|s| s == "__heap_base");
 
-    if has_data_segments || exports_data_end {
+    // Under static-PIC, wasm-ld suppresses the data-geometry linker globals
+    // (`__data_end` / `__heap_base`) unless the user explicitly asked for
+    // them via --export. This keeps the global section compact for the
+    // __memory_base / __table_base / __tls_base triad that comes first.
+    if (has_data_segments || exports_data_end) && (!static_pic || exports_data_end) {
         let de_index = globals.len() as u32;
         global_name_map.insert(b"__data_end".to_vec(), de_index);
         globals.push(OutputGlobal {
@@ -2054,7 +2134,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         });
     }
 
-    if has_data_segments || exports_heap_base {
+    if (has_data_segments || exports_heap_base) && (!static_pic || exports_heap_base) {
         let mut max_data_align = 1u32;
         for obj_info in &objects {
             for seg in &obj_info.parsed.data_segments {
@@ -2135,72 +2215,6 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
-    // --- Pass 1.72: synthesise __memory_base / __table_base under static ---
-    // Objects compiled with -fPIC may declare `__memory_base` / `__table_base`
-    // as immutable i32 globals and reference them via `global.get` in code
-    // generated around `@MBREL` / `@TBREL` relocations. Under a shared or
-    // PIE link these come in as imports (the dynamic linker sets them).
-    // Under a static link wasm-ld internalises them as local immutable i32
-    // globals with init value 0 and 1 respectively — `__memory_base = 0`
-    // means addresses are absolute, `__table_base = 1` matches wild's table
-    // convention (entry 0 reserved as null).
-    //
-    // Only synthesise when some input actually references the symbol (via a
-    // kind-2 symbol with that exact name), otherwise the output would carry
-    // unreachable globals.
-    if !layout.symbol_db.args.is_shared && !layout.symbol_db.args.is_pic {
-        // "Referenced" for synthesis-trigger purposes means referenced by
-        // code or data relocations — matches wasm-ld, which doesn't
-        // synthesise the base globals when the only references live in
-        // custom sections like .debug_info (those should fall through to
-        // the 0xFFFFFFFF sentinel in the reloc apply pass).
-        let references = |name: &[u8]| -> bool {
-            objects.iter().any(|obj| {
-                let sym_matches = |sym_idx: u32| -> bool {
-                    obj.parsed
-                        .symbols
-                        .get(sym_idx as usize)
-                        .is_some_and(|s| s.kind == 2 && s.name == name)
-                };
-                obj.parsed
-                    .code_relocations
-                    .iter()
-                    .any(|r| sym_matches(r.symbol_index))
-                    || obj
-                        .parsed
-                        .data_relocations
-                        .iter()
-                        .any(|r| sym_matches(r.symbol_index))
-            })
-        };
-        if references(b"__memory_base")
-            && !global_name_map.contains_key(b"__memory_base".as_slice())
-        {
-            let idx = globals.len() as u32;
-            global_name_map.insert(b"__memory_base".to_vec(), idx);
-            globals.push(OutputGlobal {
-                name: b"__memory_base".to_vec(),
-                valtype: VALTYPE_I32,
-                mutable: false,
-                init_value: 0,
-                exported: false,
-            });
-        }
-        if references(b"__table_base")
-            && !global_name_map.contains_key(b"__table_base".as_slice())
-        {
-            let idx = globals.len() as u32;
-            global_name_map.insert(b"__table_base".to_vec(), idx);
-            globals.push(OutputGlobal {
-                name: b"__table_base".to_vec(),
-                valtype: VALTYPE_I32,
-                mutable: false,
-                init_value: 1,
-                exported: false,
-            });
-        }
-    }
-
     // --- Pass 1.75: internalise GOT.func.* / GOT.mem.* imports (PIC → static). ---
     // wasm-ld convention: objects compiled with -fPIC import globals named
     // `GOT.func.<sym>` (function pointer) or `GOT.mem.<sym>` (data pointer).
@@ -2219,40 +2233,52 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
     let mut got_func_globals: Vec<(u32, Vec<u8>)> = Vec::new();
     if !layout.symbol_db.args.is_shared {
-        let mut seen_got: std::collections::HashSet<Vec<u8>> = Default::default();
+        // llvm-mc encodes GOT globals with module ∈ {GOT.func, GOT.mem,
+        // GOT.data} and field = referenced symbol name. For naming in
+        // wild's output we fuse them back into `GOT.func.<name>` /
+        // `GOT.mem.<name>` so consumers match wasm-ld's conventions.
+        let mut seen_got: std::collections::HashSet<(Vec<u8>, Vec<u8>)> =
+            Default::default();
         for obj_info in &objects {
             for imp in &obj_info.parsed.imports {
                 if imp.kind != 3 {
-                    continue; // global imports only
-                }
-                if !seen_got.insert(imp.field.clone()) {
                     continue;
                 }
-                if let Some(rest) = imp.field.strip_prefix(b"GOT.func.") {
-                    let func_name = rest.to_vec();
+                let is_func = imp.module == b"GOT.func";
+                let is_mem = imp.module == b"GOT.mem" || imp.module == b"GOT.data";
+                if !(is_func || is_mem) {
+                    continue;
+                }
+                let key = (imp.module.clone(), imp.field.clone());
+                if !seen_got.insert(key) {
+                    continue;
+                }
+                let mut got_name = Vec::new();
+                got_name.extend_from_slice(&imp.module);
+                got_name.push(b'.');
+                got_name.extend_from_slice(&imp.field);
+                if is_func {
+                    let func_name = imp.field.clone();
                     let global_idx = globals.len() as u32;
-                    global_name_map.insert(imp.field.clone(), global_idx);
+                    global_name_map.insert(got_name.clone(), global_idx);
                     globals.push(OutputGlobal {
-                        name: imp.field.clone(),
+                        name: got_name,
                         valtype: VALTYPE_I32,
                         mutable: false,
                         init_value: 0, // patched after Pass 2.6
                         exported: false,
                     });
                     got_func_globals.push((global_idx, func_name.clone()));
-                    // Ensure the referenced function has an indirect-table
-                    // slot. Uses the pre-import-shift index, matching the
-                    // rest of the table machinery.
                     if let Some(&func_idx) = function_name_map.get(&func_name) {
                         table_needed_funcs.insert(func_idx);
                     }
-                } else if let Some(rest) = imp.field.strip_prefix(b"GOT.mem.") {
-                    let data_name = rest.to_vec();
+                } else {
+                    let data_name = imp.field.clone();
                     let init = data_name_map.get(&data_name).copied().unwrap_or(0);
                     let global_idx = globals.len() as u32;
-                    global_name_map.insert(imp.field.clone(), global_idx);
+                    global_name_map.insert(got_name.clone(), global_idx);
                     globals.push(OutputGlobal {
-                        name: imp.field.clone(),
+                        name: got_name,
                         valtype: VALTYPE_I32,
                         mutable: false,
                         init_value: init as u64,
@@ -3252,6 +3278,21 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     num_imported_functions += 1;
                 }
                 3 => {
+                    // Under static-PIC, GOT.* globals and the base
+                    // `__memory_base` / `__table_base` / `__tls_base` imports
+                    // have been internalised into local globals — skip them
+                    // here so they don't appear as duplicates.
+                    if static_pic {
+                        if imp.module == b"GOT.func"
+                            || imp.module == b"GOT.mem"
+                            || imp.module == b"GOT.data"
+                            || imp.field == b"__memory_base"
+                            || imp.field == b"__table_base"
+                            || imp.field == b"__tls_base"
+                        {
+                            continue;
+                        }
+                    }
                     let valtype = (imp.type_index >> 1) as u8;
                     let mutable = (imp.type_index & 1) != 0;
                     output_imports.push(OutputImport {

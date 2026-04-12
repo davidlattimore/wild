@@ -126,23 +126,37 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
       passes these through. Unit test
       `got_func_import_parses_with_field_name` pins the parse
       path. `pic-static-unused` passes.
-    - `pic-static` still ignored: expects a very specific global
-      section layout (`__stack_pointer`, `__memory_base`,
-      `__table_base`, `__tls_base`, then GOTs) with `__data_end` /
-      `__heap_base` suppressed under static-PIC. Wild currently
-      emits `__data_end` / `__heap_base` unconditionally when
-      data segments exist. Closing the gap needs:
-      - A static-PIC mode that reorders / gates the linker-synth
-        globals to match wasm-ld.
-      - `__tls_base` synthesised as a local global (init 0) under
-        static-PIC when referenced.
-      - GOT global names formatted as `GOT.func.internal.<sym>` /
-        `GOT.data.internal.<sym>` for hidden-visibility targets
-        (wild currently uses the raw input import name).
-      - `@MBREL` / `@TBREL` SLEB values adjusted: currently
-        degrades to absolute under `__memory_base = 0` /
-        `__table_base = 0`, but under static-PIC they are 0 and 1
-        and values need to subtract that base.
+    - `pic-static` still ignored but partial support landed: wild
+      now detects static-PIC mode (GOT imports or code relocations
+      targeting `__memory_base` / `__table_base`) and under that
+      mode:
+      - Synthesises the triad `__memory_base` (0), `__table_base`
+        (1), `__tls_base` (0) right after `__stack_pointer`.
+      - Suppresses `__data_end` / `__heap_base` unless the user
+        explicitly asked for them via `--export`.
+      - Internalises `GOT.func` / `GOT.mem` / `GOT.data` module
+        imports (llvm-mc's actual encoding — not the earlier wrong
+        `GOT.func.<name>` field-prefix assumption) into local
+        immutable i32 globals and removes the import entries.
+      - Tag imports in output-import collection skip GOT imports
+        and `__memory_base` / `__table_base` / `__tls_base`
+        imports to avoid duplicates.
+
+      Remaining gaps to flip `pic-static` itself:
+      - Output name for internalised GOT globals: wild emits
+        `GOT.func.<name>` / `GOT.mem.<name>` / `GOT.data.<name>`
+        (module.field). wasm-ld emits `GOT.func.internal.<name>`
+        / `GOT.data.internal.<name>` for hidden-visibility
+        targets. This is a naming-convention diff.
+      - Some GOT init values still don't match. For instance
+        wasm-ld's `GOT.func.internal.ret32` expects the
+        indirect-table slot of `ret32` (1), but wild's position
+        for `ret32` lands on a different slot due to GOT
+        collection order (iterates input imports, whereas wasm-ld
+        groups by kind).
+      - `@MBREL` / `@TBREL` SLEB values under static-PIC still
+        degrade to absolute — with `__table_base = 1` they need
+        to subtract 1 rather than leaving the raw table index.
     - `@TBREL` / `@MBREL` static behaviour: under static link wild
       now synthesises `__memory_base` (init 0) and `__table_base`
       (init 1) as local immutable i32 globals, but only when an
