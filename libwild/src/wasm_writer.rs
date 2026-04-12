@@ -492,6 +492,19 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     if !merged.data_segments.is_empty() {
         let mut payload = Vec::new();
         write_leb128(&mut payload, merged.data_segments.len() as u32);
+        // Under memory64, active segment offsets are `i64.const` expressions
+        // and the encoded LEB width is SLEB64. `global.get __memory_base` is
+        // already i64-typed by phase 3's global widening.
+        let mem64 = args.memory64;
+        let emit_const_offset = |p: &mut Vec<u8>, off: Addr| {
+            if mem64 {
+                p.push(0x42); // i64.const
+                write_sleb128_i64(p, off as i64);
+            } else {
+                p.push(0x41); // i32.const
+                write_sleb128(p, off as i32);
+            }
+        };
         for seg in &merged.data_segments {
             if merged.use_passive_segments {
                 // Passive segment: flag=0x01, no init expression.
@@ -505,15 +518,13 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                     payload.push(0x0B);
                 } else {
                     payload.push(0x00);
-                    payload.push(0x41);
-                    write_sleb128(&mut payload, seg.memory_offset as i32);
+                    emit_const_offset(&mut payload, seg.memory_offset);
                     payload.push(0x0B);
                 }
             } else {
-                // Active segment: flag=0x00, i32.const offset.
+                // Active segment: flag=0x00, {i32,i64}.const offset.
                 payload.push(0x00);
-                payload.push(0x41);
-                write_sleb128(&mut payload, seg.memory_offset as i32);
+                emit_const_offset(&mut payload, seg.memory_offset);
                 payload.push(0x0B);
             }
             // Data bytes.
@@ -2854,14 +2865,20 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         let mut body = Vec::new();
         body.push(0x00); // 0 locals
 
+        let mem64 = layout.symbol_db.args.memory64;
         for (seg_idx, seg) in data_segments.iter().enumerate() {
-            // i32.const <memory_offset>
-            body.push(0x41);
-            write_sleb128(&mut body, seg.memory_offset as i32);
-            // i32.const 0 (source offset)
+            // memory.init destination is an i64 under memory64, i32 otherwise.
+            if mem64 {
+                body.push(0x42); // i64.const
+                write_sleb128_i64(&mut body, seg.memory_offset as i64);
+            } else {
+                body.push(0x41); // i32.const
+                write_sleb128(&mut body, seg.memory_offset as i32);
+            }
+            // Source offset (always i32 — within the data segment payload).
             body.push(0x41);
             write_sleb128(&mut body, 0);
-            // i32.const <size>
+            // Size (always i32).
             body.push(0x41);
             write_sleb128(&mut body, seg.data.len() as i32);
             // memory.init <seg_idx> 0
@@ -4834,6 +4851,44 @@ mod tests {
     /// min page, then round-trip through `parse_wasm_sections` and the
     /// memory-import emission path. This verifies the 0x04 bit is parsed
     /// and re-emitted faithfully.
+    /// Exercise the active-data-segment offset emission subset: under mem64
+    /// the offset must be `i64.const <SLEB64>` not `i32.const <SLEB32>`.
+    /// Covers both widths independent of the Addr alias.
+    #[test]
+    fn memory64_active_data_segment_uses_i64_const() {
+        // mem64 emission path: flag + i64.const + SLEB64 + end + size + data.
+        let offset_u64: u64 = 0x1_0000_0000;
+        let data = [0xAA, 0xBB];
+        let mut payload = Vec::new();
+        payload.push(0x00); // active, memory 0
+        payload.push(0x42); // i64.const
+        write_sleb128_i64(&mut payload, offset_u64 as i64);
+        payload.push(0x0B);
+        write_leb128(&mut payload, data.len() as u32);
+        payload.extend_from_slice(&data);
+        // SLEB64 of 2^32 is 5 bytes (0x80 0x80 0x80 0x80 0x10), plus:
+        //   flag=0x00, opcode=0x42, terminator=0x0B, size=0x02, bytes=0xAA 0xBB.
+        assert_eq!(
+            payload,
+            [0x00, 0x42, 0x80, 0x80, 0x80, 0x80, 0x10, 0x0B, 0x02, 0xAA, 0xBB]
+        );
+
+        // mem32 emission path for a small offset.
+        let offset_u32: u32 = 0x1000;
+        let mut p32 = Vec::new();
+        p32.push(0x00);
+        p32.push(0x41);
+        write_sleb128(&mut p32, offset_u32 as i32);
+        p32.push(0x0B);
+        write_leb128(&mut p32, data.len() as u32);
+        p32.extend_from_slice(&data);
+        // SLEB32 of 0x1000 = 0x80 0x20.
+        assert_eq!(
+            p32,
+            [0x00, 0x41, 0x80, 0x20, 0x0B, 0x02, 0xAA, 0xBB]
+        );
+    }
+
     /// Encode a single i64 global with init value 0x1_0000_0000 through the
     /// global-section emission subset, then hand-decode the result. Verifies
     /// that the i64 valtype + i64.const opcode + SLEB64 init expression all
