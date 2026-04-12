@@ -78,12 +78,19 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
     non-REL siblings on the assumption of non-PIC output
     (`__memory_base = __table_base = 0`). When the PIC pipeline
     lands they need to switch to base-relative arithmetic.
-  - Memory64 relocs (14/15/16/18/19/22/25) are wired but the wider
-    wasm64 pipeline (memory page indices, `i64` address arithmetic
-    through layout) is not; inputs that depend on memory64 at
-    runtime will still need the broader memory64 work before they
-    link end-to-end.
-- **memory64 / wasm64** blocked on the 64-bit relocation types above.
+  - Memory64 has a working end-to-end path: `--features=+memory64`
+    / `-mwasm64` / `--target=wasm64-*` flip `args.memory64`, memory
+    imports and memory sections carry the 0x04 limits bit with
+    ULEB64 page counts, the eight address-typed linker-synth globals
+    widen to i64 (imported `__memory_base` / `__stack_pointer`
+    included under PIC), and active data-segment offsets emit as
+    `i64.const` with SLEB64 payloads. Internal address arithmetic
+    stays `u32` by default; the `wasm-addr64` Cargo feature switches
+    the `Addr` type alias to `u64` for layouts above 4 GiB. Still to
+    do: a real mem64 `.s` test in the LLD-style suite, bulk-memory
+    operand widths beyond `memory.init`, and memory64 PIC (the
+    REL_SLEB relocs still degrade to their non-REL forms under
+    `__memory_base = 0`).
 - **Exception handling** blocked — `SYMTAB_EVENT` (kind 4) and
   `R_WASM_EVENT_INDEX_LEB` are stubs; EH tags unparsed.
 - **§8 target-features merging**: implemented in

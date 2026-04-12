@@ -4854,6 +4854,101 @@ mod tests {
     /// Exercise the active-data-segment offset emission subset: under mem64
     /// the offset must be `i64.const <SLEB64>` not `i32.const <SLEB32>`.
     /// Covers both widths independent of the Addr alias.
+    /// Synthesise a minimal memory64 wasm module using the same emission
+    /// primitives the writer uses (SECTION_MEMORY with 0x04, i64 global,
+    /// i64.const data offset), then run the output validator over it. This
+    /// exercises every mem64 emission path in combination.
+    #[test]
+    fn mem64_synthesized_output_round_trips() {
+        fn section(id: u8, payload: &[u8]) -> Vec<u8> {
+            let mut v = Vec::new();
+            v.push(id);
+            let mut len = Vec::new();
+            write_leb128(&mut len, payload.len() as u32);
+            v.extend_from_slice(&len);
+            v.extend_from_slice(payload);
+            v
+        }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"\0asm");
+        out.extend_from_slice(&[1, 0, 0, 0]);
+
+        // Type section: func () -> ().
+        let mut t = Vec::new();
+        write_leb128(&mut t, 1);
+        t.push(0x60);
+        t.push(0);
+        t.push(0);
+        out.extend_from_slice(&section(SECTION_TYPE, &t));
+
+        // Function section: one function of type 0.
+        let mut f = Vec::new();
+        write_leb128(&mut f, 1);
+        write_leb128(&mut f, 0);
+        out.extend_from_slice(&section(SECTION_FUNCTION, &f));
+
+        // Memory section: 1 mem64 memory with min 1, no max.
+        let mut m = Vec::new();
+        write_leb128(&mut m, 1);
+        m.push(0x04);
+        write_leb128_u64(&mut m, 1);
+        out.extend_from_slice(&section(SECTION_MEMORY, &m));
+
+        // Global section: mutable i64 __stack_pointer.
+        let mut g = Vec::new();
+        write_leb128(&mut g, 1);
+        g.push(VALTYPE_I64);
+        g.push(1);
+        g.push(0x42); // i64.const
+        write_sleb128_i64(&mut g, 0x1_0000);
+        g.push(0x0B);
+        out.extend_from_slice(&section(SECTION_GLOBAL, &g));
+
+        // Code section: trivial empty body.
+        let mut c = Vec::new();
+        write_leb128(&mut c, 1);
+        let body: [u8; 2] = [0x00, 0x0B];
+        write_leb128(&mut c, body.len() as u32);
+        c.extend_from_slice(&body);
+        out.extend_from_slice(&section(SECTION_CODE, &c));
+
+        // Data section: one active segment with i64.const 0x1_0000 offset.
+        let mut d = Vec::new();
+        write_leb128(&mut d, 1);
+        d.push(0x00);
+        d.push(0x42);
+        write_sleb128_i64(&mut d, 0x1_0000);
+        d.push(0x0B);
+        let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+        write_leb128(&mut d, bytes.len() as u32);
+        d.extend_from_slice(&bytes);
+        out.extend_from_slice(&section(SECTION_DATA, &d));
+
+        validate_output(&out).expect("synthesized mem64 module should validate");
+
+        // Verify the memory section's flags byte really is 0x04.
+        let mut p = 8;
+        let mut found_mem_flag = None;
+        while p < out.len() {
+            let id = out[p];
+            p += 1;
+            let (size, c) = read_leb128(&out[p..]).unwrap();
+            p += c;
+            if id == SECTION_MEMORY {
+                let (_count, cc) = read_leb128(&out[p..]).unwrap();
+                found_mem_flag = Some(out[p + cc]);
+                break;
+            }
+            p += size;
+        }
+        assert_eq!(
+            found_mem_flag,
+            Some(0x04),
+            "memory section should carry 0x04 limits bit"
+        );
+    }
+
     #[test]
     fn memory64_active_data_segment_uses_i64_const() {
         // mem64 emission path: flag + i64.const + SLEB64 + end + size + data.
