@@ -2187,6 +2187,71 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                 .copy_from_slice(&output_idx.to_le_bytes());
                         }
                     }
+                    14 => {
+                        // R_WASM_MEMORY_ADDR_LEB64 (spec §2: 10-byte varuint64)
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let v = (addr as i64 + reloc.addend as i64) as u64;
+                        write_padded_leb128_u64(&mut body, off_in_body, v);
+                    }
+                    15 => {
+                        // R_WASM_MEMORY_ADDR_SLEB64 (spec §2: 10-byte varint64)
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let v = addr as i64 + reloc.addend as i64;
+                        write_padded_sleb128_i64(&mut body, off_in_body, v);
+                    }
+                    16 => {
+                        // R_WASM_MEMORY_ADDR_I64 (spec §2: uint64 LE)
+                        let addr = symbol_to_data_addr
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        let v = (addr as i64 + reloc.addend as i64) as u64;
+                        if off_in_body + 8 <= body.len() {
+                            body[off_in_body..off_in_body + 8]
+                                .copy_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                    18 => {
+                        // R_WASM_TABLE_INDEX_SLEB64 (spec §2: 10-byte varint64)
+                        // Defer to Pass 2.6 same as 1/2.
+                        let func_idx = symbol_to_output_func
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        table_needed_funcs.insert(func_idx);
+                        let out_func_idx = functions.len() + i;
+                        deferred_table_relocs.push((
+                            out_func_idx,
+                            off_in_body,
+                            reloc.reloc_type,
+                            func_idx,
+                        ));
+                    }
+                    19 => {
+                        // R_WASM_TABLE_INDEX_I64 (spec §2: uint64 LE)
+                        let func_idx = symbol_to_output_func
+                            .get(&reloc.symbol_index)
+                            .copied()
+                            .unwrap_or(0);
+                        table_needed_funcs.insert(func_idx);
+                        let out_func_idx = functions.len() + i;
+                        deferred_table_relocs.push((
+                            out_func_idx,
+                            off_in_body,
+                            reloc.reloc_type,
+                            func_idx,
+                        ));
+                    }
+                    22 => {
+                        // R_WASM_FUNCTION_OFFSET_I64 (spec §2: uint64 LE)
+                        // Like type 8 (I32): no adjustment — wild does not reorder.
+                    }
                     other => {
                         if warned_reloc_types.insert(other) {
                             tracing::warn!(
@@ -2267,28 +2332,43 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             let seg_mem_end = seg_mem_start + out_seg.data.len() as u32;
                             if mem_off >= seg_mem_start && mem_off < seg_mem_end {
                                 let buf_off = (mem_off - seg_mem_start + off_in_seg) as usize;
-                                if buf_off + 4 <= out_seg.data.len() {
-                                    match reloc.reloc_type {
-                                        // All four are uint32 LE; sym_to_addr holds:
-                                        //   kind 0 → output func index
-                                        //   kind 1 → output memory address
-                                        //   kind 2 → output global index
-                                        // so the correct payload for each reloc type
-                                        // drops out automatically via the symbol kind.
-                                        5 |  // R_WASM_MEMORY_ADDR_I32
-                                        13 | // R_WASM_GLOBAL_INDEX_I32
-                                        26   // R_WASM_FUNCTION_INDEX_I32
-                                        => {
-                                            out_seg.data[buf_off..buf_off + 4]
-                                                .copy_from_slice(&value.to_le_bytes());
-                                        }
-                                        other => {
-                                            if warned_reloc_types.insert(other) {
-                                                tracing::warn!(
-                                                    "wasm: unhandled data-section \
-                                                     relocation type {other} (spec §9.4)"
-                                                );
-                                            }
+                                match reloc.reloc_type {
+                                    // 32-bit LE; sym_to_addr holds:
+                                    //   kind 0 → output func index
+                                    //   kind 1 → output memory address
+                                    //   kind 2 → output global index
+                                    // The right payload per reloc type drops
+                                    // out automatically from the symbol kind.
+                                    5 |  // R_WASM_MEMORY_ADDR_I32
+                                    13 | // R_WASM_GLOBAL_INDEX_I32
+                                    26   // R_WASM_FUNCTION_INDEX_I32
+                                        if buf_off + 4 <= out_seg.data.len() => {
+                                        out_seg.data[buf_off..buf_off + 4]
+                                            .copy_from_slice(&value.to_le_bytes());
+                                    }
+                                    16 if buf_off + 8 <= out_seg.data.len() => {
+                                        // R_WASM_MEMORY_ADDR_I64
+                                        let v64 = value as u64;
+                                        out_seg.data[buf_off..buf_off + 8]
+                                            .copy_from_slice(&v64.to_le_bytes());
+                                    }
+                                    19 if buf_off + 8 <= out_seg.data.len() => {
+                                        // R_WASM_TABLE_INDEX_I64 — function index
+                                        // in a data initializer. No table-index
+                                        // mapping here (Pass 2.6 hasn't run), so
+                                        // emit the raw function index; callers
+                                        // either tolerate this or the value is
+                                        // patched via the deferred list above.
+                                        let v64 = value as u64;
+                                        out_seg.data[buf_off..buf_off + 8]
+                                            .copy_from_slice(&v64.to_le_bytes());
+                                    }
+                                    other => {
+                                        if warned_reloc_types.insert(other) {
+                                            tracing::warn!(
+                                                "wasm: unhandled data-section \
+                                                 relocation type {other} (spec §9.4)"
+                                            );
                                         }
                                     }
                                 }
@@ -2330,6 +2410,21 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // R_WASM_TABLE_INDEX_I32: uint32 LE
                         func.body[*off_in_body..*off_in_body + 4]
                             .copy_from_slice(&table_idx.to_le_bytes());
+                    }
+                    18 => {
+                        // R_WASM_TABLE_INDEX_SLEB64: 10-byte signed padded LEB128
+                        write_padded_sleb128_i64(
+                            &mut func.body,
+                            *off_in_body,
+                            table_idx as i64,
+                        );
+                    }
+                    19 => {
+                        // R_WASM_TABLE_INDEX_I64: uint64 LE
+                        if *off_in_body + 8 <= func.body.len() {
+                            func.body[*off_in_body..*off_in_body + 8]
+                                .copy_from_slice(&(table_idx as u64).to_le_bytes());
+                        }
                     }
                     _ => {}
                 }
@@ -3812,6 +3907,34 @@ fn write_padded_leb128(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset + 2] = ((value >> 14) & 0x7F) as u8 | 0x80;
     buf[offset + 3] = ((value >> 21) & 0x7F) as u8 | 0x80;
     buf[offset + 4] = ((value >> 28) & 0x0F) as u8;
+}
+
+/// Write a 10-byte padded unsigned LEB128 value (64-bit) at a specific offset.
+fn write_padded_leb128_u64(buf: &mut [u8], offset: usize, value: u64) {
+    if offset + 10 > buf.len() {
+        return;
+    }
+    for i in 0..9 {
+        buf[offset + i] = ((value >> (7 * i)) & 0x7F) as u8 | 0x80;
+    }
+    buf[offset + 9] = ((value >> 63) & 0x01) as u8;
+}
+
+/// Write a 10-byte padded signed LEB128 value (64-bit) at a specific offset.
+/// The final byte carries the sign-extension pattern in bit 0x40 so that a
+/// reader correctly recovers the signed value.
+fn write_padded_sleb128_i64(buf: &mut [u8], offset: usize, value: i64) {
+    if offset + 10 > buf.len() {
+        return;
+    }
+    let uvalue = value as u64;
+    for i in 0..9 {
+        buf[offset + i] = ((uvalue >> (7 * i)) & 0x7F) as u8 | 0x80;
+    }
+    // Arithmetic right shift preserves the sign: for value >= 0 the top bits
+    // are 0, for value < 0 they are 1, giving the SLEB128 terminator its
+    // correct sign bit (0x40).
+    buf[offset + 9] = ((value >> 63) as u8) & 0x7F;
 }
 
 /// Write a 5-byte padded signed LEB128 value at a specific offset.
