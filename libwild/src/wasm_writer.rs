@@ -1182,12 +1182,15 @@ fn gc_functions(merged: &mut MergedModule, export_all_dynamic: bool) {
                 break;
             }
             for func_idx in referenced {
-                // Body carries wasm-binary indices; convert to local
-                // defined-function index and skip imports.
-                if let Some(local) = to_local(func_idx)
-                    && !reachable[local]
-                {
-                    reachable[local] = true;
+                // Body-resident call operands are in the defined-only
+                // function namespace (reloc application in merge_inputs
+                // writes `symbol_to_output_func`, which stores
+                // `func_base + local_func_idx`). Index directly — no
+                // num_imports conversion. Placeholder imports are
+                // encoded as 0 and skipped via the bounds check.
+                let idx = func_idx as usize;
+                if idx < num_funcs && !reachable[idx] {
+                    reachable[idx] = true;
                     changed = true;
                 }
             }
