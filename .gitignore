@@ -27,3 +27,10 @@ fakes-debug/sde-cet-checker-out.txt
 .claude/settings.local.json
 out/
 ld64
+# Stray test-run artifacts left in the repo by manual wild invocations.
+/wild/*.o
+/wild/*.bc
+/wild/*.wasm
+/wild/a.out
+/wild/thinlto-archives/
+/wild/d/
