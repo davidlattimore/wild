@@ -339,13 +339,35 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         }
 
         // Explicit --export=<sym> (spec §9.2: symbol must exist, error if not).
-        // Check both functions and globals.
+        // Check both functions and globals. When the requested symbol
+        // resolves to a function that also has other aliases in
+        // `function_name_map` (e.g. `_start` and `start_alias` both
+        // point at the same index under `.set start_alias, _start`),
+        // export every name pointing at that index. wasm-ld
+        // convention; matters for the alias test, which asks for
+        // `--export=start_alias` yet expects `_start` exported too.
         for sym_name in &layout.symbol_db.args.exports {
             if exports.iter().any(|(n, _, _)| n == sym_name.as_bytes()) {
                 continue;
             }
             if let Some(func_idx) = merged.function_by_name(sym_name.as_bytes()) {
-                exports.push((sym_name.as_bytes().to_vec(), EXPORT_FUNC, func_idx));
+                let mut aliases: Vec<&[u8]> = merged
+                    .function_name_map
+                    .iter()
+                    .filter(|&(_, &idx)| idx == func_idx)
+                    .map(|(n, _)| n.as_slice())
+                    .collect();
+                // Stable order: canonical (alphabetically first) before
+                // the requested name. `_` = 0x5F sorts ahead of lower
+                // letters so this matches wasm-ld's output for the
+                // common `_start` vs `start_alias` case.
+                aliases.sort();
+                for name in aliases {
+                    if exports.iter().any(|(n, _, _)| n.as_slice() == name) {
+                        continue;
+                    }
+                    exports.push((name.to_vec(), EXPORT_FUNC, func_idx));
+                }
             } else if let Some((i, _)) = merged.globals.iter().enumerate()
                 .find(|(_, g)| g.name == sym_name.as_bytes())
             {

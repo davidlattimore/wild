@@ -139,6 +139,7 @@ const KNOWN_PASSING: &[&str] = &[
     "merge-func-attr-section",
     "tls-align",
     "duplicate-function-imports",
+    "alias",
 ];
 
 /// Tests in lto/ subdirectory known to pass despite matching skip patterns.
