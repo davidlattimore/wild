@@ -930,6 +930,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wilt",
  "winnow",
  "zerocopy",
  "zstd",
@@ -2301,6 +2302,10 @@ dependencies = [
  "wait-timeout",
  "which",
 ]
+
+[[package]]
+name = "wilt"
+version = "0.8.0"
 
 [[package]]
 name = "winapi"

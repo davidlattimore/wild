@@ -1,76 +1,98 @@
 # WASM Linker — Known Gaps and TODOs
 
-## Tier 2 incomplete items
+Status: 66 of 222 tests passing (30%), 67 with --include-ignored (30%).
 
-These are known gaps in the current Tier 2 implementation. They affect correctness for specific patterns but don't block the majority of test cases.
+Note: data-layout 32-bit path fully correct (globals, segments, relocations
+all match wasm-ld), blocked only by wasm64 in the second RUN line.
 
-### Cross-object data symbol resolution
+## Implemented (per spec)
 
-Data symbol address map is built per-object only. When object A references a data symbol defined in object B, the address won't resolve. Need a global data symbol name→address map analogous to `function_name_map`.
+### Core linking (§2-§9)
 
-**Spec ref:** §9.4 — R_WASM_MEMORY_ADDR_* relocations reference symbol indices that may be undefined in the current object but defined in another.
+- §2: All 10 core relocation types
+- §4.2: Symbol flags — BINDING_WEAK, UNDEFINED, EXPORTED, NO_STRIP,
+  VISIBILITY_HIDDEN
+- §4.3: Import name resolution for unnamed undefined symbols
+- §5: WASM_SEGMENT_INFO (alignment, names, TLS flags)
+- §6: WASM_INIT_FUNCS + .init_array constructor registration
+- §7: COMDAT dedup (symbol-level via generic pipeline, data/function skipping)
+- §9.1: Section merging (type dedup, function, code, data, global)
+- §9.2: Symbol resolution (strong/weak, entry point, --export flags)
+- §9.4: Relocation application (all types, precise DATA section offsets)
+- §9.5: Padded LEB128 patching
+- §9.6: Output section ordering
 
-### Data section relocation offset tracking
+### Memory layout
 
-Pass 2.5 maps reloc offsets to data segments approximately — it checks if `reloc.offset < segment.data.len()` rather than computing exact byte positions within the DATA section payload. The DATA section payload has per-segment headers (flags + init_expr + data_len LEB) that affect offset calculations.
+- --stack-first (default) / --no-stack-first
+- --initial-memory, --max-memory, --global-base, --no-growable-memory
+- --initial-heap (with correct u64 page calculation)
+- Segment merging by name prefix (`.rodata.*` / `.data.*` / `.bss.*` grouping)
+- Per-group output segments with group-aligned layout
+- Name-based BSS classification (not content-based)
+- __heap_base aligned to max data segment alignment
 
-**Fix:** Parse the raw DATA section to record each segment's exact byte offset within the payload, then map reloc offsets precisely.
+### Exports and globals
 
-### Segment merging by name prefix
+- --export-dynamic / --export-all (with VISIBILITY_HIDDEN filtering)
+- --export=<sym> resolves both functions and globals
+- --export-table, --import-table, --growable-table
+- Export ordering: memory -> globals -> functions -> table
+- Linker-defined globals: `__stack_pointer`, `__data_end`, `__heap_base`,
+  `__global_base`, `__rodata_start`, `__rodata_end`
 
-Spec §9.1 says: "Segments with common prefixes (.data, .rodata) merge into single output segments." Currently we emit one output segment per input segment. This produces correct but suboptimal output (more segments than necessary).
+### Code generation
 
-### Memory size alignment padding
+- __wasm_call_ctors synthesis (before relocation pass for correct refs)
+- Function-level GC with opcode-aware reachability scanner
+- --compress-relocations via wilt pass (full opcode-aware LEB128 compression)
+- Custom section ordering (user -> name -> target_features) and concatenation
 
-Memory page count uses `stack_size + data_size` but `data_size` doesn't include alignment gaps between segments. Should account for the full `data_offset - stack_size` range.
+### Other
 
-### `--stack-first` flag
+- Output validation (section order, function/code count, export indices,
+  import accounting)
+- Weak/COMDAT: relocations resolve to winning definition, losing data/function
+  segments skipped
+- Archives (via wild's generic pipeline)
+- Name section (function names + global names)
+- Bounds-safe padded LEB128, overflow-safe memory calculation
+- Test runner: split-file, %/t substitution, KNOWN_PASSING lists
 
-Stack is always placed at memory offset 0 growing up to `stack_size`. The `--stack-first` flag should place data after the stack, which is our current layout, but the flag also implies `__stack_pointer` starts at `stack_size` (top of stack). Need to verify this matches wasm-ld's behavior for `--stack-first` vs default.
+## Remaining gaps
 
-### 64-bit relocation types
+### Not yet implemented
 
-Types 14-16, 18-19, 22, 24 (the `*64` variants) are parsed but not applied. These are for `memory64` (wasm64) which is not yet a common target.
+- **User-defined globals**: implemented (parse GLOBAL section, emit with
+  correct valtype init exprs, resolve GLOBAL_INDEX_LEB relocs, immutable-first
+  ordering). Remaining: export data symbol addresses as globals, mutable
+  global export gating, empty-name symbol pipeline fix.
+- **TLS** (§10): `__tls_size`, `__tls_align`, `__tls_base`, `__wasm_init_tls`
+- **Shared memory**: passive segments, __wasm_init_memory
+- **PIC/shared objects**: --experimental-pic, -shared, -pie
+- **Relocatable output**: basic -r flag works (type dedup, function merge,
+  imports, linking section with symbol table + segment info, custom sections).
+  Missing: relocation sections, data segment merging, COMDAT in linking section.
+- **LTO**: bitcode input processing
+- **Debug info sections**: proper DWARF handling
+- **.import_module / .import_name**: custom import attributes
+- **--export-memory=\<name\>**: custom memory export name
+- **--keep-section**: preserve specific sections through strip
+- **Target features validation (§8)**: cross-input compatibility
+- **Build ID**: --build-id
+- **Map file**: --Map
+- **-wrap / --wrap**: symbol wrapping
+- **--reproduce**: create reproducible archive
+- **Name section demangling**: C++ name demangling
+- **Weak undefined resolution**: weak refs to undefined symbols -> 0
+- **64-bit relocation types**: memory64/wasm64
+- **Signature mismatch warnings**: type checking diagnostics
 
-## Tier 3 — Tables (DONE)
+### Pipeline integration
 
-Table section, element section, R_WASM_TABLE_INDEX_SLEB/I32 — all implemented.
+The WASM writer re-parses raw binary input rather than fully leveraging
+wild's generic pipeline. Longer-term improvements:
 
-## Tier 4 — Archives
-
-- Archive member selection (pull members that define needed symbols)
-- `--start-lib` / `--end-lib` (lazy object semantics)
-- Library search (`-L` paths, `-l` names)
-
-Wild's generic pipeline handles archives, but WASM archive integration hasn't been tested.
-
-## Tier 5 — Constructors & GC
-
-- `__wasm_call_ctors` synthesis from WASM_INIT_FUNCS (§6)
-- COMDAT deduplication (§7)
-- `.no_dead_strip` / `WASM_SYM_NO_STRIP` flag (§4.2, flag 0x80)
-
-## Tier 6 — Advanced features
-
-- TLS: `__tls_size`, `__tls_align`, `__tls_base`, `__wasm_init_tls`
-- Shared memory: passive segments, `__wasm_init_memory`
-- PIC/shared objects: `--experimental-pic`, `-shared`, `-pie`
-- Relocatable output: `-r` flag
-- `--compress-relocations`
-- Target features validation (§8)
-- Build ID (`--build-id`)
-- Map file (`--Map`)
-- `--keep-section`
-- `.import_module` / `.import_name` directives
-- `--export-memory=<name>`
-- Weak symbol resolution (§9.2: strong vs weak)
-- Symbol aliases
-
-## Pipeline integration
-
-The WASM writer currently re-parses raw binary input rather than using wild's generic pipeline for section data and symbol resolution. Longer-term, the writer should:
-
-- Use `ObjectFile::raw_section_data()` for section bytes (partially done)
-- Use `layout.symbol_resolutions` for symbol→address mapping
-- Use the pipeline's section layout for memory offset assignment
+- Use layout.symbol_resolutions for symbol->address mapping
 - Move relocation application into the generic writer framework
+- Use pipeline section layout for memory offset assignment

@@ -24,6 +24,8 @@ pub struct WasmArgs {
     pub(crate) no_entry: bool,
     pub(crate) allow_undefined: bool,
     pub(crate) export_dynamic: bool,
+    /// Explicitly set to false by --no-export-dynamic.
+    pub(crate) no_export_dynamic: bool,
     pub(crate) no_gc_sections: bool,
     /// Symbols to explicitly export (--export=<sym>).
     pub(crate) exports: Vec<String>,
@@ -43,6 +45,7 @@ pub struct WasmArgs {
     /// Stack size override (-z stack-size=N).
     pub(crate) stack_size: Option<u64>,
     /// Place stack before data (--stack-first).
+    /// Place stack before data (--stack-first, default).
     pub(crate) stack_first: bool,
     /// Global data base address (--global-base).
     pub(crate) global_base: Option<u64>,
@@ -64,6 +67,8 @@ pub struct WasmArgs {
     pub(crate) no_growable_memory: bool,
     /// Allow table to grow (--growable-table).
     pub(crate) growable_table: bool,
+    /// Compress LEB128 in code section (--compress-relocations).
+    pub(crate) compress_relocations: bool,
 }
 
 impl Default for WasmArgs {
@@ -76,6 +81,7 @@ impl Default for WasmArgs {
             no_entry: false,
             allow_undefined: false,
             export_dynamic: false,
+            no_export_dynamic: false,
             no_gc_sections: false,
             exports: Vec::new(),
             exports_if_defined: Vec::new(),
@@ -86,7 +92,7 @@ impl Default for WasmArgs {
             initial_memory: None,
             max_memory: None,
             stack_size: None,
-            stack_first: false,
+            stack_first: true, // wasm-ld default
             global_base: None,
             initial_heap: None,
             allow_multiple_definitions: false,
@@ -97,6 +103,7 @@ impl Default for WasmArgs {
             export_table: false,
             no_growable_memory: false,
             growable_table: false,
+            compress_relocations: false,
         }
     }
 }
@@ -157,7 +164,10 @@ impl platform::Args for WasmArgs {
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {
-        self.export_dynamic || self.export_all
+        if self.no_export_dynamic {
+            return false;
+        }
+        self.export_dynamic || self.export_all || self.is_shared
     }
 
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
@@ -247,6 +257,10 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             // --- Exports (spec §9.2: export for each defined symbol with
             //     non-local linkage and non-hidden visibility) ---
             "--export-dynamic" => args.export_dynamic = true,
+            "--no-export-dynamic" => {
+                args.export_dynamic = false;
+                args.no_export_dynamic = true;
+            }
             "--export-all" => args.export_all = true,
             _ if arg.starts_with("--export=") => {
                 args.exports.push(arg[9..].to_string());
@@ -276,6 +290,7 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
                 args.initial_heap = arg[15..].parse().ok();
             }
             "--stack-first" => args.stack_first = true,
+            "--no-stack-first" => args.stack_first = false,
             "--no-growable-memory" => args.no_growable_memory = true,
             "--growable-table" => args.growable_table = true,
             "--import-memory" => args.import_memory = true,
@@ -372,7 +387,8 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             _ if arg.starts_with("--rpath") => { if arg == "--rpath" { iter.next(); } }
             "--print-gc-sections" => {}
             "--no-print-gc-sections" => {}
-            _ if arg.starts_with("--compress-relocations") => {}
+            "--compress-relocations" => args.compress_relocations = true,
+            _ if arg.starts_with("--compress-relocations") => args.compress_relocations = true,
             _ if arg.starts_with("-M") | arg.starts_with("--Map") => {
                 if arg == "-M" || arg == "--Map" { iter.next(); }
             }

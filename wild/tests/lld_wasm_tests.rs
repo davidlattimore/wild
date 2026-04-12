@@ -120,18 +120,39 @@ const KNOWN_PASSING: &[&str] = &[
     "relocatable-options",
     "undefined-data",
     "export",
+    "tls-non-shared-memory-basic",
+    "no-tls",
+    "large-section",
+    "bss-only",
+    "responsefile",
+    "custom-sections",
+    "global-base",
+    "func-attr",
+    "visibility-hidden",
+    "comdat-sections",
+    "globals",
+    "function-index",
+];
+
+/// Tests in lto/ subdirectory known to pass despite matching skip patterns.
+const KNOWN_PASSING_LTO: &[&str] = &[
+    "diagnostics",
+    "incompatible",
+    "signature-mismatch",
 ];
 
 /// Check if this test should be skipped entirely.
 fn should_skip(content: &str, path: &Path) -> bool {
     // Known-passing tests override pattern-based skipping.
-    // Only applies to main test directory (not lto/ subdirectory).
     let is_lto = path.to_string_lossy().contains("/lto/");
-    if !is_lto {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if KNOWN_PASSING.contains(&stem) {
-                return false;
-            }
+    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+        let known = if is_lto {
+            KNOWN_PASSING_LTO
+        } else {
+            KNOWN_PASSING
+        };
+        if known.contains(&stem) {
+            return false;
         }
     }
     if content.contains("REQUIRES: x86") {
@@ -150,21 +171,32 @@ fn should_skip(content: &str, path: &Path) -> bool {
                 | "signature-mismatch-export"
                 | "import-name"
                 | "debuginfo"
-                | "export-all"
+                // export-all now passes
                 | "debug-removed-fn"
                 | "local-symbols"
                 | "name-section-mangling"
                 | "weak-undefined"
                 | "version"  // uses llvm-readobj
+                | "data-segment-merging" // needs segment merging by name
+                | "dylink"   // needs full PIC GOT support
+                | "dylink-non-pie"
+                | "rpath"    // needs shared lib rpath
+                | "tag-section"  // needs PIC nopic mode
+                | "merge-func-attr-section" // func_attr index remapping
+                | "func-attr-tombstone" // func_attr tombstone values
+                | "custom-section-align" // custom section alignment padding
+                | "debug-undefined-fs" // debug section reloc payloads
+                | "debuginfo-undefined-global" // debug section globals
+                | "unresolved-symbols-dynamic" // --unresolved-symbols=import-dynamic
+                | "export-optional" // __start_/__stop_ section symbols
+                | "call-indirect" // type dedup across indirect calls
+                | "stack-first" // needs user-defined global exports
+                | "command-exports" // needs __indirect_function_table + complex exports
         ) {
             return true;
         }
     }
     // Skip tests for features not yet implemented in wild's WASM support.
-    // Stack-first layout (data before stack, not yet implemented)
-    if content.contains("stack-first") {
-        return true;
-    }
     // LTO bitcode inputs (need llvm-as/opt and LTO support)
     if content.contains("llvm-as") || content.contains(".bc") || content.contains("RUN: opt ") {
         return true;
@@ -177,29 +209,25 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Tier 5: .init_array based constructors (need data section reloc processing)
-    if content.contains(".init_array") {
-        return true;
-    }
-    // command-exports.s needs .init_array
-    if content.contains("command-exports") && content.contains(".init_array") {
-        return true;
-    }
+    // .init_array is now supported — no skip needed.
     // GC of unused imports (need import-level GC)
     if content.contains("gc-imports") || content.contains("unused_undef") {
         return true;
     }
-    // Tier 6: TLS, shared memory, PIC, relocatable output
-    if content.contains("--shared-memory")
-        || content.contains("--experimental-pic")
-        || content.contains("-shared")
-        || content.contains("-pie")
-        || content.contains("--emit-relocs")
-        || content.contains("__tls_") {
+    // TLS features we don't fully handle yet
+    if content.contains("__tls_") && !content.contains("no-tls") {
         return true;
     }
-    // Relocatable output
-    if content.contains("--relocatable") || content.contains(" -r ") {
+    // yaml2obj tests (need yaml2obj tool)
+    if content.contains("yaml2obj") {
+        return true;
+    }
+    // Emit-relocs, relocatable output (match wasm-ld -r, not llvm-ar rcs)
+    if content.contains("--emit-relocs")
+        || content.contains("--relocatable")
+        || content.contains("wasm-ld -r ")
+        || content.contains("wasm-ld -r\n")
+    {
         return true;
     }
     // --print-gc-sections outputs diagnostic info we don't produce yet.
@@ -227,10 +255,8 @@ fn should_skip(content: &str, path: &Path) -> bool {
     {
         return true;
     }
-    // Custom sections with data payloads
-    if content.contains(".int32")
-        || content.contains(".int64")
-    {
+    // .int64 used for 64-bit values not yet fully supported
+    if content.contains(".int64") {
         return true;
     }
     // Weak aliases / specific weak patterns not yet fully handled
@@ -309,13 +335,13 @@ impl TestContext {
         let stem = test_path.file_stem().unwrap().to_string_lossy();
         let test_parent = test_path.parent().unwrap();
 
+        let t_expanded = self.work_dir.join(stem.as_ref()).to_string_lossy().to_string();
         cmd.replace("%s", &test_path.to_string_lossy())
             .replace("%S", &test_parent.to_string_lossy())
             .replace("%p", &test_parent.to_string_lossy())
-            .replace(
-                "%t",
-                &self.work_dir.join(stem.as_ref()).to_string_lossy(),
-            )
+            // %/t is lit's "forward-slash %t" — identical to %t on Unix.
+            .replace("%/t", &t_expanded)
+            .replace("%t", &t_expanded)
     }
 }
 

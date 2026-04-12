@@ -105,6 +105,8 @@ pub(crate) struct SectionHeader {
     pub(crate) size: u64,
     pub(crate) is_code: bool,
     pub(crate) is_data: bool,
+    /// True if this section belongs to a COMDAT group (§7).
+    pub(crate) is_comdat: bool,
 }
 
 impl platform::SectionHeader for SectionHeader {
@@ -133,7 +135,7 @@ impl platform::SectionHeader for SectionHeader {
         false
     }
     fn is_group(&self) -> bool {
-        false
+        self.is_comdat
     }
     fn is_note(&self) -> bool {
         false
@@ -400,6 +402,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         let wasm_file = object::read::wasm::WasmFile::parse(input)?;
 
+        // Parse COMDAT groups directly from raw WASM data (§7).
+        // The object crate's WASM COMDAT is a stub, so we parse it ourselves.
+        let comdat_symbol_names = parse_comdat_symbol_names(input);
+
         // Build sections with a mapping from object crate indices to contiguous indices.
         let mut sections = Vec::new();
         let mut section_data = Vec::new();
@@ -408,13 +414,15 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         for section in wasm_file.sections() {
             let kind = section.kind();
             let our_index = sections.len();
-            section_index_map.insert(section.index().0, our_index);
+            let obj_idx = section.index().0;
+            section_index_map.insert(obj_idx, our_index);
             sections.push(SectionHeader {
                 index: our_index,
                 size: section.size(),
                 is_code: kind == object::SectionKind::Text,
                 is_data: kind == object::SectionKind::Data
                     || kind == object::SectionKind::ReadOnlyData,
+                is_comdat: false,
             });
             section_data.push(section.data().unwrap_or(&[]));
             section_names.push(section.name_bytes().unwrap_or(b""));
@@ -426,9 +434,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         for sym in wasm_file.symbols() {
             let name = sym.name_bytes().unwrap_or(b"");
             let raw_section = sym.section_index().unwrap_or(object::SectionIndex(0));
-            let section_index = object::SectionIndex(
+            let mut section_index = object::SectionIndex(
                 section_index_map.get(&raw_section.0).copied().unwrap_or(0),
             );
+
+            // For COMDAT members, create a synthetic section with is_comdat=true.
+            // This allows the generic pipeline's duplicate symbol check to work.
+            if comdat_symbol_names.contains(name) && !sym.is_undefined() {
+                let synth_idx = sections.len();
+                sections.push(SectionHeader {
+                    index: synth_idx,
+                    size: 0,
+                    is_code: sym.kind() == object::SymbolKind::Text,
+                    is_data: sym.kind() == object::SymbolKind::Data,
+                    is_comdat: true,
+                });
+                section_data.push(&[]);
+                section_names.push(b"comdat" as &[u8]);
+                section_index = object::SectionIndex(synth_idx);
+            }
+
             symbols.push(WasmSymbol {
                 name_offset: symbol_names.len() as u32,
                 is_undefined: sym.is_undefined(),
@@ -1158,5 +1183,179 @@ impl platform::Platform for Wasm {
         builder.add_sections(&custom.data);
 
         builder.build()
+    }
+}
+
+/// Parse COMDAT symbol names directly from raw WASM binary data.
+/// Returns a set of symbol names that belong to any COMDAT group.
+/// This is needed because the `object` crate's WASM COMDAT support is a stub.
+fn parse_comdat_symbol_names(data: &[u8]) -> std::collections::HashSet<&[u8]> {
+    let mut result = std::collections::HashSet::new();
+    if data.len() < 8 || &data[..4] != b"\0asm" {
+        return result;
+    }
+
+    let mut pos = 8;
+    while pos < data.len() {
+        let section_id = data[pos];
+        pos += 1;
+        let Some((size, consumed)) = read_leb(data, pos) else { break; };
+        pos += consumed;
+        if pos + size > data.len() { break; }
+
+        if section_id == 0 {
+            // Custom section — check if it's "linking".
+            let payload = &data[pos..pos + size];
+            if let Some((name_len, c)) = read_leb(payload, 0) {
+                if c + name_len <= payload.len() && &payload[c..c + name_len] == b"linking" {
+                    let link_data = &payload[c + name_len..];
+                    let mut names = Vec::new();
+                    parse_linking_for_comdat(link_data, &mut names);
+                    for name in names {
+                        result.insert(name);
+                    }
+                }
+            }
+        }
+        pos += size;
+    }
+    result
+}
+
+/// Parse the linking section to extract COMDAT member names.
+/// COMDAT entries reference function/data indices (not symbol table indices).
+/// We match these to symbol names via the symbol table.
+fn parse_linking_for_comdat<'a>(
+    data: &'a [u8],
+    comdat_names: &mut Vec<&'a [u8]>,
+) {
+    // Skip version.
+    let Some((_, mut off)) = read_leb(data, 0) else { return; };
+
+    // (kind, index) pairs from COMDAT entries: kind 0=data, 1=function.
+    let mut comdat_entries: Vec<(u8, u32)> = Vec::new();
+    // Symbol table: (kind, func_or_data_index, name) for mapping.
+    struct SymEntry<'a> { kind: u8, index: u32, name: &'a [u8] }
+    let mut sym_entries: Vec<SymEntry<'a>> = Vec::new();
+
+    while off < data.len() {
+        let Some((subsection_type, c)) = read_leb(data, off) else { break; };
+        off += c;
+        let Some((subsection_len, c)) = read_leb(data, off) else { break; };
+        off += c;
+        let subsection_end = off + subsection_len;
+        if subsection_end > data.len() { break; }
+
+        match subsection_type {
+            7 => {
+                // WASM_COMDAT_INFO (§7)
+                let Some((count, c)) = read_leb(data, off) else { off = subsection_end; continue; };
+                let mut coff = off + c;
+                for _ in 0..count {
+                    let Some((name_len, c)) = read_leb(data, coff) else { break; };
+                    coff += c + name_len;
+                    let Some((_, c)) = read_leb(data, coff) else { break; }; // flags
+                    coff += c;
+                    let Some((sym_count, c)) = read_leb(data, coff) else { break; };
+                    coff += c;
+                    for _ in 0..sym_count {
+                        let Some((kind, c)) = read_leb(data, coff) else { break; };
+                        coff += c;
+                        let Some((index, c)) = read_leb(data, coff) else { break; };
+                        coff += c;
+                        comdat_entries.push((kind as u8, index as u32));
+                    }
+                }
+            }
+            8 => {
+                // WASM_SYMBOL_TABLE (§4)
+                let Some((count, c)) = read_leb(data, off) else { off = subsection_end; continue; };
+                let mut soff = off + c;
+                for _ in 0..count {
+                    if soff >= subsection_end { break; }
+                    let kind = data[soff];
+                    soff += 1;
+                    let Some((flags, c)) = read_leb(data, soff) else { break; };
+                    soff += c;
+                    let is_undefined = (flags & 0x10) != 0;
+                    let has_explicit_name = (flags & 0x40) != 0;
+
+                    match kind {
+                        0 => {
+                            // SYMTAB_FUNCTION
+                            let Some((func_idx, c)) = read_leb(data, soff) else { break; };
+                            soff += c;
+                            let name = if !is_undefined || has_explicit_name {
+                                let Some((len, c)) = read_leb(data, soff) else { break; };
+                                soff += c;
+                                let end = (soff + len).min(data.len());
+                                let n = &data[soff..end];
+                                soff = end;
+                                n
+                            } else { b"" };
+                            sym_entries.push(SymEntry { kind: 1, index: func_idx as u32, name });
+                        }
+                        1 => {
+                            // SYMTAB_DATA
+                            let Some((len, c)) = read_leb(data, soff) else { break; };
+                            soff += c;
+                            let end = (soff + len).min(data.len());
+                            let name = &data[soff..end];
+                            soff = end;
+                            if !is_undefined {
+                                for _ in 0..3 {
+                                    let Some((_, c)) = read_leb(data, soff) else { break; };
+                                    soff += c;
+                                }
+                            }
+                            sym_entries.push(SymEntry { kind: 0, index: 0, name }); // data index filled below
+                        }
+                        _ => {
+                            // Global, section, event, table
+                            let Some((_, c)) = read_leb(data, soff) else { break; };
+                            soff += c;
+                            if !is_undefined || has_explicit_name {
+                                let Some((len, c)) = read_leb(data, soff) else { break; };
+                                soff += c;
+                                soff += len;
+                            }
+                            sym_entries.push(SymEntry { kind: 255, index: 0, name: b"" });
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        off = subsection_end;
+    }
+
+    // Map COMDAT (kind, index) → symbol name.
+    // kind 0 = COMDAT_DATA → matches sym kind 0 (data) by data segment index
+    // kind 1 = COMDAT_FUNCTION → matches sym kind 1 (function) by function index
+    for &(comdat_kind, comdat_index) in &comdat_entries {
+        for entry in &sym_entries {
+            if entry.kind == comdat_kind && entry.index == comdat_index && !entry.name.is_empty() {
+                comdat_names.push(entry.name);
+                break;
+            }
+        }
+    }
+}
+
+/// Read an unsigned LEB128 value from data at offset, returning (value, bytes_consumed).
+fn read_leb(data: &[u8], offset: usize) -> Option<(usize, usize)> {
+    let mut result: usize = 0;
+    let mut shift = 0;
+    let mut pos = offset;
+    loop {
+        if pos >= data.len() { return None; }
+        let byte = data[pos];
+        pos += 1;
+        result |= ((byte & 0x7F) as usize) << shift;
+        if byte & 0x80 == 0 {
+            return Some((result, pos - offset));
+        }
+        shift += 7;
+        if shift >= 35 { return None; }
     }
 }

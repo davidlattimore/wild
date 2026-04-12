@@ -133,7 +133,11 @@ fn check_text_files() -> Result {
             let is_text = is_valid_utf8 && !content.contains(&0);
 
             if is_text {
-                if content.contains(&b'\r') {
+                // Some test inputs intentionally keep CRLF (pinned via .gitattributes) to
+                // exercise parsing of Windows-line-ending content. Skip CRLF check for those.
+                let forced_crlf = path.ends_with("wild/tests/lld-wasm/Inputs/libstub.so");
+
+                if !forced_crlf && content.contains(&b'\r') {
                     problems.push(format!(
                         "The file {} uses Windows line-endings. Please convert it to Unix-style.",
                         path.display()

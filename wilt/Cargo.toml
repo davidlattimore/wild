@@ -1,0 +1,13 @@
+[package]
+name = "wilt"
+description = "WebAssembly In Link Time — a zero-copy WASM optimizer"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Zero runtime dependencies. Pure byte manipulation.
+
+[dev-dependencies]
