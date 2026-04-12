@@ -22,6 +22,7 @@ const SECTION_START: u8 = 8;
 const SECTION_CODE: u8 = 10;
 const SECTION_DATA: u8 = 11;
 const SECTION_DATACOUNT: u8 = 12;
+const SECTION_TAG: u8 = 13;
 
 /// WASM export kinds.
 const EXPORT_FUNC: u8 = 0x00;
@@ -142,6 +143,11 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                     payload.push(*valtype);
                     payload.push(if *mutable { 1 } else { 0 });
                 }
+                ImportKind::Tag(type_idx) => {
+                    payload.push(0x04); // tag
+                    payload.push(0x00); // attribute: exception
+                    write_leb128(&mut payload, *type_idx);
+                }
             }
         }
         write_section(&mut out, SECTION_IMPORT, &payload);
@@ -228,6 +234,17 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_section(&mut out, SECTION_MEMORY, &payload);
     }
     } // !is_shared
+
+    // Tag section (EH proposal): between memory and global.
+    if !merged.output_tags.is_empty() {
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, merged.output_tags.len() as u32);
+        for &type_idx in &merged.output_tags {
+            payload.push(0x00); // attribute: exception
+            write_leb128(&mut payload, type_idx);
+        }
+        write_section(&mut out, SECTION_TAG, &payload);
+    }
 
     // Global section (spec §9.1): linker-defined globals.
     // In shared mode, skip defining globals (they're imported).
@@ -903,6 +920,8 @@ enum ImportKind {
     Table { min: u32 },
     Memory { min: u32 },
     Global { valtype: u8, mutable: bool },
+    /// Exception-handling tag (EH proposal). Value is the type index.
+    Tag(u32),
 }
 
 /// A custom section to pass through to the output.
@@ -956,6 +975,9 @@ struct MergedModule {
     init_memory_func_idx: Option<u32>,
     /// Custom sections to pass through (e.g. target_features).
     custom_sections: Vec<CustomSection>,
+    /// EH tags defined in the output (each entry is a type index).
+    /// Tag imports live in `imports`; these are the local definitions.
+    output_tags: Vec<u32>,
 }
 
 impl MergedModule {
@@ -1943,6 +1965,45 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Pass 1.9: collect EH tags across all objects. ---
+    // Output layout is: imports first (by field_name, dedup across objects),
+    // then local definitions concatenated in object order. Each object gets a
+    // map from its local tag index to the output tag index so kind-4 symbols
+    // can be resolved for R_WASM_TAG_INDEX_LEB relocations.
+    let mut output_tag_imports: Vec<(Vec<u8>, Vec<u8>, u32)> = Vec::new(); // (module, field, type_idx)
+    let mut tag_import_index_by_field: std::collections::HashMap<Vec<u8>, u32> =
+        Default::default();
+    let mut output_tag_defs: Vec<u32> = Vec::new();
+    let mut per_obj_tag_map: Vec<std::collections::HashMap<u32, u32>> = Vec::new();
+    for obj in &objects {
+        let p = &obj.parsed;
+        let mut m: std::collections::HashMap<u32, u32> = Default::default();
+        // Imported tags occupy local indices 0..num_tag_imports.
+        for (i, field) in p.import_tag_names.iter().enumerate() {
+            let out_idx = *tag_import_index_by_field.entry(field.clone()).or_insert_with(|| {
+                let idx = output_tag_imports.len() as u32;
+                // Find matching ParsedImport for module/type_idx.
+                let (module, type_idx) = p
+                    .imports
+                    .iter()
+                    .find(|imp| imp.kind == 4 && &imp.field == field)
+                    .map(|imp| (imp.module.clone(), imp.type_index))
+                    .unwrap_or_else(|| (b"env".to_vec(), 0));
+                output_tag_imports.push((module, field.clone(), type_idx));
+                idx
+            });
+            m.insert(i as u32, out_idx);
+        }
+        // Local defs follow imports in the local index space.
+        for (i, type_idx) in p.tags.iter().enumerate() {
+            let local_idx = p.num_tag_imports + i as u32;
+            let out_idx = (output_tag_imports.len() + output_tag_defs.len()) as u32;
+            output_tag_defs.push(*type_idx);
+            m.insert(local_idx, out_idx);
+        }
+        per_obj_tag_map.push(m);
+    }
+
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
     let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
@@ -1957,6 +2018,17 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             Default::default();
         let mut symbol_to_output_global: std::collections::HashMap<u32, u32> =
             Default::default();
+        // Symbol index → output tag index (for R_WASM_TAG_INDEX_LEB).
+        let mut symbol_to_output_tag: std::collections::HashMap<u32, u32> =
+            Default::default();
+        let obj_tag_map = &per_obj_tag_map[obj_idx];
+        for (sym_idx, sym) in parsed.symbols.iter().enumerate() {
+            if sym.kind == 4
+                && let Some(&out_idx) = obj_tag_map.get(&sym.index)
+            {
+                symbol_to_output_tag.insert(sym_idx as u32, out_idx);
+            }
+        }
         // Data symbol → output memory address (spec §9.4: value = seg_offset + sym_offset + addend).
         let mut symbol_to_data_addr: std::collections::HashMap<u32, u32> = Default::default();
         let obj_seg_offsets = &segment_output_offsets[obj_idx];
@@ -2322,6 +2394,15 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             reloc.reloc_type,
                             func_idx,
                         ));
+                    }
+                    10 => {
+                        // R_WASM_TAG_INDEX_LEB (spec §2: 5-byte varuint32)
+                        // Resolved through the pre-Pass-1.9 output tag map.
+                        if let Some(&output_idx) =
+                            symbol_to_output_tag.get(&reloc.symbol_index)
+                        {
+                            write_padded_leb128(&mut body, off_in_body, output_idx);
+                        }
                     }
                     other => {
                         if warned_reloc_types.insert(other) {
@@ -2768,6 +2849,15 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // EH tag imports (collected in Pass 1.9).
+    for (module, field, type_idx) in &output_tag_imports {
+        output_imports.push(OutputImport {
+            module: module.clone(),
+            field: field.clone(),
+            kind: ImportKind::Tag(*type_idx),
+        });
+    }
+
     // --import-table: add table import (spec §9.6).
     if layout.symbol_db.args.import_table && !table_entries.is_empty() {
         let table_size = table_entries.len() as u32 + 1;
@@ -2866,6 +2956,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         use_passive_segments: use_passive,
         init_memory_func_idx,
         custom_sections: merged_custom_sections,
+        output_tags: output_tag_defs,
     })
 }
 
@@ -2935,6 +3026,12 @@ struct ParsedInput {
     import_function_names: Vec<Vec<u8>>,
     /// Import global names (indexed by import global index).
     import_global_names: Vec<Vec<u8>>,
+    /// Local tag definitions: one entry per tag, value = type index.
+    tags: Vec<u32>,
+    /// Number of imported tags (offset for local tag indices).
+    num_tag_imports: u32,
+    /// Import tag names (indexed by import tag index).
+    import_tag_names: Vec<Vec<u8>>,
     /// User-defined globals from the GLOBAL section.
     input_globals: Vec<ParsedInputGlobal>,
     /// Number of imported globals (offset for local global indices).
@@ -2979,6 +3076,9 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
     let mut num_imports = 0u32;
     let mut import_function_names: Vec<Vec<u8>> = Vec::new();
     let mut import_global_names: Vec<Vec<u8>> = Vec::new();
+    let mut import_tag_names: Vec<Vec<u8>> = Vec::new();
+    let mut num_tag_imports = 0u32;
+    let mut tags: Vec<u32> = Vec::new();
     let mut parsed_imports: Vec<ParsedImport> = Vec::new();
     let mut data_segments: Vec<ParsedDataSegment> = Vec::new();
     let mut data_relocations: Vec<WasmReloc> = Vec::new();
@@ -3076,6 +3176,21 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                                 field: field_name.to_vec(),
                                 kind: 3,
                                 type_index: ((valtype as u32) << 1) | (mutable as u32),
+                            });
+                        }
+                        0x04 => {
+                            // tag import (EH proposal): attribute byte (must be
+                            // 0 = exception) + type index (varuint32).
+                            off += 1; // attribute
+                            let (type_idx, c) = read_leb128(&payload[off..])?;
+                            off += c;
+                            import_tag_names.push(field_name.to_vec());
+                            num_tag_imports += 1;
+                            parsed_imports.push(ParsedImport {
+                                module: module_name.to_vec(),
+                                field: field_name.to_vec(),
+                                kind: 4,
+                                type_index: type_idx as u32,
                             });
                         }
                         _ => {}
@@ -3203,6 +3318,19 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
                     });
                 }
             }
+            SECTION_TAG => {
+                // EH tag section: count × { attribute (u8), type_index (leb) }.
+                let (count, mut toff) = read_leb128(payload)?;
+                for _ in 0..count {
+                    if toff >= payload.len() {
+                        break;
+                    }
+                    toff += 1; // attribute byte
+                    let (type_idx, c) = read_leb128(&payload[toff..])?;
+                    toff += c;
+                    tags.push(type_idx as u32);
+                }
+            }
             _ => {}
         }
 
@@ -3237,6 +3365,9 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
         comdat_groups,
         input_globals,
         num_global_imports,
+        tags,
+        num_tag_imports,
+        import_tag_names,
     })
 }
 
@@ -3777,11 +3908,30 @@ fn validate_output(data: &[u8]) -> crate::error::Result {
         }
         let payload = &data[pos..pos + size];
 
-        // Spec §9.6: non-custom sections must be in ascending order.
+        // Non-custom sections must follow their logical order.
+        // Modern wasm deviates from pure ID-ascending: datacount (12)
+        // sits between element (9) and code (10), and tag (13) sits
+        // between memory (5) and global (6) per the EH proposal.
+        fn logical_order(id: u8) -> u8 {
+            match id {
+                1..=5 => id,       // type..memory
+                13 => 6,           // tag (EH) after memory
+                6 => 7,            // global
+                7 => 8,            // export
+                8 => 9,            // start
+                9 => 10,           // element
+                12 => 11,          // datacount
+                10 => 12,          // code
+                11 => 13,          // data
+                other => other,    // unknown
+            }
+        }
         if section_id != 0 {
-            if section_id <= prev_id {
+            let cur = logical_order(section_id);
+            let prev = logical_order(prev_id);
+            if prev_id != 0 && cur <= prev {
                 return Err(crate::error!(
-                    "WASM output: section {section_id} out of order (prev {prev_id})"
+                    "WASM output: section {section_id} out of logical order (prev {prev_id})"
                 ));
             }
             prev_id = section_id;
