@@ -133,6 +133,7 @@ const KNOWN_PASSING: &[&str] = &[
     "globals",
     "function-index",
     "pic-static-unused",
+    "pic-static",
 ];
 
 /// Tests in lto/ subdirectory known to pass despite matching skip patterns.

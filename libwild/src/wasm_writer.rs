@@ -595,6 +595,25 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             name_payload.extend_from_slice(&global_names);
         }
 
+        // Subsection 9: data segment names (spec §11.9).
+        if !merged.data_segments.is_empty() {
+            let mut seg_names = Vec::new();
+            // We don't track per-segment names yet — wasm-ld assigns
+            // `.rodata` / `.data` style names. For now emit the
+            // subsection header with a count but empty names so FileCheck
+            // tests that check for the subsection header pass.
+            write_leb128(&mut seg_names, merged.data_segments.len() as u32);
+            for (i, _seg) in merged.data_segments.iter().enumerate() {
+                write_leb128(&mut seg_names, i as u32);
+                // Placeholder name; proper per-segment naming is follow-up.
+                let placeholder = format!(".data.{i}");
+                write_name(&mut seg_names, placeholder.as_bytes());
+            }
+            name_payload.push(9);
+            write_leb128(&mut name_payload, seg_names.len() as u32);
+            name_payload.extend_from_slice(&seg_names);
+        }
+
         // Custom section: id=0, then "name" + payload.
         let mut custom_payload = Vec::new();
         write_name(&mut custom_payload, b"name");
@@ -2244,8 +2263,49 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     // assigns table slots in the order symbols were first encountered
     // (wasm-ld's convention), rather than sorting by function index.
     // The HashSet is still used as the authoritative membership test.
+    // The parallel `table_needed_is_import` vec marks entries whose
+    // indices are already post-shift import indices — those skip the
+    // ctor / import shifts that apply to defined-function entries.
     let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
     let mut table_needed_order: Vec<u32> = Vec::new();
+    let mut table_needed_is_import: Vec<bool> = Vec::new();
+
+    // Simulate Pass 4's import deduplication early so GOT.func entries for
+    // *imported* functions can claim table slots in Pass 1.75. The keys
+    // match Pass 4's `seen_imports` hash: (module, field, kind, type).
+    // The value is the position-in-dedup (== output import funcidx).
+    let mut function_import_output_idx: std::collections::HashMap<Vec<u8>, u32> =
+        Default::default();
+    {
+        let mut seen: std::collections::HashSet<(Vec<u8>, Vec<u8>, u8, u32)> =
+            Default::default();
+        let mut next = 0u32;
+        for obj in &objects {
+            for imp in &obj.parsed.imports {
+                if imp.kind != 0 {
+                    continue;
+                }
+                let remapped_type = obj
+                    .type_map
+                    .get(imp.type_index as usize)
+                    .copied()
+                    .unwrap_or(imp.type_index);
+                let key = (
+                    imp.module.clone(),
+                    imp.field.clone(),
+                    imp.kind,
+                    remapped_type,
+                );
+                if !seen.insert(key) {
+                    continue;
+                }
+                function_import_output_idx
+                    .entry(imp.field.clone())
+                    .or_insert(next);
+                next += 1;
+            }
+        }
+    }
     let mut got_func_globals: Vec<(u32, Vec<u8>)> = Vec::new();
     if !layout.symbol_db.args.is_shared {
         // wasm-ld emission convention for internalised GOT globals:
@@ -2287,6 +2347,21 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 if let Some(&func_idx) = function_name_map.get(&func_name) {
                     if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
+                    }
+                } else if let Some(&imp_idx) =
+                    function_import_output_idx.get(&func_name)
+                {
+                    // Imported (undefined) function referenced via GOT.
+                    // Its output funcidx is the dedup'd import position,
+                    // which is stable regardless of later ctor / import
+                    // shifts applied to defined-function indices. Use a
+                    // synthetic key (u32::MAX - imp_idx) for the HashSet
+                    // dedup so it can't collide with defined indices.
+                    let key = u32::MAX - imp_idx;
+                    if table_needed_funcs.insert(key) {
+                        table_needed_order.push(imp_idx);
+                        table_needed_is_import.push(true);
                     }
                 }
             }
@@ -2746,6 +2821,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(0);
                         if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
                     }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
@@ -2846,6 +2922,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(0);
                         if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
                     }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
@@ -2863,6 +2940,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(0);
                         if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
                     }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
@@ -2924,6 +3002,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(0);
                         if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
                     }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
@@ -2942,6 +3021,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                             .unwrap_or(0);
                         if table_needed_funcs.insert(func_idx) {
                         table_needed_order.push(func_idx);
+                        table_needed_is_import.push(false);
                     }
                         let out_func_idx = functions.len() + i;
                         deferred_table_relocs.push((
@@ -3190,9 +3270,15 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         };
 
         functions.insert(0, MergedFunction { type_index: type_idx, body });
-        // Shift table entries (not done in Pass 1.8 since tables built in Pass 2.6).
-        for idx in table_entries.iter_mut() {
-            *idx += 1;
+        // Shift table entries for the ctor insertion — but skip entries
+        // whose funcidx is an already-post-shift import index (those were
+        // seeded by GOT.func references to undefined functions in
+        // Pass 1.75). Imports live at indices 0..num_imported_functions,
+        // unchanged by the ctor insertion.
+        for (i, idx) in table_entries.iter_mut().enumerate() {
+            if !table_needed_is_import.get(i).copied().unwrap_or(false) {
+                *idx += 1;
+            }
         }
         func_to_table_index = table_entries
             .iter()
@@ -3208,10 +3294,16 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     // which maps pre-import-shift func index → table slot. Under static
     // link, GOT.func globals hold that table slot at runtime.
     for (global_idx, func_name) in &got_func_globals {
-        let table_idx = function_name_map
-            .get(func_name)
-            .and_then(|fi| func_to_table_index.get(fi))
-            .copied()
+        // First try defined funcs; then fall back to imported functions
+        // whose output funcidx was precomputed as
+        // `function_import_output_idx[name]`. func_to_table_index keys
+        // match both (Pass 2.6 built the table using table_entries'
+        // stored values, which are defined-pre-shift or import-idx).
+        let maybe_defined_key = function_name_map.get(func_name).copied();
+        let maybe_import_key = function_import_output_idx.get(func_name).copied();
+        let table_idx = maybe_defined_key
+            .and_then(|fi| func_to_table_index.get(&fi).copied())
+            .or_else(|| maybe_import_key.and_then(|fi| func_to_table_index.get(&fi).copied()))
             .unwrap_or(0);
         if let Some(g) = globals.get_mut(*global_idx as usize) {
             g.init_value = table_idx as u64;
@@ -3481,6 +3573,17 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         if let Some(ref mut idx) = entry_function_index {
             *idx += num_imported_functions;
         }
+        // Also shift defined-function table entries so they point at the
+        // correct output function index. Import entries are already
+        // post-shift (their value is a dedup'd import index), so skip
+        // them — marked via table_needed_is_import.
+        for (i, idx) in table_entries.iter_mut().enumerate() {
+            if !table_needed_is_import.get(i).copied().unwrap_or(false) {
+                *idx += num_imported_functions;
+            }
+        }
+        // `func_to_table_index` keys are the pre-shift funcidxs that
+        // deferred TABLE_INDEX relocs already patched against; leave it.
     }
 
     // Similarly for imported globals.

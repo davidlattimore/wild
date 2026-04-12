@@ -142,32 +142,35 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
         and `__memory_base` / `__table_base` / `__tls_base`
         imports to avoid duplicates.
 
-      Further pic-static progress this session:
-      - GOT globals now emit as `GOT.func.internal.<sym>` /
+      `pic-static` now passes. Work across this session's PIC
+      commits landed:
+      - GOT globals emit as `GOT.func.internal.<sym>` /
         `GOT.data.internal.<sym>`, matching wasm-ld's naming.
       - GOT globals ordered func-first then data.
-      - Indirect function table slots now assigned in insertion
-        order rather than sorted — matches wasm-ld's behaviour so
-        `ret32` (first-referenced) takes slot 1.
+      - Indirect function table slots assigned in insertion order
+        rather than sorted — `ret32` (first-referenced) takes
+        slot 1.
       - Element-segment init expression uses
-        `global.get __table_base` whenever wild has a
-        `__table_base` global (imported under shared, synthesised
-        under static-PIC).
+        `global.get __table_base` whenever a `__table_base`
+        global exists (imported under shared, synthesised under
+        static-PIC).
+      - GOT.func references to *imported* (undefined) functions
+        now get table slots. A pre-Pass-4 simulation of the
+        import deduplication builds
+        `function_import_output_idx: name → output funcidx`. The
+        ctor-insertion and Pass-4 import shifts skip entries
+        flagged as imports so the final table carries the right
+        indices end-to-end.
+      - Name section subsection 9 (data segment names) emitted
+        when data segments exist. Placeholder names
+        (`.data.<i>`) for now; proper per-segment names belong to
+        a later commit.
 
-      Remaining gap (one concrete item): GOT.func entries that
-      reference *imported* functions (e.g. `missing_function`)
-      don't get table slots allocated. wild's `table_needed_funcs`
-      population uses `function_name_map` which only covers
-      *defined* functions. Imports need a parallel name map,
-      populated as part of Pass 4 (import collection), with GOT
-      patch-up deferred correspondingly. Without this,
-      `pic-static`'s expected value of 2 for
-      `GOT.func.internal.missing_function` comes out as 0.
-      Every other FileCheck line in `pic-static` matches.
-
-      - `@MBREL` / `@TBREL` SLEB values under static-PIC still
-        degrade to absolute — with `__table_base = 1` they need
-        to subtract 1 rather than leaving the raw table index.
+      Still outstanding for pure static-PIC correctness (not
+      required for pic-static): `@MBREL` / `@TBREL` SLEB values
+      under static-PIC degrade to absolute — with
+      `__table_base = 1` they should subtract 1 rather than
+      leaving the raw table index.
     - `@TBREL` / `@MBREL` static behaviour: under static link wild
       now synthesises `__memory_base` (init 0) and `__table_base`
       (init 1) as local immutable i32 globals, but only when an
