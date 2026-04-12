@@ -118,7 +118,7 @@ pub(crate) fn write_direct<A: Arch<Platform = MachO>>(layout: &Layout<'_, MachO>
     }
 
     if layout.symbol_db.args.common().validate_output {
-        validate_macho_output(&buf)?;
+        validate_macho_output(&buf, layout.symbol_db.args.flat_namespace)?;
     }
 
     let output_path = layout.symbol_db.args.output();
@@ -1877,7 +1877,10 @@ fn write_stubs_and_got<A: Arch<Platform = MachO>>(
             // If the symbol is defined internally (raw_value != 0), write a
             // rebase fixup instead of a bind fixup. A bind fixup for a defined
             // symbol causes dyld to look for it in dylibs, crashing at launch.
-            if res.raw_value != 0 {
+            // Exception: under -flat_namespace, defined-in-image symbols must
+            // remain as BIND entries with FLAT_LOOKUP so they can be
+            // interposed by dylibs loaded earlier at runtime.
+            if res.raw_value != 0 && !layout.symbol_db.args.flat_namespace {
                 out[got_file_off..got_file_off + 8].copy_from_slice(&res.raw_value.to_le_bytes());
                 rebase_fixups.push(RebaseFixup {
                     file_offset: got_file_off,
@@ -5185,7 +5188,7 @@ fn write_relocatable_object(layout: &Layout<'_, MachO>) -> Result {
 ///
 /// # Chained fixups invariants
 /// - Page start offsets are within a page (< page_size)
-fn validate_macho_output(buf: &[u8]) -> Result {
+fn validate_macho_output(buf: &[u8], flat_namespace: bool) -> Result {
     use object::read::macho::MachHeader as _;
     use object::read::macho::Section as _;
     use object::read::macho::Segment as _;
@@ -5516,7 +5519,11 @@ fn validate_macho_output(buf: &[u8]) -> Result {
     // actually defined in this binary. Such entries cause dyld to look up
     // the symbol from dylibs instead of using the internal definition,
     // leading to "Symbol not found" crashes at runtime.
-    validate_no_self_imports(buf)?;
+    // Under -flat_namespace, self-imports are legitimate (interposition),
+    // so skip the check.
+    if !flat_namespace {
+        validate_no_self_imports(buf)?;
+    }
 
     Ok(())
 }
