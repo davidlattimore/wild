@@ -66,13 +66,14 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 
   Caveats on the just-landed variants:
 
-  - Event/tag support is pass-through only: tag imports and local
-    tag definitions are parsed from section 13 and from kind-0x04
-    imports, concatenated across objects without dedup, and emitted
-    back. Symbol resolution for `R_WASM_TAG_INDEX_LEB` (10) works
-    because kind-4 symbols carry a local tag index that maps to the
-    output via a per-object table. Full EH (`throw`/`catch`
-    instructions, unwinding) is not modelled.
+  - EH tag support now resolves kind-4 (`SYMTAB_EVENT`) symbols by
+    name with §9.2 strong/weak rules and §7 COMDAT (kind 3) dedup,
+    mirroring the function-merge pipeline. Hidden-visibility tags
+    are filtered from `--export-dynamic` and `WASM_SYM_EXPORTED`
+    tags emit kind-0x04 exports. `R_WASM_TAG_INDEX_LEB` (10)
+    patches through the resolved output index. Still unmodelled:
+    tag names in the name section, and full EH semantics
+    (`throw`/`catch`/`delegate` validation, unwinding).
   - PIC-relative relocs (11/12/17/24) currently degrade to their
     non-REL siblings on the assumption of non-PIC output
     (`__memory_base = __table_base = 0`). When the PIC pipeline

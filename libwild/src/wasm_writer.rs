@@ -28,6 +28,7 @@ const SECTION_TAG: u8 = 13;
 const EXPORT_FUNC: u8 = 0x00;
 const EXPORT_MEMORY: u8 = 0x02;
 const EXPORT_GLOBAL: u8 = 0x03;
+const EXPORT_TAG: u8 = 0x04;
 
 /// WASM value types.
 const VALTYPE_I32: u8 = 0x7F;
@@ -370,6 +371,23 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             for (name, idx) in names {
                 if !exports.iter().any(|(n, _, _)| *n == name) {
                     exports.push((name, EXPORT_FUNC, idx));
+                }
+            }
+        }
+
+        // Tag exports: a tag with WASM_SYM_EXPORTED flag gets kind-0x04.
+        // Under --export-dynamic we also emit non-hidden tags.
+        {
+            let export_all_dyn = layout.symbol_db.args.should_export_all_dynamic_symbols();
+            let skip_hidden = !layout.symbol_db.args.export_all;
+            for (name, &out_idx) in &merged.tag_name_map {
+                let explicit = merged.exported_tag_names.contains(name);
+                let dyn_eligible = export_all_dyn
+                    && (!skip_hidden || !merged.hidden_tags.contains(name));
+                if (explicit || dyn_eligible)
+                    && !exports.iter().any(|(n, _, _)| n == name)
+                {
+                    exports.push((name.clone(), EXPORT_TAG, out_idx));
                 }
             }
         }
@@ -978,6 +996,14 @@ struct MergedModule {
     /// EH tags defined in the output (each entry is a type index).
     /// Tag imports live in `imports`; these are the local definitions.
     output_tags: Vec<u32>,
+    /// Tag symbol names → output tag index (imports and defs). Used by the
+    /// export pass to emit kind-0x04 exports for `WASM_SYM_EXPORTED` tags.
+    tag_name_map: std::collections::HashMap<Vec<u8>, u32>,
+    /// Tag names flagged `VISIBILITY_HIDDEN` — suppressed from
+    /// --export-dynamic.
+    hidden_tags: std::collections::HashSet<Vec<u8>>,
+    /// Tag names flagged `WASM_SYM_EXPORTED`.
+    exported_tag_names: std::collections::HashSet<Vec<u8>>,
 }
 
 impl MergedModule {
@@ -1314,6 +1340,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         comdat_skip_functions: std::collections::HashSet<u32>,
         /// Local data segment indices from duplicate COMDAT groups (to skip).
         comdat_skip_data: std::collections::HashSet<u32>,
+        /// Local tag indices from duplicate COMDAT groups (to skip).
+        comdat_skip_tags: std::collections::HashSet<u32>,
     }
     let mut objects: Vec<ObjectInfo> = Vec::new();
     let mut total_functions = 0u32;
@@ -1349,6 +1377,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             // Build a set of local function indices that belong to duplicate groups.
             let mut comdat_skip_functions: std::collections::HashSet<u32> = Default::default();
             let mut comdat_skip_data: std::collections::HashSet<u32> = Default::default();
+            let mut comdat_skip_tags: std::collections::HashSet<u32> = Default::default();
             for (group_name, entries) in &parsed.comdat_groups {
                 if !seen_comdat_groups.insert(group_name.clone()) {
                     // Duplicate group — mark all its entries for skipping.
@@ -1356,6 +1385,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         match kind {
                             0 => { comdat_skip_data.insert(index); }
                             1 => { comdat_skip_functions.insert(index); }
+                            3 => { comdat_skip_tags.insert(index); }
                             _ => {}
                         }
                     }
@@ -1422,6 +1452,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 func_base,
                 comdat_skip_functions,
                 comdat_skip_data,
+                comdat_skip_tags,
             });
         }
     }
@@ -1965,43 +1996,149 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
-    // --- Pass 1.9: collect EH tags across all objects. ---
-    // Output layout is: imports first (by field_name, dedup across objects),
-    // then local definitions concatenated in object order. Each object gets a
-    // map from its local tag index to the output tag index so kind-4 symbols
-    // can be resolved for R_WASM_TAG_INDEX_LEB relocations.
+    // --- Pass 1.9: collect EH tags across all objects via symbol-name
+    // resolution, mirroring the function-merge rules in Pass 1 (§9.2 and §7).
+    //
+    // Pipeline:
+    //   1. Walk every kind-4 (SYMTAB_EVENT) symbol from every object.
+    //   2. Strong overrides weak, first strong wins (same as functions).
+    //   3. COMDAT-duplicate tags are dropped via `comdat_skip_tags`.
+    //   4. A tag's "name" is the symbol name (if present) else the import
+    //      field name per spec §4.3.
+    //   5. Imported tags are emitted first in the output index space, then
+    //      local definitions. Symbols that lose resolution still get a
+    //      `symbol_to_output_tag` entry pointing at the winner so relocs
+    //      still patch correctly.
     let mut output_tag_imports: Vec<(Vec<u8>, Vec<u8>, u32)> = Vec::new(); // (module, field, type_idx)
-    let mut tag_import_index_by_field: std::collections::HashMap<Vec<u8>, u32> =
-        Default::default();
     let mut output_tag_defs: Vec<u32> = Vec::new();
-    let mut per_obj_tag_map: Vec<std::collections::HashMap<u32, u32>> = Vec::new();
+    let mut tag_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+    let mut tag_is_weak: std::collections::HashMap<Vec<u8>, bool> = Default::default();
+    let mut tag_is_hidden: std::collections::HashSet<Vec<u8>> = Default::default();
+    let mut exported_tag_name_set: std::collections::HashSet<Vec<u8>> = Default::default();
+    let mut per_obj_tag_map: Vec<std::collections::HashMap<u32, u32>> =
+        vec![Default::default(); objects.len()];
+
+    // First sub-pass: collect imports (name → output import index).
+    // An imported tag "defines" nothing, so strong/weak doesn't apply — but
+    // if multiple objects import the same name, they share one output slot.
+    let mut tag_import_index_by_name: std::collections::HashMap<Vec<u8>, u32> =
+        Default::default();
+    for (obj_idx, obj) in objects.iter().enumerate() {
+        let p = &obj.parsed;
+        for sym in &p.symbols {
+            if sym.kind != 4 || (sym.flags & 0x10) == 0 {
+                // Not a tag symbol or not an import.
+                continue;
+            }
+            // Determine the key: symbol name if present, else the import field.
+            let name = if !sym.name.is_empty() {
+                sym.name.clone()
+            } else if let Some(field) = p.import_tag_names.get(sym.index as usize) {
+                field.clone()
+            } else {
+                continue;
+            };
+            if tag_import_index_by_name.contains_key(&name) {
+                continue;
+            }
+            // Find the matching ParsedImport for module / type_idx.
+            let (module, type_idx) = p
+                .imports
+                .iter()
+                .find(|imp| imp.kind == 4 && imp.field == name)
+                .map(|imp| (imp.module.clone(), imp.type_index))
+                .unwrap_or_else(|| (b"env".to_vec(), 0));
+            let out_idx = output_tag_imports.len() as u32;
+            output_tag_imports.push((module, name.clone(), type_idx));
+            tag_import_index_by_name.insert(name.clone(), out_idx);
+            tag_name_map.insert(name, out_idx);
+            let _ = obj_idx; // silence unused
+        }
+    }
+
+    // Second sub-pass: collect local definitions with §9.2 resolution.
+    // Defined tags can promote over imports with the same name (a definition
+    // in one object wins over an import of the same name elsewhere).
     for obj in &objects {
         let p = &obj.parsed;
-        let mut m: std::collections::HashMap<u32, u32> = Default::default();
-        // Imported tags occupy local indices 0..num_tag_imports.
-        for (i, field) in p.import_tag_names.iter().enumerate() {
-            let out_idx = *tag_import_index_by_field.entry(field.clone()).or_insert_with(|| {
-                let idx = output_tag_imports.len() as u32;
-                // Find matching ParsedImport for module/type_idx.
-                let (module, type_idx) = p
-                    .imports
-                    .iter()
-                    .find(|imp| imp.kind == 4 && &imp.field == field)
-                    .map(|imp| (imp.module.clone(), imp.type_index))
-                    .unwrap_or_else(|| (b"env".to_vec(), 0));
-                output_tag_imports.push((module, field.clone(), type_idx));
-                idx
-            });
-            m.insert(i as u32, out_idx);
+        for sym in &p.symbols {
+            if sym.kind != 4 || (sym.flags & 0x10) != 0 {
+                continue;
+            }
+            // Defined tag. Local tag index = sym.index (beyond imports).
+            let local_def_idx = if sym.index >= p.num_tag_imports {
+                sym.index - p.num_tag_imports
+            } else {
+                continue;
+            };
+            if obj.comdat_skip_tags.contains(&local_def_idx) {
+                continue;
+            }
+            let Some(&type_idx) = p.tags.get(local_def_idx as usize) else {
+                continue;
+            };
+            let name = sym.name.clone();
+            if name.is_empty() {
+                // Unnamed defined tags are kept verbatim (rare; pass through).
+                let out_idx =
+                    (output_tag_imports.len() + output_tag_defs.len()) as u32;
+                output_tag_defs.push(type_idx);
+                let _ = out_idx;
+                continue;
+            }
+            let is_weak = (sym.flags & 0x01) != 0;
+            let is_hidden = (sym.flags & 0x04) != 0;
+            let existing = tag_name_map.get(&name).copied();
+            let existing_weak = tag_is_weak.get(&name).copied();
+            let existing_is_import =
+                existing.is_some() && tag_import_index_by_name.contains_key(&name);
+
+            let should_claim = match (existing, existing_weak) {
+                (None, _) => true, // brand new
+                (Some(_), _) if existing_is_import => true, // def wins over import
+                (Some(_), Some(true)) if !is_weak => true, // strong over weak
+                _ => false,
+            };
+            if should_claim {
+                let out_idx =
+                    (output_tag_imports.len() + output_tag_defs.len()) as u32;
+                output_tag_defs.push(type_idx);
+                tag_name_map.insert(name.clone(), out_idx);
+                tag_is_weak.insert(name.clone(), is_weak);
+                if is_hidden {
+                    tag_is_hidden.insert(name.clone());
+                } else {
+                    tag_is_hidden.remove(&name);
+                }
+                if (sym.flags & 0x20) != 0 {
+                    exported_tag_name_set.insert(name);
+                }
+            }
         }
-        // Local defs follow imports in the local index space.
-        for (i, type_idx) in p.tags.iter().enumerate() {
-            let local_idx = p.num_tag_imports + i as u32;
-            let out_idx = (output_tag_imports.len() + output_tag_defs.len()) as u32;
-            output_tag_defs.push(*type_idx);
-            m.insert(local_idx, out_idx);
+    }
+
+    // Third sub-pass: build per-object `local_tag_idx → output_tag_idx` maps.
+    for (obj_idx, obj) in objects.iter().enumerate() {
+        let p = &obj.parsed;
+        let m = &mut per_obj_tag_map[obj_idx];
+        for sym in &p.symbols {
+            if sym.kind != 4 {
+                continue;
+            }
+            // Resolve the symbol's "key name" — same rule as in sub-pass 1.
+            let name = if !sym.name.is_empty() {
+                sym.name.clone()
+            } else if (sym.flags & 0x10) != 0
+                && let Some(field) = p.import_tag_names.get(sym.index as usize)
+            {
+                field.clone()
+            } else {
+                continue;
+            };
+            if let Some(&out_idx) = tag_name_map.get(&name) {
+                m.insert(sym.index, out_idx);
+            }
         }
-        per_obj_tag_map.push(m);
     }
 
     // --- Pass 2: apply relocations with global symbol resolution ---
@@ -2957,6 +3094,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         init_memory_func_idx,
         custom_sections: merged_custom_sections,
         output_tags: output_tag_defs,
+        tag_name_map,
+        hidden_tags: tag_is_hidden,
+        exported_tag_names: exported_tag_name_set,
     })
 }
 
