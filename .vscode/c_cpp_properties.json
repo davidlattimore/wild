@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "wild-tests",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/wild/tests/sources"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}
+
