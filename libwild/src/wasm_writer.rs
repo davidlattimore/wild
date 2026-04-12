@@ -1268,6 +1268,10 @@ fn remap_call_targets(body: &mut [u8], index_map: &[Option<u32>]) {
 /// 2. Apply relocations using the global map
 fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule> {
     let entry_name = layout.symbol_db.args.entry_symbol_name(None);
+    // Dedup set for unhandled-relocation diagnostics: warn once per type per link
+    // so silent fall-throughs in the reloc match arms are at least visible.
+    let mut warned_reloc_types: std::collections::HashSet<u8> =
+        std::collections::HashSet::new();
     let mut types: Vec<FuncType> = Vec::new();
     let mut function_name_map: std::collections::HashMap<Vec<u8>, u32> = Default::default();
     // Track whether each function definition is weak (for strong/weak resolution per §9.2).
@@ -2156,7 +2160,14 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // R_WASM_SECTION_OFFSET_I32 (spec §9.4)
                         // Used in debug/custom sections — no adjustment yet.
                     }
-                    _ => {}
+                    other => {
+                        if warned_reloc_types.insert(other) {
+                            tracing::warn!(
+                                "wasm: unhandled code-section relocation type {other} \
+                                 (spec §2) — output will be silently incorrect for this reloc"
+                            );
+                        }
+                    }
                 }
             }
 
@@ -2228,6 +2239,14 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                     // R_WASM_MEMORY_ADDR_I32
                                     out_seg.data[buf_off..buf_off + 4]
                                         .copy_from_slice(&value.to_le_bytes());
+                                } else if reloc.reloc_type != 5
+                                    && warned_reloc_types.insert(reloc.reloc_type)
+                                {
+                                    tracing::warn!(
+                                        "wasm: unhandled data-section relocation type {} \
+                                         (spec §9.4) — output will be silently incorrect",
+                                        reloc.reloc_type
+                                    );
                                 }
                                 break;
                             }
