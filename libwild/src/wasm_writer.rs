@@ -2135,6 +2135,68 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Pass 1.75: internalise GOT.func.* / GOT.mem.* imports (PIC → static). ---
+    // wasm-ld convention: objects compiled with -fPIC import globals named
+    // `GOT.func.<sym>` (function pointer) or `GOT.mem.<sym>` (data pointer).
+    // Under a shared output these stay as imports (existing code path in
+    // Pass 4). Under a static or PIE link the dynamic linker isn't around,
+    // so we substitute each one with a locally-defined immutable i32 global
+    // whose init value holds the value the dynamic linker would otherwise
+    // provide: the function's indirect-table slot, or the data symbol's
+    // memory address. Absent symbols initialise to 0 (weak-undefined
+    // behaviour).
+    //
+    // Function GOTs are patched after Pass 2.6 because their table indices
+    // aren't known yet. We stash (global_idx, func_name) pairs for the
+    // patch pass and add the referenced functions to `table_needed_funcs`
+    // so the table actually gets a slot for them.
+    let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
+    let mut got_func_globals: Vec<(u32, Vec<u8>)> = Vec::new();
+    if !layout.symbol_db.args.is_shared {
+        let mut seen_got: std::collections::HashSet<Vec<u8>> = Default::default();
+        for obj_info in &objects {
+            for imp in &obj_info.parsed.imports {
+                if imp.kind != 3 {
+                    continue; // global imports only
+                }
+                if !seen_got.insert(imp.field.clone()) {
+                    continue;
+                }
+                if let Some(rest) = imp.field.strip_prefix(b"GOT.func.") {
+                    let func_name = rest.to_vec();
+                    let global_idx = globals.len() as u32;
+                    global_name_map.insert(imp.field.clone(), global_idx);
+                    globals.push(OutputGlobal {
+                        name: imp.field.clone(),
+                        valtype: VALTYPE_I32,
+                        mutable: false,
+                        init_value: 0, // patched after Pass 2.6
+                        exported: false,
+                    });
+                    got_func_globals.push((global_idx, func_name.clone()));
+                    // Ensure the referenced function has an indirect-table
+                    // slot. Uses the pre-import-shift index, matching the
+                    // rest of the table machinery.
+                    if let Some(&func_idx) = function_name_map.get(&func_name) {
+                        table_needed_funcs.insert(func_idx);
+                    }
+                } else if let Some(rest) = imp.field.strip_prefix(b"GOT.mem.") {
+                    let data_name = rest.to_vec();
+                    let init = data_name_map.get(&data_name).copied().unwrap_or(0);
+                    let global_idx = globals.len() as u32;
+                    global_name_map.insert(imp.field.clone(), global_idx);
+                    globals.push(OutputGlobal {
+                        name: imp.field.clone(),
+                        valtype: VALTYPE_I32,
+                        mutable: false,
+                        init_value: init as u64,
+                        exported: false,
+                    });
+                }
+            }
+        }
+    }
+
     // --- Pass 1.8: collect init functions and synthesize __wasm_call_ctors ---
     // This must happen BEFORE Pass 2 so relocs can resolve __wasm_call_ctors refs.
     let mut all_init_funcs: Vec<(u32, u32)> = Vec::new(); // (priority, output_func_idx)
@@ -2363,7 +2425,6 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
-    let mut table_needed_funcs: std::collections::HashSet<u32> = Default::default();
     // Store deferred table relocs: (function_output_idx, offset_in_body, reloc_type, sym→func_idx)
     let mut deferred_table_relocs: Vec<(usize, usize, u8, u32)> = Vec::new();
 
@@ -3002,6 +3063,21 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             .collect();
         // Note: call targets in function bodies are NOT shifted here because
         // Pass 2 already resolved them using post-shift function_name_map.
+    }
+
+    // --- Pass 3.25: patch GOT.func.* global init values. ---
+    // table_needed_funcs has been consumed to build func_to_table_index,
+    // which maps pre-import-shift func index → table slot. Under static
+    // link, GOT.func globals hold that table slot at runtime.
+    for (global_idx, func_name) in &got_func_globals {
+        let table_idx = function_name_map
+            .get(func_name)
+            .and_then(|fi| func_to_table_index.get(fi))
+            .copied()
+            .unwrap_or(0);
+        if let Some(g) = globals.get_mut(*global_idx as usize) {
+            g.init_value = table_idx as u64;
+        }
     }
 
     // --- Pass 3.5: synthesize __wasm_init_memory for --shared-memory ---
