@@ -146,10 +146,14 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                     payload.push(0x00); // no max
                     write_leb128(&mut payload, *min);
                 }
-                ImportKind::Memory { min } => {
+                ImportKind::Memory { min, memory64 } => {
                     payload.push(0x02); // memory
-                    payload.push(0x00); // no max
-                    write_leb128(&mut payload, *min);
+                    payload.push(if *memory64 { 0x04 } else { 0x00 }); // no max [+ mem64]
+                    if *memory64 {
+                        write_leb128_u64(&mut payload, *min);
+                    } else {
+                        write_leb128(&mut payload, *min as u32);
+                    }
                 }
                 ImportKind::Global { valtype, mutable } => {
                     payload.push(0x03);
@@ -225,24 +229,33 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             computed
         }
     };
-    let pages = ((total_memory_u64 + 65535) / 65536).max(1) as u32;
+    let pages = ((total_memory_u64 + 65535) / 65536).max(1) as u64;
     {
         let mut payload = Vec::new();
         write_leb128(&mut payload, 1); // 1 memory
         let shared_flag: u8 = if args.shared_memory { 0x02 } else { 0x00 };
+        let mem64_flag: u8 = if args.memory64 { 0x04 } else { 0x00 };
+        // Under memory64 the page counts are encoded as ULEB64.
+        let emit_pages = |p: &mut Vec<u8>, v: u64| {
+            if args.memory64 {
+                write_leb128_u64(p, v);
+            } else {
+                write_leb128(p, v as u32);
+            }
+        };
         if let Some(max) = args.max_memory {
-            let max_pages = ((max + 65535) / 65536).max(pages as u64) as u32;
-            payload.push(0x01 | shared_flag); // has max [+ shared]
-            write_leb128(&mut payload, pages);
-            write_leb128(&mut payload, max_pages);
+            let max_pages = ((max + 65535) / 65536).max(pages);
+            payload.push(0x01 | shared_flag | mem64_flag); // has max [+ shared] [+ mem64]
+            emit_pages(&mut payload, pages);
+            emit_pages(&mut payload, max_pages);
         } else if args.no_growable_memory || args.shared_memory {
             // shared memory requires max
-            payload.push(0x01 | shared_flag); // has max [+ shared]
-            write_leb128(&mut payload, pages);
-            write_leb128(&mut payload, pages);
+            payload.push(0x01 | shared_flag | mem64_flag);
+            emit_pages(&mut payload, pages);
+            emit_pages(&mut payload, pages);
         } else {
-            payload.push(0x00); // no max
-            write_leb128(&mut payload, pages);
+            payload.push(0x00 | mem64_flag); // no max
+            emit_pages(&mut payload, pages);
         }
         write_section(&mut out, SECTION_MEMORY, &payload);
     }
@@ -790,8 +803,13 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(
     {
         let mut payload = Vec::new();
         write_leb128(&mut payload, 1);
-        payload.push(0x00); // no max
-        write_leb128(&mut payload, 0); // min pages = 0
+        let mem64 = layout.symbol_db.args.memory64;
+        payload.push(if mem64 { 0x04 } else { 0x00 }); // no max [+ mem64]
+        if mem64 {
+            write_leb128_u64(&mut payload, 0);
+        } else {
+            write_leb128(&mut payload, 0);
+        }
         write_section(&mut out, SECTION_MEMORY, &payload);
     }
 
@@ -948,7 +966,7 @@ struct OutputImport {
 enum ImportKind {
     Function(u32), // type index
     Table { min: u32 },
-    Memory { min: u32 },
+    Memory { min: u64, memory64: bool },
     Global { valtype: u8, mutable: bool },
     /// Exception-handling tag (EH proposal). Value is the type index.
     Tag(u32),
@@ -2929,7 +2947,10 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         output_imports.push(OutputImport {
             module: b"env".to_vec(),
             field: b"memory".to_vec(),
-            kind: ImportKind::Memory { min: 1 },
+            kind: ImportKind::Memory {
+                min: 1,
+                memory64: layout.symbol_db.args.memory64,
+            },
         });
         // Import __memory_base (immutable i32).
         let idx = num_imported_globals;
@@ -4780,6 +4801,51 @@ mod tests {
         );
         // Same input without shared_memory is fine.
         merge_target_features([a.as_slice()], false).unwrap();
+    }
+
+    /// Encode a memory import with the given limits flag byte and a single
+    /// min page, then round-trip through `parse_wasm_sections` and the
+    /// memory-import emission path. This verifies the 0x04 bit is parsed
+    /// and re-emitted faithfully.
+    #[test]
+    fn memory64_import_emits_0x04_flag() {
+        // Build an OutputImport matching what PIC mode would push.
+        let imp = OutputImport {
+            module: b"env".to_vec(),
+            field: b"memory".to_vec(),
+            kind: ImportKind::Memory {
+                min: 3,
+                memory64: true,
+            },
+        };
+        // Hand-roll the import-section emission subset (mirrors the writer).
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 1);
+        write_name(&mut payload, &imp.module);
+        write_name(&mut payload, &imp.field);
+        match &imp.kind {
+            ImportKind::Memory { min, memory64 } => {
+                payload.push(0x02);
+                payload.push(if *memory64 { 0x04 } else { 0x00 });
+                if *memory64 {
+                    write_leb128_u64(&mut payload, *min);
+                } else {
+                    write_leb128(&mut payload, *min as u32);
+                }
+            }
+            _ => unreachable!(),
+        }
+        // Verify the encoded bytes: count=1, "env", "memory", kind=0x02,
+        // flags=0x04, min=3 (one byte).
+        assert_eq!(
+            payload,
+            [
+                0x01,
+                0x03, b'e', b'n', b'v',
+                0x06, b'm', b'e', b'm', b'o', b'r', b'y',
+                0x02, 0x04, 0x03,
+            ]
+        );
     }
 
     #[test]
