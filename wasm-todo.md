@@ -1,6 +1,6 @@
 # WASM Linker — Known Gaps and TODOs
 
-Status: 66 of 222 LLD tests passing (30%), 67 with `--include-ignored` (30%).
+Status: 72 of 223 LLD tests passing (32%).
 
 Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md).
 
@@ -83,14 +83,19 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
     imports and memory sections carry the 0x04 limits bit with
     ULEB64 page counts, the eight address-typed linker-synth globals
     widen to i64 (imported `__memory_base` / `__stack_pointer`
-    included under PIC), and active data-segment offsets emit as
-    `i64.const` with SLEB64 payloads. Internal address arithmetic
-    stays `u32` by default; the `wasm-addr64` Cargo feature switches
-    the `Addr` type alias to `u64` for layouts above 4 GiB. Still to
-    do: a real mem64 `.s` test in the LLD-style suite, bulk-memory
-    operand widths beyond `memory.init`, and memory64 PIC (the
-    REL_SLEB relocs still degrade to their non-REL forms under
-    `__memory_base = 0`).
+    included under PIC — and the static-PIC `__memory_base` /
+    `__table_base` / `__tls_base` triad now widens with them), and
+    active data-segment offsets emit as `i64.const` with SLEB64
+    payloads. `@TBREL` SLEB/SLEB64 values now carry the static-PIC
+    `-1` bias so runtime `global.get __table_base + i*.const TBREL`
+    resolves correctly (was writing absolute table index). A
+    `pic-static64.s` test pins the mem64 static-PIC global widening
+    and @TBREL/@MBREL path. Internal address arithmetic stays `u32`
+    by default; the `wasm-addr64` Cargo feature switches the `Addr`
+    type alias to `u64` for layouts above 4 GiB. Still to do:
+    bulk-memory operand widths beyond `memory.init` (memory.copy /
+    memory.fill operands pass through verbatim — a concern only if
+    an input actually emits them under mem64 with >4 GiB ranges).
 - **Exception handling** blocked — `SYMTAB_EVENT` (kind 4) and
   `R_WASM_EVENT_INDEX_LEB` are stubs; EH tags unparsed.
 - **§8 target-features merging**: implemented in
@@ -166,11 +171,11 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
         (`.data.<i>`) for now; proper per-segment names belong to
         a later commit.
 
-      Still outstanding for pure static-PIC correctness (not
-      required for pic-static): `@MBREL` / `@TBREL` SLEB values
-      under static-PIC degrade to absolute — with
-      `__table_base = 1` they should subtract 1 rather than
-      leaving the raw table index.
+      `@TBREL` SLEB / SLEB64 values under static-PIC now subtract
+      `__table_base = 1` (types 12 and 24), cancelling the
+      `global.get __table_base` the compiler emits alongside the
+      reloc. `@MBREL` needs no bias since the static-PIC
+      `__memory_base` is synthesised to 0.
 
       Four LLD PIC tests remain ignored; each needs its own
       feature chunk:
@@ -213,8 +218,65 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 - **Shared memory / atomics.** `--shared-memory` flag exists but
   passive-segment synthesis and `__wasm_init_memory` are stub-level.
   Thread-model object files don't link correctly.
-- **TLS (§10) not implemented.** `__tls_size`, `__tls_align`, `__tls_base`,
-  `__wasm_init_tls` are neither synthesised nor exported.
+- **TLS (§16.3) — partial.** `__tls_base` / `__tls_size` / `__tls_align`
+  are synthesised when TLS data is present or `--shared-memory` is set,
+  and `@TLSREL` (reloc types 21, 25) resolves to the correct
+  TLS-relative offset. `__tls_base` now follows the spec's
+  mutability rule: **immutable** (init = absolute TLS block address)
+  under non-shared, **mutable** (init = 0, set by `__wasm_init_tls`)
+  under shared. Static-PIC detection no longer false-fires on
+  `__tls_base` references or on GOT imports alone — only code or
+  data that actually references `__memory_base` / `__table_base`
+  via kind-2 symbols triggers the PIC triad. Lazy linker-global
+  synthesis landed: `__tls_size`, `__tls_align`, `__data_end`,
+  `__heap_base` are now only emitted when an input actually
+  references them (or the user `--export`s them); `__tls_size` /
+  `__tls_align` still emit unconditionally under `--shared-memory`
+  because the eventual `__wasm_init_tls` will consume them. GOT.*
+  import suppression in the output is now gated on `!is_shared`
+  (matching the GOT internalisation pass) rather than `static_pic`,
+  so a non-PIC link with `@GOT@TLS` no longer double-emits the
+  import.
+  Segment ordering landed: the data layout now has four passes —
+  `.rodata.*`, `.tdata.*`, `.data.*` (non-TLS), `.bss.*` — matching
+  wasm-ld. `.tdata` emits as its own `OutputDataSegment` (not
+  merged into the `.data.*` blob), which is both the spec §16.3
+  requirement for runtime `memory.init` and what the test suites
+  expect in the `DATA` segment lists. With this in, wild's output
+  for the non-shared variant of `tls-non-shared-memory.s` matches
+  wasm-ld globally and data-segment-wise; the test still can't be
+  added to `KNOWN_PASSING` because it bundles three other RUN
+  lines (`-shared`, `-pie`, `--features=extended-const`) that need
+  the shared-memory TLS pieces below.
+  `__wasm_init_tls (i32) -> ()` synthesis landed under
+  `--shared-memory`: body is `local.get 0; global.set __tls_base;
+  local.get 0; i32.const 0; i32.const <tls_size>; memory.init
+  <tdata_idx>, 0; end`. The emitted `.tdata` is already passive
+  because the existing `use_passive` path flips all data segments
+  to passive under `--shared-memory`, and `tls_segment_index`
+  threads through from the layout pass so `memory.init` targets
+  the right segment.
+  Still missing for the canonical `tls.s`:
+  - `@GOT@TLS` global internalisation under `--shared-memory` (the
+    compiler imports `GOT.mem.<tlssym>`; wasm-ld under `-shared`
+    replaces it with a local mutable i32 global initialised to 0
+    and sets it at runtime from `__wasm_apply_global_tls_relocs`).
+  - `__wasm_apply_global_tls_relocs ()->()` synthesis: one
+    `global.get __tls_base; i32.const <offset>; i32.add;
+    global.set <got_tls_idx>` block per internalised `@GOT@TLS`,
+    plus a `call __wasm_apply_global_tls_relocs` tail inside
+    `__wasm_init_tls`.
+  - `tls_size` bug fixed: the computation now uses the same
+    broader classification as the layout pass (`seg.is_tls` OR
+    name starts with `.tdata`), so TLS sections declared only via
+    the `"T"` section flag (which the parser doesn't always
+    round-trip into `is_tls`) are counted. `tls.s` now reads
+    `__tls_size = 12` as wasm-ld does.
+  - Data-symbol address export as globals under `-shared`.
+  - Import ordering: wasm-ld emits `env.memory` /
+    `env.__indirect_function_table` / `env.__stack_pointer` /
+    `env.__memory_base` / `env.__table_base` *before* any
+    `GOT.*` imports; wild emits source order.
 
 ### Low severity
 

@@ -1822,19 +1822,44 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     };
 
+    // TLS classification — a segment is TLS if the linking metadata
+    // sets `is_tls` (spec §4 segment flag 0x2) or the name starts with
+    // `.tdata` (older LLVM pre-dates the flag and relied on the name).
+    let is_tls_seg = |seg: &ParsedDataSegment| -> bool {
+        seg.is_tls || seg.name.starts_with(b".tdata")
+    };
+
     // Pass A: .rodata.* segments.
     layout_group(&objects, &mut segment_output_offsets, &mut data_offset,
         &|obj_idx, seg_i, seg| !should_skip_seg(obj_idx, seg_i) && is_rodata(seg));
-    // Pass B: .data.* segments (non-BSS, non-rodata).
+    // Pass B1: .tdata.* (TLS) segments. Spec §16.3 expects TLS data to
+    // live in its own segment so `memory.init` can target it, and
+    // wasm-ld places it ahead of the non-TLS `.data.*` run so
+    // `__tls_base` reads out as the start of the writable data block.
     layout_group(&objects, &mut segment_output_offsets, &mut data_offset,
-        &|obj_idx, seg_i, seg| !should_skip_seg(obj_idx, seg_i) && !is_rodata(seg) && !is_bss_name(seg));
+        &|obj_idx, seg_i, seg| {
+            !should_skip_seg(obj_idx, seg_i)
+                && !is_rodata(seg)
+                && !is_bss_name(seg)
+                && is_tls_seg(seg)
+        });
+    // Pass B2: remaining .data.* segments (non-BSS, non-rodata, non-TLS).
+    layout_group(&objects, &mut segment_output_offsets, &mut data_offset,
+        &|obj_idx, seg_i, seg| {
+            !should_skip_seg(obj_idx, seg_i)
+                && !is_rodata(seg)
+                && !is_bss_name(seg)
+                && !is_tls_seg(seg)
+        });
     // Pass C: .bss.* segments.
     layout_group(&objects, &mut segment_output_offsets, &mut data_offset,
         &|obj_idx, seg_i, seg| !should_skip_seg(obj_idx, seg_i) && is_bss_name(seg));
 
-    // Compute group boundaries for rodata/data segments.
+    // Compute group boundaries for rodata / tdata / data segments.
     let mut rodata_start: Option<u32> = None;
     let mut rodata_end: Option<u32> = None;
+    let mut tdata_start: Option<u32> = None;
+    let mut tdata_end: Option<u32> = None;
     let mut rw_data_start: Option<u32> = None;
     let mut rw_data_end: Option<u32> = None;
     for (obj_idx, obj_info) in objects.iter().enumerate() {
@@ -1847,6 +1872,9 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             if is_rodata(seg) {
                 rodata_start = Some(rodata_start.map_or(off, |s: u32| s.min(off)));
                 rodata_end = Some(rodata_end.map_or(end, |e: u32| e.max(end)));
+            } else if is_tls_seg(seg) {
+                tdata_start = Some(tdata_start.map_or(off, |s: u32| s.min(off)));
+                tdata_end = Some(tdata_end.map_or(end, |e: u32| e.max(end)));
             } else {
                 rw_data_start = Some(rw_data_start.map_or(off, |s: u32| s.min(off)));
                 rw_data_end = Some(rw_data_end.map_or(end, |e: u32| e.max(end)));
@@ -1857,7 +1885,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     // Merge data into per-group output segments (spec §9.1).
     // Groups: .rodata.* → one segment, .data.* → another, matching wasm-ld.
     // BSS segments are omitted (implicit in memory allocation).
-    let mut data_segments = if data_offset > data_start {
+    let (mut data_segments, tls_segment_index) = if data_offset > data_start {
         // Build merged data for the full range, then split into segments.
         let total_data_len = (data_offset - data_start) as usize;
         let mut merged_data = vec![0u8; total_data_len];
@@ -1873,16 +1901,27 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
 
         // Create separate output segments for each group.
+        // Order: rodata → tdata → data. Keep `.tdata` as its own output
+        // segment (spec §16.3 requires this so `memory.init` can target
+        // it under `--shared-memory`).
         let mut segments = Vec::new();
-        for (start, end) in [
+        let groups: [(Option<u32>, Option<u32>); 3] = [
             (rodata_start, rodata_end),
+            (tdata_start, tdata_end),
             (rw_data_start, rw_data_end),
-        ] {
+        ];
+        // Track which emitted segment index corresponds to `.tdata`, so
+        // `memory.init` in `__wasm_init_tls` can target it.
+        let mut tls_segment_index: Option<u32> = None;
+        for (group_i, (start, end)) in groups.into_iter().enumerate() {
             if let (Some(s), Some(e)) = (start, end) {
                 let rel_start = (s - data_start) as usize;
                 let rel_end = (e - data_start) as usize;
                 if rel_end > rel_start && rel_end <= merged_data.len() {
                     let data = merged_data[rel_start..rel_end].to_vec();
+                    if group_i == 1 {
+                        tls_segment_index = Some(segments.len() as u32);
+                    }
                     segments.push(OutputDataSegment {
                         memory_offset: s as Addr,
                         data,
@@ -1890,29 +1929,44 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 }
             }
         }
-        segments
+        (segments, tls_segment_index)
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
-    // Track TLS data: find the first TLS segment's output offset and total TLS size.
+    // Track TLS data: find the TLS segment block's start offset and
+    // total size. Use the same TLS classification as the layout pass
+    // (`seg.is_tls` OR name starts with `.tdata`) so segments that
+    // rely on the "T" section flag — which the parser may not always
+    // round-trip into `is_tls` — are still counted.
     let mut tls_base_offset: Option<u32> = None;
     let mut tls_size: u32 = 0;
     let mut tls_align: u32 = 0;
-    for obj_info in &objects {
+    for (obj_idx, obj_info) in objects.iter().enumerate() {
         for (seg_i, seg) in obj_info.parsed.data_segments.iter().enumerate() {
-            if seg.is_tls {
-                let obj_idx = objects.iter().position(|o| std::ptr::eq(o, obj_info)).unwrap();
+            if !is_tls_seg(seg) {
+                continue;
+            }
+            if let Some(&off) = segment_output_offsets[obj_idx].get(seg_i) {
+                if tls_base_offset.map_or(true, |b| off < b) {
+                    tls_base_offset = Some(off);
+                }
+                tls_align = tls_align.max(seg.alignment);
+            }
+        }
+    }
+    if let Some(base) = tls_base_offset {
+        let mut end = base;
+        for (obj_idx, obj_info) in objects.iter().enumerate() {
+            for (seg_i, seg) in obj_info.parsed.data_segments.iter().enumerate() {
+                if !is_tls_seg(seg) {
+                    continue;
+                }
                 if let Some(&off) = segment_output_offsets[obj_idx].get(seg_i) {
-                    if tls_base_offset.is_none() {
-                        tls_base_offset = Some(off);
-                    }
-                    let seg_end = off + seg.data.len() as u32;
-                    let base = tls_base_offset.unwrap();
-                    tls_size = tls_size.max(seg_end - base);
-                    tls_align = tls_align.max(seg.alignment);
+                    end = end.max(off + seg.data.len() as u32);
                 }
             }
         }
+        tls_size = end - base;
     }
 
     // Build global data symbol name → output address map for cross-object resolution.
@@ -1997,9 +2051,14 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
     let static_pic = !layout.symbol_db.args.is_shared
         && !layout.symbol_db.args.is_pic
         && objects.iter().any(|obj| {
-            // llvm-mc emits GOT imports with module = "GOT.func" /
-            // "GOT.mem" / "GOT.data" and the symbol name as the field.
-            let has_got_import = obj.parsed.imports.iter().any(|imp| {
+            // GOT imports *alone* are not a static-PIC trigger: the
+            // @GOT@TLS pattern emits GOT.data imports for TLS symbols
+            // under a plain non-PIC link (see tls-non-shared-memory.s),
+            // and wasm-ld handles those via GOT internalisation without
+            // synthesising the __memory_base / __table_base triad. Only
+            // treat the link as static-PIC if code or data actually
+            // references the base globals.
+            let _ = obj.parsed.imports.iter().any(|imp| {
                 imp.kind == 3
                     && (imp.module == b"GOT.func"
                         || imp.module == b"GOT.mem"
@@ -2007,9 +2066,13 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             });
             // A code or data relocation actually targets a kind-2 symbol
             // that resolves (via import_global_names when sym.name is
-            // empty) to `__memory_base` / `__table_base` / `__tls_base`.
+            // empty) to `__memory_base` / `__table_base`. `__tls_base`
+            // alone is NOT a static-PIC trigger — an input can reference
+            // `__tls_base` in a plain non-PIC link (see
+            // tls-non-shared-memory.s), and wasm-ld treats that as a
+            // regular TLS synthesis, not PIC.
             let base_names: &[&[u8]] =
-                &[b"__memory_base", b"__table_base", b"__tls_base"];
+                &[b"__memory_base", b"__table_base"];
             let effective_global_name = |sym_idx: u32| -> Option<Vec<u8>> {
                 let s = obj.parsed.symbols.get(sym_idx as usize)?;
                 if s.kind != 2 {
@@ -2035,7 +2098,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 effective_global_name(r.symbol_index)
                     .is_some_and(|n| base_names.iter().any(|b| *b == n.as_slice()))
             });
-            has_got_import || code_touches_base || data_touches_base
+            code_touches_base || data_touches_base
         });
     if static_pic {
         for (name, init) in [
@@ -2051,7 +2114,10 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 }
                 globals.push(OutputGlobal {
                     name: name.to_vec(),
-                    valtype: VALTYPE_I32,
+                    // Under memory64 the base globals widen to i64 to match
+                    // the compiler's `i64.const <sym>@MBREL` / `@TBREL`
+                    // sequences.
+                    valtype: addr_vt,
                     mutable: false,
                     init_value: init,
                     exported: false,
@@ -2060,24 +2126,90 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // Lazy linker-synth gating: wasm-ld only emits the optional
+    // linker-defined globals (`__tls_size`, `__tls_align`, `__data_end`,
+    // `__heap_base`) when something in the input actually references
+    // them. Collect the set of names reached via a kind-2 (GLOBAL)
+    // symbol attached to any code or data relocation. An empty-named
+    // global symbol carries the referenced name in the corresponding
+    // entry of `import_global_names` (kept by the parser for
+    // `global.get`-style references where the symbol table points at
+    // an import index).
+    let mut referenced_linker_globals: std::collections::HashSet<Vec<u8>> =
+        Default::default();
+    for obj in &objects {
+        let resolve = |sym_idx: u32| -> Option<Vec<u8>> {
+            let s = obj.parsed.symbols.get(sym_idx as usize)?;
+            if s.kind != 2 {
+                return None;
+            }
+            if !s.name.is_empty() {
+                return Some(s.name.clone());
+            }
+            if s.flags & 0x10 != 0 {
+                obj.parsed
+                    .import_global_names
+                    .get(s.index as usize)
+                    .cloned()
+            } else {
+                None
+            }
+        };
+        for r in obj.parsed.code_relocations.iter()
+            .chain(obj.parsed.data_relocations.iter())
+        {
+            if let Some(n) = resolve(r.symbol_index) {
+                referenced_linker_globals.insert(n);
+            }
+        }
+    }
+    let is_referenced = |name: &[u8]| -> bool {
+        referenced_linker_globals.contains(name)
+    };
+
     // TLS globals: created when TLS data exists OR --shared-memory is used.
     let has_tls = tls_base_offset.is_some() || tls_size > 0
         || layout.symbol_db.args.shared_memory;
-    // __tls_base: mutable i32 — points to TLS data start in non-shared mode.
+    // __tls_base per spec §16.3:
+    //   - Under --shared-memory: mutable, initialised to 0, set at
+    //     runtime by the synthesised `__wasm_init_tls(ptr)` function.
+    //   - Under non-shared: immutable, initialised to the absolute
+    //     address of the TLS block (there is only one thread, so the
+    //     base is known at link time). `tls_base_offset` is the byte
+    //     offset of `.tdata` within the merged data image, so the
+    //     absolute base is `data_start + tls_base_offset`.
+    let tls_shared = layout.symbol_db.args.shared_memory;
     if has_tls {
         let tls_idx = globals.len() as u32;
         global_name_map.insert(b"__tls_base".to_vec(), tls_idx);
+        // `tls_base_offset` is already an absolute output address
+        // (it comes from `segment_output_offsets`, which include
+        // `data_start`), so don't add `data_start` again.
+        let (mutable, init_value) = if tls_shared {
+            (true, 0u64)
+        } else {
+            (false, tls_base_offset.unwrap_or(data_start) as u64)
+        };
         globals.push(OutputGlobal {
             name: b"__tls_base".to_vec(),
             valtype: addr_vt,
-            mutable: true,
-            init_value: tls_base_offset.unwrap_or(0) as u64,
+            mutable,
+            init_value,
             exported: false,
         });
     }
 
-    // __tls_size: immutable i32 — total TLS data size.
-    if has_tls {
+    // __tls_size: immutable i32 — total TLS data size. Lazy: only
+    // emitted if an input references it or the user --export's it.
+    let exports_tls_size = layout
+        .symbol_db
+        .args
+        .exports
+        .iter()
+        .any(|s| s == "__tls_size");
+    if has_tls
+        && (tls_shared || is_referenced(b"__tls_size") || exports_tls_size)
+    {
         let idx = globals.len() as u32;
         global_name_map.insert(b"__tls_size".to_vec(), idx);
         globals.push(OutputGlobal {
@@ -2085,12 +2217,20 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             valtype: VALTYPE_I32,
             mutable: false,
             init_value: tls_size as u64,
-            exported: false,
+            exported: exports_tls_size,
         });
     }
 
-    // __tls_align: immutable i32 — max TLS alignment.
-    if has_tls {
+    // __tls_align: immutable i32 — max TLS alignment. Lazy as above.
+    let exports_tls_align = layout
+        .symbol_db
+        .args
+        .exports
+        .iter()
+        .any(|s| s == "__tls_align");
+    if has_tls
+        && (tls_shared || is_referenced(b"__tls_align") || exports_tls_align)
+    {
         let idx = globals.len() as u32;
         global_name_map.insert(b"__tls_align".to_vec(), idx);
         globals.push(OutputGlobal {
@@ -2098,7 +2238,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             valtype: VALTYPE_I32,
             mutable: false,
             init_value: tls_align as u64,
-            exported: false,
+            exported: exports_tls_align,
         });
     }
 
@@ -2119,11 +2259,13 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         .iter()
         .any(|s| s == "__heap_base");
 
-    // Under static-PIC, wasm-ld suppresses the data-geometry linker globals
-    // (`__data_end` / `__heap_base`) unless the user explicitly asked for
-    // them via --export. This keeps the global section compact for the
-    // __memory_base / __table_base / __tls_base triad that comes first.
-    if (has_data_segments || exports_data_end) && (!static_pic || exports_data_end) {
+    // wasm-ld emits `__data_end` / `__heap_base` only when referenced by
+    // an input or explicitly --export'd. The older "always when
+    // has_data_segments" rule was too eager and broke CHECK chains on
+    // tests like tls-non-shared-memory.
+    let data_end_needed = is_referenced(b"__data_end") || exports_data_end;
+    let heap_base_needed = is_referenced(b"__heap_base") || exports_heap_base;
+    if data_end_needed && (!static_pic || exports_data_end) {
         let de_index = globals.len() as u32;
         global_name_map.insert(b"__data_end".to_vec(), de_index);
         globals.push(OutputGlobal {
@@ -2162,7 +2304,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         });
     }
 
-    if (has_data_segments || exports_heap_base) && (!static_pic || exports_heap_base) {
+    if heap_base_needed && (!static_pic || exports_heap_base) {
         let mut max_data_align = 1u32;
         for obj_info in &objects {
             for seg in &obj_info.parsed.data_segments {
@@ -3199,6 +3341,12 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
 
         // Patch deferred TABLE_INDEX relocations.
+        // Under static-PIC, __table_base is synthesised to 1, so @TBREL
+        // values must subtract 1 to cancel the `global.get __table_base`
+        // the compiler emits alongside the reloc. Shared PIC imports
+        // __table_base with unknown runtime value; the module-local
+        // index is what the reloc should carry.
+        let tbrel_bias: i64 = if static_pic { 1 } else { 0 };
         for (func_out_idx, off_in_body, reloc_type, target_func_idx) in &deferred_table_relocs {
             let table_idx = func_to_table_index.get(target_func_idx).copied().unwrap_or(0);
             if let Some(func) = functions.get_mut(*func_out_idx) {
@@ -3228,17 +3376,16 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         }
                     }
                     12 => {
-                        // R_WASM_TABLE_INDEX_REL_SLEB: degrades to SLEB under
-                        // __table_base = 0 (non-PIC).
-                        write_padded_sleb128(&mut func.body, *off_in_body, table_idx as i32);
+                        // R_WASM_TABLE_INDEX_REL_SLEB: value =
+                        // table_idx - __table_base. Under static-PIC
+                        // __table_base = 1; under non-PIC it is 0.
+                        let v = (table_idx as i64 - tbrel_bias) as i32;
+                        write_padded_sleb128(&mut func.body, *off_in_body, v);
                     }
                     24 => {
-                        // R_WASM_TABLE_INDEX_REL_SLEB64: degrades to SLEB64.
-                        write_padded_sleb128_i64(
-                            &mut func.body,
-                            *off_in_body,
-                            table_idx as i64,
-                        );
+                        // R_WASM_TABLE_INDEX_REL_SLEB64: same bias.
+                        let v = table_idx as i64 - tbrel_bias;
+                        write_padded_sleb128_i64(&mut func.body, *off_in_body, v);
                     }
                     _ => {}
                 }
@@ -3371,6 +3518,63 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
     // (Data segment layout done in pass 1.5 above.)
 
+    // --- Pass 3.6: synthesize __wasm_init_tls for --shared-memory ---
+    // Spec §16.3: under threaded builds, the runtime calls
+    // `__wasm_init_tls(ptr)` once per thread with a freshly-allocated
+    // TLS block. The function copies `.tdata` into the block via
+    // `memory.init` and points `__tls_base` at the block.
+    // Body:
+    //     local.get 0
+    //     global.set __tls_base
+    //     local.get 0
+    //     i32.const 0
+    //     i32.const <tls_size>
+    //     memory.init <tdata_idx>, 0
+    //     end
+    // Call to `__wasm_apply_global_tls_relocs` is appended only when
+    // that helper is also synthesised.
+    if layout.symbol_db.args.shared_memory {
+        let tls_base_idx = global_name_map.get(&b"__tls_base"[..]).copied();
+        if let Some(tls_base_global) = tls_base_idx {
+            // type (i32) -> ()
+            let ty = FuncType {
+                params: vec![VALTYPE_I32],
+                results: Vec::new(),
+            };
+            let type_idx = if let Some(pos) = types.iter().position(|t| *t == ty) {
+                pos as u32
+            } else {
+                let idx = types.len() as u32;
+                types.push(ty);
+                idx
+            };
+            let mut body = Vec::new();
+            body.push(0x00); // 0 locals
+            body.push(0x20); // local.get
+            write_leb128(&mut body, 0);
+            body.push(0x24); // global.set
+            write_leb128(&mut body, tls_base_global);
+            if tls_size > 0 {
+                if let Some(tdata_idx) = tls_segment_index {
+                    body.push(0x20); // local.get
+                    write_leb128(&mut body, 0);
+                    body.push(0x41); // i32.const 0 (src offset)
+                    write_sleb128(&mut body, 0);
+                    body.push(0x41); // i32.const tls_size
+                    write_sleb128(&mut body, tls_size as i32);
+                    body.push(0xFC);
+                    write_leb128(&mut body, 0x08); // memory.init
+                    write_leb128(&mut body, tdata_idx);
+                    write_leb128(&mut body, 0); // memory index
+                }
+            }
+            body.push(0x0B); // end
+            let func_idx = functions.len() as u32;
+            function_name_map.insert(b"__wasm_init_tls".to_vec(), func_idx);
+            functions.push(MergedFunction { type_index: type_idx, body });
+        }
+    }
+
     // --- Pass 4: collect unresolved imports (spec §9.2) ---
     // Per spec: "an import for each undefined strong symbol."
     // Skip imports for memory (we define our own) and globals we define
@@ -3416,20 +3620,25 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     num_imported_functions += 1;
                 }
                 3 => {
-                    // Under static-PIC, GOT.* globals and the base
-                    // `__memory_base` / `__table_base` / `__tls_base` imports
-                    // have been internalised into local globals — skip them
-                    // here so they don't appear as duplicates.
-                    if static_pic {
-                        if imp.module == b"GOT.func"
+                    // Pass 1.75 internalises GOT.* imports whenever the
+                    // output is not shared — skip them here to avoid
+                    // duplicates. The base-global imports
+                    // (`__memory_base` / `__table_base` / `__tls_base`)
+                    // are only internalised under static-PIC, so gate
+                    // those separately.
+                    if !layout.symbol_db.args.is_shared
+                        && (imp.module == b"GOT.func"
                             || imp.module == b"GOT.mem"
-                            || imp.module == b"GOT.data"
-                            || imp.field == b"__memory_base"
+                            || imp.module == b"GOT.data")
+                    {
+                        continue;
+                    }
+                    if static_pic
+                        && (imp.field == b"__memory_base"
                             || imp.field == b"__table_base"
-                            || imp.field == b"__tls_base"
-                        {
-                            continue;
-                        }
+                            || imp.field == b"__tls_base")
+                    {
+                        continue;
                     }
                     let valtype = (imp.type_index >> 1) as u8;
                     let mutable = (imp.type_index & 1) != 0;

@@ -134,6 +134,10 @@ const KNOWN_PASSING: &[&str] = &[
     "function-index",
     "pic-static-unused",
     "pic-static",
+    "pic-static64",
+    "data-layout",
+    "merge-func-attr-section",
+    "tls-align",
 ];
 
 /// Tests in lto/ subdirectory known to pass despite matching skip patterns.
