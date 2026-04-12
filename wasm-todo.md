@@ -1,6 +1,6 @@
 # WASM Linker — Known Gaps and TODOs
 
-Status: 74 of 223 LLD tests passing (33%).
+Status: 75 of 223 LLD tests passing (34%).
 
 Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-conventions/blob/main/Linking.md).
 

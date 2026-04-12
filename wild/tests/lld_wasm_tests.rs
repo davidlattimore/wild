@@ -140,6 +140,7 @@ const KNOWN_PASSING: &[&str] = &[
     "tls-align",
     "duplicate-function-imports",
     "alias",
+    "debug-undefined-fs",
 ];
 
 /// Tests in lto/ subdirectory known to pass despite matching skip patterns.
