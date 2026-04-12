@@ -131,13 +131,20 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
       global-section byte pattern for internalised GOTs — closing
       the gap to those tests needs both the 0xFFFFFFFF convention
       and a matching expected-output audit.
-    - `@TBREL` / `@MBREL` static behaviour: under static link the
-      compiler's `global.get __table_base` / `__memory_base`
-      sequences either need the base globals synthesised as local
-      immutable i32 globals (init = 1 / 0) or the SLEB values
-      pre-adjusted so the `i32.add` comes out absolute. Wild does
-      neither today; the existing REL_SLEB handler just writes the
-      absolute address and relies on `global.get` returning 0.
+    - `@TBREL` / `@MBREL` static behaviour: under static link wild
+      now synthesises `__memory_base` (init 0) and `__table_base`
+      (init 1) as local immutable i32 globals, but only when an
+      input actually references them as kind-2 symbols. This makes
+      the compiler's `global.get __table_base` then `i32.const @TBREL`
+      then `i32.add` sequence resolve at runtime (previously the
+      `global.get` would fail because the referenced global didn't
+      exist in the output).
+    - Custom-section relocations (e.g. `reloc..debug_info`) are
+      parsed but not applied. `pic-static-unused` expects
+      `0xFFFFFFFF` sentinels for unresolved GLOBAL_INDEX_I32
+      relocs in debug sections — plumbing that requires storing
+      per-custom-section relocation lists and rewriting the
+      passthrough bytes.
     - `_is_pic` alone (without `is_shared`) doesn't yet propagate
       to the "import `__memory_base` / `__table_base` /
       `__stack_pointer`" machinery — a pure `-pie` link today

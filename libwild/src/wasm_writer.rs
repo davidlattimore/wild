@@ -2135,6 +2135,56 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Pass 1.72: synthesise __memory_base / __table_base under static ---
+    // Objects compiled with -fPIC may declare `__memory_base` / `__table_base`
+    // as immutable i32 globals and reference them via `global.get` in code
+    // generated around `@MBREL` / `@TBREL` relocations. Under a shared or
+    // PIE link these come in as imports (the dynamic linker sets them).
+    // Under a static link wasm-ld internalises them as local immutable i32
+    // globals with init value 0 and 1 respectively — `__memory_base = 0`
+    // means addresses are absolute, `__table_base = 1` matches wild's table
+    // convention (entry 0 reserved as null).
+    //
+    // Only synthesise when some input actually references the symbol (via a
+    // kind-2 symbol with that exact name), otherwise the output would carry
+    // unreachable globals.
+    if !layout.symbol_db.args.is_shared && !layout.symbol_db.args.is_pic {
+        let references = |name: &[u8]| -> bool {
+            objects.iter().any(|obj| {
+                obj.parsed
+                    .symbols
+                    .iter()
+                    .any(|s| s.kind == 2 && s.name == name)
+            })
+        };
+        if references(b"__memory_base")
+            && !global_name_map.contains_key(b"__memory_base".as_slice())
+        {
+            let idx = globals.len() as u32;
+            global_name_map.insert(b"__memory_base".to_vec(), idx);
+            globals.push(OutputGlobal {
+                name: b"__memory_base".to_vec(),
+                valtype: VALTYPE_I32,
+                mutable: false,
+                init_value: 0,
+                exported: false,
+            });
+        }
+        if references(b"__table_base")
+            && !global_name_map.contains_key(b"__table_base".as_slice())
+        {
+            let idx = globals.len() as u32;
+            global_name_map.insert(b"__table_base".to_vec(), idx);
+            globals.push(OutputGlobal {
+                name: b"__table_base".to_vec(),
+                valtype: VALTYPE_I32,
+                mutable: false,
+                init_value: 1,
+                exported: false,
+            });
+        }
+    }
+
     // --- Pass 1.75: internalise GOT.func.* / GOT.mem.* imports (PIC → static). ---
     // wasm-ld convention: objects compiled with -fPIC import globals named
     // `GOT.func.<sym>` (function pointer) or `GOT.mem.<sym>` (data pointer).
@@ -5327,6 +5377,60 @@ mod tests {
             write_sleb128_i64(&mut buf, *v);
             assert_eq!(&buf, expected, "sleb64 for {v}");
         }
+    }
+
+    /// Under a static link, a kind-2 symbol named `__memory_base` must be
+    /// picked up by the synthesis scan that runs before Pass 1.75. Build a
+    /// minimal wasm object that declares that symbol in its linking section
+    /// and assert parse_wasm_sections recovers a matching kind-2 entry.
+    #[test]
+    fn memory_base_reference_detected_in_symtab() {
+        // Hand-roll the linking section subsection 8 (WASM_SYMBOL_TABLE)
+        // with a single kind-2 (global) entry called "__memory_base",
+        // flagged UNDEFINED (0x10) and EXPLICIT_NAME (0x40).
+        let mut sym_entries = Vec::new();
+        write_leb128(&mut sym_entries, 1); // 1 symbol
+        sym_entries.push(2); // kind = GLOBAL
+        write_leb128(&mut sym_entries, 0x10 | 0x40); // UNDEFINED | EXPLICIT_NAME
+        write_leb128(&mut sym_entries, 0); // global index (unused for this test)
+        write_leb128(&mut sym_entries, b"__memory_base".len() as u32);
+        sym_entries.extend_from_slice(b"__memory_base");
+
+        let mut symtab_subsec = Vec::new();
+        symtab_subsec.push(8); // WASM_SYMBOL_TABLE subsection type
+        write_leb128(&mut symtab_subsec, sym_entries.len() as u32);
+        symtab_subsec.extend_from_slice(&sym_entries);
+
+        let mut linking = Vec::new();
+        write_leb128(&mut linking, 2); // version 2
+        linking.extend_from_slice(&symtab_subsec);
+
+        // Wrap into a custom section named "linking".
+        let mut cs_payload = Vec::new();
+        write_name(&mut cs_payload, b"linking");
+        cs_payload.extend_from_slice(&linking);
+
+        // Assemble the full wasm.
+        let mut wasm = Vec::new();
+        wasm.extend_from_slice(b"\0asm");
+        wasm.extend_from_slice(&[1, 0, 0, 0]);
+        // Custom section (id 0).
+        wasm.push(0);
+        let mut cslen = Vec::new();
+        write_leb128(&mut cslen, cs_payload.len() as u32);
+        wasm.extend_from_slice(&cslen);
+        wasm.extend_from_slice(&cs_payload);
+
+        let parsed = parse_wasm_sections(&wasm).expect("parse ok");
+        let mb_sym = parsed
+            .symbols
+            .iter()
+            .find(|s| s.kind == 2 && s.name == b"__memory_base")
+            .expect("__memory_base symbol recognised");
+        assert!(
+            mb_sym.flags & 0x10 != 0,
+            "UNDEFINED flag should be set"
+        );
     }
 
     /// A GOT.func.<name> global import in a compiled object gets picked up
