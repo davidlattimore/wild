@@ -44,6 +44,7 @@ const EXPORT_TAG: u8 = 0x04;
 
 /// WASM value types.
 const VALTYPE_I32: u8 = 0x7F;
+const VALTYPE_I64: u8 = 0x7E;
 
 /// Default stack size (64KB, same as wasm-ld).
 const DEFAULT_STACK_SIZE: u32 = 65536;
@@ -295,7 +296,7 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
                 0x7E => {
                     // i64
                     payload.push(0x42); // i64.const
-                    write_sleb128(&mut payload, global.init_value as i32);
+                    write_sleb128_i64(&mut payload, global.init_value as i64);
                 }
                 _ => {
                     // i32 (0x7F) and others
@@ -1766,11 +1767,18 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         let aligned_data_end = (data_offset + 15) & !15;
         aligned_data_end + stack_size
     };
+    // Address-typed linker-defined globals use i64 under memory64 so their
+    // value encodes at the full width of a linear-memory address.
+    let addr_vt = if layout.symbol_db.args.memory64 {
+        VALTYPE_I64
+    } else {
+        VALTYPE_I32
+    };
     let sp_index = globals.len() as u32;
     global_name_map.insert(b"__stack_pointer".to_vec(), sp_index);
     globals.push(OutputGlobal {
         name: b"__stack_pointer".to_vec(),
-        valtype: VALTYPE_I32,
+        valtype: addr_vt,
         mutable: true,
         init_value: stack_pointer_value as u64,
         exported: false,
@@ -1785,7 +1793,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__tls_base".to_vec(), tls_idx);
         globals.push(OutputGlobal {
             name: b"__tls_base".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: true,
             init_value: tls_base_offset.unwrap_or(0) as u64,
             exported: false,
@@ -1840,7 +1848,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__data_end".to_vec(), de_index);
         globals.push(OutputGlobal {
             name: b"__data_end".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: false,
             init_value: data_end as u64,
             exported: has_data_segments || exports_data_end,
@@ -1856,7 +1864,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__rodata_start".to_vec(), idx);
         globals.push(OutputGlobal {
             name: b"__rodata_start".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: false,
             init_value: rodata_start.unwrap_or(data_start) as u64,
             exported: true,
@@ -1867,7 +1875,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__rodata_end".to_vec(), idx);
         globals.push(OutputGlobal {
             name: b"__rodata_end".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: false,
             init_value: rodata_end.unwrap_or(data_start) as u64,
             exported: true,
@@ -1886,7 +1894,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__heap_base".to_vec(), hb_index);
         globals.push(OutputGlobal {
             name: b"__heap_base".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: false,
             init_value: heap_base as u64,
             exported: has_data_segments || exports_heap_base,
@@ -1898,7 +1906,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         global_name_map.insert(b"__global_base".to_vec(), gb_index);
         globals.push(OutputGlobal {
             name: b"__global_base".to_vec(),
-            valtype: VALTYPE_I32,
+            valtype: addr_vt,
             mutable: false,
             init_value: data_start as u64,
             exported: true,
@@ -2952,24 +2960,29 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 memory64: layout.symbol_db.args.memory64,
             },
         });
-        // Import __memory_base (immutable i32).
+        let addr_vt_imp = if layout.symbol_db.args.memory64 {
+            VALTYPE_I64
+        } else {
+            VALTYPE_I32
+        };
+        // Import __memory_base (immutable, i32 or i64 under memory64).
         let idx = num_imported_globals;
         memory_base_global_idx = Some(idx);
         output_imports.push(OutputImport {
             module: b"env".to_vec(),
             field: b"__memory_base".to_vec(),
             kind: ImportKind::Global {
-                valtype: VALTYPE_I32,
+                valtype: addr_vt_imp,
                 mutable: false,
             },
         });
         num_imported_globals += 1;
-        // Import __stack_pointer (mutable i32).
+        // Import __stack_pointer (mutable, i32 or i64 under memory64).
         output_imports.push(OutputImport {
             module: b"env".to_vec(),
             field: b"__stack_pointer".to_vec(),
             kind: ImportKind::Global {
-                valtype: VALTYPE_I32,
+                valtype: addr_vt_imp,
                 mutable: true,
             },
         });
@@ -4359,6 +4372,20 @@ fn write_padded_leb128(buf: &mut [u8], offset: usize, value: u32) {
     buf[offset + 4] = ((value >> 28) & 0x0F) as u8;
 }
 
+/// Write a signed LEB128 value up to 64 bits wide. Emits 1–10 bytes.
+fn write_sleb128_i64(out: &mut Vec<u8>, mut value: i64) {
+    loop {
+        let byte = (value as u8) & 0x7F;
+        value >>= 7; // arithmetic shift sign-extends
+        let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
+        if done {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 /// Write an unsigned LEB128 value up to 64 bits wide. Emits 1–10 bytes.
 fn write_leb128_u64(out: &mut Vec<u8>, mut value: u64) {
     loop {
@@ -4807,6 +4834,57 @@ mod tests {
     /// min page, then round-trip through `parse_wasm_sections` and the
     /// memory-import emission path. This verifies the 0x04 bit is parsed
     /// and re-emitted faithfully.
+    /// Encode a single i64 global with init value 0x1_0000_0000 through the
+    /// global-section emission subset, then hand-decode the result. Verifies
+    /// that the i64 valtype + i64.const opcode + SLEB64 init expression all
+    /// line up.
+    #[test]
+    fn memory64_global_emits_i64_const_init() {
+        let g = OutputGlobal {
+            name: b"__stack_pointer".to_vec(),
+            valtype: VALTYPE_I64,
+            mutable: true,
+            init_value: 0x1_0000_0000, // 2^32 — needs > 4 bytes
+            exported: false,
+        };
+        let mut payload = Vec::new();
+        write_leb128(&mut payload, 1);
+        payload.push(g.valtype);
+        payload.push(if g.mutable { 1 } else { 0 });
+        assert_eq!(g.valtype, 0x7E, "valtype should be i64");
+        payload.push(0x42); // i64.const
+        write_sleb128_i64(&mut payload, g.init_value as i64);
+        payload.push(0x0B); // end
+        // Expected: count=1, valtype=0x7E, mut=1, 0x42, SLEB64 of 2^32, 0x0B.
+        // SLEB64 of 0x1_0000_0000 = 0x80 0x80 0x80 0x80 0x10.
+        assert_eq!(
+            payload,
+            [0x01, 0x7E, 0x01, 0x42, 0x80, 0x80, 0x80, 0x80, 0x10, 0x0B]
+        );
+    }
+
+    /// SLEB64 encoder produces the exact canonical output.
+    #[test]
+    fn sleb128_i64_encodes_canonically() {
+        let cases: &[(i64, &[u8])] = &[
+            (0, &[0x00]),
+            (1, &[0x01]),
+            (-1, &[0x7F]),
+            (63, &[0x3F]),
+            (-64, &[0x40]),
+            (64, &[0xC0, 0x00]),
+            (-65, &[0xBF, 0x7F]),
+            (0x1_0000_0000, &[0x80, 0x80, 0x80, 0x80, 0x10]),
+            (i64::MIN, &[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x7F]),
+            (i64::MAX, &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]),
+        ];
+        for (v, expected) in cases {
+            let mut buf = Vec::new();
+            write_sleb128_i64(&mut buf, *v);
+            assert_eq!(&buf, expected, "sleb64 for {v}");
+        }
+    }
+
     #[test]
     fn memory64_import_emits_0x04_flag() {
         // Build an OutputImport matching what PIC mode would push.
