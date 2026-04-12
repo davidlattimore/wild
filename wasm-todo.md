@@ -86,10 +86,12 @@ Reference: [tool-conventions/Linking.md](https://github.com/WebAssembly/tool-con
 - **memory64 / wasm64** blocked on the 64-bit relocation types above.
 - **Exception handling** blocked — `SYMTAB_EVENT` (kind 4) and
   `R_WASM_EVENT_INDEX_LEB` are stubs; EH tags unparsed.
-- **§8 target-features merging is absent.** `REQUIRED (0x2b)` vs
-  `DISALLOWED (0x2d)` vs `USED (0x2c)` prefixes are concatenated, never
-  checked across inputs. Spec requires a conflict error; wild emits a
-  silently invalid module.
+- **§8 target-features merging**: implemented in
+  `merge_target_features`. `+` (0x2b, USED) and legacy `=` (0x3d,
+  REQUIRED) unify into USED; `-` (0x2d, DISALLOWED) survives only
+  when no input uses the feature; the USED-vs-DISALLOWED conflict
+  case errors out. Covered by five unit tests. Still to do: plumb
+  shared-memory vs `atomics` DISALLOWED check per spec §8.
 
 ### Medium severity
 

@@ -3034,22 +3034,29 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
 
     // Collect custom sections from all objects.
     // Per spec: same-name custom sections are concatenated.
-    // Exception: target_features uses first-wins (feature list, not raw data).
+    // Exception: target_features is merged per §8 across all inputs — the
+    // output is the union of USED features with DISALLOWED features
+    // surviving only when no input uses them. A feature that one input
+    // uses ('+' 0x2b) and another disallows ('-' 0x2d) is a conflict.
     let mut merged_custom_sections: Vec<CustomSection> = Vec::new();
     let mut custom_section_index: std::collections::HashMap<Vec<u8>, usize> = Default::default();
+    let merged_tf_payload = merge_target_features(
+        objects.iter().map(|o| o.parsed.custom_sections.as_slice()),
+    )?;
+    if !merged_tf_payload.is_empty() {
+        custom_section_index.insert(b"target_features".to_vec(), merged_custom_sections.len());
+        merged_custom_sections.push(CustomSection {
+            name: b"target_features".to_vec(),
+            data: merged_tf_payload,
+        });
+    }
     for obj_info in &objects {
         for cs in &obj_info.parsed.custom_sections {
             if cs.name == b"target_features" {
-                // First-wins for target_features.
-                if !custom_section_index.contains_key(&cs.name) {
-                    custom_section_index.insert(cs.name.clone(), merged_custom_sections.len());
-                    merged_custom_sections.push(CustomSection {
-                        name: cs.name.clone(),
-                        data: cs.data.clone(),
-                    });
-                }
-            } else if let Some(&idx) = custom_section_index.get(&cs.name) {
-                // Concatenate data for same-name sections.
+                // Handled above via merge_target_features.
+                continue;
+            }
+            if let Some(&idx) = custom_section_index.get(&cs.name) {
                 merged_custom_sections[idx].data.extend_from_slice(&cs.data);
             } else {
                 custom_section_index.insert(cs.name.clone(), merged_custom_sections.len());
@@ -4387,6 +4394,99 @@ fn read_leb128(data: &[u8]) -> crate::error::Result<(usize, usize)> {
     Err(crate::error!("Unexpected end of LEB128"))
 }
 
+/// Merge the `target_features` custom sections from every input object
+/// per spec §8. Returns the encoded payload (count + {prefix, name_len,
+/// name} entries) for the merged section, or an empty vec when no input
+/// carried a target_features section.
+///
+/// Rules:
+/// - `+` (0x2b): this object USES the feature.
+/// - `-` (0x2d): this object DISALLOWS the feature.
+/// - `=` (0x3d): deprecated REQUIRED; wild treats it the same as USED.
+/// - A feature USED by one input and DISALLOWED by another is a conflict.
+/// - Output carries `+` for every USED feature and `-` for every feature
+///   DISALLOWED by at least one input that no input uses.
+fn merge_target_features<'a>(
+    per_object_custom: impl IntoIterator<Item = &'a [CustomSection]>,
+) -> crate::error::Result<Vec<u8>> {
+    use std::collections::BTreeSet;
+    let mut used: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut disallowed: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut saw_any = false;
+
+    for obj in per_object_custom {
+        for cs in obj {
+            if cs.name != b"target_features" {
+                continue;
+            }
+            saw_any = true;
+            let (count, mut off) = read_leb128(&cs.data)?;
+            for _ in 0..count {
+                if off >= cs.data.len() {
+                    break;
+                }
+                let prefix = cs.data[off];
+                off += 1;
+                let (nlen, c) = read_leb128(&cs.data[off..])?;
+                off += c;
+                if off + nlen > cs.data.len() {
+                    break;
+                }
+                let name = cs.data[off..off + nlen].to_vec();
+                off += nlen;
+                match prefix {
+                    b'+' | b'=' => {
+                        used.insert(name);
+                    }
+                    b'-' => {
+                        disallowed.insert(name);
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "wasm: target_features: unknown prefix byte {prefix:#04x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if !saw_any {
+        return Ok(Vec::new());
+    }
+
+    // Conflict: a feature used by some input and disallowed by another.
+    for name in used.intersection(&disallowed) {
+        crate::bail!(
+            "target_features: feature {:?} is USED by one input and DISALLOWED by another",
+            String::from_utf8_lossy(name)
+        );
+    }
+
+    // Drop disallowed entries that anything uses (they can't both be true;
+    // the conflict check above rules this out, but defensively compute the
+    // set difference so the output is always consistent).
+    let disallowed_only: Vec<Vec<u8>> =
+        disallowed.difference(&used).cloned().collect();
+
+    let mut payload = Vec::new();
+    write_leb128(
+        &mut payload,
+        (used.len() + disallowed_only.len()) as u32,
+    );
+    for name in &used {
+        payload.push(b'+');
+        write_leb128(&mut payload, name.len() as u32);
+        payload.extend_from_slice(name);
+    }
+    for name in &disallowed_only {
+        payload.push(b'-');
+        write_leb128(&mut payload, name.len() as u32);
+        payload.extend_from_slice(name);
+    }
+    Ok(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4503,6 +4603,97 @@ mod tests {
     ///   - a tag section defining one local tag of the same type
     ///   - a linking custom section with one SYMTAB_EVENT symbol for the def
     /// Then round-trip it through parse_wasm_sections and assert the shape.
+    fn tf(entries: &[(u8, &[u8])]) -> Vec<CustomSection> {
+        let mut data = Vec::new();
+        write_leb128(&mut data, entries.len() as u32);
+        for (prefix, name) in entries {
+            data.push(*prefix);
+            write_leb128(&mut data, name.len() as u32);
+            data.extend_from_slice(name);
+        }
+        vec![CustomSection {
+            name: b"target_features".to_vec(),
+            data,
+        }]
+    }
+
+    fn parse_tf(payload: &[u8]) -> Vec<(u8, Vec<u8>)> {
+        let (count, mut off) = read_leb128(payload).unwrap();
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let prefix = payload[off];
+            off += 1;
+            let (nlen, c) = read_leb128(&payload[off..]).unwrap();
+            off += c;
+            let name = payload[off..off + nlen].to_vec();
+            off += nlen;
+            out.push((prefix, name));
+        }
+        out
+    }
+
+    #[test]
+    fn target_features_union_of_used() {
+        let a = tf(&[(b'+', b"atomics"), (b'+', b"simd128")]);
+        let b = tf(&[(b'+', b"atomics"), (b'+', b"bulk-memory")]);
+        let merged = merge_target_features([a.as_slice(), b.as_slice()]).unwrap();
+        let mut got = parse_tf(&merged);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (b'+', b"atomics".to_vec()),
+                (b'+', b"bulk-memory".to_vec()),
+                (b'+', b"simd128".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn target_features_disallowed_without_use_survives() {
+        let a = tf(&[(b'+', b"simd128")]);
+        let b = tf(&[(b'-', b"atomics")]);
+        let merged = merge_target_features([a.as_slice(), b.as_slice()]).unwrap();
+        let mut got = parse_tf(&merged);
+        got.sort_by(|(_, n1), (_, n2)| n1.cmp(n2));
+        assert_eq!(
+            got,
+            vec![
+                (b'-', b"atomics".to_vec()),
+                (b'+', b"simd128".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn target_features_conflict_errors() {
+        let a = tf(&[(b'+', b"atomics")]);
+        let b = tf(&[(b'-', b"atomics")]);
+        let err = merge_target_features([a.as_slice(), b.as_slice()])
+            .expect_err("expected conflict error");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("atomics") && msg.contains("USED") && msg.contains("DISALLOWED"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn target_features_legacy_equals_is_treated_as_used() {
+        // '=' (0x3d) is the deprecated REQUIRED prefix; wild folds it into '+'.
+        let a = tf(&[(b'=', b"multivalue")]);
+        let b = tf(&[(b'-', b"multivalue")]);
+        merge_target_features([a.as_slice(), b.as_slice()])
+            .expect_err("'=' in one input and '-' in another must conflict");
+    }
+
+    #[test]
+    fn target_features_empty_when_no_inputs_carry_section() {
+        let empty: Vec<CustomSection> = Vec::new();
+        let payload = merge_target_features([empty.as_slice()]).unwrap();
+        assert!(payload.is_empty());
+    }
+
     #[test]
     fn tag_section_parse_roundtrip() {
         // Helper to wrap a section payload with id + LEB length prefix.
