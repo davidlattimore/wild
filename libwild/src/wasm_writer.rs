@@ -3931,7 +3931,42 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             data: merged_producers_payload,
         });
     }
-    for obj_info in &objects {
+
+    // Output byte offset of each defined function's body within the output
+    // CODE section payload. Layout: `count_leb` followed by per-function
+    // `{size_leb, body}`. Indexed by position in `functions` (i.e. the
+    // wasm-binary function index minus num_imported_functions).
+    let mut output_code_body_offsets: Vec<u32> = Vec::with_capacity(functions.len());
+    {
+        let mut cursor = leb128_len(functions.len() as u32) as u32;
+        for f in &functions {
+            let size_leb = leb128_len(f.body.len() as u32) as u32;
+            output_code_body_offsets.push(cursor + size_leb);
+            cursor += size_leb + f.body.len() as u32;
+        }
+    }
+
+    // Offset at which each obj's contribution to a given custom section
+    // starts in the merged output data. Built by simulating the merge in
+    // input order so that relocs referencing the obj's own .debug_* section
+    // can be patched with the correct output offset.
+    let mut contrib_offsets: Vec<std::collections::HashMap<Vec<u8>, u32>> =
+        vec![Default::default(); objects.len()];
+    {
+        let mut running: std::collections::HashMap<Vec<u8>, u32> = Default::default();
+        for (obj_idx, obj_info) in objects.iter().enumerate() {
+            for cs in &obj_info.parsed.custom_sections {
+                if cs.name == b"target_features" || cs.name == b"producers" {
+                    continue;
+                }
+                let start = *running.get(&cs.name).unwrap_or(&0);
+                contrib_offsets[obj_idx].insert(cs.name.clone(), start);
+                running.insert(cs.name.clone(), start + cs.data.len() as u32);
+            }
+        }
+    }
+
+    for (obj_idx, obj_info) in objects.iter().enumerate() {
         for cs in &obj_info.parsed.custom_sections {
             if cs.name == b"target_features" || cs.name == b"producers" {
                 // Handled above via merge_target_features / merge_producers.
@@ -4006,15 +4041,49 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                 unresolved
                             }
                         }
-                        // R_WASM_FUNCTION_OFFSET_I32 (8) and
-                        // R_WASM_SECTION_OFFSET_I32 (9) reference a byte
-                        // offset within the linker's code/custom sections.
-                        // Wild does not reorder, so the compiler's
-                        // placeholder bytes already hold the correct value
-                        // for single-object links. Multi-object debug info
-                        // would need per-input offset shifts — follow-up
-                        // work when a test depends on it.
-                        8 | 9 => continue,
+                        8 => {
+                            // R_WASM_FUNCTION_OFFSET_I32 — offset within the
+                            // output CODE section payload of `sym`'s function
+                            // body, plus the reloc addend. Undefined /
+                            // GC'd functions fall back to the unresolved
+                            // sentinel so debug readers know the reference
+                            // is dead.
+                            let body_start = sym
+                                .filter(|s| s.kind == 0)
+                                .and_then(effective_name)
+                                .and_then(|n| function_name_map.get(&n).copied())
+                                .and_then(|wasm_idx| {
+                                    wasm_idx
+                                        .checked_sub(num_imported_functions)
+                                        .and_then(|pos| {
+                                            output_code_body_offsets.get(pos as usize).copied()
+                                        })
+                                });
+                            match body_start {
+                                Some(off) => (off as i64 + reloc.addend as i64) as u32,
+                                None => unresolved,
+                            }
+                        }
+                        9 => {
+                            // R_WASM_SECTION_OFFSET_I32 — offset within the
+                            // target custom section's merged output data,
+                            // where this obj's contribution starts, plus the
+                            // reloc addend. The target is a kind-3 section
+                            // symbol whose `index` names an input section.
+                            let target = sym
+                                .filter(|s| s.kind == 3)
+                                .and_then(|s| {
+                                    obj_info
+                                        .parsed
+                                        .section_index_to_name
+                                        .get(&s.index)
+                                })
+                                .and_then(|name| contrib_offsets[obj_idx].get(name).copied());
+                            match target {
+                                Some(off) => (off as i64 + reloc.addend as i64) as u32,
+                                None => unresolved,
+                            }
+                        }
                         _ => continue,
                     };
                     patched[off_in_data..off_in_data + 4]
@@ -4177,6 +4246,10 @@ struct ParsedInput {
     data_segments: Vec<ParsedDataSegment>,
     /// COMDAT groups (spec §7): (group_name, [(kind, index)]).
     comdat_groups: Vec<(Vec<u8>, Vec<(u8, u32)>)>,
+    /// Input section-index → custom-section name, for resolving kind-3
+    /// (SYMTAB_SECTION) symbols referenced by R_WASM_SECTION_OFFSET_I32.
+    /// Only custom sections are populated; other section kinds are absent.
+    section_index_to_name: std::collections::HashMap<u32, Vec<u8>>,
 }
 
 struct ParsedFunction {
@@ -4525,6 +4598,10 @@ fn parse_wasm_sections(data: &[u8]) -> crate::error::Result<ParsedInput> {
             }
             custom_relocations
         },
+        section_index_to_name: custom_section_position
+            .iter()
+            .map(|(&idx, name)| (idx as u32, name.clone()))
+            .collect(),
     })
 }
 
@@ -5265,6 +5342,16 @@ fn write_section(out: &mut Vec<u8>, section_id: u8, payload: &[u8]) {
     out.push(section_id);
     write_leb128(out, payload.len() as u32);
     out.extend_from_slice(payload);
+}
+
+/// Number of bytes an unsigned LEB128 encoding of `value` would occupy.
+fn leb128_len(mut value: u32) -> usize {
+    let mut n = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        n += 1;
+    }
+    n
 }
 
 /// Write an unsigned LEB128 value.
