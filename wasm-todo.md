@@ -144,6 +144,55 @@ leveraging wild's generic pipeline. Longer-term improvements:
 - Move relocation application into the generic writer framework
 - Use pipeline section layout for memory offset assignment
 
+## Implemented but untested
+
+Features landed in code with no dedicated test in wild's wasm suite.
+Priority candidates for follow-up test cases. Each line names the
+shipping commit (where applicable) and what would need to be exercised.
+
+### Relocation handlers
+
+- `R_WASM_GLOBAL_INDEX_I32` (13), `TABLE_NUMBER_LEB` (20),
+  `FUNCTION_INDEX_I32` (26) — `bbfae0a`. Need a `.s` or `.ll` test
+  that emits each and checks the patched bytes.
+- `R_WASM_MEMORY_ADDR_LEB64` (14), `SLEB64` (15), `I64` (16) —
+  `87bf606`. Need a memory64 object exercising each width.
+- `R_WASM_TABLE_INDEX_SLEB64` (18), `I64` (19),
+  `FUNCTION_OFFSET_I64` (22) — `87bf606`. Same memory64 dependency.
+- `R_WASM_MEMORY_ADDR_REL_SLEB` (11), `TABLE_INDEX_REL_SLEB` (12),
+  `MEMORY_ADDR_REL_SLEB64` (17), `MEMORY_ADDR_LOCREL_I32` (23),
+  `TABLE_INDEX_REL_SLEB64` (24), `MEMORY_ADDR_TLS_SLEB64` (25) —
+  `09bde02`. PIC / memory64 / TLS paths.
+- `R_WASM_TAG_INDEX_LEB` (10) — `f4ca707` + `53bdad4`. Need an EH
+  object with a tag ref.
+
+### EH / tag pipeline
+
+- Tag section (id 13) parse + concat → emit. Round-trip test needed.
+- Kind-4 (`SYMTAB_EVENT`) symbol merging with §9.2 strong/weak,
+  §7 COMDAT (kind 3) dedup, hidden-visibility filtering.
+- Kind-0x04 tag exports (explicit `WASM_SYM_EXPORTED` and
+  `--export-dynamic`).
+- Tag import kind 0x04 in the import section.
+
+### LEB / SLEB writers
+
+- `write_padded_leb128_u64` / `write_padded_sleb128_i64` — `87bf606`.
+  Need round-trip unit tests with edge values (0, MAX, MIN, -1, 1).
+  Especially worth it given the SLEB64 terminator-byte sign logic.
+
+### Writer and validator plumbing
+
+- Unhandled-reloc `tracing::warn!` dedup — `9b4ba5f`. A targeted test
+  that feeds an unknown reloc type and checks the warning fires once.
+- Section-order validator using *logical* positions (datacount and
+  tag) — covered by the existing output format but the ordering rule
+  itself has no negative test.
+- Tidy CRLF exemption for `wild/tests/lld-wasm/Inputs/libstub.so` —
+  `255160b`. Relies on the `.gitattributes` entry staying put; a
+  test asserting both file contents and attribute would catch
+  accidental removal.
+
 ## Test suite skips — mapping to gaps
 
 The `KNOWN_PASSING` allow-list in `wild/tests/lld_wasm_tests.rs` skips
