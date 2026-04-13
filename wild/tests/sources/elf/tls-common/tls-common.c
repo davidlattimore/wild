@@ -9,7 +9,7 @@
 //#DiffIgnore:section.got
 //#DiffIgnore:.dynamic.*
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 __thread int tvar __attribute__((common));
 

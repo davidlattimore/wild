@@ -2,7 +2,7 @@
 //#Object:wrap-real-only2.c
 //#LinkArgs:--wrap=foo
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // Note that `__wrap_foo` is not defined anywhere.
 int __real_foo(void);

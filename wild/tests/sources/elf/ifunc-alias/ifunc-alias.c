@@ -12,9 +12,9 @@
 //#CompArgs:-fno-pie
 //#DiffIgnore:section.rela.plt.link
 
+#include "../common/runtime.h"
 #include "ifunc_init.h"
 #include "init.h"
-#include "runtime.h"
 
 static int target_func(void) { return 42; }
 

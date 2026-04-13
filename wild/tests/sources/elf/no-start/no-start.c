@@ -11,7 +11,7 @@
 //#LinkArgs:-z now --gc-sections
 //#RunEnabled:false
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // Provided this is the first function, it'll get used as the entry point - at
 // least by GNU ld. LLD doesn't set an entry point in this case.

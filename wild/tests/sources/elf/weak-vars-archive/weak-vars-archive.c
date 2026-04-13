@@ -3,7 +3,7 @@
 //#Object:runtime.c
 //#CompArgs:-fno-stack-protector
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 #if (VARIANT & 1) != 0
 int weak_var1 __attribute__((weak)) = 2;  // 64

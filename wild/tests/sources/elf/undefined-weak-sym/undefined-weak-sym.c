@@ -10,7 +10,7 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:rel.undefined-weak.dynamic.R_X86_64_GLOB_DAT
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 #define WEAK __attribute__((weak))
 

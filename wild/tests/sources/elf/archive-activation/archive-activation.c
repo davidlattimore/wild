@@ -69,7 +69,7 @@
 //#ThinArchive:runtime.c
 //#ThinArchive:empty.a
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int bar(void);
 int does_not_exist(void);

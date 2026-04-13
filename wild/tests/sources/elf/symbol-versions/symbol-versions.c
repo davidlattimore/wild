@@ -30,7 +30,7 @@
 //#Config:with-escaping:verdef
 //#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo(void);
 int bar_global(void);

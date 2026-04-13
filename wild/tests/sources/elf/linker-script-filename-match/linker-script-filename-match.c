@@ -8,7 +8,7 @@
 //#ExpectSym:app_code section=".text.app"
 //#ExpectSym:begin_here section=".text"
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 extern int startup_code(void);
 extern int app_code(void);

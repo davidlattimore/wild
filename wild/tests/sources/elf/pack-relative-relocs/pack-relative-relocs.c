@@ -31,8 +31,8 @@
 //#EnableLinker:lld
 //#SkipLinker:ld
 
+#include "../common/runtime.h"
 #include "init.h"
-#include "runtime.h"
 
 int target = 42;
 

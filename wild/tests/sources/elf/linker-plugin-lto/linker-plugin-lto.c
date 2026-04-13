@@ -84,7 +84,7 @@
 //#Archive:empty.c:-flto
 //#ExpectError:(Error from linker plugin: Invalid parallelism level: foo|Wild was compiled without linker-plugin support)
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo();
 

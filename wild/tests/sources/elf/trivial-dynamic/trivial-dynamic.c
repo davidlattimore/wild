@@ -31,7 +31,7 @@
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
 //#ExpectDynamic:DT_FLAGS
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo(void);
 

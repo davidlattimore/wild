@@ -27,9 +27,9 @@
 //#ExpectSym:compute_value32$plt section=".plt.got"
 //#NoSym:compute_unused$plt
 
+#include "../common/runtime.h"
 #include "ifunc_init.h"
 #include "init.h"
-#include "runtime.h"
 
 extern int compute_value10(void);
 extern int compute_value32(void);

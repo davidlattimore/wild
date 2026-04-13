@@ -4,7 +4,7 @@
 //#Object:runtime.c
 //#EnableLinker:lld
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int a;
 extern int data[];

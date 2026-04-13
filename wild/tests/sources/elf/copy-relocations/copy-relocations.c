@@ -11,7 +11,7 @@
 //#ExpectSym:_start section=".text"
 //#ExpectSym:w4
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // These two symbols are at the same address in the shared object, so references
 // to both should point to the same copy relocation and that location should be

@@ -21,7 +21,7 @@
 //#Archive:shared-priority-1.c
 //#Shared:shared-priority-2.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo(void);
 

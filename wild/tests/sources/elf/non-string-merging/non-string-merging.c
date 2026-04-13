@@ -21,7 +21,7 @@
 //#DiffIgnore:segment.PT_DYNAMIC.*
 //#DiffIgnore:section.got
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 extern const char s1h[];
 extern const char s2h[];

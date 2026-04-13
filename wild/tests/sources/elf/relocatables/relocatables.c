@@ -2,7 +2,7 @@
 //#Object:runtime.c
 //#Relocatable:relocatable-1.c,relocatable-2.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int add(int, int);
 int subtract(int, int);

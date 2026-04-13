@@ -9,7 +9,7 @@
 //#DiffIgnore:rel.R_X86_64_PC32.R_X86_64_PC32
 //#DiffIgnore:rel.R_AARCH64_CALL26.R_AARCH64_CALL26
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // Defined weakly in wrap-1, but that gets overridden by the strong definition
 // in wrap-2.

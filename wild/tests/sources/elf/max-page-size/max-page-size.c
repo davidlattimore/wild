@@ -19,7 +19,7 @@
 // It seems that large page sizes are not permitted in RISC-V QEMU
 //#SkipArch: riscv64
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int _start() {
   runtime_init();

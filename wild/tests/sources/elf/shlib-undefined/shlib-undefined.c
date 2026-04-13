@@ -44,7 +44,7 @@
 // object. We probably should too.
 //#DiffIgnore:file-header.entry
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int def1(void) { return 100; }
 

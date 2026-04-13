@@ -1,4 +1,4 @@
-#include "runtime.h"
+#include "../common/runtime.h"
 
 void _start(void) {
   runtime_init();

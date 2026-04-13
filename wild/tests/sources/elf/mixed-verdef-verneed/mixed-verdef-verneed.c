@@ -8,7 +8,7 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:section.got
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int from_so(void);
 

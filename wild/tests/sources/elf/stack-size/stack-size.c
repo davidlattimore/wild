@@ -5,7 +5,7 @@
 //#LinkArgs:-z stack-size=0x1000 -z now
 //#DiffIgnore:section.note.gnu.property
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 void _start() {
   runtime_init();

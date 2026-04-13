@@ -1,7 +1,7 @@
 //#Object:runtime.c
 //#TestUpdateInPlace:true
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 #define ALIGNMENT 65536
 

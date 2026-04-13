@@ -13,7 +13,7 @@
 //#Config:object:default
 //#Object:custom_section0.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 static int foo1 __attribute__((used, section("foo"))) = 2;
 static int foo2 __attribute__((used, section("foo"))) = 5;

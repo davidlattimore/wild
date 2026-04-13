@@ -14,7 +14,7 @@
 //#Shared:hidden-ref-1.c
 //#Archive:hidden-ref-2.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 __attribute__((visibility(("hidden")))) int foo(void);
 

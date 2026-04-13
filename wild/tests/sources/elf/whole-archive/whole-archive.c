@@ -2,7 +2,7 @@
 //#LinkArgs:--whole-archive
 //#Archive:whole_archive0.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 extern int __start_foo[];
 extern int __stop_foo[];

@@ -3,7 +3,7 @@
 //#Object:runtime.c
 //#TestUpdateInPlace:true
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int v0(void);
 int v1(void);

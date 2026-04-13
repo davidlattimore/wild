@@ -34,7 +34,7 @@
 //#LinkArgs:--error-unresolved-symbols
 //#ExpectError:foo
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo();
 

@@ -10,7 +10,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // This function is defined weakly in all the files, except the last shared
 // object, which defines it strongly. The definition used should be the first
