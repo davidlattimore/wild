@@ -35,7 +35,7 @@ pub use module::WasmModule;
 /// (e.g. dedup frees funcs → DCE removes them → type_gc frees types).
 /// Capped at a handful of iterations so a pathological no-convergence case
 /// still terminates.
-const MAX_FIXPOINT_ITERATIONS: usize = 10;
+const MAX_FIXPOINT_ITERATIONS: usize = 40;
 
 /// Optimise a WASM module with linker-supplied metadata. Lets passes that
 /// can use closed-world / call-graph / reachability information do so;
@@ -45,12 +45,14 @@ const MAX_FIXPOINT_ITERATIONS: usize = 10;
 pub fn optimise_with_hints<H: linker_hints::LinkerHints>(input: &[u8], hints: &H) -> Vec<u8> {
     if WasmModule::parse(input).is_err() { return input.to_vec(); }
     let mut current = input.to_vec();
+    let mut best = current.clone();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let next = optimise_once_with_hints(&current, Some(hints));
         if next == current { break; }
+        if next.len() < best.len() { best = next.clone(); }
         current = next;
     }
-    current
+    best
 }
 
 /// Optimise a WASM module. Returns the optimised bytes.
@@ -90,12 +92,14 @@ fn optimise_inner(input: &[u8]) -> Vec<u8> {
         return optimise_with_hints(input, &hints);
     }
     let mut current = input.to_vec();
+    let mut best = current.clone();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let next = optimise_once(&current);
         if next == current { break; }
+        if next.len() < best.len() { best = next.clone(); }
         current = next;
     }
-    current
+    best
 }
 
 fn optimise_once(input: &[u8]) -> Vec<u8> {
