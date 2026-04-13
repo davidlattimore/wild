@@ -3628,7 +3628,12 @@ impl Clone for LinkCommand {
     }
 }
 
-fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
+fn diff_shared_objects(config: &Config, programs: &[Program]) -> Result {
+    // If we're using a single linker for all shared objects, then there's nothing to diff.
+    if config.so_single_linker.is_some() {
+        return Ok(());
+    }
+
     // All our programs should have the same number of shared objects and they should be in the same
     // order. We use this to group shared objects at the corresponding index so that we can then
     // diff them.
@@ -3644,7 +3649,7 @@ fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
     for so_group in so_groups {
         let filenames = so_group.iter().map(|i| i.path.clone()).collect_vec();
         diff_files(
-            instructions,
+            config,
             filenames,
             // Shared objects should always have a command.
             so_group.last().unwrap().command.as_ref().unwrap(),
