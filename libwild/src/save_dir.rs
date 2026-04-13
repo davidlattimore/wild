@@ -160,8 +160,24 @@ impl SaveDirState {
 
         let mut original_output_file = None;
         write_env(&mut out, args)?;
+
+        // Collect at-file setup code and exec args separately so we can emit setup
+        // code before the exec line.
+        let mut setup_buf: Vec<u8> = Vec::new();
+        let mut args_buf: Vec<u8> = Vec::new();
+        let mut at_file_counter = 0usize;
+        self.write_args(
+            &self.args,
+            &mut args_buf,
+            &mut setup_buf,
+            &mut original_output_file,
+            &mut at_file_counter,
+            false,
+        )?;
+
+        out.write_all(&setup_buf)?;
         out.write_all(b"exec \"$@\"")?;
-        self.write_args(&self.args, &mut out, &mut original_output_file)?;
+        out.write_all(&args_buf)?;
 
         if let Some(orig) = original_output_file {
             out.write_all(b"\n# Original output file: ")?;
@@ -173,22 +189,78 @@ impl SaveDirState {
         Ok(())
     }
 
+    /// Writes arguments to `out`.
+    ///
+    /// When `is_at_file` is false (writing the main run-with script), each `@file` argument is
+    /// saved as a separate file in the save-dir with path substitutions applied. The shell script
+    /// setup code (temp-file creation + `envsubst` expansion) is emitted to `setup_out`, and the
+    /// argument becomes `@$WILD_AT_N` in the exec line.
+    ///
+    /// When `is_at_file` is true (writing saved at-file content), nested `@file` arguments are
+    /// expanded inline so the at-file content stays self-contained.
     fn write_args(
         &self,
         args: &[String],
-        out: &mut BufWriter<&mut std::fs::File>,
+        out: &mut dyn Write,
+        setup_out: &mut dyn Write,
         original_output_file: &mut Option<String>,
+        at_file_counter: &mut usize,
+        is_at_file: bool,
     ) -> Result {
         let mut args = args.iter();
 
         while let Some(arg) = args.next() {
             if let Some(args_path) = arg.strip_prefix("@") {
                 let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
-                self.write_args(&args_from_file, out, original_output_file)?;
+
+                if is_at_file {
+                    // Expand nested @-files inline into the current at-file.
+                    self.write_args(
+                        &args_from_file,
+                        out,
+                        setup_out,
+                        original_output_file,
+                        at_file_counter,
+                        true,
+                    )?;
+                } else {
+                    // Save to a separate file and reference it via a temp variable.
+                    let at_index = *at_file_counter;
+                    *at_file_counter += 1;
+                    let at_filename = format!("at-{at_index}.txt");
+                    let at_path = self.dir.join(&at_filename);
+
+                    {
+                        let mut at_file = std::fs::File::create(&at_path)
+                            .with_context(|| format!("Failed to create `{}`", at_path.display()))?;
+                        let mut at_out = BufWriter::new(&mut at_file);
+                        let mut dummy_orig = None;
+                        let mut noop_setup: Vec<u8> = Vec::new();
+                        self.write_args(
+                            &args_from_file,
+                            &mut at_out,
+                            &mut noop_setup,
+                            &mut dummy_orig,
+                            at_file_counter,
+                            true,
+                        )?;
+                        at_out.flush()?;
+                    }
+
+                    write!(
+                        setup_out,
+                        "WILD_AT_{at_index}=$(mktemp)\n\
+                         envsubst '$D $OUT' < \"$D/{at_filename}\" > \"$WILD_AT_{at_index}\"\n\
+                         trap \"rm -f \\\"$WILD_AT_{at_index}\\\"\" EXIT\n"
+                    )?;
+
+                    write_script_arg_separator(out)?;
+                    write!(out, "@$WILD_AT_{at_index}")?;
+                }
                 continue;
             }
 
-            out.write_all(b" \\\n  ")?;
+            write_arg_separator(out, is_at_file)?;
 
             if let Some(mut path) = arg.strip_prefix("-o") {
                 if path.is_empty() {
@@ -215,6 +287,10 @@ impl SaveDirState {
                 let path = std::path::absolute(maybe_path)?;
                 if self.output_path(&path).exists() {
                     write_copied_file_arg(out, &path)?;
+                } else if is_at_file {
+                    // At-file content is consumed directly by the linker, not by a shell, so no
+                    // shell escaping is needed.
+                    out.write_all(maybe_path.as_bytes())?;
                 } else {
                     for b in maybe_path.bytes() {
                         if b" $\\".contains(&b) {
@@ -491,7 +567,23 @@ fn make_relative_path(target: &Path, directory: &Path) -> Option<PathBuf> {
     Some(out)
 }
 
-fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
+/// Writes the separator used between arguments in the main run-with shell script.
+fn write_script_arg_separator(out: &mut dyn Write) -> Result {
+    out.write_all(b" \\\n  ")?;
+    Ok(())
+}
+
+/// Writes the appropriate argument separator for the current output mode.
+fn write_arg_separator(out: &mut dyn Write, is_at_file: bool) -> Result {
+    if is_at_file {
+        out.write_all(b"\n")?;
+    } else {
+        write_script_arg_separator(out)?;
+    }
+    Ok(())
+}
+
+fn write_copied_file_arg(out: &mut dyn Write, path: &Path) -> Result {
     out.write_all(b"$D/")?;
     out.write_all(to_output_relative_path(path).as_os_str().as_encoded_bytes())?;
     Ok(())
