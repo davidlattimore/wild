@@ -558,6 +558,62 @@ Each milestone reports, on the full binaryen corpus:
 A milestone that doesn't pay off in size or speed is reverted, not
 shipped behind a flag. Code rot is more expensive than re-derivation.
 
+## Deferred / future work (no commitment, just so it's tracked)
+
+### Layout for compression
+
+Reorder items within each section (functions, data segments, type
+entries) so that adjacent items share more bytes. The result is a
+spec-compliant `.wasm` that compresses (gzip / brotli) noticeably
+smaller. Wasm-opt does *call-frequency*-based reordering for cache
+locality but doesn't aim at compression; this would be a genuine
+asymmetric advantage.
+
+What's needed:
+
+- Compute a "byte-similarity" score per item (n-gram shingle Jaccard
+  or SimHash).
+- Cluster similar items adjacent (greedy nearest-neighbour suffices).
+- Reuse existing index-remapping infrastructure (`dce`, `type_gc`,
+  `reorder`) to update all references after reordering.
+- Add a compressed-bytes column to the comparison harness (`gzip -9`
+  / `brotli -q 11`) so we can measure wins on what matters.
+- Guard: only commit a reordering if it's a wire-size win.
+
+Caveats:
+
+- Mild streaming-compile-latency cost on large modules; consider
+  keeping the start function + a small "hot" prefix at the front.
+- Determinism is essential; pick a stable tie-breaker.
+
+Estimated effort: ~3-5 days. Could plausibly reach 120-130%+ of
+wasm-opt's *compressed* size savings (a metric wasm-opt doesn't
+target).
+
+### Cross-BB simplify_locals (in progress as a separate task)
+
+Real liveness analysis on the CFG: backward dataflow to compute
+per-BB `live_in`/`live_out`, then mark `local.set X` dead when X
+is not live at the set's exit. Catches dead stores split by control
+flow that the current single-BB pass bails on. Estimate +10-15pp on
+the comparison.
+
+### Multi-callsite inliner with cost model
+
+Allow inlining when `call_count > 1` if the body is small enough
+that `N × inlined_size` beats `original_size + N × call_overhead`.
+Probably +1-2pp.
+
+### Cross-BB const propagation
+
+Extend `const_prop` to track bindings across BB joins (intersection
+of incoming bindings). Estimate +0.5-1pp.
+
+### Function merging
+
+Hash function bodies; identical bodies become a single function with
+multiple call sites pointing at it. ~150 LOC. Estimate +1-3pp.
+
 ## Open questions to settle before M1
 
 - **Hints object lifetime.** Does `optimise_with_hints` take `&H` for the
