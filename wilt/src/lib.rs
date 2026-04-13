@@ -35,7 +35,7 @@ pub use module::WasmModule;
 /// (e.g. dedup frees funcs → DCE removes them → type_gc frees types).
 /// Capped at a handful of iterations so a pathological no-convergence case
 /// still terminates.
-const MAX_FIXPOINT_ITERATIONS: usize = 6;
+const MAX_FIXPOINT_ITERATIONS: usize = 10;
 
 /// Optimise a WASM module with linker-supplied metadata. Lets passes that
 /// can use closed-world / call-graph / reachability information do so;
