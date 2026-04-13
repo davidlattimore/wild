@@ -47,6 +47,58 @@ fn hints_never_regress_size() {
 }
 
 #[test]
+fn m6_inliner_v2_single_callsite() {
+    // With hints declaring $helper internal AND it has exactly one
+    // caller, wilt should inline the body. Without hints, wilt should
+    // not (no closed-world guarantee → could grow). Either way the
+    // output validates.
+    let input = assemble("inliner_v2_single_callsite.wat");
+    assert!(validates(&input));
+
+    let plain = wilt::optimise(&input);
+    assert!(validates(&plain));
+
+    let mut hints = FixedHints::default();
+    // Func 0 is $helper (no imports). Mark internal.
+    hints.internal.insert(0);
+    let with = wilt::optimise_with_hints(&input, &hints);
+    assert!(validates(&with));
+
+    // Hint-aware path must not be larger.
+    assert!(
+        with.len() <= plain.len(),
+        "hint-aware inliner regressed size: standalone {} vs hints {}",
+        plain.len(), with.len(),
+    );
+}
+
+#[test]
+fn m7_devirt_singleton_table() {
+    let input = assemble("devirt_singleton_table.wat");
+    assert!(validates(&input));
+
+    let plain = wilt::optimise(&input);
+    assert!(validates(&plain));
+
+    // Hint: table 0 has just one target — function index 1 ($target,
+    // since $target is defined func 1 with the elem slot 0).
+    // Note: $target is index 0 (defined funcs come after imports — none
+    // here — so $target=0, $caller=1). The element points at $target=0.
+    let mut hints = FixedHints::default();
+    hints.tables.insert(0, vec![0]);
+    // Mark $target reachable — devirt doesn't need is_internal but
+    // downstream passes (DCE) might keep $target as ref.func target.
+    hints.ref_funcs.push(0);
+    let with = wilt::optimise_with_hints(&input, &hints);
+    assert!(validates(&with));
+    assert!(
+        with.len() <= plain.len(),
+        "devirt regressed size: standalone {} vs hints {}",
+        plain.len(), with.len(),
+    );
+}
+
+#[test]
 fn full_corpus_hints_output_validates() {
     // Every regression fixture: optimise with empty FixedHints (which
     // means "every function is external — assume nothing", strictly more

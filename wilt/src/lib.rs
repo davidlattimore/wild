@@ -94,7 +94,9 @@ fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::Linke
             passes::remove_unused_brs::apply_mut(&mut m);
             passes::merge_blocks::apply_mut(&mut m);
             passes::simplify_locals::apply_mut(&mut m);
-            passes::inline_trivial::apply_mut(&mut m);
+            passes::devirt::apply_mut_with_hints(&mut m, hints);
+            passes::inline_trivial::apply_mut_with_hints(&mut m, hints);
+            passes::dead_globals::apply_mut_with_hints(&mut m, hints);
             passes::dae::apply_mut_with_hints(&mut m, hints);
             passes::reorder_locals::apply_mut(&mut m);
             passes::memory_packing::apply_mut(&mut m);

@@ -8,6 +8,8 @@ pub mod compress;
 pub mod const_fold;
 pub mod dae;
 pub mod dce;
+pub mod dead_globals;
+pub mod devirt;
 pub mod dedup;
 pub mod dedup_imports;
 pub mod inline_trivial;
