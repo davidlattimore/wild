@@ -201,8 +201,11 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
         }
     }
 
-    // M6 phase 2/3/4/5 — `(T...) -> R?` body inlining.
-    if is_unique_caller && sig.0 > 0 && sig.1 <= 1 {
+    // M6 phase 2-6 — general inliner: any params, any declared locals,
+    // any `return`/br pattern, 0 or 1 result valtype. Phase 1 above
+    // catches the trivial verbatim-paste case (no params, no locals,
+    // no control flow) — this entry covers everything else.
+    if is_unique_caller && sig.1 <= 1 {
         let body_instrs = &body[locals_end..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
@@ -261,28 +264,32 @@ fn safe_to_inline_no_locals(body: &[u8], instrs_start: usize) -> bool {
     !iter.failed()
 }
 
-/// Phase-2/3 safety predicate. Locals 0..n_params allowed; nothing
-/// higher. `return` is allowed but flagged (caller wraps + rewrites).
-/// `br`/`br_if`/`br_table`/`call_indirect` still disallowed.
-fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_params: u32)
+/// Phase 2-6 safety predicate. Locals 0..n_locals allowed; nothing
+/// higher. `return` and `br`/`br_if`/`br_table` are allowed and force
+/// the caller to wrap the inlined body in a `block`. The wrap absorbs
+/// the function frame's role for any br whose target was the function
+/// (L == enclosing-count); inner brs (L < enclosing-count) work
+/// unchanged because wasm labels are relative to enclosing frames.
+/// `call_indirect` still bails — table semantics complicate things.
+fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_locals: u32)
     -> (bool, bool)
 {
     let mut iter = InstrIter::new(body, instrs_start);
-    let mut has_return = false;
+    let mut needs_wrap = false;
     while let Some((p, _)) = iter.next() {
         let op = body[p];
         match op {
             0x20 | 0x21 | 0x22 => {
                 let Some((k, _)) = leb128::read_u32(&body[p + 1..]) else { return (false, false) };
-                if k >= n_params { return (false, false); }
+                if k >= n_locals { return (false, false); }
             }
-            0x0F => has_return = true,
-            0x0C | 0x0D | 0x0E | 0x11 => return (false, false),
+            0x0F | 0x0C | 0x0D | 0x0E => needs_wrap = true,
+            0x11 => return (false, false),
             _ => {}
         }
     }
     if iter.failed() { return (false, false); }
-    (true, has_return)
+    (true, needs_wrap)
 }
 
 /// Rewrite every `return` opcode in `body` (already locals-stripped
@@ -599,10 +606,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_inline_when_body_has_branch() {
-        // br 0 — control flow we don't yet rewire.
+    fn phase6_accepts_body_with_internal_branch() {
+        // body: block; br 0; end; end.  Used to bail; phase 6 wraps
+        // and trusts wasm's structured CF: br L semantics are unchanged
+        // from the body's perspective because the wrap only adds an
+        // OUTER frame.
         let body = [0, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
-        assert!(classify(&body, (0, 0), true).is_none());
+        let entry = classify(&body, (0, 0), true);
+        // Should classify as ReplaceWithBodyParams with wrap_for_return.
+        match entry {
+            Some(Trivial::ReplaceWithBodyParams { wrap_for_return: true, .. }) => {}
+            _ => panic!("phase 6 should classify body-with-br as ReplaceWithBodyParams + wrap"),
+        }
     }
 
     #[test]
