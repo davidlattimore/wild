@@ -44,19 +44,19 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
     // bloating the module on multi-call functions.
     let call_counts = count_call_sites(m, num_imports, num_bodies);
 
-    // Classify each defined function's body. ReplaceWithBody*  variants
-    // both require unique-caller AND closed-world is_internal — without
-    // the latter, DCE may not reap the orphaned callee and the module
-    // grows.
+    // Classify each defined function's body. ReplaceWithBody* variants
+    // require closed-world is_internal AND a profitability check —
+    // unique-caller is always profitable; multi-callsite is gated on
+    // the per-site inlined-size vs callee-overhead cost model.
     let mut trivial: Vec<Option<Trivial>> = Vec::with_capacity(num_bodies);
     let func_types = read_defined_func_type_indices(&wm).unwrap_or_default();
     for i in 0..num_bodies {
         let body = m.body_bytes(i);
         let abs_idx = num_imports + i as u32;
         let sig = sigs.func_sig(abs_idx).unwrap_or((0, 0));
-        let is_unique = call_counts.get(i).copied() == Some(1);
-        let inline_safe = is_unique && hints.is_some_and(|h| h.is_internal(abs_idx));
-        let mut entry = classify(body, sig, inline_safe);
+        let n_callers = call_counts.get(i).copied().unwrap_or(0);
+        let internal = hints.is_some_and(|h| h.is_internal(abs_idx));
+        let mut entry = classify(body, sig, n_callers, internal);
         // Patch ReplaceWithBodyParams's param_types + result_blocktype.
         if let Some(Trivial::ReplaceWithBodyParams {
             param_types, result_blocktype, ..
@@ -148,7 +148,33 @@ enum Trivial {
 /// behaviour predictable.
 const MAX_INLINE_BODY_BYTES: usize = 64;
 
-fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Trivial> {
+/// Cost model for multi-callsite inlining. Original size (callee
+/// definition + N call instructions) is roughly `body_total + 5 + N*2`.
+/// After inlining: callee removed, each call replaced by inlined_size
+/// bytes. Wins iff `N * (inlined_size - 2) < body_total + 5`.
+fn multi_caller_profitable(
+    body_total: usize, n_params: u32, has_wrap: bool, n_callers: u32,
+) -> bool {
+    if n_callers == 0 { return false; }
+    if n_callers == 1 { return true; }
+    let body_instr_bytes = body_total.saturating_sub(1);
+    let inlined_size =
+        body_instr_bytes
+        + 2 * n_params as usize           // local.set chain
+        + if has_wrap { 2 } else { 0 };   // block + end
+    let added_per_site = inlined_size as i64 - 2;
+    let total_added = n_callers as i64 * added_per_site;
+    let callee_savings = body_total as i64 + 5;
+    callee_savings > total_added
+}
+
+fn classify(
+    body: &[u8],
+    sig: (u32, u32),
+    n_callers: u32,
+    internal: bool,
+) -> Option<Trivial> {
+    let is_unique_caller = n_callers == 1;
     // Parse locals header. Phase 5 supports callees with declared locals.
     let (locals_end, declared_types) = parse_locals_header(body)?;
 
@@ -190,22 +216,28 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
         }
     }
 
+    // The inline-paste variants (ReplaceWithBody*) need closed-world
+    // visibility (`internal`) so DCE can reap the orphaned callee.
+    if !internal { return None; }
+    let _ = is_unique_caller;
+
     // M6 phase 1 — `() -> ()` no-locals body inlining (verbatim paste).
-    if is_unique_caller && sig == (0, 0) && no_declared {
+    if sig == (0, 0) && no_declared {
         let body_instrs = &body[locals_end..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
             && safe_to_inline_no_locals(body, locals_end)
+            && multi_caller_profitable(body.len(), 0, false, n_callers)
         {
             return Some(Trivial::ReplaceWithBody(body_instrs.to_vec()));
         }
     }
 
-    // M6 phase 2-6 — general inliner: any params, any declared locals,
-    // any `return`/br pattern, 0 or 1 result valtype. Phase 1 above
-    // catches the trivial verbatim-paste case (no params, no locals,
-    // no control flow) — this entry covers everything else.
-    if is_unique_caller && sig.1 <= 1 {
+    // M6 phase 2-7 — general inliner: any params, any declared locals,
+    // any `return`/br pattern, any `call`/`call_indirect`, 0 or 1
+    // result valtype. Now also: any number of callers if the cost
+    // model says it's a win.
+    if sig.1 <= 1 {
         let body_instrs = &body[locals_end..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
@@ -213,7 +245,7 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
             let total_locals = sig.0 + declared_types.len() as u32;
             let (safe, has_return) =
                 safe_to_inline_with_param_locals_v3(body, locals_end, total_locals);
-            if safe {
+            if safe && multi_caller_profitable(body.len(), sig.0, has_return, n_callers) {
                 let result_blocktype = if sig.1 == 0 { 0x40 } else { 0u8 /* patched */ };
                 return Some(Trivial::ReplaceWithBodyParams {
                     param_types: vec![0u8; sig.0 as usize],
@@ -545,9 +577,10 @@ fn rewrite_body(
 mod tests {
     use super::*;
 
-    // Helper: most pre-M6 tests don't care about the unique-caller flag.
+    // Helper: most pre-M6 tests are fast-path Empty/Identity/Const
+    // patterns that don't need internal/n_callers info.
     fn cls(body: &[u8], sig: (u32, u32)) -> Option<Trivial> {
-        classify(body, sig, false)
+        classify(body, sig, 0, false)
     }
 
     #[test]
@@ -590,7 +623,7 @@ mod tests {
         // Without unique-caller flag — falls back to no-match.
         assert!(cls(&body, (0, 0)).is_none());
         // With unique-caller — becomes ReplaceWithBody.
-        let t = classify(&body, (0, 0), true).expect("should classify");
+        let t = classify(&body, (0, 0), 1, true).expect("should classify");
         match t {
             Trivial::ReplaceWithBody(b) => assert_eq!(b, vec![0x01, 0x01]),
             _ => panic!("expected body inline"),
@@ -601,7 +634,7 @@ mod tests {
     fn rejects_inline_when_body_uses_locals() {
         // local.get 0 inside body — would clash with caller's local 0.
         let body = [0, 0x20, 0, 0x1A, 0x0B];
-        assert!(classify(&body, (0, 0), true).is_none());
+        assert!(classify(&body, (0, 0), 1, true).is_none());
     }
 
     #[test]
@@ -611,7 +644,7 @@ mod tests {
         // from the body's perspective because the wrap only adds an
         // OUTER frame.
         let body = [0, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
-        let entry = classify(&body, (0, 0), true);
+        let entry = classify(&body, (0, 0), 1, true);
         // Should classify as ReplaceWithBodyParams with wrap_for_return.
         match entry {
             Some(Trivial::ReplaceWithBodyParams { wrap_for_return: true, .. }) => {}
@@ -804,10 +837,40 @@ mod tests {
             0x0B,
         ];
         // sig (1) -> () with one i32 param.
-        let entry = classify(&body, (1, 0), true);
+        let entry = classify(&body, (1, 0), 1, true);
         match entry {
             Some(Trivial::ReplaceWithBodyParams { .. }) => {}
             _ => panic!("call_indirect inside callee should now classify"),
+        }
+    }
+
+    // Multi-callsite cost model: tiny body with 2 callers should be
+    // profitable to inline; larger body shouldn't.
+    #[test]
+    fn multi_caller_profitable_for_tiny_body() {
+        // Tiny body: just `nop` (1 byte instr). body_total = 3 (1 locals
+        // header + 1 nop + 1 end). With 0 params, no wrap:
+        // inlined_size = 3-1 = 2. added_per_site = 2 - 2 = 0.
+        // total_added = 2*0 = 0. callee_savings = 3+5 = 8 > 0. PROFITABLE.
+        let body = [0, 0x01, 0x0B];
+        match classify(&body, (0, 0), 2, true) {
+            Some(_) => {}
+            None => panic!("tiny body with 2 callers should be inline-profitable"),
+        }
+    }
+
+    #[test]
+    fn multi_caller_unprofitable_for_large_body_with_params() {
+        // Big body: 32 nops (32 bytes). body_total = 1 + 32 + 1 = 34.
+        // 2 params, has wrap.
+        // inlined_size = 33 + 4 + 2 = 39. added_per_site = 37.
+        // total_added = 5 * 37 = 185. callee_savings = 39. NOT profitable.
+        let mut body = vec![0]; // 0 locals
+        for _ in 0..32 { body.push(0x01); } // 32 nops
+        body.push(0x0B); // end
+        match classify(&body, (2, 0), 5, true) {
+            None => {}
+            Some(_) => panic!("large body × 5 callers should NOT be inline-profitable"),
         }
     }
 }
