@@ -17,6 +17,7 @@ pub mod devirt;
 pub mod dedup;
 pub mod dedup_imports;
 pub mod fn_merge;
+pub mod if_fold;
 pub mod inline_trivial;
 pub mod layout_for_compression;
 pub mod memory_packing;
