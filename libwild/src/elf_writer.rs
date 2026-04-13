@@ -4669,24 +4669,21 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |_| elf::RELR_ENTRY_SIZE,
     ),
     DynamicEntryWriter::optional(
-        // TODO(object): Not yet added
-        0x6fff_e000,
+        object::elf::DT_ANDROID_RELR,
         |inputs| {
             inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
         },
         |inputs| inputs.vma_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
-        // TODO(object): Not yet added
-        0x6fff_e001,
+        object::elf::DT_ANDROID_RELRSZ,
         |inputs| {
             inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
         },
         |inputs| inputs.size_of_section(output_section_id::RELR_DYN),
     ),
     DynamicEntryWriter::optional(
-        // TODO(object): Not yet added
-        0x6fff_e003,
+        object::elf::DT_ANDROID_RELRENT,
         |inputs| {
             inputs.has_data_in_section(output_section_id::RELR_DYN) && has_android_relr_tags(inputs)
         },
@@ -4964,8 +4961,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         entry.sh_name.set(e, name_offset);
 
         let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
-            // TODO(object): Not yet added
-            0x6fffff00
+            object::elf::SHT_ANDROID_RELR
         } else {
             section_type.raw()
         };
