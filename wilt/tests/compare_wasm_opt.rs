@@ -52,6 +52,31 @@ struct Row {
     wilt_hint_ms: u128,
     opt_out: Option<usize>,
     opt_ms: u128,
+    /// Compressed (gzip -9) sizes — what users actually pay over the wire.
+    input_gz: usize,
+    wilt_out_gz: usize,
+    wilt_hint_out_gz: usize,
+    opt_out_gz: usize,
+}
+
+fn gzip_size(bytes: &[u8]) -> usize {
+    use std::io::Write;
+    let mut child = match Command::new("gzip")
+        .arg("-9").arg("-c")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return bytes.len(),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(bytes);
+    }
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => out.stdout.len(),
+        _ => bytes.len(),
+    }
 }
 
 fn run_wasm_opt(input_path: &Path, level: &str) -> Option<(Vec<u8>, u128)> {
@@ -126,6 +151,26 @@ fn compare_aggregate() {
             None => { n_opt_failed += 1; (None, 0) }
         };
 
+        // Compressed sizes — what users actually pay.
+        let input_gz = gzip_size(&bytes);
+        let wilt_out_gz = if wilt_len.is_some() { gzip_size(&wilt_out) } else { 0 };
+        let wilt_hint_out_gz = match (wilt_hint_out, &Some(()).map(|_| ())) {
+            (Some(_), _) => {
+                // Re-run optimise_with_hints to get the bytes for compression.
+                if let Some(hints) =
+                    wilt::linker_hints::DerivedHints::from_bytes(&bytes)
+                {
+                    let out = wilt::optimise_with_hints(&bytes, &hints);
+                    gzip_size(&out)
+                } else { 0 }
+            }
+            _ => 0,
+        };
+        let opt_out_gz = if opt_out.is_some() {
+            // Re-run wasm-opt to get the bytes for compression.
+            if let Some((b, _)) = run_wasm_opt(path, "-O") { gzip_size(&b) } else { 0 }
+        } else { 0 };
+
         rows.push(Row {
             name: path.strip_prefix(&root).unwrap().display().to_string(),
             input: bytes.len(),
@@ -135,6 +180,10 @@ fn compare_aggregate() {
             wilt_hint_ms,
             opt_out,
             opt_ms,
+            input_gz,
+            wilt_out_gz,
+            wilt_hint_out_gz,
+            opt_out_gz,
         });
     }
 
@@ -195,4 +244,35 @@ fn compare_aggregate() {
     }
     println!("wall time: wilt {} ms / wilt+hints {} ms / wasm-opt {} ms",
         total_wilt_ms, total_wilt_hint_ms, total_opt_ms);
+
+    // Compressed-bytes column — what users actually pay.
+    let mut total_in_gz = 0usize;
+    let mut total_wilt_gz = 0usize;
+    let mut total_wilt_hint_gz = 0usize;
+    let mut total_opt_gz = 0usize;
+    for r in &rows {
+        if r.wilt_out.is_some() && r.wilt_hint_out.is_some() && r.opt_out.is_some() {
+            total_in_gz += r.input_gz;
+            total_wilt_gz += r.wilt_out_gz;
+            total_wilt_hint_gz += r.wilt_hint_out_gz;
+            total_opt_gz += r.opt_out_gz;
+        }
+    }
+    println!();
+    println!("── compressed (gzip -9) sizes — wire bytes ────────────────────────");
+    println!("input gz:          {} bytes", total_in_gz);
+    println!("wilt gz:           {} bytes  ({:.1}%)", total_wilt_gz,
+        100.0 * total_wilt_gz as f64 / total_in_gz.max(1) as f64);
+    println!("wilt+hints gz:     {} bytes  ({:.1}%)", total_wilt_hint_gz,
+        100.0 * total_wilt_hint_gz as f64 / total_in_gz.max(1) as f64);
+    println!("wasm-opt gz:       {} bytes  ({:.1}%)", total_opt_gz,
+        100.0 * total_opt_gz as f64 / total_in_gz.max(1) as f64);
+    if total_opt_gz > 0 {
+        println!("wilt-saved-gz / wasm-opt-saved-gz (standalone): {:.1}%",
+            100.0 * (total_in_gz as i64 - total_wilt_gz as i64) as f64
+                / (total_in_gz as i64 - total_opt_gz as i64).max(1) as f64);
+        println!("wilt-saved-gz / wasm-opt-saved-gz (with hints): {:.1}%",
+            100.0 * (total_in_gz as i64 - total_wilt_hint_gz as i64) as f64
+                / (total_in_gz as i64 - total_opt_gz as i64).max(1) as f64);
+    }
 }

@@ -17,6 +17,7 @@ pub mod dedup;
 pub mod dedup_imports;
 pub mod fn_merge;
 pub mod inline_trivial;
+pub mod layout_for_compression;
 pub mod memory_packing;
 pub mod merge_blocks;
 pub mod remove_unused_brs;

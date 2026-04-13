@@ -76,6 +76,42 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     emit(module, data, &index_map, num_imports, &order)
 }
 
+/// Apply an arbitrary permutation of defined function indices. The
+/// `order` slice maps new defined-position → original absolute index.
+/// `imports..total` are reordered; imports stay fixed. Used by both
+/// the call-frequency reorder and the layout-for-compression pass.
+pub fn apply_with_order(module: &mut WasmModule<'_>, order: Vec<u32>) -> Vec<u8> {
+    module.ensure_function_bodies_parsed();
+    let num_defined = module.num_function_bodies() as u32;
+    let num_imports = super::dce::count_func_imports_pub(module);
+    let total = num_imports + num_defined;
+    let data = module.data();
+
+    if let Some(sec) = module.section(module::SECTION_ELEMENT) {
+        let p = sec.payload.slice(data);
+        if super::dce::scan_elements_funcidx(p).is_none() {
+            return data.to_vec();
+        }
+    }
+
+    // Bodies whose `call` immediates we can't decode would carry stale
+    // indices into the output — bail.
+    if !super::dce::all_bodies_walkable(module) {
+        return data.to_vec();
+    }
+
+    if order.iter().enumerate().all(|(i, &orig)| orig == num_imports + i as u32) {
+        return data.to_vec();
+    }
+
+    let mut index_map: Vec<Option<u32>> = (0..num_imports).map(Some).collect();
+    index_map.resize(total as usize, None);
+    for (new_local, &orig_abs) in order.iter().enumerate() {
+        index_map[orig_abs as usize] = Some(num_imports + new_local as u32);
+    }
+    emit(module, data, &index_map, num_imports, &order)
+}
+
 fn emit(
     module: &WasmModule<'_>,
     data: &[u8],

@@ -113,7 +113,9 @@ fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::Linke
     let Ok(mut module5c) = WasmModule::parse(&after_unused_data) else { return input.to_vec() };
     let after_unused_elem = passes::unused_elem::apply(&mut module5c);
     let Ok(mut module6) = WasmModule::parse(&after_unused_elem) else { return input.to_vec() };
-    passes::reorder::apply(&mut module6)
+    let after_reorder = passes::reorder::apply(&mut module6);
+    let Ok(mut module7) = WasmModule::parse(&after_reorder) else { return after_reorder };
+    passes::layout_for_compression::apply(&mut module7)
 }
 
 /// Configuration for the optimizer.
