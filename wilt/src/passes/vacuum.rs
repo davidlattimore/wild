@@ -205,6 +205,21 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
             }
         }
 
+        // Peephole: local.tee N; drop → local.set N.
+        // tee pushes+stores; drop discards what tee pushed; net effect
+        // is exactly local.set. Saves one byte per site.
+        if !dead && op == OP_LOCAL_TEE && idx < instrs.len() {
+            let (np, _) = instrs[idx];
+            if body[np] == OP_DROP {
+                let (a, _) = crate::leb128::read_u32(&body[*p + 1..*p + len]).unwrap_or((0, 0));
+                out.push(OP_LOCAL_SET);
+                crate::leb128::write_u32(&mut out, a);
+                skip_remaining = 1;
+                changed = true;
+                continue;
+            }
+        }
+
         // Peephole: local.set N; local.get N → local.tee N.
         // Only safe outside dead code (we mustn't rewrite then skip).
         if !dead && op == OP_LOCAL_SET && idx < instrs.len() {
@@ -359,6 +374,14 @@ mod tests {
         let body = vec![0, 0x41, 5, 0x1A, 0x0B];
         let out = clean_body(&body).unwrap();
         assert_eq!(out, vec![0, 0x0B]);
+    }
+
+    #[test]
+    fn fold_tee_drop_into_set() {
+        // i32.const 5 ; local.tee 3 ; drop → i32.const 5 ; local.set 3
+        let body = vec![0, 0x41, 5, 0x22, 3, 0x1A, 0x0B];
+        let out = clean_body(&body).unwrap();
+        assert_eq!(out, vec![0, 0x41, 5, 0x21, 3, 0x0B]);
     }
 
     #[test]
