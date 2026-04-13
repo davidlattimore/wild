@@ -115,23 +115,51 @@ impl CfgIr {
             }
         };
 
-        // Pre-compute matching `end` for every block/loop/if open.
-        // Needed because `br` can reference a frame before its end is seen.
-        let matching_end_of = match_ends(ir);
+        // Pre-compute matching `end` and `else` for every structural open.
+        let (matching_end_of, matching_else_of) = match_structural(ir);
 
         // Step 3: walk again with a frame stack to compute edges.
         let mut frames: Vec<Frame> = Vec::new();
+        // Then-branch tail BBs that should NOT fall through to their
+        // sibling (the `else` BB) — instead they branch past the else
+        // body to the post-end of the matching `if`.
+        let mut suppress_fallthrough: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
+        let mut extra_branches: Vec<(u32, u32)> = Vec::new();
         for i in 0..n {
             let op = ir.instrs()[i].op;
             match op {
                 0x02 | 0x04 => {
                     let end_idx = *matching_end_of.get(&i)?;
-                    let target = if end_idx + 1 < n {
+                    let post_end = if end_idx + 1 < n {
                         bb_of((end_idx + 1) as u32)
                     } else {
                         (blocks.len() - 1) as u32
                     };
-                    frames.push(Frame { branch_target_bb: target });
+                    frames.push(Frame { branch_target_bb: post_end });
+
+                    // For `if`, add a Branch edge for the cond=false path.
+                    if op == 0x04 {
+                        let if_bb = bb_of(i as u32);
+                        let else_target = if let Some(&e) = matching_else_of.get(&i) {
+                            // cond=false jumps to the else body, which
+                            // is the BB *after* the else opcode.
+                            if e + 1 < n { bb_of((e + 1) as u32) } else { post_end }
+                        } else {
+                            // No else: cond=false jumps to post-end.
+                            post_end
+                        };
+                        // Skip degenerate (else_target == fallthrough).
+                        let then_bb = if i + 1 < n {
+                            bb_of((i + 1) as u32)
+                        } else { post_end };
+                        if else_target != then_bb {
+                            blocks[if_bb as usize].successors.push(BlockEdge {
+                                target: else_target,
+                                kind: EdgeKind::Branch,
+                            });
+                        }
+                    }
                 }
                 0x03 => {
                     let body_target = if i + 1 < n {
@@ -142,12 +170,19 @@ impl CfgIr {
                     frames.push(Frame { branch_target_bb: body_target });
                 }
                 0x05 => {
-                    // `else`: ends the if-true region; doesn't change the
-                    // frame stack here. Edges from the if-true BB are
-                    // computed during fall-through pass.
+                    // `else`: the BB just before the else-BB is the
+                    // then-branch tail. Its fall-through to the else-BB
+                    // is wrong — execution jumps past the else body to
+                    // the matching if's post-end.
+                    let else_bb = bb_of(i as u32);
+                    if let Some(prev) = else_bb.checked_sub(1) {
+                        if let Some(frame) = frames.last() {
+                            suppress_fallthrough.insert(prev);
+                            extra_branches.push((prev, frame.branch_target_bb));
+                        }
+                    }
                 }
                 0x0B => {
-                    // Pop the closed frame.
                     let _ = frames.pop();
                 }
                 0x0C => {
@@ -201,10 +236,11 @@ impl CfgIr {
         //   - BB ending in any other op (incl. block/loop/if/else/end mid-body
         //     or last instr being non-terminator): fallthrough.
         for bi in 0..blocks.len() {
-            if bi + 1 >= blocks.len() { continue; }   // last BB has no next
+            if bi + 1 >= blocks.len() { continue; }
             let last_instr_idx = blocks[bi].end_instr.saturating_sub(1);
             let last_op = ir.instrs()[last_instr_idx as usize].op;
-            let no_fallthrough = matches!(last_op, 0x0C | 0x0E | 0x0F | 0x00);
+            let no_fallthrough = matches!(last_op, 0x0C | 0x0E | 0x0F | 0x00)
+                || suppress_fallthrough.contains(&(bi as u32));
             if !no_fallthrough {
                 let next_bb = (bi + 1) as u32;
                 blocks[bi].successors.push(BlockEdge {
@@ -212,6 +248,15 @@ impl CfgIr {
                     kind: EdgeKind::Fallthrough,
                 });
             }
+        }
+
+        // Apply the explicit "skip past else body" edges queued by the
+        // else handling above.
+        for (bb, target) in extra_branches {
+            blocks[bb as usize].successors.push(BlockEdge {
+                target,
+                kind: EdgeKind::Branch,
+            });
         }
 
         Some(CfgIr { blocks, entry: 0 })
@@ -229,20 +274,37 @@ fn label_target_bb(frames: &[Frame], label: u32) -> Option<u32> {
     frames.get(idx).map(|f| f.branch_target_bb)
 }
 
-/// Pre-pass: locate the matching `end` instruction index for every
-/// `block`/`loop`/`if` open. Returns `None` if the body's structured
-/// control flow is malformed.
-fn match_ends(ir: &BodyIr) -> std::collections::HashMap<usize, usize> {
-    let mut out = std::collections::HashMap::new();
+/// Pre-pass: for every `block`/`loop`/`if`, locate its matching
+/// `end`; for every `if`, also locate its matching `else` (if any).
+fn match_structural(ir: &BodyIr) -> (
+    std::collections::HashMap<usize, usize>,
+    std::collections::HashMap<usize, usize>,
+) {
+    let mut ends = std::collections::HashMap::new();
+    let mut elses = std::collections::HashMap::new();
     let mut stack: Vec<usize> = Vec::new();
     for (i, it) in ir.instrs().iter().enumerate() {
         match it.op {
             0x02 | 0x03 | 0x04 => stack.push(i),
-            0x0B => { if let Some(open) = stack.pop() { out.insert(open, i); } }
+            0x05 => {
+                if let Some(&top) = stack.last() {
+                    if ir.instrs()[top].op == 0x04 {
+                        elses.insert(top, i);
+                    }
+                }
+            }
+            0x0B => {
+                if let Some(open) = stack.pop() { ends.insert(open, i); }
+            }
             _ => {}
         }
     }
-    out
+    (ends, elses)
+}
+
+#[allow(dead_code)]
+fn match_ends(ir: &BodyIr) -> std::collections::HashMap<usize, usize> {
+    match_structural(ir).0
 }
 
 #[cfg(test)]
@@ -351,5 +413,56 @@ mod tests {
         let body = [0u8, 0x00, 0x0B];
         let cfg = build(&body);
         assert!(cfg.blocks[0].successors.is_empty(), "unreachable-BB must have no successors");
+    }
+
+    #[test]
+    fn if_no_else_has_two_successors() {
+        // (func i32.const 1 if end end)
+        let body = [0u8, 0x41, 1, 0x04, 0x40, 0x0B, 0x0B];
+        let cfg = build(&body);
+        // Find the BB containing the `if` (last instr 0x04). It should
+        // have 2 successors: fall-through to then-body (the immediately
+        // following BB) AND Branch to post-end (cond=false case).
+        let if_bb = cfg.blocks.iter().position(|b| {
+            let last = (b.end_instr - 1) as usize;
+            // Locate by checking last opcode of BB.
+            // We don't have direct access to ir here; rely on edges.
+            b.successors.iter().any(|e| e.kind == EdgeKind::Branch)
+                && b.successors.iter().any(|e| e.kind == EdgeKind::Fallthrough)
+                && last < 99 // sentinel
+        });
+        assert!(if_bb.is_some(),
+            "the if's BB should have both Fallthrough and Branch successors");
+    }
+
+    #[test]
+    fn if_else_then_tail_skips_else_body() {
+        // (func i32.const 1 if nop else nop end end)
+        // Then-tail BB (containing the first nop) should NOT fall
+        // through into the else-BB; it should Branch to post-end.
+        let body = [
+            0u8,
+            0x41, 1,        // i32.const 1
+            0x04, 0x40,     // if
+            0x01,           // then: nop
+            0x05,           // else
+            0x01,           // else body: nop
+            0x0B,           // end if
+            0x0B,           // end func
+        ];
+        let cfg = build(&body);
+        // Find the then-tail BB: the one whose only successor is a
+        // Branch (no Fallthrough), and that's not the end.
+        let then_tail = cfg.blocks.iter().find(|b| {
+            b.successors.len() == 1
+                && b.successors[0].kind == EdgeKind::Branch
+                // Exclude the else-BB which also has just one successor.
+                // Then-tail is the one whose start_instr is BEFORE the
+                // else opcode; identify by a heuristic: index 1 should
+                // be the then-tail in our partition.
+                && b.start_instr < 6
+        });
+        assert!(then_tail.is_some(),
+            "then-tail BB should branch past else body, not fall through");
     }
 }

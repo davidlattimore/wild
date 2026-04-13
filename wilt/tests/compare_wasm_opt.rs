@@ -48,6 +48,8 @@ struct Row {
     input: usize,
     wilt_out: Option<usize>,
     wilt_ms: u128,
+    wilt_hint_out: Option<usize>,
+    wilt_hint_ms: u128,
     opt_out: Option<usize>,
     opt_ms: u128,
 }
@@ -99,11 +101,24 @@ fn compare_aggregate() {
             continue;
         }
 
-        // wilt.
+        // wilt standalone.
         let t0 = Instant::now();
         let wilt_out = wilt::optimise(&bytes);
         let wilt_ms = t0.elapsed().as_millis();
         let wilt_len = if validates(&wilt_out) { Some(wilt_out.len()) } else { None };
+
+        // wilt with derived hints (simulates wild-as-linker).
+        let (wilt_hint_out, wilt_hint_ms) = if let Some(hints) =
+            wilt::linker_hints::DerivedHints::from_bytes(&bytes)
+        {
+            let t0 = Instant::now();
+            let out = wilt::optimise_with_hints(&bytes, &hints);
+            let ms = t0.elapsed().as_millis();
+            let len = if validates(&out) { Some(out.len()) } else { None };
+            (len, ms)
+        } else {
+            (None, 0)
+        };
 
         // wasm-opt -O.
         let (opt_out, opt_ms) = match run_wasm_opt(path, "-O") {
@@ -116,82 +131,68 @@ fn compare_aggregate() {
             input: bytes.len(),
             wilt_out: wilt_len,
             wilt_ms,
+            wilt_hint_out,
+            wilt_hint_ms,
             opt_out,
             opt_ms,
         });
     }
 
-    // Aggregates over files where BOTH produced output (fair comparison).
+    // Aggregates over files where ALL THREE produced output (fair).
     let mut total_in = 0usize;
     let mut total_wilt = 0usize;
+    let mut total_wilt_hint = 0usize;
     let mut total_opt = 0usize;
     let mut total_wilt_ms = 0u128;
+    let mut total_wilt_hint_ms = 0u128;
     let mut total_opt_ms = 0u128;
     let mut both = 0usize;
     for r in &rows {
-        if let (Some(w), Some(o)) = (r.wilt_out, r.opt_out) {
+        if let (Some(w), Some(wh), Some(o)) = (r.wilt_out, r.wilt_hint_out, r.opt_out) {
             total_in += r.input;
             total_wilt += w;
+            total_wilt_hint += wh;
             total_opt += o;
             total_wilt_ms += r.wilt_ms;
+            total_wilt_hint_ms += r.wilt_hint_ms;
             total_opt_ms += r.opt_ms;
             both += 1;
         }
     }
 
     println!();
-    println!("── per-file ────────────────────────────────────────────────────────");
-    println!(
-        "{:<50}  {:>7}  {:>9}  {:>9}  {:>8}",
-        "file", "input", "wilt", "wasm-opt", "Δ",
-    );
-    println!("{:-<50}  {:-<7}  {:-<9}  {:-<9}  {:-<8}", "", "", "", "", "");
-    for r in &rows {
-        let wilt_s = r.wilt_out.map(|n| format!("{}", n)).unwrap_or_else(|| "—".to_string());
-        let opt_s = r.opt_out.map(|n| format!("{}", n)).unwrap_or_else(|| "—".to_string());
-        let delta = match (r.wilt_out, r.opt_out) {
-            (Some(w), Some(o)) => {
-                let w_saved = r.input as isize - w as isize;
-                let o_saved = r.input as isize - o as isize;
-                if o_saved == 0 { "—".to_string() }
-                else {
-                    format!("{:.0}%", 100.0 * w_saved as f64 / o_saved as f64)
-                }
-            }
-            _ => "—".to_string(),
-        };
-        let short = if r.name.len() > 48 { &r.name[r.name.len()-48..] } else { &r.name };
-        println!(
-            "{:<50}  {:>7}  {:>9}  {:>9}  {:>8}",
-            short, r.input, wilt_s, opt_s, delta,
-        );
-    }
-
-    println!();
-    println!("── aggregate (files where both produced output) ───────────────────");
+    println!("── aggregate (files where all three produced output) ──────────────");
     println!("files compared:    {} of {} (skipped invalid: {}, wasm-opt failed: {})",
         both, files.len(), n_skipped_invalid, n_opt_failed);
     println!("total input:       {} bytes", total_in);
     println!(
-        "wilt total out:    {} bytes  (saved {}, {:.1}%)",
+        "wilt standalone:   {} bytes  (saved {}, {:.1}%)",
         total_wilt,
         total_in - total_wilt,
         100.0 * (total_in - total_wilt) as f64 / total_in as f64,
     );
     println!(
-        "wasm-opt total:    {} bytes  (saved {}, {:.1}%)",
+        "wilt + hints:      {} bytes  (saved {}, {:.1}%)",
+        total_wilt_hint,
+        total_in - total_wilt_hint,
+        100.0 * (total_in - total_wilt_hint) as f64 / total_in as f64,
+    );
+    println!(
+        "wasm-opt -O:       {} bytes  (saved {}, {:.1}%)",
         total_opt,
         total_in - total_opt,
         100.0 * (total_in - total_opt) as f64 / total_in as f64,
     );
     if total_in > total_opt {
         println!(
-            "wilt-saved / wasm-opt-saved: {:.1}%",
+            "wilt-saved / wasm-opt-saved (standalone): {:.1}%",
             100.0 * (total_in - total_wilt) as f64 / (total_in - total_opt) as f64,
         );
+        println!(
+            "wilt-saved / wasm-opt-saved (with hints): {:.1}%",
+            100.0 * (total_in - total_wilt_hint) as f64 / (total_in - total_opt) as f64,
+        );
     }
-    println!("wall time:         wilt {} ms, wasm-opt {} ms  (ratio {:.2}x)",
-        total_wilt_ms, total_opt_ms,
-        total_opt_ms as f64 / total_wilt_ms.max(1) as f64,
-    );
+    println!("wall time: wilt {} ms / wilt+hints {} ms / wasm-opt {} ms",
+        total_wilt_ms, total_wilt_hint_ms, total_opt_ms);
 }

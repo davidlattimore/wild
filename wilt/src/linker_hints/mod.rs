@@ -50,6 +50,9 @@ pub trait LinkerHints: Sync {
 pub struct NoHints;
 impl LinkerHints for NoHints {}
 
+pub mod derived;
+pub use derived::DerivedHints;
+
 /// Test fixtures for `LinkerHints`. Cheap and pure; always exposed so
 /// downstream integration tests (and wild itself) can use it without a
 /// feature flag.
