@@ -54,9 +54,28 @@ pub fn optimise_with_hints<H: linker_hints::LinkerHints>(input: &[u8], hints: &H
 }
 
 /// Optimise a WASM module. Returns the optimised bytes.
+///
+/// Auto-derives closed-world hints (`DerivedHints::from_bytes`) so the
+/// hint-aware passes fire even without explicit linker input. This is
+/// sound on any self-contained `.wasm` — derivation scans exports,
+/// ref.func, elements, start, etc., to identify internal functions the
+/// same way a linker would. Callers with richer info (e.g. host-import
+/// visibility) can still go through `optimise_with_hints` to override.
 pub fn optimise(input: &[u8]) -> Vec<u8> {
+    let result = optimise_inner(input);
+    // Never-grow guard. Some pass combinations (DAE adding drops at
+    // many call sites, LEB shifts after reorder, etc.) can produce
+    // output slightly larger than the input. The contract is "wilt
+    // never grows a module"; if we'd grow, return the input verbatim.
+    if result.len() > input.len() { input.to_vec() } else { result }
+}
+
+fn optimise_inner(input: &[u8]) -> Vec<u8> {
     if WasmModule::parse(input).is_err() {
         return input.to_vec();
+    }
+    if let Some(hints) = linker_hints::DerivedHints::from_bytes(input) {
+        return optimise_with_hints(input, &hints);
     }
     let mut current = input.to_vec();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {

@@ -107,5 +107,8 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     entries.sort_by(|a, b| a.1.cmp(b.1));
     let order: Vec<u32> = entries.into_iter().map(|(abs, _)| abs).collect();
 
+    // The top-level `optimise` never-grow guard catches the
+    // uncommon case where layout's LEB-shift grows raw bytes. Keep
+    // the reordering here unconditional so compressed wins stay.
     super::reorder::apply_with_order(module, order)
 }
