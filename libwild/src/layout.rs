@@ -1044,7 +1044,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
-    fn section_loaded(
+    pub(crate) fn section_loaded(
         &mut self,
         part_id: PartId,
         header: &P::SectionHeader,
@@ -1194,6 +1194,12 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
     delay_processing: ArrayQueue<GroupState<'data, P>>,
 
     pub(crate) layout_resources_ext: P::LayoutResourcesExt<'data>,
+}
+
+impl<'data, 'scope, P: Platform> GraphResources<'data, 'scope, P> {
+    pub(crate) fn output_sections(&self) -> &'scope OutputSections<'data, P> {
+        self.output_sections
+    }
 }
 
 pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
@@ -2544,7 +2550,7 @@ impl<'data, P: Platform> std::fmt::Display for ObjectLayout<'data, P> {
 }
 
 impl Section {
-    fn create<'data, P: Platform>(
+    pub(crate) fn create<'data, P: Platform>(
         header: &P::SectionHeader,
         object_state: &ObjectLayoutState<'data, P>,
         _part_id: PartId,
@@ -3503,6 +3509,22 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
+        let mut group_sections = Vec::new();
+        for section in &self.sections {
+            if let SectionSlot::UnloadedGroup(index) = section {
+                group_sections.push(*index);
+            }
+        }
+
+        if resources.symbol_db.args.should_output_partial_object() {
+            <A::Platform as Platform>::process_group_sections::<A>(
+                self,
+                common,
+                group_sections,
+                resources,
+            )?;
+        }
+
         let mut frame_section_index = None;
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
@@ -3626,6 +3648,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             | SectionSlot::FrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
+            | SectionSlot::UnloadedGroup(..)
+            | SectionSlot::LoadedGroup { .. }
             | SectionSlot::RiscvVAttributes(..) => {}
             SectionSlot::MergeStrings(_) => {
                 // We currently always load everything in merge-string sections. i.e. we don't GC
@@ -3790,6 +3814,14 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 }
                 SectionSlot::FrameData(..) => {
                     let address = P::frame_data_base_address(memory_offsets);
+                    SectionResolution { address }
+                }
+                &mut SectionSlot::LoadedGroup {
+                    ref mut section, ..
+                } => {
+                    let address = *memory_offsets.get(part_id);
+                    *memory_offsets.get_mut(part_id) +=
+                        section.capacity(part_id, resources.output_sections);
                     SectionResolution { address }
                 }
                 _ => SectionResolution::none(),

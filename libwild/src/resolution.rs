@@ -661,6 +661,15 @@ pub(crate) enum SectionSlot {
 
     // RISC-V attributes section (.riscv.attributes)
     RiscvVAttributes(object::SectionIndex),
+
+    // Group section (.group) that hasn't been fully processed yet.
+    UnloadedGroup(object::SectionIndex),
+
+    // Loaded group section with its output section assignment.
+    LoadedGroup {
+        section: crate::layout::Section,
+        symbol_id: SymbolId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1177,6 +1186,7 @@ fn resolve_section<'data, P: Platform>(
 
     let mut unloaded_section;
     let mut is_debug_info = false;
+    let mut is_group = false;
     let mut must_load = input_section.should_retain() || input_section.is_note();
     let part_id: PartId;
 
@@ -1268,6 +1278,11 @@ fn resolve_section<'data, P: Platform>(
                 part_id::UNMAPPED,
             ));
         }
+        SectionRuleOutcome::Group => {
+            part_id = part_id::CUSTOM_PLACEHOLDER;
+            is_group = true;
+            unloaded_section = UnloadedSection::new();
+        }
     };
 
     if part_id == part_id::CUSTOM_PLACEHOLDER {
@@ -1275,6 +1290,7 @@ fn resolve_section<'data, P: Platform>(
             name: SectionName(section_name),
             alignment,
             index: input_section_index,
+            is_unique: is_group || input_section.is_group(),
         };
 
         obj.custom_sections.push(custom_section);
@@ -1297,6 +1313,8 @@ fn resolve_section<'data, P: Platform>(
         });
 
         SectionSlot::MergeStrings(StringMergeSectionSlot::new())
+    } else if is_group {
+        SectionSlot::UnloadedGroup(input_section_index)
     } else if is_debug_info {
         SectionSlot::UnloadedDebugInfo
     } else if must_load {

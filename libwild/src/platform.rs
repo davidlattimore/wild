@@ -659,6 +659,15 @@ pub(crate) trait Platform:
         _total_sizes: &mut OutputSectionPartMap<u64>,
     ) {
     }
+
+    fn process_group_sections<'data, A: Arch<Platform = Self>>(
+        _object: &mut ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _group_section_indices: Vec<object::SectionIndex>,
+        _resources: &layout::GraphResources<'data, '_, Self>,
+    ) -> Result {
+        Ok(())
+    }
 }
 
 /// Abstracts over the different object file formats that we support (or may support). e.g. ELF.

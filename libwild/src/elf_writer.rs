@@ -121,6 +121,7 @@ use linker_utils::relaxation::opt_input_to_output;
 use linker_utils::utils::slice_from_all_bytes_mut;
 use object::LittleEndian;
 use object::SymbolIndex;
+use object::elf::GRP_COMDAT;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
@@ -243,10 +244,10 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
-    let sym_index_map = if layout.args().should_output_partial_object() {
-        build_sym_index_map(layout)
+    let partial_object_info = if layout.args().should_output_partial_object() {
+        Some(build_partial_object_info(layout))
     } else {
-        Vec::new()
+        None
     };
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
@@ -271,7 +272,7 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
                     &mut table_writer,
                     layout,
                     &sized_output.trace,
-                    &sym_index_map,
+                    &partial_object_info,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
@@ -473,13 +474,15 @@ fn write_file<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
     trace: &TraceOutput,
-    sym_index_map: &[Option<u32>],
+    partial_info: &Option<PartialObjectInfo>,
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            write_object::<A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
+            write_object::<A>(s, buffers, table_writer, layout, trace, partial_info)?;
         }
-        FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::Prelude(s) => {
+            write_prelude::<A>(s, buffers, table_writer, layout, partial_info)?;
+        }
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
@@ -1447,12 +1450,17 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
     trace: &TraceOutput,
-    sym_index_map: &[Option<u32>],
+    partial_info: &Option<PartialObjectInfo>,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
+
+    let sym_index_map = partial_info
+        .as_ref()
+        .map(|info| info.symbol_index_map.as_slice());
+
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
@@ -1473,6 +1481,11 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
             }
             SectionSlot::FrameData(section_index) => {
                 write_eh_frame_data::<A>(object, *section_index, layout, table_writer, trace)?;
+            }
+            SectionSlot::LoadedGroup { section: sec, .. }
+                if layout.args().should_output_partial_object() =>
+            {
+                write_group_section(object, layout, sec, section_index, buffers)?;
             }
             _ => (),
         }
@@ -1516,14 +1529,20 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     if layout.args().should_output_partial_object() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
 
-        write_rela_sections(object, buffers, layout, sym_index_map)?;
+        write_rela_sections(object, buffers, layout, sym_index_map.unwrap())?;
     } else if !layout.args().should_strip_all() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
     Ok(())
 }
 
-fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
+struct PartialObjectInfo {
+    symbol_index_map: Vec<Option<u32>>,
+    rela_targets: hashbrown::HashMap<OutputSectionId, u32>,
+    group_symbols: hashbrown::HashMap<OutputSectionId, u32>,
+}
+
+fn build_partial_object_info(layout: &ElfLayout<'_>) -> PartialObjectInfo {
     let section_sym_indices = build_section_sym_indices(layout);
 
     let num_all_locals = (layout
@@ -1535,6 +1554,9 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
     let total_syms = layout.symbol_db.num_symbols();
     let mut map: Vec<Option<u32>> = vec![None; total_syms];
 
+    let mut rela_targets = hashbrown::HashMap::new();
+    let mut group_symbols_raw = hashbrown::HashMap::new();
+
     // TODO: Use a ShardedWriter to parallelize this loop
     for group in &layout.group_layouts {
         let mut group_global_base = num_all_locals + group.symtab_global_start_index;
@@ -1544,6 +1566,40 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
             let FileLayout::Object(object) = file else {
                 continue;
             };
+
+            for (sec_idx, slot) in object.sections.iter().enumerate() {
+                let sec_output_id = match slot {
+                    SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
+                        object
+                            .section_part_id(
+                                object::SectionIndex(sec_idx),
+                                &layout.symbol_db.section_part_ids,
+                            )
+                            .output_section_id(),
+                    ),
+                    _ => None,
+                };
+                if let Some(sec_output_id) = sec_output_id {
+                    let e = object::LittleEndian;
+                    if let Ok(header) = object.object.section(object::SectionIndex(sec_idx))
+                        && header.sh_type.get(e) == object::elf::SHT_RELA
+                    {
+                        let target_sec_idx = object::SectionIndex(header.sh_info.get(e) as usize);
+                        let target_output_id =
+                            output_section_idx_for_input(object, layout, target_sec_idx);
+                        rela_targets.insert(sec_output_id, target_output_id);
+                    }
+                }
+
+                if let SectionSlot::LoadedGroup { symbol_id, .. } = slot {
+                    let symbol_id = layout.symbol_db.definition(*symbol_id);
+                    let part_id = object.section_part_id(
+                        object::SectionIndex(sec_idx),
+                        &layout.symbol_db.section_part_ids,
+                    );
+                    group_symbols_raw.insert(part_id.output_section_id(), symbol_id);
+                }
+            }
 
             for ((sym_index, sym), flags) in object
                 .object
@@ -1616,7 +1672,18 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
         }
     }
 
-    map
+    let mut group_symbols = hashbrown::HashMap::new();
+    for (sec_id, sym_id) in group_symbols_raw {
+        if let Some(sym_idx) = map.get(sym_id.as_usize()).copied().flatten() {
+            group_symbols.insert(sec_id, sym_idx);
+        }
+    }
+
+    PartialObjectInfo {
+        symbol_index_map: map,
+        rela_targets,
+        group_symbols,
+    }
 }
 
 fn build_section_sym_indices(layout: &ElfLayout<'_>) -> OutputSectionMap<u32> {
@@ -1656,13 +1723,20 @@ fn write_rela_sections<'data>(
             continue;
         }
 
-        let Some(section_id) = layout
-            .output_sections
-            .custom_name_to_id(output_section_id::SectionName(section_name))
-        else {
+        let part_id = if let Some(sec_slot) = object.sections.get(sec_idx.0) {
+            match *sec_slot {
+                SectionSlot::Loaded(_)
+                | SectionSlot::LoadedDebugInfo(_)
+                | SectionSlot::MergeStrings(_)
+                | SectionSlot::LoadedGroup { .. } => {
+                    object.section_part_id(sec_idx, &layout.symbol_db.section_part_ids)
+                }
+                SectionSlot::FrameData(..) => part_id::EH_FRAME,
+                _ => continue,
+            }
+        } else {
             continue;
         };
-        let part_id = section_id.part_id_with_alignment(crate::alignment::RELA_ENTRY);
 
         let target_sec_idx = object::SectionIndex(header.sh_info.get(e) as usize);
         let section_address = object.section_resolutions[target_sec_idx.0]
@@ -1890,6 +1964,72 @@ fn write_section_reversed<'data, A: Arch<Platform = Elf>>(
     Ok(())
 }
 
+fn write_group_section<'data>(
+    object: &ObjectLayout<'data, Elf>,
+    layout: &ElfLayout<'data>,
+    section: &Section,
+    section_index: object::SectionIndex,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let group_header = object.object.section(section_index)?;
+    let raw_data = object.object.raw_section_data(group_header)?;
+
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+
+    if raw_data.len() < 4 || raw_data.len() % 4 != 0 {
+        return Ok(());
+    }
+
+    let allocation_size = section.capacity(part_id, &layout.output_sections) as usize;
+    let section_buffer = buffers.get_mut(part_id);
+    let out = section_buffer
+        .split_off_mut(..allocation_size)
+        .with_context(|| format!("Insufficient buffer for group section {:?}", section_index))?;
+
+    out[..4].copy_from_slice(&GRP_COMDAT.to_le_bytes());
+
+    let num_members = (raw_data.len() - 4) / 4;
+    let mut out_pos = 4;
+    for i in 0..num_members {
+        let member_idx_raw =
+            u32::from_le_bytes(raw_data[4 + i * 4..4 + i * 4 + 4].try_into().unwrap());
+        let member_idx = object::SectionIndex(member_idx_raw as usize);
+        let output_section_header_idx = output_section_idx_for_input(object, layout, member_idx);
+        let idx_bytes = output_section_header_idx.to_le_bytes();
+        out[out_pos..out_pos + 4].copy_from_slice(&idx_bytes);
+        out_pos += 4;
+    }
+    out[out_pos..].fill(0);
+
+    Ok(())
+}
+
+fn output_section_idx_for_input<'data>(
+    object: &ObjectLayout<'data, Elf>,
+    layout: &ElfLayout<'data>,
+    input_section_idx: object::SectionIndex,
+) -> u32 {
+    let Some(slot) = object.sections.get(input_section_idx.0) else {
+        return 0;
+    };
+    let Some(section_id) = (match slot {
+        SectionSlot::Loaded(_)
+        | SectionSlot::LoadedGroup { .. }
+        | SectionSlot::LoadedDebugInfo(_) => Some(
+            object
+                .section_part_id(input_section_idx, &layout.symbol_db.section_part_ids)
+                .output_section_id(),
+        ),
+        _ => return 0,
+    }) else {
+        return 0;
+    };
+    layout
+        .output_sections
+        .output_index_of_section(section_id)
+        .unwrap_or(0)
+}
+
 fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     object: &ObjectLayout<'data, Elf>,
     layout: &ElfLayout<'data>,
@@ -2025,7 +2165,8 @@ fn write_symbols<'data>(
                     match &object.sections[section_index.0] {
                         SectionSlot::Loaded(_)
                         | SectionSlot::LoadedDebugInfo(_)
-                        | SectionSlot::MergeStrings(_) => object
+                        | SectionSlot::MergeStrings(_)
+                        | SectionSlot::LoadedGroup { .. } => object
                             .section_part_id(section_index, &layout.symbol_db.section_part_ids)
                             .output_section_id(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
@@ -3358,6 +3499,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
+    partial_info: &Option<PartialObjectInfo>,
 ) -> Result {
     verbose_timing_phase!("Write prelude");
 
@@ -3369,7 +3511,11 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
     let mut program_headers = ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
     write_program_headers(&mut program_headers, layout)?;
 
-    write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
+    write_section_headers(
+        buffers.get_mut(part_id::SECTION_HEADERS),
+        layout,
+        partial_info,
+    )?;
 
     write_section_header_strings(
         buffers.get_mut(part_id::SHSTRTAB),
@@ -4994,7 +5140,11 @@ impl<'out> DynamicEntriesWriter<'out> {
     }
 }
 
-fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
+fn write_section_headers(
+    out: &mut [u8],
+    layout: &ElfLayout,
+    partial_info: &Option<PartialObjectInfo>,
+) -> Result {
     let entries: &mut [SectionHeader] = slice_from_all_bytes_mut(out);
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
@@ -5104,13 +5254,23 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
             {
                 link = symtab_idx;
             }
-            if let Some(section_name) = output_sections.name(section_id)
-                && let Some(target_name) = section_name.0.strip_prefix(b".rela")
-                && let Some(target_id) = output_sections
-                    .custom_name_to_id(crate::output_section_id::SectionName(target_name))
-                && let Some(target_idx) = output_sections.output_index_of_section(target_id)
+            if let Some(info) = partial_info
+                && let Some(target_idx) = info.rela_targets.get(&section_id)
             {
-                info_value = target_idx;
+                info_value = *target_idx;
+            }
+        }
+
+        if layout.args().should_output_partial_object() && section_type == sht::GROUP {
+            if let Some(symtab_idx) =
+                output_sections.output_index_of_section(output_section_id::SYMTAB_LOCAL)
+            {
+                link = symtab_idx;
+            }
+            if let Some(info) = partial_info
+                && let Some(sig_sym_idx) = info.group_symbols.get(&section_id)
+            {
+                info_value = *sig_sym_idx;
             }
         }
 
