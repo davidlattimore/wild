@@ -70,6 +70,19 @@ pub fn optimise(input: &[u8]) -> Vec<u8> {
     if result.len() > input.len() { input.to_vec() } else { result }
 }
 
+/// Optimise + strip debug / source-map custom sections.
+///
+/// For shipping builds. Keeps `name` and `producers` (tiny; helpful
+/// in crash reports). Drops `.debug_*`, `sourceMappingURL`, and
+/// `external_debug_info`. Use `optimise()` if debugging symbols
+/// must survive.
+pub fn optimise_stripped(input: &[u8]) -> Vec<u8> {
+    let optimised = optimise(input);
+    let Ok(m) = WasmModule::parse(&optimised) else { return optimised };
+    let stripped = passes::strip::apply(&m, passes::strip::StripConfig::default_strip());
+    if stripped.len() > optimised.len() { optimised } else { stripped }
+}
+
 fn optimise_inner(input: &[u8]) -> Vec<u8> {
     if WasmModule::parse(input).is_err() {
         return input.to_vec();
