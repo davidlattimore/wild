@@ -4,6 +4,7 @@
 /// Passes don't modify the module directly — they produce patches
 /// that the emitter applies.
 
+pub mod cfg_dce;
 pub mod compress;
 pub mod const_fold;
 pub mod dae;

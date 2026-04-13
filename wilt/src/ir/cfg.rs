@@ -66,6 +66,10 @@ impl CfgIr {
         // Boundaries:
         //   - function entry (instr 0)
         //   - after every block/loop/if/else opcode (body starts a new BB)
+        //   - BEFORE every else/end (so structural closers always sit
+        //     in their own BB — lets dead-code elimination remove the
+        //     non-structural tail of an unreachable region without
+        //     touching the closer)
         //   - after every `end` (post-end code is a new BB)
         //   - after every br/br_if/br_table/return/unreachable
         let mut starts: Vec<u32> = vec![0];
@@ -74,6 +78,10 @@ impl CfgIr {
             let needs_split_after = matches!(op,
                 0x02 | 0x03 | 0x04 | 0x05 | 0x0B
                 | 0x0C | 0x0D | 0x0E | 0x0F | 0x00);
+            let needs_split_before = matches!(op, 0x05 | 0x0B);
+            if needs_split_before && i > 0 {
+                starts.push(i as u32);
+            }
             if needs_split_after && i + 1 < n {
                 starts.push((i + 1) as u32);
             }
@@ -247,12 +255,16 @@ mod tests {
     }
 
     #[test]
-    fn straight_line_is_one_bb() {
+    fn straight_line_is_two_bbs() {
         // (func i32.const 1 i32.const 2 i32.add drop end)
+        // Two BBs: the linear code, and the function-end opcode in its
+        // own BB (split-before-end keeps closers structurally isolated).
         let body = [0u8, 0x41, 1, 0x41, 2, 0x6A, 0x1A, 0x0B];
         let cfg = build(&body);
-        assert_eq!(cfg.blocks.len(), 1);
-        assert_eq!(cfg.blocks[0].successors.len(), 0);
+        assert_eq!(cfg.blocks.len(), 2);
+        // BB 0 fall-through to BB 1; BB 1 (end) is terminator.
+        assert_eq!(cfg.blocks[0].successors.len(), 1);
+        assert!(cfg.blocks[1].successors.is_empty());
     }
 
     #[test]
