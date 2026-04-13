@@ -1238,7 +1238,11 @@ fn handle_non_default_visibility(
     match visibility {
         Visibility::Hidden => {
             // Hidden merged visibility must localize the symbol so it cannot leak into dynsym.
-            flags.or_assign(ValueFlags::NON_INTERPOSABLE | ValueFlags::DOWNGRADE_TO_LOCAL);
+            // However, symbols from shared libraries must not be downgraded since that would remove
+            // them from the dynamic symbol table and prevent runtime resolution.
+            if !flags.get().contains(ValueFlags::DYNAMIC) {
+                flags.or_assign(ValueFlags::NON_INTERPOSABLE | ValueFlags::DOWNGRADE_TO_LOCAL);
+            }
         }
         Visibility::Protected => {
             if !flags.get().contains(ValueFlags::DYNAMIC) {
