@@ -48,8 +48,16 @@ fn gz(bytes: &[u8]) -> usize {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn() else { return bytes.len() };
-    if let Some(mut i) = c.stdin.take() { let _ = i.write_all(bytes); }
-    c.wait_with_output().map(|o| o.stdout.len()).unwrap_or(bytes.len())
+    // Deadlock guard: drain stdin on a thread (see real_binary.rs for
+    // the full rationale).
+    let stdin = c.stdin.take().unwrap();
+    let buf = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let mut s = stdin; let _ = s.write_all(&buf);
+    });
+    let out = c.wait_with_output().map(|o| o.stdout.len()).unwrap_or(bytes.len());
+    let _ = writer.join();
+    out
 }
 
 fn wasm_opt(path: &std::path::Path) -> Option<Vec<u8>> {

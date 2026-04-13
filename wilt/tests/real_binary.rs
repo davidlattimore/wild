@@ -15,8 +15,20 @@ fn gz(bytes: &[u8]) -> usize {
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn() else { return bytes.len() };
-    if let Some(mut i) = c.stdin.take() { let _ = i.write_all(bytes); }
-    c.wait_with_output().map(|o| o.stdout.len()).unwrap_or(bytes.len())
+    // Must drain stdin on a separate thread — for inputs larger than
+    // the pipe buffer (~64 KB on macOS) gzip's stdout fills first,
+    // gzip then blocks writing, can't consume more stdin, and
+    // write_all deadlocks. wait_with_output drains stdout in parallel,
+    // so the only remaining risk is the stdin path, hence the thread.
+    let stdin = c.stdin.take().unwrap();
+    let buf = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let mut s = stdin;
+        let _ = s.write_all(&buf);
+    });
+    let out = c.wait_with_output().map(|o| o.stdout.len()).unwrap_or(bytes.len());
+    let _ = writer.join();
+    out
 }
 
 fn validates(b: &[u8]) -> bool {

@@ -70,13 +70,21 @@ fn gzip_size(bytes: &[u8]) -> usize {
         Ok(c) => c,
         Err(_) => return bytes.len(),
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(bytes);
-    }
-    match child.wait_with_output() {
+    // Drain stdin on a thread so wait_with_output's stdout drain can
+    // run concurrently — otherwise large inputs deadlock on the pipe
+    // buffer (~64 KB on macOS). Small binaryen tests never hit this,
+    // but real compiled binaries (1 MB+) do.
+    let stdin = child.stdin.take().unwrap();
+    let buf = bytes.to_vec();
+    let writer = std::thread::spawn(move || {
+        let mut s = stdin; let _ = s.write_all(&buf);
+    });
+    let out = match child.wait_with_output() {
         Ok(out) if out.status.success() => out.stdout.len(),
         _ => bytes.len(),
-    }
+    };
+    let _ = writer.join();
+    out
 }
 
 fn run_wasm_opt(input_path: &Path, level: &str) -> Option<(Vec<u8>, u128)> {
