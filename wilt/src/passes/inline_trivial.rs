@@ -112,11 +112,14 @@ enum Trivial {
     /// Inline the entire callee body in place of `call f`. M6 phase 1 —
     /// `() -> ()` callees with no locals references.
     ReplaceWithBody(Vec<u8>),
-    /// Inline a `(T_0, .., T_{N-1}) -> ()` callee. M6 phase 2. The
+    /// Inline a `(T_0, .., T_{N-1}) -> ()` callee. M6 phase 2/3. The
     /// caller materialises args into N freshly-allocated caller locals,
     /// then pastes the body with `local.{get,set,tee} k` rewritten to
-    /// `local.{...} (caller_first_new_local + k)`.
-    ReplaceWithBodyParams { param_types: Vec<u8>, body: Vec<u8> },
+    /// `local.{...} (caller_first_new_local + k)`. If `wrap_for_return`
+    /// is true, the body is also wrapped in `block 0x40 ... end` and
+    /// every `return` opcode is rewritten to `br N` where N is the
+    /// return's nesting depth (so it targets the wrapping block).
+    ReplaceWithBodyParams { param_types: Vec<u8>, body: Vec<u8>, wrap_for_return: bool },
 }
 
 /// Maximum bytes we'll inline-paste a body for the unique-caller case.
@@ -174,26 +177,22 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
         }
     }
 
-    // M6 phase 2 — single-caller `(T...) -> ()` body inlining.
-    // Same constraints as phase 1 except local refs are allowed (we
-    // remap them at splice time). Also: 0 declared locals so the only
-    // locals referenced are the params we're remapping.
+    // M6 phase 2/3 — single-caller `(T...) -> ()` body inlining.
+    // Phase 2: no return / no branch / no call_indirect.
+    // Phase 3: allow `return` (we wrap and rewrite to `br N`).
     if is_unique_caller && sig.0 > 0 && sig.1 == 0 {
         let body_instrs = &body[off..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
-            && safe_to_inline_with_param_locals(body, off, sig.0)
         {
-            // Param valtypes aren't carried in the body; they're in
-            // the function type. The caller knows them via ModuleSigs
-            // — we stash a placeholder here and patch at splice time.
-            // For simplicity we record the count (=sig.0); the caller's
-            // pass passes in the param type list separately when it
-            // chooses to splice.
-            return Some(Trivial::ReplaceWithBodyParams {
-                param_types: vec![0u8; sig.0 as usize], // patched at use
-                body: body_instrs.to_vec(),
-            });
+            let (safe, has_return) = safe_to_inline_with_param_locals_v3(body, off, sig.0);
+            if safe {
+                return Some(Trivial::ReplaceWithBodyParams {
+                    param_types: vec![0u8; sig.0 as usize],
+                    body: body_instrs.to_vec(),
+                    wrap_for_return: has_return,
+                });
+            }
         }
     }
 
@@ -217,23 +216,56 @@ fn safe_to_inline_no_locals(body: &[u8], instrs_start: usize) -> bool {
     !iter.failed()
 }
 
-/// Phase-2 safety predicate: callee body may reference locals
-/// `0..n_params` (its parameters) but nothing higher. Same control-flow
-/// constraints as phase 1.
-fn safe_to_inline_with_param_locals(body: &[u8], instrs_start: usize, n_params: u32) -> bool {
+/// Phase-2/3 safety predicate. Locals 0..n_params allowed; nothing
+/// higher. `return` is allowed but flagged (caller wraps + rewrites).
+/// `br`/`br_if`/`br_table`/`call_indirect` still disallowed.
+fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_params: u32)
+    -> (bool, bool)
+{
     let mut iter = InstrIter::new(body, instrs_start);
+    let mut has_return = false;
     while let Some((p, _)) = iter.next() {
         let op = body[p];
         match op {
             0x20 | 0x21 | 0x22 => {
-                let Some((k, _)) = leb128::read_u32(&body[p + 1..]) else { return false };
-                if k >= n_params { return false; }
+                let Some((k, _)) = leb128::read_u32(&body[p + 1..]) else { return (false, false) };
+                if k >= n_params { return (false, false); }
             }
-            0x0F | 0x0C | 0x0D | 0x0E | 0x11 => return false,
+            0x0F => has_return = true,
+            0x0C | 0x0D | 0x0E | 0x11 => return (false, false),
             _ => {}
         }
     }
-    !iter.failed()
+    if iter.failed() { return (false, false); }
+    (true, has_return)
+}
+
+/// Rewrite every `return` opcode in `body` (already locals-stripped
+/// instruction stream) to `br N` where N is the return's enclosing
+/// block/loop/if nesting depth. The caller will wrap the resulting
+/// stream in `block 0x40 ... end`, so depth 0 == that wrapping block.
+fn rewrite_returns_to_br(body: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(body.len() + 8);
+    let mut iter = InstrIter::new(body, 0);
+    let mut cursor = 0;
+    let mut depth: u32 = 0;
+    while let Some((p, len)) = iter.next() {
+        let op = body[p];
+        match op {
+            0x02 | 0x03 | 0x04 => depth += 1,
+            0x0B => depth = depth.saturating_sub(1),
+            0x0F => {
+                out.extend_from_slice(&body[cursor..p]);
+                out.push(0x0C);                            // br
+                leb128::write_u32(&mut out, depth);
+                cursor = p + len;
+            }
+            _ => {}
+        }
+    }
+    if iter.failed() { return None; }
+    out.extend_from_slice(&body[cursor..]);
+    Some(out)
 }
 
 /// Rewrite every `local.{get,set,tee} k` immediate in `body` by adding
@@ -353,17 +385,35 @@ fn rewrite_body(
             Trivial::ReplaceWithBody(bytes) => {
                 edits.push((p, len, bytes.clone()));
             }
-            Trivial::ReplaceWithBodyParams { param_types, body: callee } => {
+            Trivial::ReplaceWithBodyParams { param_types, body: callee, wrap_for_return } => {
                 let n = param_types.len() as u32;
                 let first_new = next_new_local;
                 let Some(remapped) = rebase_locals(callee, first_new) else { continue };
-                let mut repl = Vec::with_capacity(callee.len() + 2 * n as usize);
-                // Pop args in reverse (top-of-stack = last arg = first_new + n - 1).
+                // Phase 3: rewrite returns to br N (N = nesting depth).
+                let body_part = if *wrap_for_return {
+                    match rewrite_returns_to_br(&remapped) {
+                        Some(b) => b,
+                        None => continue,
+                    }
+                } else {
+                    remapped
+                };
+                let mut repl = Vec::with_capacity(body_part.len() + 2 * n as usize + 4);
                 for k in (0..n).rev() {
-                    repl.push(0x21);                      // local.set
+                    repl.push(0x21);
                     leb128::write_u32(&mut repl, first_new + k);
                 }
-                repl.extend_from_slice(&remapped);
+                if *wrap_for_return {
+                    // Wrap the inlined body in `block 0x40 ... end` so
+                    // `return → br N` lands at this block's end (=
+                    // post-call site, exactly what return would do).
+                    repl.push(0x02);                       // block
+                    repl.push(0x40);                       // empty blocktype
+                    repl.extend_from_slice(&body_part);
+                    repl.push(0x0B);                       // end
+                } else {
+                    repl.extend_from_slice(&body_part);
+                }
                 new_local_types.extend_from_slice(param_types);
                 next_new_local += n;
                 edits.push((p, len, repl));
@@ -499,6 +549,7 @@ mod tests {
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
             param_types: vec![0x7F],          // i32
             body: callee_body,
+            wrap_for_return: false,
         })];
         let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline");
         // Locals header: was 0 groups; now 1 group of (1, i32).
@@ -510,6 +561,42 @@ mod tests {
             0x20, 0,           // local.get 0 (remapped from callee's local 0)
             0x1A,              // drop
             0x0B,              // end
+        ];
+        assert_eq!(out, expected);
+    }
+
+    // M6 phase 3: callee body with `return` — wrap + rewrite.
+    #[test]
+    fn rewrites_call_with_return_wraps_and_rewrites_br() {
+        // Caller: 0 locals, i32.const 5, call 0, end. Callee 0 takes
+        // 1 i32 param and has body `local.get 0 ; drop ; return`.
+        let body = [0u8, 0x41, 5, 0x10, 0, 0x0B];
+        let callee_body = vec![0x20, 0, 0x1A, 0x0F]; // local.get 0; drop; return
+        let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
+            param_types: vec![0x7F],
+            body: callee_body,
+            wrap_for_return: true,
+        })];
+        let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline + wrap");
+        // Expected: 1 group of (1, i32) header. Caller body:
+        //   i32.const 5
+        //   local.set 0          ;; arg materialised
+        //   block 0x40           ;; wrap
+        //     local.get 0        ;; remapped from callee's local 0
+        //     drop
+        //     br 0               ;; was return, now br to wrap-end
+        //   end                  ;; wrap end
+        //   end                  ;; func end
+        let expected = vec![
+            1, 1, 0x7F,
+            0x41, 5,
+            0x21, 0,
+            0x02, 0x40,
+            0x20, 0,
+            0x1A,
+            0x0C, 0,
+            0x0B,
+            0x0B,
         ];
         assert_eq!(out, expected);
     }
