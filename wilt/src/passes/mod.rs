@@ -7,6 +7,7 @@
 pub mod cfg_dce;
 pub mod compress;
 pub mod const_fold;
+pub mod const_prop;
 pub mod dae;
 pub mod dce;
 pub mod dead_globals;

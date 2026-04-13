@@ -90,6 +90,7 @@ fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::Linke
     let after_mut_block: Vec<u8> = match crate::mut_module::MutModule::new(&after_type_gc) {
         Ok(mut m) => {
             passes::const_fold::apply_mut(&mut m);
+            passes::const_prop::apply_mut(&mut m);
             passes::vacuum::apply_mut(&mut m);
             passes::cfg_dce::apply_mut(&mut m);
             passes::remove_unused_brs::apply_mut(&mut m);
