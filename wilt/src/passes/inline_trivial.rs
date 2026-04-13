@@ -264,13 +264,13 @@ fn safe_to_inline_no_locals(body: &[u8], instrs_start: usize) -> bool {
     !iter.failed()
 }
 
-/// Phase 2-6 safety predicate. Locals 0..n_locals allowed; nothing
-/// higher. `return` and `br`/`br_if`/`br_table` are allowed and force
-/// the caller to wrap the inlined body in a `block`. The wrap absorbs
-/// the function frame's role for any br whose target was the function
-/// (L == enclosing-count); inner brs (L < enclosing-count) work
-/// unchanged because wasm labels are relative to enclosing frames.
-/// `call_indirect` still bails — table semantics complicate things.
+/// Phase 2-7 safety predicate. The only hard constraint is local
+/// references: indices >= `n_locals` would point at non-existent
+/// callee locals (we don't paste them). Everything else is allowed:
+/// - `return` and br variants force a wrap (phase 3/6).
+/// - `call F` and `call_indirect` are fine — their immediates are
+///   module-global indices (function/type/table), unchanged by the
+///   splice (phase 7).
 fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_locals: u32)
     -> (bool, bool)
 {
@@ -284,7 +284,6 @@ fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_local
                 if k >= n_locals { return (false, false); }
             }
             0x0F | 0x0C | 0x0D | 0x0E => needs_wrap = true,
-            0x11 => return (false, false),
             _ => {}
         }
     }
@@ -791,5 +790,24 @@ mod tests {
             0x0B,
         ];
         assert_eq!(out, expected);
+    }
+
+    // Phase 7: callee body containing call_indirect — module-global
+    // type/table indices unchanged by the splice.
+    #[test]
+    fn phase7_accepts_callee_with_call_indirect() {
+        // Callee body: i32.const 0; call_indirect (type 0) (table 0); end.
+        let body = [
+            0,
+            0x41, 0,
+            0x11, 0, 0,
+            0x0B,
+        ];
+        // sig (1) -> () with one i32 param.
+        let entry = classify(&body, (1, 0), true);
+        match entry {
+            Some(Trivial::ReplaceWithBodyParams { .. }) => {}
+            _ => panic!("call_indirect inside callee should now classify"),
+        }
     }
 }
