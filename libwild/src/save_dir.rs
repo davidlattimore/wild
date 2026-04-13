@@ -205,9 +205,16 @@ impl SaveDirState {
                 out.write_all(b"-L")?;
                 write_copied_file_arg(out, &dir)?;
             } else {
+                // If the arg contains '=', then check to see if what's after the '=' is a filename
+                // that exists. If it does, use that.
                 let maybe_path = if let Some(eq_index) = arg.find('=') {
-                    out.write_all(&arg.as_bytes()[..=eq_index])?;
-                    &arg[eq_index + 1..]
+                    let after_equals = &arg[eq_index + 1..];
+                    if Path::new(after_equals).exists() {
+                        out.write_all(&arg.as_bytes()[..=eq_index])?;
+                        after_equals
+                    } else {
+                        arg.as_str()
+                    }
                 } else {
                     arg.as_str()
                 };
