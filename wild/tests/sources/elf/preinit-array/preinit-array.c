@@ -11,7 +11,7 @@
 //#RequiresGlibc:true
 //#Mode:dynamic
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int exit_code;
 

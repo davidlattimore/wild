@@ -7,8 +7,8 @@
 
 //#Config:pie:default
 
+#include "../common/runtime.h"
 #include "ptr_black_box.h"
-#include "runtime.h"
 
 extern char _etext;
 extern char __etext;

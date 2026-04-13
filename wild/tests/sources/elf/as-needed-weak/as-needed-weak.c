@@ -14,7 +14,7 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:rel.undefined-weak.dynamic.R_X86_64_GLOB_DAT
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 __attribute__((weak)) int fn1(void);
 

@@ -10,7 +10,7 @@
 // necessary.
 //#DiffIgnore:section.got
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 extern int foo[8];
 extern int bar[8];

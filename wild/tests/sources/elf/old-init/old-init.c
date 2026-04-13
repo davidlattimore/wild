@@ -15,7 +15,7 @@
 //#EnableLinker:lld
 //#Arch: x86_64
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int _init();
 int _fini();

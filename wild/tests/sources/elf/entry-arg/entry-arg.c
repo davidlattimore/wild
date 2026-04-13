@@ -6,7 +6,7 @@
 //#ExpectSym:custom_entry section=".text"
 //#TestUpdateInPlace:true
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 void custom_entry(void) {
   runtime_init();

@@ -3,7 +3,7 @@
 //#Object:call-via-defsym-1.c
 //#LinkArgs:-znow --defsym=foo=bar
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int foo();
 int __attribute__((weak)) bar(void) { return 8; }

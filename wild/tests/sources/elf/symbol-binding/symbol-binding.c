@@ -7,7 +7,7 @@
 //#Object:symbol-binding-1.c
 //#Archive:symbol-binding-2.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 __attribute__((visibility("hidden"))) int foo(void);
 __attribute__((visibility("hidden"))) int bar(void);

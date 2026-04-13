@@ -6,7 +6,7 @@
 //#Shared:hidden-undef-lib.c
 //#ExpectError:foo
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // foo is declared hidden — must not be resolved from the DSO above.
 __attribute__((visibility("hidden"))) int foo(void);

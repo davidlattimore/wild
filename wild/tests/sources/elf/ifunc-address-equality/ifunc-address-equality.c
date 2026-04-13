@@ -9,8 +9,8 @@
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
 
+#include "../common/runtime.h"
 #include "ifunc_init.h"
-#include "runtime.h"
 
 typedef void (*Func)(void);
 

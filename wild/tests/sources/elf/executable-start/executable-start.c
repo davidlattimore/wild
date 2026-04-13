@@ -13,8 +13,8 @@
 //#Shared:force-dynamic-linking.c
 //#DiffIgnore:.dynamic.DT_NEEDED
 
+#include "../common/runtime.h"
 #include "ptr_black_box.h"
-#include "runtime.h"
 
 extern char __executable_start;
 

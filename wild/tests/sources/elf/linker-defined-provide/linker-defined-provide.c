@@ -51,7 +51,7 @@
 //#LinkArgs:-shared
 //#ExpectDynSym:__executable_start
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 // User defines _end - linker should not create a conflicting symbol
 char _end __attribute__((weak)) = 42;

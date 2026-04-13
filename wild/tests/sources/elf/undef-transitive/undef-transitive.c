@@ -15,7 +15,7 @@
 //#Object:undef-transitive-1.c
 //#ExpectError:foo
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int bar(void);
 

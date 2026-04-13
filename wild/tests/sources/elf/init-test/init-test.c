@@ -5,7 +5,7 @@
 
 #include "init.h"
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 static int value = 0;
 

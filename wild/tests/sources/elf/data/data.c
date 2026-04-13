@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 static char data1[] = "QQQ";
 

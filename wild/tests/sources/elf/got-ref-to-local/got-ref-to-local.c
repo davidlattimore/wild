@@ -7,7 +7,7 @@
 //#Object:runtime.c
 //#Arch: x86_64
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 typedef int (*fnptr)(void);
 

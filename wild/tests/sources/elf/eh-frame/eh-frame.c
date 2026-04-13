@@ -6,7 +6,7 @@
 
 #include <stdint.h>
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 typedef uint32_t u32;
 

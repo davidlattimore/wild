@@ -7,7 +7,7 @@
 
 #include <stddef.h>
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int value = 42;
 extern const char start_of_text;

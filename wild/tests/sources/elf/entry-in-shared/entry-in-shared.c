@@ -6,7 +6,7 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 //#Mode:dynamic
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 void _start(void) {
   runtime_init();

@@ -3,7 +3,7 @@
 
 //#Object:runtime.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 struct Rela {
   long long a, b, c;

@@ -2,7 +2,7 @@
 //#Object:gnu-unique-1.cc
 //#Object:gnu-unique-2.cc
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 typedef int (*get_int_fn_t)(int);
 

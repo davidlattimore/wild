@@ -12,7 +12,7 @@
 //#Shared:shlib-archive-activation-1.c
 //#Archive:shlib-archive-activation-2.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int f1(void);
 

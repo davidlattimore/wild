@@ -1,7 +1,7 @@
 //#Object:runtime.c
 //#Object:weak-entry-1.c
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 #define WEAK __attribute__((weak))
 

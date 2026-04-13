@@ -17,7 +17,7 @@
 //#ExpectSym:bar
 //#ExpectSym:is_archive0_loaded
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 __attribute__((weak)) int is_archive0_loaded() { return 0; }
 

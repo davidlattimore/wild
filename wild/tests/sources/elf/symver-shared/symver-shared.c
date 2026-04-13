@@ -13,7 +13,7 @@
 //#LinkArgs:--version-script=./symver-shared.map -znow
 //#RequiresGlibc:true
 
-#include "runtime.h"
+#include "../common/runtime.h"
 
 int call_foo_v1(void);
 
