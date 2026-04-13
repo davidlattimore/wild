@@ -179,6 +179,20 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
             let _ = (OP_I32_NE, OP_I64_NE);
         }
 
+        // Peephole: return ; <function-closing end> → <end>.
+        // An explicit return right before the function's own closing
+        // end is redundant — falling through does the same thing.
+        // Safe iff the next instruction is `end` AND that end is the
+        // very last byte of the body (i.e. the function's closing end,
+        // not an inner block's end).
+        if !dead && op == OP_RETURN && idx < instrs.len() {
+            let (np, nlen) = instrs[idx];
+            if body[np] == OP_END && np + nlen == body.len() {
+                changed = true;
+                continue;
+            }
+        }
+
         // Peephole: <pure producer>; drop → (nothing).
         // Must not fire inside dead code (we'd be re-emitting anyway).
         if !dead && is_pure_producer(op) && idx < instrs.len() {
@@ -374,6 +388,26 @@ mod tests {
         let body = vec![0, 0x41, 5, 0x1A, 0x0B];
         let out = clean_body(&body).unwrap();
         assert_eq!(out, vec![0, 0x0B]);
+    }
+
+    #[test]
+    fn elide_return_before_final_end() {
+        // i32.const 5 ; return ; end → i32.const 5 ; end
+        let body = vec![0, 0x41, 5, 0x0F, 0x0B];
+        let out = clean_body(&body).unwrap();
+        assert_eq!(out, vec![0, 0x41, 5, 0x0B]);
+    }
+
+    #[test]
+    fn keep_return_before_inner_end() {
+        // block ... return ; end_of_block ; end_of_func — return stays,
+        // because falling out of a block is not returning from the fn.
+        let body = vec![0, 0x02, 0x40, 0x0F, 0x0B, 0x0B];
+        // Expect no fold of the return (its following end is inner block).
+        let out = clean_body(&body);
+        // After the return, dead-code mode may strip intervening nothing;
+        // but the return itself must remain.
+        assert!(out.as_ref().map(|v| v.contains(&0x0F)).unwrap_or(true));
     }
 
     #[test]
