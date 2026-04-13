@@ -72,22 +72,40 @@ fn fold_body(body: &[u8]) -> Option<Vec<u8>> {
         .map(|(p, len)| (p, p + len))
         .collect();
 
-    // Find foldable triples: (i32.const, i32.const, binop).
-    let mut replacements: Vec<(usize, usize, i32)> = Vec::new();
+    // Find foldable spans. Each replacement is (from, to, Repl).
+    // Two-const triples: collapse to a single i32.const.
+    // Single-const+identity-binop pairs: collapse to nothing (delete both).
+    enum Repl { Const(i32), Empty }
+    let mut replacements: Vec<(usize, usize, Repl)> = Vec::new();
     let mut i = 0;
-    while i + 2 < spans.len() {
-        let (a0, a1) = spans[i];
-        let (b0, b1) = spans[i + 1];
-        let (c0, _c1) = spans[i + 2];
-        if body[a0] == I32_CONST && body[b0] == I32_CONST {
-            if let (Some((va, _)), Some((vb, _))) = (
-                read_sleb128_i32(&body[a0 + 1..a1]),
-                read_sleb128_i32(&body[b0 + 1..b1]),
-            ) {
-                if let Some(r) = evaluate(body[c0], va, vb) {
-                    replacements.push((a0, spans[i + 2].1, r));
-                    i += 3;
-                    continue;
+    while i < spans.len() {
+        if i + 2 < spans.len() {
+            let (a0, a1) = spans[i];
+            let (b0, b1) = spans[i + 1];
+            let (c0, _c1) = spans[i + 2];
+            if body[a0] == I32_CONST && body[b0] == I32_CONST {
+                if let (Some((va, _)), Some((vb, _))) = (
+                    read_sleb128_i32(&body[a0 + 1..a1]),
+                    read_sleb128_i32(&body[b0 + 1..b1]),
+                ) {
+                    if let Some(r) = evaluate(body[c0], va, vb) {
+                        replacements.push((a0, spans[i + 2].1, Repl::Const(r)));
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+        }
+        if i + 1 < spans.len() {
+            let (a0, a1) = spans[i];
+            let (b0, _b1) = spans[i + 1];
+            if body[a0] == I32_CONST {
+                if let Some((v, _)) = read_sleb128_i32(&body[a0 + 1..a1]) {
+                    if is_rhs_identity(body[b0], v) {
+                        replacements.push((a0, spans[i + 1].1, Repl::Empty));
+                        i += 2;
+                        continue;
+                    }
                 }
             }
         }
@@ -98,14 +116,32 @@ fn fold_body(body: &[u8]) -> Option<Vec<u8>> {
 
     let mut out = Vec::with_capacity(body.len());
     let mut cursor = 0;
-    for (from, to, val) in replacements {
+    for (from, to, repl) in replacements {
         out.extend_from_slice(&body[cursor..from]);
-        out.push(I32_CONST);
-        write_sleb128_i32(&mut out, val);
+        match repl {
+            Repl::Const(val) => {
+                out.push(I32_CONST);
+                write_sleb128_i32(&mut out, val);
+            }
+            Repl::Empty => {}
+        }
         cursor = to;
     }
     out.extend_from_slice(&body[cursor..]);
     Some(out)
+}
+
+/// True if `<x> ; i32.const v ; op` is semantically `<x>` — i.e. v is
+/// the right-hand identity for the binop. Commutative op + left-hand
+/// identity is not matched here (would need backward value tracking).
+fn is_rhs_identity(op: u8, v: i32) -> bool {
+    matches!((op, v),
+        (I32_ADD, 0) | (I32_SUB, 0)
+        | (I32_OR, 0) | (I32_XOR, 0)
+        | (I32_SHL, 0) | (I32_SHR_U, 0) | (0x75 /*shr_s*/, 0)
+        | (I32_MUL, 1)
+        | (I32_AND, -1)
+    )
 }
 
 /// Evaluate a binary operation on two i32 constants.
@@ -240,6 +276,36 @@ mod tests {
         let body = vec![0, I32_CONST, 15, I32_CONST, 6, I32_AND, 0x0B];
         let folded = fold_body(&body).unwrap();
         assert_eq!(folded, vec![0, I32_CONST, 6, 0x0B]);
+    }
+
+    #[test]
+    fn fold_identity_add_zero() {
+        // local.get 0 ; i32.const 0 ; i32.add → local.get 0
+        let body = vec![0, 0x20, 0, I32_CONST, 0, I32_ADD, 0x0B];
+        let folded = fold_body(&body).unwrap();
+        assert_eq!(folded, vec![0, 0x20, 0, 0x0B]);
+    }
+
+    #[test]
+    fn fold_identity_mul_one() {
+        let body = vec![0, 0x20, 0, I32_CONST, 1, I32_MUL, 0x0B];
+        let folded = fold_body(&body).unwrap();
+        assert_eq!(folded, vec![0, 0x20, 0, 0x0B]);
+    }
+
+    #[test]
+    fn fold_identity_and_neg_one() {
+        // -1 sleb = 0x7F
+        let body = vec![0, 0x20, 0, I32_CONST, 0x7F, I32_AND, 0x0B];
+        let folded = fold_body(&body).unwrap();
+        assert_eq!(folded, vec![0, 0x20, 0, 0x0B]);
+    }
+
+    #[test]
+    fn leave_non_identity_pair() {
+        // i32.const 2 ; i32.mul — not identity.
+        let body = vec![0, 0x20, 0, I32_CONST, 2, I32_MUL, 0x0B];
+        assert!(fold_body(&body).is_none());
     }
 
     #[test]
