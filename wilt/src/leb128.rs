@@ -34,6 +34,27 @@ pub fn write_u32(out: &mut Vec<u8>, mut value: u32) {
     }
 }
 
+/// Read a signed LEB128 value (sleb128) as `i32`. Returns
+/// `(value, bytes_consumed)`. Used for `i32.const` immediates whose
+/// concrete value matters (branch-threading, const-fold).
+pub fn read_i32(data: &[u8]) -> Option<(i32, usize)> {
+    let mut result: i64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as i64) << shift;
+        shift += 7;
+        if byte < 0x80 {
+            // Sign-extend if the highest data bit is set.
+            if shift < 64 && (byte & 0x40) != 0 {
+                result |= !0i64 << shift;
+            }
+            return Some((result as i32, i + 1));
+        }
+        if shift >= 35 { return None; }
+    }
+    None
+}
+
 /// Count the bytes of a LEB128 (signed or unsigned) without trying
 /// to decode its value. Needed when the caller only wants to skip
 /// past the immediate (e.g. `i64.const`'s value can be up to 10 bytes
