@@ -1,129 +1,155 @@
-//! Pure-call elimination: delete `call f` when `f` is pure and has
-//! signature `(void) -> (void)`. The call produces nothing and has no
-//! side effects, so it's a no-op at every call site.
+//! Pure-call elimination.
 //!
-//! Relies on `LinkerHints::func_is_pure` (standalone: `DerivedHints`
-//! computes the pure set by fixpoint over defined bodies). Imports
-//! are pessimistically impure, so this pass is safe even when we
-//! can't see the import's implementation.
+//! General form: `call f ; drop^k` where `f` is pure with arity `n -> k`
+//! becomes `drop^n`. The call is stack-wise just "pop n, push k" and
+//! pure means no observable side effects, so if the caller immediately
+//! throws the k results away we can drop the arguments directly and
+//! skip the call.
 //!
-//! Out of scope (good follow-ups):
-//!   * `call f; drop×k` when `f` is pure with `k` results — needs
-//!     recognition of the post-call drop run.
-//!   * Pure calls whose results are consumed: we can't elide the
-//!     call without changing stack shape (would need to replace with
-//!     equivalent constants, i.e. real IPA).
+//! Savings per site: `1 + uleb(f) + k - n` bytes. We apply only when
+//! this is positive.
 //!
-//! Byte savings per match: `1 + uleb128_len(f)` (≥ 2 bytes).
+//! Relies on `LinkerHints::func_is_pure`. DerivedHints computes purity
+//! by fixpoint over defined bodies; imports are pessimistically impure.
+//!
+//! Out of scope:
+//!   * Pure calls whose results are *consumed* (would need constant
+//!     substitution, i.e. real IPA).
+//!   * Impure calls with dropped results (unsound — side effects
+//!     still have to run).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::leb128;
 use crate::linker_hints::LinkerHints;
 use crate::module::{self as wmod, WasmModule};
 use crate::mut_module::MutModule;
-use crate::opcode::{self as opc, InstrIter};
+use crate::opcode::{self as opc};
 
 const OP_CALL: u8 = 0x10;
+const OP_DROP: u8 = 0x1A;
+
+type Arity = (u32, u32);   // (params, results)
 
 pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHints>) {
     let Some(hints) = hints else { return };
     let input = m.input();
     let Ok(wm) = WasmModule::parse(input) else { return };
 
-    // Set of function indices that are *both* pure and have void
-    // signature `() -> ()`. Computed once per pass invocation; the
-    // hint does the pure test, the module's type section does arity.
-    let voidable = match compute_voidable(&wm, hints) {
-        Some(v) if !v.is_empty() => v,
+    let arities = match compute_pure_arities(&wm, hints) {
+        Some(a) if !a.is_empty() => a,
         _ => return,
     };
 
     use rayon::prelude::*;
     let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| rewrite_body(m.body_bytes(i), &voidable).map(|b| (i, b)))
+        .filter_map(|i| rewrite_body(m.body_bytes(i), &arities).map(|b| (i, b)))
         .collect();
     for (i, b) in updates { m.set_body(i, b); }
 }
 
-fn rewrite_body(body: &[u8], voidable: &HashSet<u32>) -> Option<Vec<u8>> {
+fn rewrite_body(body: &[u8], arities: &HashMap<u32, Arity>) -> Option<Vec<u8>> {
     let start = opc::skip_locals(body)?;
-    let mut iter = InstrIter::new(body, start);
-    let mut deletes: Vec<(usize, usize)> = Vec::new();
-    while let Some((p, len)) = iter.next() {
-        if body[p] != OP_CALL { continue; }
-        let (f, _) = leb128::read_u32(&body[p + 1..])?;
-        if voidable.contains(&f) {
-            deletes.push((p, len));
+    let mut off = start;
+    // Rewrites are (span_start, span_end, num_drops_to_write).
+    let mut edits: Vec<(usize, usize, u32)> = Vec::new();
+    while off < body.len() {
+        let op = *body.get(off)?;
+        if op == 0x0B { break; }
+        let len = opc::instr_len(body, off)?;
+        if op != OP_CALL { off += len; continue; }
+
+        let (f, _) = leb128::read_u32(&body[off + 1..])?;
+        let Some(&(n, k)) = arities.get(&f) else { off += len; continue };
+
+        // Look ahead for exactly k consecutive drops.
+        let mut probe = off + len;
+        let mut drops = 0u32;
+        while drops < k && probe < body.len() {
+            let op2 = *body.get(probe)?;
+            if op2 != OP_DROP { break; }
+            probe += 1;
+            drops += 1;
         }
+        if drops < k { off += len; continue; }
+
+        let orig_span = probe - off;
+        let new_span = n as usize;
+        if new_span >= orig_span { off += len; continue; }
+
+        edits.push((off, probe, n));
+        off = probe;
     }
-    if deletes.is_empty() { return None; }
+    if edits.is_empty() { return None; }
 
     let mut out = Vec::with_capacity(body.len());
     let mut cursor = 0;
-    for (p, len) in &deletes {
-        out.extend_from_slice(&body[cursor..*p]);
-        cursor = p + len;
+    for &(s, e, n) in &edits {
+        out.extend_from_slice(&body[cursor..s]);
+        for _ in 0..n { out.push(OP_DROP); }
+        cursor = e;
     }
     out.extend_from_slice(&body[cursor..]);
     Some(out)
 }
 
-fn compute_voidable(module: &WasmModule<'_>, hints: &dyn LinkerHints) -> Option<HashSet<u32>> {
-    let data = module.data();
+fn compute_pure_arities(
+    module: &WasmModule<'_>, hints: &dyn LinkerHints,
+) -> Option<HashMap<u32, Arity>> {
     let num_imports = count_func_imports(module)?;
     let func_types = read_defined_func_type_indices(module)?;
-    let void_types = scan_void_type_indices(module);
+    let type_arities = scan_type_arities(module)?;
 
-    let mut out = HashSet::new();
+    let mut out = HashMap::new();
     for (i, &tidx) in func_types.iter().enumerate() {
         let abs = num_imports + i as u32;
-        if void_types.contains(&tidx) && hints.func_is_pure(abs) {
-            out.insert(abs);
-        }
+        if !hints.func_is_pure(abs) { continue; }
+        let Some(&arity) = type_arities.get(tidx as usize) else { continue };
+        out.insert(abs, arity);
     }
-    // Also include imported funcs whose type is void AND func_is_pure.
-    // In practice DerivedHints never marks imports pure, but linker
-    // hints COULD — e.g. a pure-annotated WASI call. Cheap to allow.
+    // Linker-annotated pure imports: include if any.
     for abs in 0..num_imports {
-        if hints.func_is_pure(abs) {
-            let tidx = import_func_type_idx(module, abs)?;
-            if void_types.contains(&tidx) { out.insert(abs); }
-        }
+        if !hints.func_is_pure(abs) { continue; }
+        let Some(tidx) = import_func_type_idx(module, abs) else { continue };
+        let Some(&arity) = type_arities.get(tidx as usize) else { continue };
+        out.insert(abs, arity);
     }
-    let _ = data;
     Some(out)
 }
 
-/// Return the set of type indices whose entry is exactly
-/// `0x60 0x00 0x00` — the byte pattern for `() -> ()`.
-fn scan_void_type_indices(module: &WasmModule<'_>) -> HashSet<u32> {
-    let mut out = HashSet::new();
-    let Some(sec) = module.section(wmod::SECTION_TYPE) else { return out };
+/// Parse the type section and return `(params_count, results_count)`
+/// for every `0x60`-form entry. Returns `None` on any unrecognised
+/// form / malformed layout (we'd rather bail than lie).
+fn scan_type_arities(module: &WasmModule<'_>) -> Option<Vec<Arity>> {
+    let Some(sec) = module.section(wmod::SECTION_TYPE) else { return Some(Vec::new()) };
     let p = sec.payload.slice(module.data());
-    let Some((count, mut off)) = leb128::read_u32(p) else { return out };
-    for i in 0..count {
-        let Some(&form) = p.get(off) else { return out };
-        if form != 0x60 { return out; }
-        // Peek next two bytes: expected empty params and empty results.
-        let params_empty = p.get(off + 1).copied() == Some(0x00);
-        let results_empty = p.get(off + 2).copied() == Some(0x00);
-        if params_empty && results_empty {
-            out.insert(i);
-            off += 3;
-            continue;
-        }
-        // Otherwise skip the entry — decode params vec, then results vec.
+    let (count, mut off) = leb128::read_u32(p)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let form = *p.get(off)?;
+        if form != 0x60 { return None; }
         off += 1;
-        for _ in 0..2 {
-            let Some((n, c)) = leb128::read_u32(p.get(off..).unwrap_or(&[])) else { return out };
-            off += c;
-            off += n as usize;  // one byte per valtype (MVP numeric set)
-            if off > p.len() { return out; }
+        let (nparams, c) = leb128::read_u32(p.get(off..)?)?;
+        off += c;
+        // One byte per valtype (MVP numeric set — GC types would break
+        // this, but DerivedHints doesn't mark GC modules as having pure
+        // funcs reliably anyway).
+        for _ in 0..nparams {
+            let vt = *p.get(off)?;
+            if !matches!(vt, 0x7B..=0x7F) { return None; }
+            off += 1;
         }
+        let (nresults, c) = leb128::read_u32(p.get(off..)?)?;
+        off += c;
+        for _ in 0..nresults {
+            let vt = *p.get(off)?;
+            if !matches!(vt, 0x7B..=0x7F) { return None; }
+            off += 1;
+        }
+        out.push((nparams, nresults));
     }
-    out
+    Some(out)
 }
 
 fn count_func_imports(module: &WasmModule<'_>) -> Option<u32> {
@@ -198,31 +224,62 @@ fn read_defined_func_type_indices(module: &WasmModule<'_>) -> Option<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linker_hints::testing::FixedHints;
 
     #[test]
     fn drops_pure_void_call() {
         // body = [0 locals, call 0, end]
         let body = [0u8, OP_CALL, 0x00, 0x0B];
-        let mut voidable = HashSet::new();
-        voidable.insert(0u32);
-        let out = rewrite_body(&body, &voidable).expect("should drop");
+        let mut arities = HashMap::new();
+        arities.insert(0u32, (0, 0));
+        let out = rewrite_body(&body, &arities).expect("should drop");
         assert_eq!(out, vec![0u8, 0x0B]);
+    }
+
+    #[test]
+    fn elides_pure_1_to_1_with_drop() {
+        // push arg (local.get 0), call 0, drop, end.
+        let body = [0u8, 0x20, 0x00, OP_CALL, 0x00, OP_DROP, 0x0B];
+        let mut arities = HashMap::new();
+        arities.insert(0u32, (1, 1));
+        let out = rewrite_body(&body, &arities).expect("should fold");
+        // call+drop (3 bytes) replaced by 1 drop: arg stays, one drop consumes it.
+        assert_eq!(out, vec![0u8, 0x20, 0x00, OP_DROP, 0x0B]);
+    }
+
+    #[test]
+    fn elides_pure_0_to_2_with_two_drops() {
+        // call 0, drop, drop, end. f is pure () -> (i32, i32).
+        let body = [0u8, OP_CALL, 0x00, OP_DROP, OP_DROP, 0x0B];
+        let mut arities = HashMap::new();
+        arities.insert(0u32, (0, 2));
+        let out = rewrite_body(&body, &arities).expect("should fold");
+        // call+2 drops (4 bytes) replaced by 0 drops.
+        assert_eq!(out, vec![0u8, 0x0B]);
+    }
+
+    #[test]
+    fn bails_when_too_few_drops() {
+        // call 0, drop, end. f is () -> (i32, i32) — only one drop follows.
+        let body = [0u8, OP_CALL, 0x00, OP_DROP, 0x0B];
+        let mut arities = HashMap::new();
+        arities.insert(0u32, (0, 2));
+        assert!(rewrite_body(&body, &arities).is_none());
+    }
+
+    #[test]
+    fn bails_when_no_savings() {
+        // f is (i32, i32, i32) -> (i32). orig = 3, replacement = 3 drops = 3.
+        // `call f; drop` = 3 bytes; replacement = 3 bytes → no saving.
+        let body = [0u8, OP_CALL, 0x00, OP_DROP, 0x0B];
+        let mut arities = HashMap::new();
+        arities.insert(0u32, (3, 1));
+        assert!(rewrite_body(&body, &arities).is_none());
     }
 
     #[test]
     fn leaves_impure_call() {
         let body = [0u8, OP_CALL, 0x00, 0x0B];
-        let voidable = HashSet::new();
-        assert!(rewrite_body(&body, &voidable).is_none());
-    }
-
-    #[test]
-    fn pure_set_empty_when_no_hints() {
-        let _h = FixedHints::default();
-        let voidable: HashSet<u32> = HashSet::new();
-        // With no marked-pure funcs, rewrite_body is a no-op.
-        let body = [0u8, OP_CALL, 0x00, 0x0B];
-        assert!(rewrite_body(&body, &voidable).is_none());
+        let arities: HashMap<u32, Arity> = HashMap::new();
+        assert!(rewrite_body(&body, &arities).is_none());
     }
 }
