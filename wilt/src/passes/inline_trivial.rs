@@ -57,11 +57,21 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         let is_unique = call_counts.get(i).copied() == Some(1);
         let inline_safe = is_unique && hints.is_some_and(|h| h.is_internal(abs_idx));
         let mut entry = classify(body, sig, inline_safe);
-        // Patch ReplaceWithBodyParams's param_types with real valtypes.
-        if let Some(Trivial::ReplaceWithBodyParams { param_types, .. }) = entry.as_mut() {
+        // Patch ReplaceWithBodyParams's param_types + result_blocktype.
+        if let Some(Trivial::ReplaceWithBodyParams {
+            param_types, result_blocktype, ..
+        }) = entry.as_mut() {
             if let Some(&tidx) = func_types.get(i) {
-                if let Some(real) = read_param_types(&wm, tidx) {
-                    *param_types = real;
+                if let Some((real_params, real_results)) = read_func_sig_types(&wm, tidx) {
+                    *param_types = real_params;
+                    if real_results.is_empty() {
+                        *result_blocktype = 0x40;
+                    } else if real_results.len() == 1 {
+                        *result_blocktype = real_results[0];
+                    } else {
+                        // Multi-value result — out of scope; bail.
+                        entry = None;
+                    }
                 } else {
                     entry = None;
                 }
@@ -112,14 +122,22 @@ enum Trivial {
     /// Inline the entire callee body in place of `call f`. M6 phase 1 —
     /// `() -> ()` callees with no locals references.
     ReplaceWithBody(Vec<u8>),
-    /// Inline a `(T_0, .., T_{N-1}) -> ()` callee. M6 phase 2/3. The
-    /// caller materialises args into N freshly-allocated caller locals,
-    /// then pastes the body with `local.{get,set,tee} k` rewritten to
-    /// `local.{...} (caller_first_new_local + k)`. If `wrap_for_return`
-    /// is true, the body is also wrapped in `block 0x40 ... end` and
-    /// every `return` opcode is rewritten to `br N` where N is the
-    /// return's nesting depth (so it targets the wrapping block).
-    ReplaceWithBodyParams { param_types: Vec<u8>, body: Vec<u8>, wrap_for_return: bool },
+    /// Inline a `(T_0, .., T_{N-1}) -> R?` callee — M6 phase 2/3/4.
+    /// Args are materialised into freshly-allocated caller locals; the
+    /// body is pasted with `local.{get,set,tee} k → (first_new + k)`.
+    ///
+    /// `wrap_for_return == true`: the body is wrapped in
+    /// `block <result_blocktype> ... end` and every `return` is
+    /// rewritten to `br N` where N is the return's nesting depth.
+    ///
+    /// `result_blocktype` is `0x40` for void callees or the single
+    /// valtype byte for `(T...) -> R` callees (phase 4).
+    ReplaceWithBodyParams {
+        param_types: Vec<u8>,
+        body: Vec<u8>,
+        wrap_for_return: bool,
+        result_blocktype: u8,
+    },
 }
 
 /// Maximum bytes we'll inline-paste a body for the unique-caller case.
@@ -177,20 +195,23 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
         }
     }
 
-    // M6 phase 2/3 — single-caller `(T...) -> ()` body inlining.
-    // Phase 2: no return / no branch / no call_indirect.
-    // Phase 3: allow `return` (we wrap and rewrite to `br N`).
-    if is_unique_caller && sig.0 > 0 && sig.1 == 0 {
+    // M6 phase 2/3/4 — single-caller `(T...) -> R?` body inlining.
+    if is_unique_caller && sig.0 > 0 && sig.1 <= 1 {
         let body_instrs = &body[off..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
         {
             let (safe, has_return) = safe_to_inline_with_param_locals_v3(body, off, sig.0);
             if safe {
+                // result_blocktype is patched at apply_mut time once we
+                // know the callee's result valtype. For void callees,
+                // 0x40 (empty); for 1-result, the valtype byte.
+                let result_blocktype = if sig.1 == 0 { 0x40 } else { 0u8 /* placeholder */ };
                 return Some(Trivial::ReplaceWithBodyParams {
                     param_types: vec![0u8; sig.0 as usize],
                     body: body_instrs.to_vec(),
                     wrap_for_return: has_return,
+                    result_blocktype,
                 });
             }
         }
@@ -289,8 +310,48 @@ fn rebase_locals(body: &[u8], delta: u32) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Read the param valtype bytes for a function type. Returns None on
-/// unsupported (non-0x60) form or unrecognised valtype byte.
+/// Read both the param and result valtype byte vectors for a function
+/// type. Returns None on unsupported (non-0x60) form or unrecognised
+/// valtype byte.
+fn read_func_sig_types(module: &WasmModule<'_>, type_idx: u32)
+    -> Option<(Vec<u8>, Vec<u8>)>
+{
+    let sec = module.section(crate::module::SECTION_TYPE)?;
+    let p = sec.payload.slice(module.data());
+    let (count, mut off) = leb128::read_u32(p)?;
+    if type_idx >= count { return None; }
+    for ti in 0..count {
+        if *p.get(off)? != 0x60 { return None; }
+        off += 1;
+        let (params, c) = leb128::read_u32(p.get(off..)?)?;
+        off += c;
+        let params_start = off;
+        for _ in 0..params {
+            let vt = *p.get(off)?;
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            off += 1;
+        }
+        let params_end = off;
+        let (results, c) = leb128::read_u32(p.get(off..)?)?;
+        off += c;
+        let results_start = off;
+        for _ in 0..results {
+            let vt = *p.get(off)?;
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            off += 1;
+        }
+        let results_end = off;
+        if ti == type_idx {
+            return Some((
+                p[params_start..params_end].to_vec(),
+                p[results_start..results_end].to_vec(),
+            ));
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
 fn read_param_types(module: &WasmModule<'_>, type_idx: u32) -> Option<Vec<u8>> {
     let sec = module.section(crate::module::SECTION_TYPE)?;
     let p = sec.payload.slice(module.data());
@@ -385,11 +446,12 @@ fn rewrite_body(
             Trivial::ReplaceWithBody(bytes) => {
                 edits.push((p, len, bytes.clone()));
             }
-            Trivial::ReplaceWithBodyParams { param_types, body: callee, wrap_for_return } => {
+            Trivial::ReplaceWithBodyParams {
+                param_types, body: callee, wrap_for_return, result_blocktype,
+            } => {
                 let n = param_types.len() as u32;
                 let first_new = next_new_local;
                 let Some(remapped) = rebase_locals(callee, first_new) else { continue };
-                // Phase 3: rewrite returns to br N (N = nesting depth).
                 let body_part = if *wrap_for_return {
                     match rewrite_returns_to_br(&remapped) {
                         Some(b) => b,
@@ -404,13 +466,12 @@ fn rewrite_body(
                     leb128::write_u32(&mut repl, first_new + k);
                 }
                 if *wrap_for_return {
-                    // Wrap the inlined body in `block 0x40 ... end` so
-                    // `return → br N` lands at this block's end (=
-                    // post-call site, exactly what return would do).
-                    repl.push(0x02);                       // block
-                    repl.push(0x40);                       // empty blocktype
+                    // Wrap with block <result_blocktype>. Return → br N
+                    // lands at this block's end with the result on stack.
+                    repl.push(0x02);
+                    repl.push(*result_blocktype);
                     repl.extend_from_slice(&body_part);
-                    repl.push(0x0B);                       // end
+                    repl.push(0x0B);
                 } else {
                     repl.extend_from_slice(&body_part);
                 }
@@ -550,6 +611,7 @@ mod tests {
             param_types: vec![0x7F],          // i32
             body: callee_body,
             wrap_for_return: false,
+            result_blocktype: 0x40,
         })];
         let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline");
         // Locals header: was 0 groups; now 1 group of (1, i32).
@@ -576,6 +638,7 @@ mod tests {
             param_types: vec![0x7F],
             body: callee_body,
             wrap_for_return: true,
+            result_blocktype: 0x40,
         })];
         let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline + wrap");
         // Expected: 1 group of (1, i32) header. Caller body:
@@ -597,6 +660,44 @@ mod tests {
             0x0C, 0,
             0x0B,
             0x0B,
+        ];
+        assert_eq!(out, expected);
+    }
+
+    // M6 phase 4: 1-result callee with return — wrap blocktype is the
+    // result valtype, not 0x40.
+    #[test]
+    fn rewrites_call_returning_value_uses_result_blocktype() {
+        // Caller: 0 locals ; i32.const 5 ; call 0 ; drop ; end.
+        let body = [0u8, 0x41, 5, 0x10, 0, 0x1A, 0x0B];
+        // Callee: (i32) -> i32, body = local.get 0 ; return.
+        let callee_body = vec![0x20, 0, 0x0F];
+        let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
+            param_types: vec![0x7F],
+            body: callee_body,
+            wrap_for_return: true,
+            result_blocktype: 0x7F,    // i32
+        })];
+        let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline");
+        // 1 group of (1, i32). Body:
+        //   i32.const 5
+        //   local.set 0
+        //   block (result i32)
+        //     local.get 0
+        //     br 0
+        //   end
+        //   drop
+        //   end
+        let expected = vec![
+            1, 1, 0x7F,
+            0x41, 5,
+            0x21, 0,
+            0x02, 0x7F,        // block (result i32)
+            0x20, 0,           // local.get 0 (the new local)
+            0x0C, 0,           // br 0 (return rewritten)
+            0x0B,              // end of wrap
+            0x1A,              // drop
+            0x0B,              // end func
         ];
         assert_eq!(out, expected);
     }
