@@ -62,6 +62,13 @@ pub trait LinkerHints: Sync {
     /// imported global that can only be known at link time — returns
     /// `None`. Default: unknown.
     fn global_const(&self, _global_idx: u32) -> Option<ConstVal> { None }
+
+    /// True if the function has no observable side effects: no stores,
+    /// no global.set, no table writes, no memory.grow / memory.copy /
+    /// memory.init / memory.fill, no call_indirect, and every direct
+    /// callee is also pure. Imports are conservatively impure.
+    /// Default: assume impure.
+    fn func_is_pure(&self, _func_idx: u32) -> bool { false }
 }
 
 /// No-op hints — equivalent to passing `None`. Useful when an API needs
@@ -90,6 +97,7 @@ pub mod testing {
         pub origins: HashMap<u32, u32>,
         pub unread_globals: HashSet<u32>,
         pub global_consts: HashMap<u32, ConstVal>,
+        pub pure_funcs: HashSet<u32>,
     }
 
     impl LinkerHints for FixedHints {
@@ -102,6 +110,7 @@ pub mod testing {
         fn origin_unit(&self, f: u32) -> Option<u32> { self.origins.get(&f).copied() }
         fn global_is_read(&self, g: u32) -> bool { !self.unread_globals.contains(&g) }
         fn global_const(&self, g: u32) -> Option<ConstVal> { self.global_consts.get(&g).copied() }
+        fn func_is_pure(&self, f: u32) -> bool { self.pure_funcs.contains(&f) }
     }
 }
 
@@ -120,6 +129,7 @@ mod tests {
         assert_eq!(n.origin_unit(0), None);
         assert!(n.global_is_read(0));        // assume read
         assert_eq!(n.global_const(0), None);
+        assert!(!n.func_is_pure(0));
     }
 
     #[test]

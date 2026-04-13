@@ -124,6 +124,7 @@ fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::Linke
             passes::inline_trivial::apply_mut_with_hints(&mut m, hints);
             passes::dead_globals::apply_mut_with_hints(&mut m, hints);
             passes::dae::apply_mut_with_hints(&mut m, hints);
+            passes::pure_call_elim::apply_mut_with_hints(&mut m, hints);
             passes::reorder_locals::apply_mut(&mut m);
             passes::memory_packing::apply_mut(&mut m);
             m.serialize()

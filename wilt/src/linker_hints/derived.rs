@@ -37,6 +37,7 @@ pub struct DerivedHints {
     ref_funcs: Vec<u32>,
     unread_globals: HashSet<u32>,
     global_consts: HashMap<u32, ConstVal>,
+    pure_funcs: HashSet<u32>,
 }
 
 impl DerivedHints {
@@ -116,6 +117,8 @@ impl DerivedHints {
 
         let global_consts = collect_global_consts(&wm, num_imported_globals);
 
+        let pure_funcs = derive_pure_funcs(&wm, num_imports);
+
         Some(DerivedHints {
             internal,
             call_counts,
@@ -123,6 +126,7 @@ impl DerivedHints {
             ref_funcs: ref_funcs.into_iter().collect(),
             unread_globals,
             global_consts,
+            pure_funcs,
         })
     }
 }
@@ -136,6 +140,91 @@ impl LinkerHints for DerivedHints {
     fn ref_func_targets(&self) -> &[u32] { &self.ref_funcs }
     fn global_is_read(&self, g: u32) -> bool { !self.unread_globals.contains(&g) }
     fn global_const(&self, g: u32) -> Option<ConstVal> { self.global_consts.get(&g).copied() }
+    fn func_is_pure(&self, f: u32) -> bool { self.pure_funcs.contains(&f) }
+}
+
+/// Per-defined-function facts used in the purity fixpoint.
+struct PurityFacts {
+    walkable: bool,
+    intrinsic_impure: bool,   // any single-opcode side effect
+    calls_import: bool,
+    callees_defined: Vec<u32>, // absolute func indices of defined callees
+}
+
+fn derive_pure_funcs(module: &WasmModule<'_>, num_imports: u32) -> HashSet<u32> {
+    let data = module.data();
+    let num_defined = module.function_bodies().len() as u32;
+    let mut facts: Vec<PurityFacts> = Vec::with_capacity(num_defined as usize);
+    for body in module.function_bodies() {
+        facts.push(scan_purity(body.body.slice(data), num_imports));
+    }
+
+    // Fixpoint: start optimistic for each walkable+intrinsic-pure func.
+    let mut pure: HashSet<u32> = HashSet::new();
+    for (i, f) in facts.iter().enumerate() {
+        if f.walkable && !f.intrinsic_impure && !f.calls_import {
+            pure.insert(num_imports + i as u32);
+        }
+    }
+    loop {
+        let mut to_demote: Vec<u32> = Vec::new();
+        for &idx in pure.iter() {
+            let i = (idx - num_imports) as usize;
+            let f = &facts[i];
+            if !f.callees_defined.iter().all(|c| pure.contains(c)) {
+                to_demote.push(idx);
+            }
+        }
+        if to_demote.is_empty() { break; }
+        for idx in to_demote { pure.remove(&idx); }
+    }
+    pure
+}
+
+/// Scan a body for side effects and direct callees. Conservative:
+/// any opcode we don't know → intrinsic_impure = true.
+fn scan_purity(body: &[u8], num_imports: u32) -> PurityFacts {
+    let Some(start) = opcode::skip_locals(body) else {
+        return PurityFacts { walkable: false, intrinsic_impure: true,
+                             calls_import: false, callees_defined: Vec::new() };
+    };
+    let mut f = PurityFacts {
+        walkable: true, intrinsic_impure: false,
+        calls_import: false, callees_defined: Vec::new(),
+    };
+    let mut iter = InstrIter::new(body, start);
+    while let Some((p, _)) = iter.next() {
+        let op = body[p];
+        if is_side_effect_opcode(op) { f.intrinsic_impure = true; }
+        if op == 0x10 {
+            if let Some((callee, _)) = leb128::read_u32(&body[p + 1..]) {
+                if callee < num_imports {
+                    f.calls_import = true;
+                } else {
+                    f.callees_defined.push(callee);
+                }
+            } else {
+                f.intrinsic_impure = true;
+            }
+        }
+    }
+    if iter.failed() { f.walkable = false; f.intrinsic_impure = true; }
+    f
+}
+
+/// Opcodes that on their own imply an observable side effect.
+/// Conservative: 0xFC/0xFD/0xFE prefix families are treated as impure
+/// (many of their subcodes are writes or atomics; precise decoding can
+/// come later).
+fn is_side_effect_opcode(op: u8) -> bool {
+    matches!(op,
+        0x11        // call_indirect
+        | 0x24        // global.set
+        | 0x26        // table.set
+        | 0x36..=0x3E // i32/i64/f32/f64 stores
+        | 0x40        // memory.grow
+        | 0xFC | 0xFD | 0xFE
+    )
 }
 
 /// Walk the globals section. Imported globals are not in this section
