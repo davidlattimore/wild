@@ -8,6 +8,14 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# Zero runtime dependencies. Pure byte manipulation.
+# Pure byte manipulation; the only runtime dep is rayon for per-body
+# parallelism on multi-core hosts. See passes/* — the gather-then-apply
+# pattern keeps MutModule's API mutation-free during the parallel phase.
+rayon = { workspace = true }
 
 [dev-dependencies]
+wasmparser = "0.221"
+wat = "1.221"
+wasm-smith = "0.221"
+arbitrary = "1"
+proptest = "1"

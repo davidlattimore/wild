@@ -4,3 +4,6 @@
 [submodule "wild/tests/bins"]
 	path = wild/tests/bins
 	url = https://github.com/wild-linker/test-files
+[submodule "external_test_suites/binaryen"]
+	path = external_test_suites/binaryen
+	url = https://github.com/WebAssembly/binaryen

@@ -34,6 +34,19 @@ pub fn write_u32(out: &mut Vec<u8>, mut value: u32) {
     }
 }
 
+/// Count the bytes of a LEB128 (signed or unsigned) without trying
+/// to decode its value. Needed when the caller only wants to skip
+/// past the immediate (e.g. `i64.const`'s value can be up to 10 bytes
+/// and won't fit in `u32`, so `read_u32` would refuse it).
+/// A WASM LEB is at most 10 bytes (64-bit signed).
+pub fn skip_len(data: &[u8]) -> Option<usize> {
+    for i in 0..10 {
+        let b = *data.get(i)?;
+        if b < 0x80 { return Some(i + 1); }
+    }
+    None
+}
+
 /// Compute the byte length of an unsigned LEB128 encoding.
 pub fn u32_size(mut value: u32) -> usize {
     let mut size = 1;
@@ -83,6 +96,24 @@ mod tests {
             assert_eq!(len, buf.len());
             assert_eq!(len, u32_size(value));
         }
+    }
+
+    /// Regression: `i64.const` can encode up to 10 bytes of LEB, which
+    /// overflows `read_u32`'s 5-byte cap. `skip_len` only cares about
+    /// byte length, so it handles these transparently. Before this
+    /// existed, `instr_len` for `0x42` used `read_u32` and silently
+    /// failed on every `i64.const` whose value didn't fit in 32 bits.
+    #[test]
+    fn skip_len_handles_max_i64_leb() {
+        // 9 bytes — first 8 with MSB set, last byte terminates.
+        let bytes = [0x88, 0xef, 0x99, 0xab, 0xc5, 0xe8, 0x8c, 0x91, 0x11];
+        assert_eq!(skip_len(&bytes), Some(9));
+        // 10 bytes — full-width i64 sleb.
+        let bytes10 = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x00];
+        assert_eq!(skip_len(&bytes10), Some(10));
+        // Unterminated after 10 — caller must reject.
+        let unterm = [0x80u8; 11];
+        assert_eq!(skip_len(&unterm), None);
     }
 
     #[test]

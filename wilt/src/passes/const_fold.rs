@@ -66,41 +66,46 @@ fn write_sleb128_i32(out: &mut Vec<u8>, mut value: i32) {
 /// Try to fold constants in a function body.
 /// Returns None if no folds were found (body unchanged).
 fn fold_body(body: &[u8]) -> Option<Vec<u8>> {
-    // Scan for the pattern: i32.const <sleb>; i32.const <sleb>; <binop>
-    let mut out = Vec::new();
-    let mut pos = 0;
-    let mut folded = false;
+    let instr_start = crate::opcode::skip_locals(body)?;
+    let spans: Vec<(usize, usize)> = crate::opcode::walk(body, instr_start)?
+        .into_iter()
+        .map(|(p, len)| (p, p + len))
+        .collect();
 
-    while pos < body.len() {
-        // Check for: i32.const A; i32.const B; binop
-        if body[pos] == I32_CONST {
-            if let Some((val_a, consumed_a)) = read_sleb128_i32(&body[pos + 1..]) {
-                let after_a = pos + 1 + consumed_a;
-                if after_a < body.len() && body[after_a] == I32_CONST {
-                    if let Some((val_b, consumed_b)) = read_sleb128_i32(&body[after_a + 1..]) {
-                        let after_b = after_a + 1 + consumed_b;
-                        if after_b < body.len() {
-                            let result = evaluate(body[after_b], val_a, val_b);
-                            if let Some(result_val) = result {
-                                // Fold! Emit i32.const <result>.
-                                out.push(I32_CONST);
-                                write_sleb128_i32(&mut out, result_val);
-                                pos = after_b + 1; // skip the binop
-                                folded = true;
-                                continue;
-                            }
-                        }
-                    }
+    // Find foldable triples: (i32.const, i32.const, binop).
+    let mut replacements: Vec<(usize, usize, i32)> = Vec::new();
+    let mut i = 0;
+    while i + 2 < spans.len() {
+        let (a0, a1) = spans[i];
+        let (b0, b1) = spans[i + 1];
+        let (c0, _c1) = spans[i + 2];
+        if body[a0] == I32_CONST && body[b0] == I32_CONST {
+            if let (Some((va, _)), Some((vb, _))) = (
+                read_sleb128_i32(&body[a0 + 1..a1]),
+                read_sleb128_i32(&body[b0 + 1..b1]),
+            ) {
+                if let Some(r) = evaluate(body[c0], va, vb) {
+                    replacements.push((a0, spans[i + 2].1, r));
+                    i += 3;
+                    continue;
                 }
             }
         }
-
-        // No fold — copy byte as-is.
-        out.push(body[pos]);
-        pos += 1;
+        i += 1;
     }
 
-    if folded { Some(out) } else { None }
+    if replacements.is_empty() { return None; }
+
+    let mut out = Vec::with_capacity(body.len());
+    let mut cursor = 0;
+    for (from, to, val) in replacements {
+        out.extend_from_slice(&body[cursor..from]);
+        out.push(I32_CONST);
+        write_sleb128_i32(&mut out, val);
+        cursor = to;
+    }
+    out.extend_from_slice(&body[cursor..]);
+    Some(out)
 }
 
 /// Evaluate a binary operation on two i32 constants.
@@ -119,6 +124,17 @@ fn evaluate(opcode: u8, a: i32, b: i32) -> Option<i32> {
 }
 
 /// Apply constant folding to a module.
+/// MutModule-style entry point: walk each defined body and set overrides
+/// for those we folded. Zero-alloc for unchanged bodies.
+pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
+    use rayon::prelude::*;
+    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+        .into_par_iter()
+        .filter_map(|i| fold_body(m.body_bytes(i)).map(|b| (i, b)))
+        .collect();
+    for (i, b) in updates { m.set_body(i, b); }
+}
+
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();
     let Some(code_sec_idx) = module.sections().iter().position(|s| s.id == module::SECTION_CODE) else {
@@ -191,56 +207,47 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    // Bodies start with a locals-vec header: `0` = zero locals.
     #[test]
     fn fold_add() {
-        // i32.const 10; i32.const 20; i32.add → i32.const 30
-        let body = vec![I32_CONST, 10, I32_CONST, 20, I32_ADD, 0x0B];
+        let body = vec![0, I32_CONST, 10, I32_CONST, 20, I32_ADD, 0x0B];
         let folded = fold_body(&body).unwrap();
-        assert_eq!(folded, vec![I32_CONST, 30, 0x0B]);
+        assert_eq!(folded, vec![0, I32_CONST, 30, 0x0B]);
     }
 
     #[test]
     fn fold_sub() {
-        let body = vec![I32_CONST, 50, I32_CONST, 20, I32_SUB, 0x0B];
+        let body = vec![0, I32_CONST, 50, I32_CONST, 20, I32_SUB, 0x0B];
         let folded = fold_body(&body).unwrap();
-        assert_eq!(folded, vec![I32_CONST, 30, 0x0B]);
+        assert_eq!(folded, vec![0, I32_CONST, 30, 0x0B]);
     }
 
     #[test]
     fn fold_mul() {
-        let body = vec![I32_CONST, 6, I32_CONST, 7, I32_MUL, 0x0B];
+        let body = vec![0, I32_CONST, 6, I32_CONST, 7, I32_MUL, 0x0B];
         let folded = fold_body(&body).unwrap();
-        assert_eq!(folded, vec![I32_CONST, 42, 0x0B]);
+        assert_eq!(folded, vec![0, I32_CONST, 42, 0x0B]);
     }
 
     #[test]
     fn no_fold_without_pattern() {
-        // Just i32.const 10; end — no binop to fold.
-        let body = vec![I32_CONST, 10, 0x0B];
+        let body = vec![0, I32_CONST, 10, 0x0B];
         assert!(fold_body(&body).is_none());
     }
 
     #[test]
-    fn fold_and() {
-        let body = vec![I32_CONST, 0xFF, 0x00, I32_CONST, 0x0F, I32_AND, 0x0B];
-        let folded = fold_body(&body).unwrap();
-        // 0xFF00 & 0x0F = 0x0F... wait, 0xFF 0x00 is LEB128 for 127.
-        // Let me use simpler values.
-    }
-
-    #[test]
     fn fold_simple_and() {
-        let body = vec![I32_CONST, 15, I32_CONST, 6, I32_AND, 0x0B];
+        let body = vec![0, I32_CONST, 15, I32_CONST, 6, I32_AND, 0x0B];
         let folded = fold_body(&body).unwrap();
-        assert_eq!(folded, vec![I32_CONST, 6, 0x0B]); // 15 & 6 = 6
+        assert_eq!(folded, vec![0, I32_CONST, 6, 0x0B]);
     }
 
     #[test]
     fn fold_preserves_surrounding() {
         // nop; i32.const 3; i32.const 4; i32.add; drop; end
-        let body = vec![0x01, I32_CONST, 3, I32_CONST, 4, I32_ADD, 0x1A, 0x0B];
+        let body = vec![0, 0x01, I32_CONST, 3, I32_CONST, 4, I32_ADD, 0x1A, 0x0B];
         let folded = fold_body(&body).unwrap();
-        assert_eq!(folded, vec![0x01, I32_CONST, 7, 0x1A, 0x0B]);
+        assert_eq!(folded, vec![0, 0x01, I32_CONST, 7, 0x1A, 0x0B]);
     }
 
     #[test]

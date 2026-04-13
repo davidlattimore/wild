@@ -18,27 +18,96 @@
 //! raw bytes (e.g. for call opcodes) and produce patches. The emitter
 //! copies unchanged sections verbatim and splices in modifications.
 
+pub mod block_walker;
 pub mod emit;
+pub mod ir;
 pub mod leb128;
+pub mod linker_hints;
 pub mod module;
+pub mod mut_module;
+pub mod opcode;
 pub mod passes;
 pub mod scan;
 
 pub use module::WasmModule;
 
-/// Optimise a WASM module. Returns the optimised bytes.
+/// Run the pipeline to fixpoint: each iteration can enable later passes
+/// (e.g. dedup frees funcs → DCE removes them → type_gc frees types).
+/// Capped at a handful of iterations so a pathological no-convergence case
+/// still terminates.
+const MAX_FIXPOINT_ITERATIONS: usize = 6;
+
+/// Optimise a WASM module with linker-supplied metadata. Lets passes that
+/// can use closed-world / call-graph / reachability information do so;
+/// passes that ignore hints behave identically to `optimise`.
 ///
-/// Applies dead code elimination and type GC.
+/// As of M2: `dae` consults hints; other passes ignore them.
+pub fn optimise_with_hints<H: linker_hints::LinkerHints>(input: &[u8], hints: &H) -> Vec<u8> {
+    if WasmModule::parse(input).is_err() { return input.to_vec(); }
+    let mut current = input.to_vec();
+    for _ in 0..MAX_FIXPOINT_ITERATIONS {
+        let next = optimise_once_with_hints(&current, Some(hints));
+        if next == current { break; }
+        current = next;
+    }
+    current
+}
+
+/// Optimise a WASM module. Returns the optimised bytes.
 pub fn optimise(input: &[u8]) -> Vec<u8> {
-    let mut module = WasmModule::parse(input).expect("invalid WASM module");
-    // Pass 1: remove unreachable functions.
-    let after_dce = passes::dce::apply(&mut module);
-    // Pass 2: remove unused types (may be freed by DCE).
-    let module2 = WasmModule::parse(&after_dce).expect("DCE produced invalid WASM");
+    if WasmModule::parse(input).is_err() {
+        return input.to_vec();
+    }
+    let mut current = input.to_vec();
+    for _ in 0..MAX_FIXPOINT_ITERATIONS {
+        let next = optimise_once(&current);
+        if next == current { break; }
+        current = next;
+    }
+    current
+}
+
+fn optimise_once(input: &[u8]) -> Vec<u8> {
+    optimise_once_with_hints(input, None)
+}
+
+fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::LinkerHints>) -> Vec<u8> {
+    let Ok(mut module_in) = WasmModule::parse(input) else {
+        return input.to_vec();
+    };
+    let after_didup = passes::dedup_imports::apply(&mut module_in);
+    let Ok(mut module) = WasmModule::parse(&after_didup) else {
+        return input.to_vec();
+    };
+    let after_dedup = passes::dedup::apply(&mut module);
+    let Ok(mut module0) = WasmModule::parse(&after_dedup) else { return input.to_vec() };
+    let after_dce = passes::dce::apply(&mut module0);
+    let Ok(module2) = WasmModule::parse(&after_dce) else { return input.to_vec() };
     let after_type_gc = passes::type_gc::apply(&module2);
-    // Pass 3: fold constant arithmetic.
-    let module3 = WasmModule::parse(&after_type_gc).expect("type GC produced invalid WASM");
-    passes::const_fold::apply(&module3)
+    // MutModule block: body-only passes + memory_packing all share one
+    // COW view over the input. No intermediate parse/emit; unchanged bytes
+    // never allocated.
+    let after_mut_block: Vec<u8> = match crate::mut_module::MutModule::new(&after_type_gc) {
+        Ok(mut m) => {
+            passes::const_fold::apply_mut(&mut m);
+            passes::vacuum::apply_mut(&mut m);
+            passes::remove_unused_brs::apply_mut(&mut m);
+            passes::merge_blocks::apply_mut(&mut m);
+            passes::simplify_locals::apply_mut(&mut m);
+            passes::inline_trivial::apply_mut(&mut m);
+            passes::dae::apply_mut_with_hints(&mut m, hints);
+            passes::reorder_locals::apply_mut(&mut m);
+            passes::memory_packing::apply_mut(&mut m);
+            m.serialize()
+        }
+        Err(_) => return input.to_vec(),
+    };
+    let Ok(mut module5b) = WasmModule::parse(&after_mut_block) else { return input.to_vec() };
+    let after_unused_data = passes::unused_data::apply(&mut module5b);
+    let Ok(mut module5c) = WasmModule::parse(&after_unused_data) else { return input.to_vec() };
+    let after_unused_elem = passes::unused_elem::apply(&mut module5c);
+    let Ok(mut module6) = WasmModule::parse(&after_unused_elem) else { return input.to_vec() };
+    passes::reorder::apply(&mut module6)
 }
 
 /// Configuration for the optimizer.
