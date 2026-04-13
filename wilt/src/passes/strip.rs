@@ -34,6 +34,13 @@ impl StripConfig {
         // keep names (useful for fatals) and producers (tiny).
         Self { dwarf: true, source_maps: true, ..Self::default() }
     }
+    /// Match what `wasm-opt -O` emits: strips DWARF, source maps, names,
+    /// and target_features. Keeps `producers` (tiny, identifies tool).
+    /// For shipping builds that don't need JS-side name-map debugging.
+    pub fn shipping() -> Self {
+        Self { dwarf: true, source_maps: true, names: true,
+               target_features: true, producers: false }
+    }
 }
 
 fn should_drop(name: &str, cfg: &StripConfig) -> bool {
