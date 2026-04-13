@@ -14,6 +14,18 @@
 //! This is just the surface (Plan C, milestone M1). No pass consumes
 //! hints yet — `dae_v2` (M2) is the first.
 
+/// Concrete constant value sitting in an immutable global, returned
+/// from `LinkerHints::global_const`. Encodings match the wasm binary
+/// immediate exactly (signed LEB for ints, raw little-endian bytes for
+/// floats) so callers can splice them in without re-encoding semantics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConstVal {
+    I32(i32),
+    I64(i64),
+    F32(u32),
+    F64(u64),
+}
+
 pub trait LinkerHints: Sync {
     /// Function is unreachable from outside the module — never exported,
     /// never reachable via ref.func or table init. Default: conservatively
@@ -43,6 +55,13 @@ pub trait LinkerHints: Sync {
     /// True if this global is read anywhere in the link set. Default:
     /// conservatively assume it is.
     fn global_is_read(&self, _global_idx: u32) -> bool { true }
+
+    /// If this global is non-mutable and its init expression is a
+    /// single constant (i32.const / i64.const / f32.const / f64.const),
+    /// the literal value. Anything else — mutable, ref.func init,
+    /// imported global that can only be known at link time — returns
+    /// `None`. Default: unknown.
+    fn global_const(&self, _global_idx: u32) -> Option<ConstVal> { None }
 }
 
 /// No-op hints — equivalent to passing `None`. Useful when an API needs
@@ -70,6 +89,7 @@ pub mod testing {
         pub ref_funcs: Vec<u32>,
         pub origins: HashMap<u32, u32>,
         pub unread_globals: HashSet<u32>,
+        pub global_consts: HashMap<u32, ConstVal>,
     }
 
     impl LinkerHints for FixedHints {
@@ -81,6 +101,7 @@ pub mod testing {
         fn ref_func_targets(&self) -> &[u32] { &self.ref_funcs }
         fn origin_unit(&self, f: u32) -> Option<u32> { self.origins.get(&f).copied() }
         fn global_is_read(&self, g: u32) -> bool { !self.unread_globals.contains(&g) }
+        fn global_const(&self, g: u32) -> Option<ConstVal> { self.global_consts.get(&g).copied() }
     }
 }
 
@@ -98,6 +119,7 @@ mod tests {
         assert!(n.ref_func_targets().is_empty());
         assert_eq!(n.origin_unit(0), None);
         assert!(n.global_is_read(0));        // assume read
+        assert_eq!(n.global_const(0), None);
     }
 
     #[test]

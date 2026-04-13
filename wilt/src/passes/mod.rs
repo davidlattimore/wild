@@ -8,6 +8,7 @@ pub mod branch_threading;
 pub mod cfg_dce;
 pub mod compress;
 pub mod const_fold;
+pub mod const_global;
 pub mod const_prop;
 pub mod copy_prop;
 pub mod dae;

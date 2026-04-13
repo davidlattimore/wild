@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::LinkerHints;
+use super::{ConstVal, LinkerHints};
 use crate::leb128;
 use crate::module::{self as wmod, WasmModule};
 use crate::opcode::{self, InstrIter};
@@ -36,6 +36,7 @@ pub struct DerivedHints {
     tables: HashMap<u32, Vec<u32>>,
     ref_funcs: Vec<u32>,
     unread_globals: HashSet<u32>,
+    global_consts: HashMap<u32, ConstVal>,
 }
 
 impl DerivedHints {
@@ -113,12 +114,15 @@ impl DerivedHints {
             }
         }
 
+        let global_consts = collect_global_consts(&wm, num_imported_globals);
+
         Some(DerivedHints {
             internal,
             call_counts,
             tables,
             ref_funcs: ref_funcs.into_iter().collect(),
             unread_globals,
+            global_consts,
         })
     }
 }
@@ -131,6 +135,68 @@ impl LinkerHints for DerivedHints {
     }
     fn ref_func_targets(&self) -> &[u32] { &self.ref_funcs }
     fn global_is_read(&self, g: u32) -> bool { !self.unread_globals.contains(&g) }
+    fn global_const(&self, g: u32) -> Option<ConstVal> { self.global_consts.get(&g).copied() }
+}
+
+/// Walk the globals section. Imported globals are not in this section
+/// (they live in SECTION_IMPORT) — indices start at `first_defined_idx`.
+/// For each defined global, if mutability is 0 and the init expr is
+/// exactly one `*.const N` followed by `end`, record the literal.
+fn collect_global_consts(
+    module: &WasmModule<'_>, first_defined_idx: u32,
+) -> HashMap<u32, ConstVal> {
+    let mut out = HashMap::new();
+    let Some(sec) = module.section(wmod::SECTION_GLOBAL) else { return out };
+    let p = sec.payload.slice(module.data());
+    let Some((count, mut off)) = leb128::read_u32(p) else { return out };
+    for i in 0..count {
+        // globaltype = valtype(1 byte) + mut(1 byte)
+        if off + 2 > p.len() { return out; }
+        let _valtype = p[off];
+        let mutability = p[off + 1];
+        off += 2;
+        // init expr: single const + end — or anything else (we skip).
+        if mutability == 0 {
+            if let Some((val, next)) = read_single_const(p, off) {
+                out.insert(first_defined_idx + i, val);
+                off = next;
+                continue;
+            }
+        }
+        // Skip init expr up to terminating `end`.
+        let Some(end_off) = skip_const_expr(p, off) else { return out };
+        off = end_off;
+    }
+    out
+}
+
+/// Decode `(*.const N)(end)` starting at `off`. Returns (value, new_off)
+/// on match, `None` if the init expr is anything else.
+fn read_single_const(p: &[u8], off: usize) -> Option<(ConstVal, usize)> {
+    let op = *p.get(off)?;
+    match op {
+        0x41 => {  // i32.const
+            let (v, c) = leb128::read_i32(p.get(off + 1..)?)?;
+            if *p.get(off + 1 + c)? != 0x0B { return None; }
+            Some((ConstVal::I32(v), off + 1 + c + 1))
+        }
+        0x42 => {  // i64.const
+            let (v, c) = leb128::read_i64(p.get(off + 1..)?)?;
+            if *p.get(off + 1 + c)? != 0x0B { return None; }
+            Some((ConstVal::I64(v), off + 1 + c + 1))
+        }
+        0x43 => {  // f32.const (4 raw bytes LE)
+            let bytes: [u8; 4] = p.get(off + 1..off + 5)?.try_into().ok()?;
+            if *p.get(off + 5)? != 0x0B { return None; }
+            Some((ConstVal::F32(u32::from_le_bytes(bytes)), off + 6))
+        }
+        0x44 => {  // f64.const (8 raw bytes LE)
+            let bytes: [u8; 8] = p.get(off + 1..off + 9)?.try_into().ok()?;
+            if *p.get(off + 9)? != 0x0B { return None; }
+            Some((ConstVal::F64(u64::from_le_bytes(bytes)), off + 10))
+        }
+        _ => None,
+    }
 }
 
 // ───── helpers ─────

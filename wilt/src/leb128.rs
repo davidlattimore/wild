@@ -55,6 +55,55 @@ pub fn read_i32(data: &[u8]) -> Option<(i32, usize)> {
     None
 }
 
+/// Signed LEB128 for `i64`. Used for `i64.const` immediates where the
+/// value doesn't fit in `i32` (we can't just widen `read_i32`).
+pub fn read_i64(data: &[u8]) -> Option<(i64, usize)> {
+    let mut result: i64 = 0;
+    let mut shift = 0;
+    for (i, &byte) in data.iter().enumerate() {
+        result |= ((byte & 0x7F) as i64) << shift;
+        shift += 7;
+        if byte < 0x80 {
+            if shift < 64 && (byte & 0x40) != 0 {
+                result |= !0i64 << shift;
+            }
+            return Some((result, i + 1));
+        }
+        if shift >= 70 { return None; }
+    }
+    None
+}
+
+/// Write a signed LEB128 (`i32`). Matches the wasm `i32.const` immediate.
+pub fn write_i32(out: &mut Vec<u8>, mut value: i32) {
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        let sign_bit = byte & 0x40;
+        let done = (value == 0 && sign_bit == 0) || (value == -1 && sign_bit != 0);
+        if done {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Write a signed LEB128 (`i64`). Matches the wasm `i64.const` immediate.
+pub fn write_i64(out: &mut Vec<u8>, mut value: i64) {
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        let sign_bit = byte & 0x40;
+        let done = (value == 0 && sign_bit == 0) || (value == -1 && sign_bit != 0);
+        if done {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
 /// Count the bytes of a LEB128 (signed or unsigned) without trying
 /// to decode its value. Needed when the caller only wants to skip
 /// past the immediate (e.g. `i64.const`'s value can be up to 10 bytes
