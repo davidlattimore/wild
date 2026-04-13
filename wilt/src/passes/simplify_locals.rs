@@ -24,6 +24,7 @@ use std::collections::HashSet;
 use crate::ir::{BodyIr, CfgIr};
 use crate::leb128;
 use crate::mut_module::MutModule;
+use crate::opcode::{self as opc, InstrIter};
 
 const OP_DROP: u8 = 0x1A;
 const OP_LOCAL_GET: u8 = 0x20;
@@ -40,6 +41,11 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 }
 
 fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    // Bail-early: if no local.set in the body, there's nothing for us
+    // to mark dead. Avoids the cost of building BodyIr + CfgIr +
+    // running dataflow on bodies that pure passthrough / arithmetic.
+    if !has_local_set(body) { return None; }
+
     let ir = BodyIr::new(body)?;
     let cfg = CfgIr::build(&ir)?;
     let nbb = cfg.blocks.len();
@@ -148,6 +154,17 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
 
 fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
     leb128::read_u32(&ir.instr_bytes(i)[1..]).map(|(v, _)| v)
+}
+
+/// Quick byte-scan: does the body's instruction stream contain at
+/// least one `local.set` opcode? Cheaper than building IR.
+fn has_local_set(body: &[u8]) -> bool {
+    let Some(start) = opc::skip_locals(body) else { return false };
+    let mut iter = InstrIter::new(body, start);
+    while let Some((p, _)) = iter.next() {
+        if body[p] == OP_LOCAL_SET { return true; }
+    }
+    false
 }
 
 #[cfg(test)]

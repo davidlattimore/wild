@@ -24,6 +24,16 @@
 use crate::ir::BodyIr;
 use crate::leb128;
 use crate::mut_module::MutModule;
+use crate::opcode::{self as opc, InstrIter};
+
+fn has_if(body: &[u8]) -> bool {
+    let Some(start) = opc::skip_locals(body) else { return false };
+    let mut iter = InstrIter::new(body, start);
+    while let Some((p, _)) = iter.next() {
+        if body[p] == OP_IF { return true; }
+    }
+    false
+}
 
 const OP_I32_CONST: u8 = 0x41;
 const OP_IF: u8 = 0x04;
@@ -38,6 +48,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 }
 
 fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    // Bail-early: branch_threading needs at least one `if` opcode.
+    if !has_if(body) { return None; }
+
     let ir = BodyIr::new(body)?;
     let n = ir.instrs().len();
     if n < 3 { return None; }

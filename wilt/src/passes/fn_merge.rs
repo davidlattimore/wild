@@ -44,8 +44,12 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
     let start = m.facts.start_func;
     let ref_funcs = collect_ref_func_targets(&wm);
 
-    // Group safe-to-redirect bodies by (type_idx, body bytes).
-    let mut groups: HashMap<(u32, Vec<u8>), Vec<u32>> = HashMap::new();
+    // Group safe-to-redirect bodies by (type_idx, hash(body)). Hashing
+    // is O(body) but only 8 bytes per key — vs cloning the whole body
+    // into the HashMap key. Verify byte-equality on collision before
+    // committing to the merge.
+    use std::hash::{Hash, Hasher};
+    let mut groups: HashMap<(u32, u64), Vec<u32>> = HashMap::new();
     for i in 0..num_bodies {
         let abs_idx = num_imports + i as u32;
         if exported.contains(&abs_idx)
@@ -53,17 +57,40 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
             || start == Some(abs_idx)
         { continue; }
         let tidx = match func_types.get(i) { Some(&t) => t, None => continue };
-        let body = m.body_bytes(i).to_vec();
-        groups.entry((tidx, body)).or_default().push(abs_idx);
+        let body = m.body_bytes(i);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        body.hash(&mut hasher);
+        let h = hasher.finish();
+        groups.entry((tidx, h)).or_default().push(abs_idx);
     }
 
-    // Build remap: non-canonical → lowest-index canonical.
+    // Build remap: non-canonical → lowest-index canonical. Verify
+    // byte-equality between members before merging (hash collisions
+    // would otherwise corrupt the module).
     let mut remap: HashMap<u32, u32> = HashMap::new();
     for members in groups.values() {
         if members.len() < 2 { continue; }
-        let canonical = *members.iter().min().unwrap();
-        for &abs in members {
-            if abs != canonical { remap.insert(abs, canonical); }
+        // Cluster members by exact body equality (O(N²) within a
+        // group, but groups are tiny in practice).
+        let mut clusters: Vec<Vec<u32>> = Vec::new();
+        'outer: for &abs in members {
+            let body = m.body_bytes((abs - num_imports) as usize);
+            for cluster in clusters.iter_mut() {
+                let canon = cluster[0];
+                let canon_body = m.body_bytes((canon - num_imports) as usize);
+                if body == canon_body {
+                    cluster.push(abs);
+                    continue 'outer;
+                }
+            }
+            clusters.push(vec![abs]);
+        }
+        for cluster in &clusters {
+            if cluster.len() < 2 { continue; }
+            let canonical = *cluster.iter().min().unwrap();
+            for &abs in cluster {
+                if abs != canonical { remap.insert(abs, canonical); }
+            }
         }
     }
     if remap.is_empty() { return; }

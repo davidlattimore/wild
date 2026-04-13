@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use crate::ir::{BodyIr, CfgIr};
 use crate::leb128;
 use crate::mut_module::MutModule;
+use crate::opcode::{self as opc, InstrIter};
 
 const OP_I32_CONST: u8 = 0x41;
 const OP_I64_CONST: u8 = 0x42;
@@ -49,6 +50,10 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 }
 
 fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    // Bail-early: const_prop only fires when there's BOTH a const opcode
+    // AND a local.get to potentially rewrite. Cheap byte scan first.
+    if !has_const_and_local_get(body) { return None; }
+
     let ir = BodyIr::new(body)?;
     let cfg = CfgIr::build(&ir)?;
     let nbb = cfg.blocks.len();
@@ -182,6 +187,22 @@ fn record_rewrites(
 
 fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
     leb128::read_u32(&ir.instr_bytes(i)[1..]).map(|(v, _)| v)
+}
+
+fn has_const_and_local_get(body: &[u8]) -> bool {
+    let Some(start) = opc::skip_locals(body) else { return false };
+    let mut iter = InstrIter::new(body, start);
+    let mut has_const = false;
+    let mut has_get = false;
+    while let Some((p, _)) = iter.next() {
+        match body[p] {
+            OP_I32_CONST | OP_I64_CONST | OP_F32_CONST | OP_F64_CONST => has_const = true,
+            OP_LOCAL_GET => has_get = true,
+            _ => {}
+        }
+        if has_const && has_get { return true; }
+    }
+    false
 }
 
 #[cfg(test)]
