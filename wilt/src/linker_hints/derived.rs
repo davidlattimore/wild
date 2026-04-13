@@ -195,7 +195,20 @@ fn scan_purity(body: &[u8], num_imports: u32) -> PurityFacts {
     let mut iter = InstrIter::new(body, start);
     while let Some((p, _)) = iter.next() {
         let op = body[p];
-        if is_side_effect_opcode(op) { f.intrinsic_impure = true; }
+        if op == 0xFC {
+            // Decode the sub-opcode: the trunc_sat family (0..=7) and
+            // table.size (0x10) are pure. Everything else in this prefix
+            // mutates memory, tables, or data segments.
+            if let Some((sub, _)) = leb128::read_u32(&body[p + 1..]) {
+                if !matches!(sub, 0x00..=0x07 | 0x10) {
+                    f.intrinsic_impure = true;
+                }
+            } else {
+                f.intrinsic_impure = true;
+            }
+        } else if is_side_effect_opcode(op) {
+            f.intrinsic_impure = true;
+        }
         if op == 0x10 {
             if let Some((callee, _)) = leb128::read_u32(&body[p + 1..]) {
                 if callee < num_imports {
@@ -212,10 +225,11 @@ fn scan_purity(body: &[u8], num_imports: u32) -> PurityFacts {
     f
 }
 
-/// Opcodes that on their own imply an observable side effect.
-/// Conservative: 0xFC/0xFD/0xFE prefix families are treated as impure
-/// (many of their subcodes are writes or atomics; precise decoding can
-/// come later).
+/// Opcodes that on their own imply an observable side effect. 0xFC is
+/// decoded separately above (most sub-ops are mutations, a couple are
+/// pure). 0xFD (SIMD) stays pessimistically impure because some sub-ops
+/// are stores and precise classification isn't wired; 0xFE (atomics)
+/// always implies shared-memory semantics.
 fn is_side_effect_opcode(op: u8) -> bool {
     matches!(op,
         0x11        // call_indirect
@@ -223,7 +237,7 @@ fn is_side_effect_opcode(op: u8) -> bool {
         | 0x26        // table.set
         | 0x36..=0x3E // i32/i64/f32/f64 stores
         | 0x40        // memory.grow
-        | 0xFC | 0xFD | 0xFE
+        | 0xFD | 0xFE
     )
 }
 
