@@ -134,6 +134,9 @@ enum Trivial {
     /// valtype byte for `(T...) -> R` callees (phase 4).
     ReplaceWithBodyParams {
         param_types: Vec<u8>,
+        /// Phase 5: callee's declared local valtypes (in order).
+        /// Empty for callees with no declared locals.
+        declared_types: Vec<u8>,
         body: Vec<u8>,
         wrap_for_return: bool,
         result_blocktype: u8,
@@ -146,69 +149,72 @@ enum Trivial {
 const MAX_INLINE_BODY_BYTES: usize = 64;
 
 fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Trivial> {
-    // Must have no locals.
-    let (groups, off) = leb128::read_u32(body)?;
-    if groups != 0 { return None; }
+    // Parse locals header. Phase 5 supports callees with declared locals.
+    let (locals_end, declared_types) = parse_locals_header(body)?;
+
+    // The Empty / Identity / Const fast-paths require zero declared locals.
+    let no_declared = declared_types.is_empty();
 
     // Case: body is just `end`.
-    if body.get(off) == Some(&0x0B) && off + 1 == body.len() {
+    if no_declared && body.get(locals_end) == Some(&0x0B) && locals_end + 1 == body.len() {
         if sig == (0, 0) {
             return Some(Trivial::DeleteCall);
         }
         return None;
     }
 
-    // Try the one-instruction patterns first (Empty / Identity / Const).
-    let len = opcode::instr_len(body, off)?;
-    let op_start = off;
-    let op_end = off + len;
-    let one_instr_body = body.get(op_end) == Some(&0x0B) && op_end + 1 == body.len();
-
-    if one_instr_body {
-        let op = body[op_start];
-        match op {
-            0x20 => {
-                let (n, _) = leb128::read_u32(&body[op_start + 1..])?;
-                if n == 0 && sig.0 == 1 && sig.1 == 1 {
-                    return Some(Trivial::DeleteCall);
+    // One-instruction patterns (need no declared locals).
+    if no_declared {
+        let len = opcode::instr_len(body, locals_end)?;
+        let op_start = locals_end;
+        let op_end = locals_end + len;
+        let one_instr_body = body.get(op_end) == Some(&0x0B) && op_end + 1 == body.len();
+        if one_instr_body {
+            let op = body[op_start];
+            match op {
+                0x20 => {
+                    let (n, _) = leb128::read_u32(&body[op_start + 1..])?;
+                    if n == 0 && sig.0 == 1 && sig.1 == 1 {
+                        return Some(Trivial::DeleteCall);
+                    }
                 }
-            }
-            0x41 | 0x42 | 0x43 | 0x44 => {
-                if sig.0 == 0 && sig.1 == 1 {
-                    return Some(Trivial::ReplaceWithConst(
-                        body[op_start..op_end].to_vec(),
-                    ));
+                0x41 | 0x42 | 0x43 | 0x44 => {
+                    if sig.0 == 0 && sig.1 == 1 {
+                        return Some(Trivial::ReplaceWithConst(
+                            body[op_start..op_end].to_vec(),
+                        ));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
-    // M6 phase 1 — single-caller `() -> ()` body inlining.
-    if is_unique_caller && sig == (0, 0) {
-        let body_instrs = &body[off..body.len() - 1];
+    // M6 phase 1 — `() -> ()` no-locals body inlining (verbatim paste).
+    if is_unique_caller && sig == (0, 0) && no_declared {
+        let body_instrs = &body[locals_end..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
-            && safe_to_inline_no_locals(body, off)
+            && safe_to_inline_no_locals(body, locals_end)
         {
             return Some(Trivial::ReplaceWithBody(body_instrs.to_vec()));
         }
     }
 
-    // M6 phase 2/3/4 — single-caller `(T...) -> R?` body inlining.
+    // M6 phase 2/3/4/5 — `(T...) -> R?` body inlining.
     if is_unique_caller && sig.0 > 0 && sig.1 <= 1 {
-        let body_instrs = &body[off..body.len() - 1];
+        let body_instrs = &body[locals_end..body.len() - 1];
         if body_instrs.len() <= MAX_INLINE_BODY_BYTES
             && body_instrs.last().is_some()
         {
-            let (safe, has_return) = safe_to_inline_with_param_locals_v3(body, off, sig.0);
+            let total_locals = sig.0 + declared_types.len() as u32;
+            let (safe, has_return) =
+                safe_to_inline_with_param_locals_v3(body, locals_end, total_locals);
             if safe {
-                // result_blocktype is patched at apply_mut time once we
-                // know the callee's result valtype. For void callees,
-                // 0x40 (empty); for 1-result, the valtype byte.
-                let result_blocktype = if sig.1 == 0 { 0x40 } else { 0u8 /* placeholder */ };
+                let result_blocktype = if sig.1 == 0 { 0x40 } else { 0u8 /* patched */ };
                 return Some(Trivial::ReplaceWithBodyParams {
                     param_types: vec![0u8; sig.0 as usize],
+                    declared_types,
                     body: body_instrs.to_vec(),
                     wrap_for_return: has_return,
                     result_blocktype,
@@ -218,6 +224,24 @@ fn classify(body: &[u8], sig: (u32, u32), is_unique_caller: bool) -> Option<Triv
     }
 
     None
+}
+
+/// Decode the locals header. Returns `(byte_offset_of_first_instr,
+/// declared_local_valtypes_in_order)`. `None` on unrecognised valtype.
+fn parse_locals_header(body: &[u8]) -> Option<(usize, Vec<u8>)> {
+    let (groups, mut off) = leb128::read_u32(body)?;
+    let mut types = Vec::new();
+    for _ in 0..groups {
+        let (n, c) = leb128::read_u32(body.get(off..)?)?;
+        off += c;
+        let vt = *body.get(off)?;
+        if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+        off += 1;
+        for _ in 0..n {
+            types.push(vt);
+        }
+    }
+    Some((off, types))
 }
 
 /// Phase-1 safety predicate: callee body has zero locals references
@@ -447,11 +471,13 @@ fn rewrite_body(
                 edits.push((p, len, bytes.clone()));
             }
             Trivial::ReplaceWithBodyParams {
-                param_types, body: callee, wrap_for_return, result_blocktype,
+                param_types, declared_types, body: callee, wrap_for_return, result_blocktype,
             } => {
                 let n = param_types.len() as u32;
                 let first_new = next_new_local;
                 let Some(remapped) = rebase_locals(callee, first_new) else { continue };
+                // Body might still reference declared locals at indices
+                // n..n+d (already rebased above).
                 let body_part = if *wrap_for_return {
                     match rewrite_returns_to_br(&remapped) {
                         Some(b) => b,
@@ -476,7 +502,8 @@ fn rewrite_body(
                     repl.extend_from_slice(&body_part);
                 }
                 new_local_types.extend_from_slice(param_types);
-                next_new_local += n;
+                new_local_types.extend_from_slice(declared_types);
+                next_new_local += n + declared_types.len() as u32;
                 edits.push((p, len, repl));
             }
         }
@@ -609,6 +636,7 @@ mod tests {
         let callee_body = vec![0x20, 0, 0x1A]; // local.get 0; drop
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
             param_types: vec![0x7F],          // i32
+            declared_types: vec![],
             body: callee_body,
             wrap_for_return: false,
             result_blocktype: 0x40,
@@ -636,6 +664,7 @@ mod tests {
         let callee_body = vec![0x20, 0, 0x1A, 0x0F]; // local.get 0; drop; return
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
             param_types: vec![0x7F],
+            declared_types: vec![],
             body: callee_body,
             wrap_for_return: true,
             result_blocktype: 0x40,
@@ -674,6 +703,7 @@ mod tests {
         let callee_body = vec![0x20, 0, 0x0F];
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
             param_types: vec![0x7F],
+            declared_types: vec![],
             body: callee_body,
             wrap_for_return: true,
             result_blocktype: 0x7F,    // i32
@@ -698,6 +728,52 @@ mod tests {
             0x0B,              // end of wrap
             0x1A,              // drop
             0x0B,              // end func
+        ];
+        assert_eq!(out, expected);
+    }
+
+    // M6 phase 5: callee with declared locals — they get appended to
+    // the caller's locals header alongside the param locals.
+    #[test]
+    fn rewrites_call_with_declared_locals() {
+        // Caller: 0 locals ; i32.const 5 ; call 0 ; end.
+        let body = [0u8, 0x41, 5, 0x10, 0, 0x0B];
+        // Callee: (i32) -> () with one declared i64.
+        // Body (instr stream only): local.set 1 (i64-coerced — illustrative)
+        //                            local.get 0
+        //                            drop
+        // For this unit test we only verify the locals header rewrite;
+        // semantically we'd want the i64 set with an i64 source. We
+        // construct a body that just touches local 1 (declared).
+        let callee_body = vec![
+            0x42, 0,    // i64.const 0
+            0x21, 1,    // local.set 1 (the declared local)
+            0x20, 0,    // local.get 0
+            0x1A,       // drop
+        ];
+        let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
+            param_types: vec![0x7F],   // i32 param
+            declared_types: vec![0x7E], // i64 declared local
+            body: callee_body,
+            wrap_for_return: false,
+            result_blocktype: 0x40,
+        })];
+        let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline");
+        // Expected locals header: 2 groups (one per appended local).
+        // Body: i32.const 5, local.set 0, i64.const 0, local.set 1,
+        //       local.get 0, drop, end.
+        // Locals 0..1 in the splice = (param_i32, declared_i64) of the callee.
+        let expected = vec![
+            2,                  // 2 groups
+            1, 0x7F,            // (1, i32) — for the param
+            1, 0x7E,            // (1, i64) — for the declared local
+            0x41, 5,
+            0x21, 0,            // local.set 0 (arg materialised)
+            0x42, 0,            // i64.const 0 (callee's instr)
+            0x21, 1,            // local.set 1 (callee's declared, rebased to caller idx 1)
+            0x20, 0,            // local.get 0 (callee's param 0, rebased)
+            0x1A,
+            0x0B,
         ];
         assert_eq!(out, expected);
     }
