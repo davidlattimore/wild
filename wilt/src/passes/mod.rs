@@ -15,6 +15,7 @@ pub mod dead_globals;
 pub mod devirt;
 pub mod dedup;
 pub mod dedup_imports;
+pub mod fn_merge;
 pub mod inline_trivial;
 pub mod memory_packing;
 pub mod merge_blocks;

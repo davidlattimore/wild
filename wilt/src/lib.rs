@@ -98,6 +98,7 @@ fn optimise_once_with_hints(input: &[u8], hints: Option<&dyn linker_hints::Linke
             passes::merge_blocks::apply_mut(&mut m);
             passes::simplify_locals::apply_mut(&mut m);
             passes::devirt::apply_mut_with_hints(&mut m, hints);
+            passes::fn_merge::apply_mut(&mut m);
             passes::inline_trivial::apply_mut_with_hints(&mut m, hints);
             passes::dead_globals::apply_mut_with_hints(&mut m, hints);
             passes::dae::apply_mut_with_hints(&mut m, hints);
