@@ -28,6 +28,13 @@ OPTIONS:
     --strip-producers       Strip `producers` custom section.
     --strip                 Strip DWARF, source maps, names, target_features
                             (matches `wasm-opt -O --strip-debug`'s output).
+    --source-map-in <PATH>  External V3 source map for the input.
+                            Without this, if the input carries a
+                            `sourceMappingURL` we strip it and warn
+                            (since any map describes the pre-opt code).
+    --source-map-out <PATH> Where to write the rewritten map.
+                            The output wasm's sourceMappingURL is
+                            updated to reference this path.
     --debug=<level>         Set debug-info fidelity tier:
                               none  — strip everything
                               names — rewrite `name` section to match
@@ -65,6 +72,13 @@ struct Args {
     /// (which today yields `optimise()` style output without names-
     /// tier rewriting — future work upgrades the default).
     debug_level: Option<wilt::debug_level::DebugLevel>,
+    /// `--source-map-in <path>`: external V3 source map describing
+    /// the input. When the output would otherwise reference a stale
+    /// map, supplying this + `source_map_out` lets wilt transform
+    /// it to stay consistent with the optimised output.
+    source_map_in: Option<PathBuf>,
+    /// `--source-map-out <path>`: where wilt writes the rewritten map.
+    source_map_out: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -90,6 +104,26 @@ fn parse_args() -> Result<Args, String> {
                 let v = raw.get(i).ok_or_else(|| "--debug: expected level".to_string())?;
                 a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v)
                     .ok_or_else(|| format!("--debug: unknown level {v:?}"))?);
+                i += 1;
+            }
+            "--source-map-in" => {
+                i += 1;
+                let v = raw.get(i).ok_or_else(|| "--source-map-in: expected path".to_string())?;
+                a.source_map_in = Some(PathBuf::from(v));
+                i += 1;
+            }
+            s if s.starts_with("--source-map-in=") => {
+                a.source_map_in = Some(PathBuf::from(&s["--source-map-in=".len()..]));
+                i += 1;
+            }
+            "--source-map-out" => {
+                i += 1;
+                let v = raw.get(i).ok_or_else(|| "--source-map-out: expected path".to_string())?;
+                a.source_map_out = Some(PathBuf::from(v));
+                i += 1;
+            }
+            s if s.starts_with("--source-map-out=") => {
+                a.source_map_out = Some(PathBuf::from(&s["--source-map-out=".len()..]));
                 i += 1;
             }
             "-g0" => { a.debug_level = Some(wilt::debug_level::DebugLevel::None);  i += 1; }
@@ -139,6 +173,14 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+fn code_section_bytes<'a>(m: &'a wilt::WasmModule<'a>) -> &'a [u8] {
+    let data = m.data();
+    m.sections().iter()
+        .find(|s| s.id == 10 /* code */)
+        .map(|s| s.full.slice(data))
+        .unwrap_or(&[])
+}
+
 fn default_output_path(input: &std::path::Path) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     let dir = input.parent().unwrap_or(std::path::Path::new("."));
@@ -182,6 +224,83 @@ fn main() -> ExitCode {
     } else {
         wilt::optimise(&input_bytes)
     };
+
+    // Handle external source-map reference. If input carries one:
+    // - When --source-map-in/out supplied: rewrite through (step 2 —
+    //   today the rewrite is pipe-through when code is unchanged;
+    //   otherwise we strip with warning).
+    // - When neither supplied: strip the reference from output and
+    //   warn.
+    if let Ok(input_m) = wilt::WasmModule::parse(&input_bytes) {
+        if let Some(in_url) = wilt::passes::source_map::detect_url(&input_m) {
+            match (args.source_map_in.as_deref(), args.source_map_out.as_deref()) {
+                (Some(in_path), Some(out_path)) => {
+                    let in_json = match std::fs::read_to_string(in_path) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("wilt: could not read {}: {e}", in_path.display());
+                            return ExitCode::from(1);
+                        }
+                    };
+                    // Pipe-through rewrite (only succeeds today when
+                    // wilt's pipeline produced no code changes).
+                    let Ok(in_bytes_m) = wilt::WasmModule::parse(&input_bytes) else {
+                        return ExitCode::from(1);
+                    };
+                    let Ok(out_bytes_m) = wilt::WasmModule::parse(&output_bytes) else {
+                        return ExitCode::from(1);
+                    };
+                    let code_unchanged = code_section_bytes(&in_bytes_m)
+                        == code_section_bytes(&out_bytes_m);
+                    let identity_remap = true; // CLI doesn't expose remap;
+                        // this is a best-effort heuristic. Step 2 will
+                        // thread the actual FuncRemap through.
+                    let fake_remap = wilt::remap::FuncRemap::identity(0);
+                    let rewritten = if identity_remap {
+                        wilt::passes::source_map::rewrite_v3(&in_json, &fake_remap, code_unchanged)
+                    } else { None };
+
+                    match rewritten {
+                        Some(new_json) => {
+                            if let Err(e) = std::fs::write(out_path, new_json) {
+                                eprintln!("wilt: could not write {}: {e}", out_path.display());
+                                return ExitCode::from(1);
+                            }
+                            let out_url = out_path.file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&in_url);
+                            output_bytes = wilt::passes::source_map::set_url(&output_bytes, out_url);
+                            if args.verbose {
+                                let _ = writeln!(
+                                    std::io::stderr(),
+                                    "wilt: rewrote source map → {}", out_path.display(),
+                                );
+                            }
+                        }
+                        None => {
+                            // Can't guarantee accuracy — strip and warn.
+                            output_bytes = wilt::passes::source_map::strip_url(&output_bytes);
+                            let _ = writeln!(
+                                std::io::stderr(),
+                                "wilt: source map {in_url:?} stripped — \
+                                 rewriting not yet possible when code has changed",
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    // User didn't supply paths → strip + warn.
+                    output_bytes = wilt::passes::source_map::strip_url(&output_bytes);
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "wilt: input references external source map {in_url:?} — dropping \
+                         reference from output. Pass --source-map-in <path> --source-map-out \
+                         <path> to maintain consistency.",
+                    );
+                }
+            }
+        }
+    }
 
     if partial_strip {
         if let Ok(m) = wilt::WasmModule::parse(&output_bytes) {

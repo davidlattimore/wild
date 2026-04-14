@@ -29,6 +29,7 @@ pub mod pure_call_elim;
 pub mod remove_unused_brs;
 pub mod reorder;
 pub mod reorder_locals;
+pub mod source_map;
 pub mod simplify_locals;
 pub mod strip;
 pub mod type_gc;
