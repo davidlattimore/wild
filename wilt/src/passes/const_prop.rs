@@ -42,14 +42,19 @@ type Bindings = HashMap<u32, Vec<u8>>;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| rewrite_body(m.body_bytes(i)).map(|b| (i, b)))
+        .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
+#[allow(dead_code)]
 fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body).map(|(b, _)| b)
+}
+
+fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     // Bail-early: const_prop only fires when there's BOTH a const opcode
     // AND a local.get to potentially rewrite. Cheap byte scan first.
     if !has_const_and_local_get(body) { return None; }
@@ -92,14 +97,21 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
     rewrites.sort_by_key(|e| e.0);
 
     let mut out = Vec::with_capacity(body.len());
+    let mut edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for (p, len, repl) in &rewrites {
         out.extend_from_slice(&body[cursor..*p]);
+        let out_start = out.len() as u32;
         out.extend_from_slice(repl);
+        let out_len = out.len() as u32 - out_start;
+        edits.push(
+            crate::provenance::Edit::subst(*p as u32, *len as u32, out_start, out_len),
+            None,
+        );
         cursor = p + len;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, edits))
 }
 
 fn meet_in(_bi: u32, preds: &[u32], bb_out: &[Bindings]) -> Bindings {

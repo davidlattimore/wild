@@ -25,15 +25,20 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 
     let _ = num_imports; // reserved for future use
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
         .filter_map(|i| {
             let type_idx = *type_indices.get(i).unwrap_or(&0) as usize;
             let num_params = type_param_counts.get(type_idx).copied().unwrap_or(0);
-            reorder_body(m.body_bytes(i), num_params).map(|b| (i, b))
+            reorder_body_with_edits(m.body_bytes(i), num_params).map(|(b, e)| (i, b, e))
         })
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+}
+
+#[allow(dead_code)]
+fn reorder_body(body: &[u8], num_params: u32) -> Option<Vec<u8>> {
+    reorder_body_with_edits(body, num_params).map(|(b, _)| b)
 }
 
 /// Parse the function section to learn each function's type index.
@@ -87,7 +92,9 @@ const OP_LOCAL_TEE: u8 = 0x22;
 
 /// Core of the pass. Returns None if the body can't be cleanly rewritten
 /// (unknown valtype, walker failure, no declared locals to reorder).
-fn reorder_body(body: &[u8], num_params: u32) -> Option<Vec<u8>> {
+fn reorder_body_with_edits(
+    body: &[u8], num_params: u32,
+) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     // 1. Parse locals header.
     let mut off = 0;
     let (group_count, c) = leb128::read_u32(body)?;
@@ -152,6 +159,14 @@ fn reorder_body(body: &[u8], num_params: u32) -> Option<Vec<u8>> {
 
     // 6. Emit body with local.get/set/tee immediates remapped.
     let mut out = Vec::with_capacity(body.len());
+    let mut edits = crate::provenance::BodyEdits::identity();
+    // Locals header is completely replaced — one big substitution.
+    edits.push(
+        crate::provenance::Edit::subst(
+            0, instrs_start as u32, 0, new_header.len() as u32,
+        ),
+        None,
+    );
     out.extend_from_slice(&new_header);
     let mut cursor = instrs_start;
     let mut iter = opcode::InstrIter::new(body, instrs_start);
@@ -162,8 +177,18 @@ fn reorder_body(body: &[u8], num_params: u32) -> Option<Vec<u8>> {
                 let new_idx = remap[idx as usize];
                 if new_idx != idx {
                     out.extend_from_slice(&body[cursor..p]);
+                    let out_opcode_pos = out.len() as u32;
                     out.push(op);
                     leb128::write_u32(&mut out, new_idx);
+                    // Replaces the full opcode+LEB instruction.
+                    let full_in_len = (1 + c) as u32;
+                    let full_out_len = out.len() as u32 - out_opcode_pos;
+                    edits.push(
+                        crate::provenance::Edit::subst(
+                            p as u32, full_in_len, out_opcode_pos, full_out_len,
+                        ),
+                        None,
+                    );
                     cursor = p + 1 + c;
                 }
             }
@@ -172,7 +197,7 @@ fn reorder_body(body: &[u8], num_params: u32) -> Option<Vec<u8>> {
     }
     if iter.failed() { return None; }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, edits))
 }
 
 fn rle_groups(types: &[u8]) -> Vec<(u32, u8)> {

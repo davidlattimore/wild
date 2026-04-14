@@ -33,14 +33,19 @@ const OP_LOCAL_TEE: u8 = 0x22;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| rewrite_body(m.body_bytes(i)).map(|b| (i, b)))
+        .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
+#[allow(dead_code)]
 fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body).map(|(b, _)| b)
+}
+
+fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     // Bail-early: if no local.set in the body, there's nothing for us
     // to mark dead. Avoids the cost of building BodyIr + CfgIr +
     // running dataflow on bodies that pure passthrough / arithmetic.
@@ -142,14 +147,20 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
 
     // Replace each dead local.set with `drop` (same stack effect).
     let mut out = Vec::with_capacity(body.len());
+    let mut edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for (p, len) in &dead {
         out.extend_from_slice(&body[cursor..*p]);
+        let out_start = out.len() as u32;
         out.push(OP_DROP);
+        edits.push(
+            crate::provenance::Edit::subst(*p as u32, *len as u32, out_start, 1),
+            None,
+        );
         cursor = p + len;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, edits))
 }
 
 fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
