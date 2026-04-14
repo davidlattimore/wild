@@ -673,20 +673,21 @@ impl platform::Platform for Elf {
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
-        section: layout::Section,
+        _section: layout::Section,
+        section_index: object::SectionIndex,
         scope: &Scope<'scope>,
     ) -> Result {
         if resources.symbol_db.args.should_output_partial_object() {
             return Ok(());
         }
-        match state.relocations(section.index)? {
+        match state.relocations(section_index)? {
             RelocationList::Rela(relocations) => {
                 load_section_relocations::<A, Rela>(
                     state,
                     common,
                     queue,
                     resources,
-                    section,
+                    section_index,
                     relocations.rel_iter(),
                     scope,
                 )?;
@@ -697,7 +698,7 @@ impl platform::Platform for Elf {
                     common,
                     queue,
                     resources,
-                    section,
+                    section_index,
                     relocations.flat_map(|r| r.ok()),
                     scope,
                 )?;
@@ -4712,7 +4713,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
     common: &mut CommonGroupState<'data, Elf>,
     queue: &mut layout::LocalWorkQueue,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
-    section: layout::Section,
+    section_index: object::SectionIndex,
     relocations: impl Iterator<Item = R>,
     scope: &Scope<'scope>,
 ) -> Result {
@@ -4726,7 +4727,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             state,
             common,
             &rel,
-            state.object.section(section.index)?,
+            state.object.section(section_index)?,
             resources,
             queue,
             false,
@@ -4735,7 +4736,7 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
         .with_context(|| {
             format!(
                 "Failed to copy section {} from file {state}",
-                layout::section_debug::<Elf>(state.object, section.index)
+                layout::section_debug::<Elf>(state.object, section_index)
             )
         })?;
     }

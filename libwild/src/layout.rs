@@ -1117,7 +1117,6 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Section {
-    pub(crate) index: object::SectionIndex,
     /// Size in the output. This starts as the input section size, then may be reduced by
     /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
@@ -2548,12 +2547,10 @@ impl Section {
     fn create<'data, P: Platform>(
         header: &P::SectionHeader,
         object_state: &ObjectLayoutState<'data, P>,
-        section_index: object::SectionIndex,
         _part_id: PartId,
     ) -> Result<Section> {
         let size = object_state.object.section_size(header)?;
         let section = Section {
-            index: section_index,
             size,
             flags: ValueFlags::empty(),
         };
@@ -3655,10 +3652,16 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     ) -> Result {
         let part_id = self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id)?;
+        let section = Section::create(header, self, part_id)?;
 
         <A::Platform as Platform>::load_object_section_relocations::<A>(
-            self, common, queue, resources, section, scope,
+            self,
+            common,
+            queue,
+            resources,
+            section,
+            section_index,
+            scope,
         )?;
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
@@ -3686,7 +3689,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     ) -> Result {
         let part_id = self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id)?;
+        let section = Section::create(header, self, part_id)?;
 
         // Note: We intentionally do NOT process debug relocations here. On some architectures (like
         // RISC-V and LoongArch64), debug sections reference local symbols (e.g. .LFB0, .LFE0) in

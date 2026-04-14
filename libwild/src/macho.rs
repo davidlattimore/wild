@@ -984,10 +984,11 @@ impl platform::Platform for MachO {
         queue: &mut crate::layout::LocalWorkQueue,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,
         section: crate::layout::Section,
+        section_index: object::SectionIndex,
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // TODO
-        // for rel in state.relocations(section.index)?.relocations {
+        // for rel in state.relocations(section_index)?.relocations {
         //     dbg!(rel.info(LE));
         // }
         Ok(())

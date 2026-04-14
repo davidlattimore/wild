@@ -367,6 +367,7 @@ pub(crate) trait Platform:
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
         section: layout::Section,
+        section_index: object::SectionIndex,
         scope: &Scope<'scope>,
     ) -> Result;
 
