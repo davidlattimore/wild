@@ -50,6 +50,22 @@ Accepts `-O / -O0..-O4 / -Os / -Oz / -o / --output / --strip / --strip-debug /
 Unknown wasm-opt-shaped flags (`--enable-X`, `--disable-X`, `--pass-X`,
 `--no-X`, `--features X`) are silently accepted.
 
+### In-linker (wild)
+
+Wild links wasm and runs wilt inline when invoked with `-O<N>`:
+
+```bash
+wild --target wasm32 -O1 ...               # enable wilt
+wild --target wasm32 -O1 --strip-debug ... # drop DWARF, keep names
+wild --target wasm32 -O1 --strip-all ...   # drop names + DWARF
+wild --target wasm32 ...                   # -O0: no wilt, wasm-ld compatible
+```
+
+Wilt is enabled by default (Cargo feature `wilt` in `libwild`); turn
+off with `--no-default-features`. The optional `wasm-opt` feature
+additionally LEB-compresses relocation payloads under
+`--compress-relocations`.
+
 ## Debug info is invalidated — important
 
 **wilt's `optimise()` does not keep DWARF, source maps, or the `name`
