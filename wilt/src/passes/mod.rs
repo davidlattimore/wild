@@ -14,6 +14,7 @@ pub mod copy_prop;
 pub mod dae;
 pub mod dce;
 pub mod dead_globals;
+pub mod dwarf_line;
 pub mod devirt;
 pub mod dedup;
 pub mod dedup_imports;

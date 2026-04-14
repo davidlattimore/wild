@@ -8,10 +8,14 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-# Pure byte manipulation; the only runtime dep is rayon for per-body
-# parallelism on multi-core hosts. See passes/* — the gather-then-apply
-# pattern keeps MutModule's API mutation-free during the parallel phase.
+# Per-body parallelism on multi-core hosts. See passes/* — the
+# gather-then-apply pattern keeps MutModule's API mutation-free during
+# the parallel phase.
 rayon = { workspace = true }
+# DWARF .debug_line parsing + emission for the `lines` debug tier.
+# Used only when a caller opts into `DebugLevel::Lines`; otherwise dead
+# code that LTO/DCE will strip. Apache-2.0/MIT; Rust compiler team.
+gimli = { version = "0.33", default-features = false, features = ["read", "write", "std"] }
 
 [dev-dependencies]
 wasmparser = "0.221"

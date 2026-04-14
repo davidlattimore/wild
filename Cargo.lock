@@ -2481,6 +2481,7 @@ name = "wilt"
 version = "0.8.0"
 dependencies = [
  "arbitrary",
+ "gimli 0.33.1",
  "proptest",
  "rayon",
  "wasm-smith",

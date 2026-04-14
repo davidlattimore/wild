@@ -35,7 +35,7 @@ impl DebugLevel {
 
     /// The highest tier that is fully implemented today. Callers who
     /// asked for a higher tier silently fall back to this.
-    pub fn highest_implemented() -> Self { Self::Names }
+    pub fn highest_implemented() -> Self { Self::Lines }
 
     pub fn implemented_floor(self) -> Self {
         match self {
@@ -80,10 +80,10 @@ mod tests {
     }
 
     #[test]
-    fn implemented_floor_caps_at_names_today() {
+    fn implemented_floor_caps_at_lines_today() {
         assert_eq!(DebugLevel::None.implemented_floor(), DebugLevel::None);
         assert_eq!(DebugLevel::Names.implemented_floor(), DebugLevel::Names);
-        assert_eq!(DebugLevel::Lines.implemented_floor(), DebugLevel::Names);
-        assert_eq!(DebugLevel::Full.implemented_floor(), DebugLevel::Names);
+        assert_eq!(DebugLevel::Lines.implemented_floor(), DebugLevel::Lines);
+        assert_eq!(DebugLevel::Full.implemented_floor(), DebugLevel::Lines);
     }
 }

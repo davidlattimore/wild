@@ -108,12 +108,40 @@ pub fn optimise_with_debug_level(input: &[u8], level: debug_level::DebugLevel) -
             let stripped = passes::strip::apply(&m, passes::strip::StripConfig::shipping());
             if stripped.len() > core.len() { core } else { stripped }
         }
-        DebugLevel::Names | DebugLevel::Lines | DebugLevel::Full => {
-            // Rewrite `name` section via the cumulative remap; drop DWARF
-            // + source-maps (they're stale and Phase 2 not yet wired).
+        DebugLevel::Names => {
             apply_names_tier(&core, input, &cumulative_remap)
         }
+        DebugLevel::Lines | DebugLevel::Full => {
+            // Names rewrite + try to preserve an accurate `.debug_line`.
+            // Falls back to strip behavior for line info when we can't
+            // guarantee accuracy (body modified or code layout shifted).
+            apply_lines_tier(&core, input, &cumulative_remap)
+        }
     }
+}
+
+fn apply_lines_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) -> Vec<u8> {
+    // Names first (stripping DWARF in the process).
+    let mut out = apply_names_tier(optimised, input, remap);
+
+    // Then, if we can salvage an accurate .debug_line from the input,
+    // splice it in. Today's criterion is strict: identity remap + byte-
+    // identical code section. Follow-up commits of Phase 2b broaden
+    // this to per-function preservation via gimli-backed rewriting.
+    if let Some(line_bytes) = passes::dwarf_line::rewrite(input, optimised, remap) {
+        let mut custom_payload = Vec::new();
+        leb128::write_u32(&mut custom_payload, b".debug_line".len() as u32);
+        custom_payload.extend_from_slice(b".debug_line");
+        custom_payload.extend_from_slice(&line_bytes);
+
+        let mut sec = Vec::new();
+        sec.push(module::SECTION_CUSTOM);
+        leb128::write_u32(&mut sec, custom_payload.len() as u32);
+        sec.extend_from_slice(&custom_payload);
+
+        out.extend_from_slice(&sec);
+    }
+    out
 }
 
 fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) -> Vec<u8> {
