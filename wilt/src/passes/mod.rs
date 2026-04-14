@@ -23,6 +23,7 @@ pub mod inline_trivial;
 pub mod layout_for_compression;
 pub mod memory_packing;
 pub mod merge_blocks;
+pub mod name_section;
 pub mod pure_call_elim;
 pub mod remove_unused_brs;
 pub mod reorder;

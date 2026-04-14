@@ -14,14 +14,18 @@ use crate::leb128;
 use crate::module::{self, WasmModule};
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
+    apply_with_remap(module).0
+}
+
+pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::FuncRemap) {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
     let data = module.data();
     let Some((entries, num_func_imports)) = super::dce::parse_imports(module) else {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_defined));
     };
     if num_func_imports < 2 {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
     }
 
     // Group function imports by (module, field, type_idx). Canonical = first.
@@ -44,11 +48,11 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
         func_cursor += 1;
     }
     if !found_dup {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
     }
 
     if !super::dce::all_bodies_walkable(module) {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
     }
 
     // Compute new-position for every function-import index (skipping dups).
@@ -85,12 +89,12 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     // emit falls back to verbatim, which here would carry stale indices.
     if let Some(sec) = module.section(module::SECTION_ELEMENT) {
         if super::dce::scan_elements_funcidx(sec.payload.slice(data)).is_none() {
-            return data.to_vec();
+            return (data.to_vec(), crate::remap::FuncRemap::identity(total));
         }
     }
 
-    let _ = total;
-    emit(module, data, &index_map, &entries, &canonical_of, num_func_imports)
+    let bytes = emit(module, data, &index_map, &entries, &canonical_of, num_func_imports);
+    (bytes, crate::remap::FuncRemap::from_entries(index_map))
 }
 
 fn emit(

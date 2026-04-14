@@ -11,10 +11,15 @@ use crate::module::{self, WasmModule};
 use crate::opcode;
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
+    apply_with_remap(module).0
+}
+
+pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::FuncRemap) {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
     if num_defined < 2 {
-        return module.data().to_vec();
+        return (module.data().to_vec(), crate::remap::FuncRemap::identity(
+            super::dce::count_func_imports_pub(module) + num_defined));
     }
     let num_imports = super::dce::count_func_imports_pub(module);
     let total = num_imports + num_defined;
@@ -26,7 +31,7 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     if let Some(sec) = module.section(module::SECTION_ELEMENT) {
         let p = sec.payload.slice(data);
         if super::dce::scan_elements_funcidx(p).is_none() {
-            return data.to_vec();
+            return (data.to_vec(), crate::remap::FuncRemap::identity(total));
         }
     }
 
@@ -34,8 +39,12 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     let mut count = vec![0u32; total as usize];
     for body in module.function_bodies() {
         let b = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(b) else { return data.to_vec(); };
-        let Some(instrs) = opcode::walk(b, start) else { return data.to_vec(); };
+        let Some(start) = opcode::skip_locals(b) else {
+            return (data.to_vec(), crate::remap::FuncRemap::identity(total));
+        };
+        let Some(instrs) = opcode::walk(b, start) else {
+            return (data.to_vec(), crate::remap::FuncRemap::identity(total));
+        };
         for (p, _) in instrs {
             let op = b[p];
             if op == opcode::OP_CALL || op == opcode::OP_REF_FUNC {
@@ -63,7 +72,7 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
 
     // If already in best order, no-op.
     if order.iter().enumerate().all(|(i, &orig)| orig == num_imports + i as u32) {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
     // index_map[orig_abs] = new_abs
@@ -73,7 +82,8 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
         index_map[orig_abs as usize] = Some(num_imports + new_local as u32);
     }
 
-    emit(module, data, &index_map, num_imports, &order)
+    let bytes = emit(module, data, &index_map, num_imports, &order);
+    (bytes, crate::remap::FuncRemap::from_entries(index_map))
 }
 
 /// Apply an arbitrary permutation of defined function indices. The
@@ -81,6 +91,12 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
 /// `imports..total` are reordered; imports stay fixed. Used by both
 /// the call-frequency reorder and the layout-for-compression pass.
 pub fn apply_with_order(module: &mut WasmModule<'_>, order: Vec<u32>) -> Vec<u8> {
+    apply_with_order_remap(module, order).0
+}
+
+pub fn apply_with_order_remap(
+    module: &mut WasmModule<'_>, order: Vec<u32>,
+) -> (Vec<u8>, crate::remap::FuncRemap) {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
     let num_imports = super::dce::count_func_imports_pub(module);
@@ -90,18 +106,16 @@ pub fn apply_with_order(module: &mut WasmModule<'_>, order: Vec<u32>) -> Vec<u8>
     if let Some(sec) = module.section(module::SECTION_ELEMENT) {
         let p = sec.payload.slice(data);
         if super::dce::scan_elements_funcidx(p).is_none() {
-            return data.to_vec();
+            return (data.to_vec(), crate::remap::FuncRemap::identity(total));
         }
     }
 
-    // Bodies whose `call` immediates we can't decode would carry stale
-    // indices into the output — bail.
     if !super::dce::all_bodies_walkable(module) {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
     if order.iter().enumerate().all(|(i, &orig)| orig == num_imports + i as u32) {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
     let mut index_map: Vec<Option<u32>> = (0..num_imports).map(Some).collect();
@@ -109,7 +123,8 @@ pub fn apply_with_order(module: &mut WasmModule<'_>, order: Vec<u32>) -> Vec<u8>
     for (new_local, &orig_abs) in order.iter().enumerate() {
         index_map[orig_abs as usize] = Some(num_imports + new_local as u32);
     }
-    emit(module, data, &index_map, num_imports, &order)
+    let bytes = emit(module, data, &index_map, num_imports, &order);
+    (bytes, crate::remap::FuncRemap::from_entries(index_map))
 }
 
 fn emit(

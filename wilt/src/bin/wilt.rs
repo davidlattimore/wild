@@ -28,6 +28,13 @@ OPTIONS:
     --strip-producers       Strip `producers` custom section.
     --strip                 Strip DWARF, source maps, names, target_features
                             (matches `wasm-opt -O --strip-debug`'s output).
+    --debug=<level>         Set debug-info fidelity tier:
+                              none  — strip everything
+                              names — rewrite `name` section to match
+                                      output (default when implemented)
+                              lines — names + DWARF `.debug_line` (future)
+                              full  — everything rewritten (future)
+                            -g0/-g1/-g2/-g3 are aliases.
     --enable-<feature>      Accepted for compatibility; wilt supports
     --disable-<feature>     MVP + SIMD + multi-value + bulk-memory +
                             reference-types + non-trapping-float natively.
@@ -54,6 +61,10 @@ struct Args {
     strip_producers: bool,
     keep_debuginfo: bool,
     verbose: bool,
+    /// Explicit `--debug=<level>`. `None` = not set, use default
+    /// (which today yields `optimise()` style output without names-
+    /// tier rewriting — future work upgrades the default).
+    debug_level: Option<wilt::debug_level::DebugLevel>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -67,6 +78,24 @@ fn parse_args() -> Result<Args, String> {
             "-v" | "--verbose" => { a.verbose = true; i += 1; }
             // Optimisation levels — all equivalent for wilt.
             "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => { i += 1; }
+            // Debug-level flag: --debug=none/names/lines/full.
+            s if s.starts_with("--debug=") => {
+                let v = &s[8..];
+                a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v)
+                    .ok_or_else(|| format!("--debug: unknown level {v:?} (want none/names/lines/full)"))?);
+                i += 1;
+            }
+            "--debug" => {
+                i += 1;
+                let v = raw.get(i).ok_or_else(|| "--debug: expected level".to_string())?;
+                a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v)
+                    .ok_or_else(|| format!("--debug: unknown level {v:?}"))?);
+                i += 1;
+            }
+            "-g0" => { a.debug_level = Some(wilt::debug_level::DebugLevel::None);  i += 1; }
+            "-g1" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Names); i += 1; }
+            "-g2" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Lines); i += 1; }
+            "-g3" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Full);  i += 1; }
             // Debug / strip flags.
             "-g" | "--debuginfo" => { a.keep_debuginfo = true; i += 1; }
             "--strip" => { a.strip_all = true; i += 1; }
@@ -146,7 +175,9 @@ fn main() -> ExitCode {
         && (args.strip_debug || args.strip_producers)
         && !args.keep_debuginfo;
 
-    let mut output_bytes = if shipping_strip {
+    let mut output_bytes = if let Some(level) = args.debug_level {
+        wilt::optimise_with_debug_level(&input_bytes, level)
+    } else if shipping_strip {
         wilt::optimise_stripped(&input_bytes)
     } else {
         wilt::optimise(&input_bytes)

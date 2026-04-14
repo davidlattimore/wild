@@ -65,33 +65,38 @@ fn any_body_has_advanced_features(module: &WasmModule<'_>) -> bool {
 }
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
+    apply_with_remap(module).0
+}
+
+pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::FuncRemap) {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
-    if num_defined < 2 { return module.data().to_vec(); }
+    let num_imports = super::dce::count_func_imports_pub(module);
+    let total = num_imports + num_defined;
+    if num_defined < 2 {
+        return (module.data().to_vec(), crate::remap::FuncRemap::identity(total));
+    }
 
     // Bail on bodies we can't fully decode (GC opcodes etc.) — the
     // emit path's call-rewriter would silently miss references it
     // can't see, leaving stale function indices. apply_with_order
     // also has this guard but bailing here is clearer.
     if !super::dce::all_bodies_walkable(module) {
-        return module.data().to_vec();
+        return (module.data().to_vec(), crate::remap::FuncRemap::identity(total));
     }
     // Conservative: bail if any body uses GC/SIMD/atomics/EH prefix
     // opcodes. Our function-index renumbering doesn't account for
-    // edge-case references those families might have, and the cost
-    // of a single corrupted module outweighs the gain on MVP-only
-    // modules.
+    // edge-case references those families might have.
     if any_body_has_advanced_features(module) {
-        return module.data().to_vec();
+        return (module.data().to_vec(), crate::remap::FuncRemap::identity(total));
     }
     // Extra-conservative: bail if any function type uses non-numeric
     // valtypes. Modules with externref / typed function refs / GC types
     // hit edge cases in the renumbering that we don't fully model.
     if any_func_type_uses_non_numeric_valtypes(module) {
-        return module.data().to_vec();
+        return (module.data().to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
-    let num_imports = super::dce::count_func_imports_pub(module);
     let data = module.data();
 
     // Collect (orig_abs_idx, body_bytes) pairs.
@@ -110,5 +115,5 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     // The top-level `optimise` never-grow guard catches the
     // uncommon case where layout's LEB-shift grows raw bytes. Keep
     // the reordering here unconditional so compressed wins stay.
-    super::reorder::apply_with_order(module, order)
+    super::reorder::apply_with_order_remap(module, order)
 }

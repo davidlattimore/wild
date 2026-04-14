@@ -384,19 +384,27 @@ pub fn analyse(module: &mut WasmModule<'_>) -> DceResult {
 }
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
+    apply_with_remap(module).0
+}
+
+/// Same as `apply` but returns the input→output function-index remap
+/// alongside the bytes. Callers that care about keeping debug / name
+/// sections consistent with the new index space use this.
+pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::FuncRemap) {
     let result = analyse(module);
     let data = module.data();
     let num_defined = module.num_function_bodies() as u32;
+    let num_total = result.num_imports + num_defined;
 
     if result.defined_kept == num_defined {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_total));
     }
 
     // Safety: removing defined funcs means surviving funcs get renumbered.
     // We must be able to rewrite every body's call / ref.func immediates;
     // if any body has an opcode we can't decode (e.g. SIMD), bail.
     if !all_bodies_walkable(module) {
-        return data.to_vec();
+        return (data.to_vec(), crate::remap::FuncRemap::identity(num_total));
     }
 
     let mut out = Vec::with_capacity(data.len());
@@ -413,7 +421,8 @@ pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
             _ => out.extend_from_slice(section.full.slice(data)),
         }
     }
-    out
+    let remap = crate::remap::FuncRemap::from_entries(result.index_map);
+    (out, remap)
 }
 
 fn emit_function_section(out: &mut Vec<u8>, section: &module::Section, data: &[u8], r: &DceResult) {
