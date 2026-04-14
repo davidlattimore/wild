@@ -28,6 +28,7 @@ pub mod module;
 pub mod mut_module;
 pub mod opcode;
 pub mod passes;
+pub mod provenance;
 pub mod remap;
 pub mod scan;
 
