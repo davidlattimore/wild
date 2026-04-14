@@ -1,0 +1,198 @@
+//! `wilt` — WebAssembly In Link Time — CLI optimiser.
+//!
+//! Drop-in for most `wasm-opt` invocations. Accepts the common flags
+//! (`-O`, `-O1..-O3`, `-Os`, `-Oz`, `-o`, `--strip-debug`,
+//! `--strip-producers`, `--enable-*`, `-g`, `--print`, `-v`) and
+//! translates them onto wilt's pipeline. Unknown flags with an
+//! `--enable-` / `--disable-` / `--pass-` prefix are silently
+//! accepted so `wasm-opt`-shaped invocations don't need rewriting.
+
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+const USAGE: &str = "\
+wilt — WebAssembly optimiser (drop-in for most `wasm-opt` usage)
+
+USAGE:
+    wilt <INPUT> [-o <OUTPUT>] [OPTIONS...]
+
+OPTIONS:
+    -o, --output <P>        Output path (required unless --print)
+    -O, -O1, -O2, -O3       Optimisation level. All map to wilt's
+    -Os, -Oz                pipeline (wilt has one mode; these are
+                            accepted for drop-in compatibility).
+    -g, --debuginfo         Preserve debug-info custom sections.
+                            This is wilt's default — noted for clarity.
+    --strip-debug           Strip DWARF + source-map custom sections.
+    --strip-producers       Strip `producers` custom section.
+    --strip                 Strip DWARF, source maps, names, target_features
+                            (matches `wasm-opt -O --strip-debug`'s output).
+    --enable-<feature>      Accepted for compatibility; wilt supports
+    --disable-<feature>     MVP + SIMD + multi-value + bulk-memory +
+                            reference-types + non-trapping-float natively.
+    --print                 Write output to stdout.
+    -v, --verbose           Report input/output sizes.
+    -h, --help              Show this help.
+
+Unknown `--pass-*`, `--enable-*`, `--disable-*` flags are accepted
+silently. Unknown other flags produce an error.
+
+EXIT CODES:
+    0 — success
+    1 — IO / parse error
+    2 — invalid arguments
+";
+
+#[derive(Default)]
+struct Args {
+    input: Option<PathBuf>,
+    output: Option<PathBuf>,
+    print_stdout: bool,
+    strip_all: bool,
+    strip_debug: bool,
+    strip_producers: bool,
+    keep_debuginfo: bool,
+    verbose: bool,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut a = Args::default();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < raw.len() {
+        let arg = &raw[i];
+        match arg.as_str() {
+            "-h" | "--help" => { print!("{USAGE}"); std::process::exit(0); }
+            "-v" | "--verbose" => { a.verbose = true; i += 1; }
+            // Optimisation levels — all equivalent for wilt.
+            "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => { i += 1; }
+            // Debug / strip flags.
+            "-g" | "--debuginfo" => { a.keep_debuginfo = true; i += 1; }
+            "--strip" => { a.strip_all = true; i += 1; }
+            "--strip-debug" | "--strip-dwarf" => { a.strip_debug = true; i += 1; }
+            "--strip-producers" => { a.strip_producers = true; i += 1; }
+            "--strip-target-features" => { i += 1; /* folded into --strip */ }
+            "--print" => { a.print_stdout = true; i += 1; }
+            // Output.
+            "-o" | "--output" => {
+                i += 1;
+                let v = raw.get(i).ok_or_else(|| format!("{arg}: expected path"))?;
+                a.output = Some(PathBuf::from(v));
+                i += 1;
+            }
+            s if s.starts_with("-o=") => {
+                a.output = Some(PathBuf::from(&s[3..])); i += 1;
+            }
+            s if s.starts_with("--output=") => {
+                a.output = Some(PathBuf::from(&s[9..])); i += 1;
+            }
+            // wasm-opt feature toggles + pass flags — accept and ignore.
+            s if s.starts_with("--enable-")
+              || s.starts_with("--disable-")
+              || s.starts_with("--pass-")
+              || s.starts_with("--no-") => { i += 1; }
+            // Some wasm-opt flags take an arg; accept and skip it for known ones.
+            "--features" | "--mvp-features" | "--all-features" => {
+                // --features takes a value; others stand alone. Peek:
+                if arg == "--features" { i += 2; } else { i += 1; }
+            }
+            s if s.starts_with("-") => return Err(format!("unknown flag: {s}")),
+            _ => {
+                if a.input.is_some() {
+                    return Err(format!("unexpected positional arg: {arg}"));
+                }
+                a.input = Some(PathBuf::from(arg));
+                i += 1;
+            }
+        }
+    }
+    Ok(a)
+}
+
+fn default_output_path(input: &std::path::Path) -> PathBuf {
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+    let dir = input.parent().unwrap_or(std::path::Path::new("."));
+    dir.join(format!("{stem}.opt.wasm"))
+}
+
+fn main() -> ExitCode {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("wilt: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let Some(input_path) = args.input.as_deref() else {
+        eprintln!("wilt: missing <INPUT> argument\n\n{USAGE}");
+        return ExitCode::from(2);
+    };
+
+    let input_bytes = match std::fs::read(input_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("wilt: could not read {}: {e}", input_path.display());
+            return ExitCode::from(1);
+        }
+    };
+
+    // Strip policy — later flags don't override earlier; we take the
+    // union. --strip (our full shipping strip) wins if set. --debuginfo
+    // vetoes --strip-debug (matches wasm-opt's -g behaviour).
+    let shipping_strip = args.strip_all;
+    let partial_strip = !shipping_strip
+        && (args.strip_debug || args.strip_producers)
+        && !args.keep_debuginfo;
+
+    let mut output_bytes = if shipping_strip {
+        wilt::optimise_stripped(&input_bytes)
+    } else {
+        wilt::optimise(&input_bytes)
+    };
+
+    if partial_strip {
+        if let Ok(m) = wilt::WasmModule::parse(&output_bytes) {
+            use wilt::passes::strip::StripConfig;
+            let cfg = StripConfig {
+                dwarf: args.strip_debug,
+                source_maps: args.strip_debug,
+                producers: args.strip_producers,
+                ..StripConfig::default()
+            };
+            let stripped = wilt::passes::strip::apply(&m, cfg);
+            if stripped.len() < output_bytes.len() {
+                output_bytes = stripped;
+            }
+        }
+    }
+
+    if args.print_stdout {
+        let mut stdout = std::io::stdout();
+        if let Err(e) = stdout.write_all(&output_bytes) {
+            eprintln!("wilt: write stdout: {e}");
+            return ExitCode::from(1);
+        }
+    } else {
+        let out_path = args.output
+            .unwrap_or_else(|| default_output_path(input_path));
+        if let Err(e) = std::fs::write(&out_path, &output_bytes) {
+            eprintln!("wilt: could not write {}: {e}", out_path.display());
+            return ExitCode::from(1);
+        }
+        if args.verbose {
+            let inp = input_bytes.len();
+            let out = output_bytes.len();
+            let saved = inp.saturating_sub(out);
+            let pct = if inp > 0 { 100.0 * saved as f64 / inp as f64 } else { 0.0 };
+            let _ = writeln!(
+                std::io::stderr(),
+                "wilt: {} → {}  ({inp} → {out} bytes, saved {saved}, {pct:.1}%)",
+                input_path.display(), out_path.display(),
+            );
+        }
+    }
+
+    ExitCode::SUCCESS
+}
