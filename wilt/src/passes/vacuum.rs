@@ -292,13 +292,130 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Infer a coarse `BodyEdits` from input/output by finding the
-/// longest common prefix and suffix. The middle becomes one edit.
-/// Vacuum often makes multiple localized changes, so this loses
-/// finer-grained provenance inside the changed region — but it's
-/// strictly better than marking the body as tracking-lost, and the
-/// DWARF rewriter falls back to stub line info cleanly for the
-/// single coarse span.
+/// Infer a fine-grained `BodyEdits` from input/output via small-
+/// window instruction diff. Each diverging chunk becomes a single
+/// `Edit` describing the byte range substituted.
+///
+/// Walks both bodies' instruction lists in lockstep, advancing
+/// through identity runs (matched bytes), and emitting one edit
+/// for each diverging region. The resync lookahead is bounded
+/// (5 instructions either side) so vacuum's localized peepholes —
+/// nop strip, const+drop strip, set/get→tee, etc. — each surface
+/// as their own small subst/delete edit. Returns `None` if the
+/// instruction streams diverge wider than the lookahead window;
+/// callers fall back to `infer_coarse_edits`.
+fn infer_fine_edits(input: &[u8], output: &[u8]) -> Option<crate::provenance::BodyEdits> {
+    use crate::provenance::{BodyEdits, Edit};
+
+    let in_start = opcode::skip_locals(input)?;
+    let out_start = opcode::skip_locals(output)?;
+    // Locals header byte ranges should be identical (vacuum doesn't
+    // touch them). If they differ, fall back.
+    if input[..in_start] != output[..out_start] { return None; }
+
+    let in_instrs = opcode::walk(input, in_start)?;
+    let out_instrs = opcode::walk(output, out_start)?;
+
+    let mut edits = BodyEdits::identity();
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < in_instrs.len() || j < out_instrs.len() {
+        // Skip the identity run.
+        while i < in_instrs.len() && j < out_instrs.len()
+            && instrs_eq(in_instrs[i], out_instrs[j], input, output)
+        {
+            i += 1;
+            j += 1;
+        }
+        if i >= in_instrs.len() && j >= out_instrs.len() { break; }
+
+        // Find resync point with bounded lookahead.
+        let (di, dj) = resync(&in_instrs, &out_instrs, i, j, input, output, 6)?;
+
+        // Emit one edit covering the diverging region.
+        let in_byte_start = if i < in_instrs.len() {
+            in_instrs[i].0 as u32
+        } else {
+            input.len() as u32
+        };
+        let in_byte_end = if di > 0 {
+            (in_instrs[i + di - 1].0 + in_instrs[i + di - 1].1) as u32
+        } else {
+            in_byte_start
+        };
+        let out_byte_start = if j < out_instrs.len() {
+            out_instrs[j].0 as u32
+        } else {
+            output.len() as u32
+        };
+        let out_byte_end = if dj > 0 {
+            (out_instrs[j + dj - 1].0 + out_instrs[j + dj - 1].1) as u32
+        } else {
+            out_byte_start
+        };
+
+        let in_len = in_byte_end.saturating_sub(in_byte_start);
+        let out_len = out_byte_end.saturating_sub(out_byte_start);
+        let edit = match (in_len, out_len) {
+            (0, 0) => { i += di; j += dj; continue }
+            (_, 0) => Edit::delete(in_byte_start, in_len, out_byte_start),
+            (0, _) => Edit::synth(in_byte_start, out_byte_start, out_len),
+            _ => Edit::subst(in_byte_start, in_len, out_byte_start, out_len),
+        };
+        edits.push(edit, None);
+        i += di;
+        j += dj;
+    }
+    Some(edits)
+}
+
+fn instrs_eq(a: (usize, usize), b: (usize, usize), in_body: &[u8], out_body: &[u8]) -> bool {
+    let ai = in_body.get(a.0..a.0 + a.1);
+    let bo = out_body.get(b.0..b.0 + b.1);
+    ai == bo && ai.is_some()
+}
+
+/// Find (di, dj) such that `in_instrs[i+di]` matches
+/// `out_instrs[j+dj]` — the next synchronization point. Returns
+/// `None` if no resync is found within `max_lookahead` steps either
+/// way (caller falls back to coarse diff).
+fn resync(
+    in_instrs: &[(usize, usize)],
+    out_instrs: &[(usize, usize)],
+    i_start: usize, j_start: usize,
+    in_body: &[u8], out_body: &[u8],
+    max_lookahead: usize,
+) -> Option<(usize, usize)> {
+    if i_start >= in_instrs.len() {
+        return Some((0, out_instrs.len() - j_start));
+    }
+    if j_start >= out_instrs.len() {
+        return Some((in_instrs.len() - i_start, 0));
+    }
+    for dist in 1..=(max_lookahead * 2) {
+        for di in 0..=dist {
+            let dj = dist - di;
+            if di > max_lookahead || dj > max_lookahead { continue; }
+            let i_at_end = i_start + di >= in_instrs.len();
+            let j_at_end = j_start + dj >= out_instrs.len();
+            if i_at_end && j_at_end {
+                return Some((in_instrs.len() - i_start, out_instrs.len() - j_start));
+            }
+            if !i_at_end && !j_at_end
+                && instrs_eq(in_instrs[i_start + di], out_instrs[j_start + dj],
+                             in_body, out_body)
+            {
+                return Some((di, dj));
+            }
+        }
+    }
+    None
+}
+
+/// Coarse fallback: longest common prefix + suffix → one subst in
+/// the middle. Used when `infer_fine_edits` can't resync within its
+/// window.
 fn infer_coarse_edits(input: &[u8], output: &[u8]) -> crate::provenance::BodyEdits {
     use crate::provenance::{BodyEdits, Edit};
     let prefix = input.iter().zip(output.iter())
@@ -340,7 +457,11 @@ pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
         .filter_map(|i| {
             let input_body = m.body_bytes(i);
             let out = clean_body(input_body)?;
-            let edits = infer_coarse_edits(input_body, &out);
+            // Try fine-grained edits first; fall back to coarse on
+            // pathological diffs (vacuum applies many tiny peepholes;
+            // resync usually succeeds quickly).
+            let edits = infer_fine_edits(input_body, &out)
+                .unwrap_or_else(|| infer_coarse_edits(input_body, &out));
             Some((i, out, edits))
         })
         .collect();
@@ -451,6 +572,56 @@ mod tests {
         // After the return, dead-code mode may strip intervening nothing;
         // but the return itself must remain.
         assert!(out.as_ref().map(|v| v.contains(&0x0F)).unwrap_or(true));
+    }
+
+    #[test]
+    fn fine_edits_separate_non_adjacent_peepholes() {
+        // Two non-adjacent nop strips separated by an instruction
+        // that survives. Should produce 2 distinct edits, each one
+        // a delete (vs coarse's single span covering both).
+        // local.get 0; nop; drop; nop; end
+        let body = vec![
+            1, 1, 0x7F,         // 1 local of i32
+            0x20, 0x00,         // local.get 0      (kept)
+            0x01,               // nop              (stripped — edit 1)
+            0x1A,               // drop             (kept — separator)
+            0x01,               // nop              (stripped — edit 2)
+            0x0B,               // end              (kept)
+        ];
+        let out = clean_body(&body).unwrap();
+        let edits = infer_fine_edits(&body, &out)
+            .expect("fine-edit inference should succeed on this input");
+        assert!(edits.edits().len() >= 2,
+                "expected ≥ 2 fine edits across two separated peepholes; got {}",
+                edits.edits().len());
+        // Reconstruct: apply edits to input; should equal vacuum's output.
+        let reconstructed = edits.apply(&body, |i, _src, _len| {
+            let e = edits.edits().get(i)?;
+            Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+        }).unwrap();
+        assert_eq!(reconstructed, out);
+    }
+
+    #[test]
+    fn fine_edits_reconstruct_for_combined_peephole() {
+        // Adjacent peepholes that vacuum strips contiguously.
+        // Edits may merge into one span — that's fine; verify the
+        // reconstruction still matches.
+        let body = vec![
+            1, 1, 0x7F,
+            0x20, 0x00,
+            0x01,            // nop
+            0x41, 0x00,      // i32.const 0
+            0x6A,            // i32.add
+            0x0B,
+        ];
+        let out = clean_body(&body).unwrap();
+        let edits = infer_fine_edits(&body, &out).unwrap();
+        let reconstructed = edits.apply(&body, |i, _src, _len| {
+            let e = edits.edits().get(i)?;
+            Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+        }).unwrap();
+        assert_eq!(reconstructed, out);
     }
 
     #[test]
