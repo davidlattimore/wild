@@ -1163,6 +1163,13 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         true
     }
 
+    /// Wasm post-link optimisation level (`-O<N>`). Non-wasm platforms
+    /// return 0; the wasm writer consults this to decide whether wilt
+    /// should run. Default 0 keeps wild byte-compatible with wasm-ld.
+    fn wasm_opt_level(&self) -> u8 {
+        0
+    }
+
     fn should_relax(&self) -> bool {
         false
     }

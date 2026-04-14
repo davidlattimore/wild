@@ -682,8 +682,30 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         }
     }
 
-    // Compress padded LEB128 in function bodies when --compress-relocations.
-    // wasm-ld only compresses on explicit request; default keeps padded form.
+    // Post-link optimisation via wilt. Runs DCE, type GC, const fold,
+    // devirt, the rest of the fixpoint, and ends with a
+    // compression-friendly layout pass — but does NOT LEB-compress.
+    // Compression is a separate, opt-in step below.
+    //
+    // Gated on `--gc-sections`: aggressive index-changing passes are
+    // only safe when the caller has already asked for unused code to
+    // be removed. Without `--gc-sections`, wild aims for lld-wasm
+    // byte-compatibility and wilt stays out of the way.
+    //
+    // `DebugLevel::Full` keeps the name section index-consistent with
+    // post-DCE indices and preserves DWARF when the transformation
+    // permits. Stale names would otherwise fail downstream tools
+    // (obj2yaml / wasm-objdump) that re-validate name entries.
+    #[cfg(feature = "wilt")]
+    let out = if layout.symbol_db.args.wasm_opt_level() >= 1 {
+        wilt::optimise_with_debug_level(&out, wilt::debug_level::DebugLevel::Full)
+    } else {
+        out
+    };
+
+    // LEB128 compression of padded relocation payloads (opt-in, via
+    // `--compress-relocations`). wasm-ld behaves the same — default
+    // preserves padded form for downstream tools.
     #[cfg(feature = "wasm-opt")]
     let out = if layout.symbol_db.args.compress_relocations {
         let module = wilt::WasmModule::parse(&out).unwrap_or_else(|_| {
@@ -692,15 +714,6 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         wilt::passes::compress::apply(&module)
     } else {
         out
-    };
-
-    // Post-link optimization via wilt (constant folding).
-    #[cfg(feature = "wasm-opt")]
-    let out = {
-        let module = wilt::WasmModule::parse(&out).unwrap_or_else(|_| {
-            panic!("wilt: failed to parse wild's output")
-        });
-        wilt::passes::const_fold::apply(&module)
     };
 
     std::fs::write(output_path.as_ref(), &out)?;

@@ -66,6 +66,8 @@ ar = { workspace = true }
 tempfile = { workspace = true }
 
 [features]
+default = ["wilt"]
+
 # Support for running the linker as a subprocess.
 fork = []
 
@@ -75,7 +77,13 @@ plugins = ["libloading"]
 # Support for Mach-O LTO via libLTO.dylib.
 macho-lto = ["libloading"]
 
-# WASM optimization via wilt (DCE, type GC, constant folding).
+# WASM post-link optimisation via wilt (DCE, type GC, const fold,
+# compression-friendly layout). On by default; turn off with
+# `default-features = false`.
+wilt = ["dep:wilt"]
+
+# Additional LEB128 compression of relocation payloads (opt-in, gated
+# behind `--compress-relocations`). Implies `wilt`.
 wasm-opt = ["wilt"]
 
 # Widen the wasm writer's internal address arithmetic from u32 to u64 so

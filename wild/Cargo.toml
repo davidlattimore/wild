@@ -69,7 +69,7 @@ which = { workspace = true }
 wait-timeout = { workspace = true }
 
 [features]
-default = ["fork", "macho-lto", "wasm-opt"]
+default = ["fork", "macho-lto", "wilt"]
 
 fork = ["libwild/fork"]
 
@@ -78,6 +78,8 @@ plugins = ["libwild/plugins"]
 macho-lto = ["libwild/macho-lto"]
 
 perfetto = ["libwild/perfetto"]
+
+wilt = ["libwild/wilt"]
 
 wasm-opt = ["libwild/wasm-opt"]
 

@@ -77,6 +77,10 @@ pub struct WasmArgs {
     /// a shared library implies PIC, but a PIE executable does too. Set
     /// by `-pie`, `--pie`, or `--experimental-pic`.
     pub(crate) is_pic: bool,
+    /// Optimisation level from `-O<N>`. Zero (the default) keeps wild
+    /// byte-compatible with wasm-ld. `>= 1` enables the wilt post-link
+    /// optimisation pipeline (DCE, type-GC, const-fold, layout).
+    pub(crate) opt_level: u8,
 }
 
 impl Default for WasmArgs {
@@ -114,6 +118,7 @@ impl Default for WasmArgs {
             compress_relocations: false,
             memory64: false,
             is_pic: false,
+            opt_level: 0,
         }
     }
 }
@@ -186,6 +191,10 @@ impl platform::Args for WasmArgs {
 
     fn should_gc_sections(&self) -> bool {
         !self.no_gc_sections
+    }
+
+    fn wasm_opt_level(&self) -> u8 {
+        self.opt_level
     }
 
     fn should_allow_object_undefined(
@@ -441,7 +450,13 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             "--reproduce" => { iter.next(); }
             _ if arg.starts_with("--reproduce=") => {}
             "--color-diagnostics" | "--no-color-diagnostics" => {}
-            _ if arg.starts_with("-O") => {} // optimisation level
+            _ if arg.starts_with("-O") => {
+                // `-O<N>` — optimisation level. `-O` alone is treated as `-O1`.
+                let rest = &arg[2..];
+                args.opt_level = if rest.is_empty() { 1 } else {
+                    rest.parse::<u8>().unwrap_or(1)
+                };
+            }
             _ if arg.starts_with("--threads=") => {}
             _ if arg.starts_with("--lto") => {}
             _ if arg.starts_with("--thinlto") => {}
