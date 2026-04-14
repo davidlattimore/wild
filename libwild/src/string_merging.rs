@@ -32,6 +32,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
+use crate::input_section_id::SectionIdRange;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -87,17 +88,14 @@ pub(crate) struct StringMergeInputs<'data> {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StringMergeSectionSlot {
-    pub(crate) part_id: PartId,
-
-    /// The sum of the sizes of the input sections prior to this one with the same `part_id`.
+    /// The sum of the sizes of the input sections prior to this one with the same part ID.
     /// Populated during string merging.
     start_input_offset: LinearInputOffset,
 }
 
 impl StringMergeSectionSlot {
-    pub(crate) fn new(part_id: PartId) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            part_id,
             // We'll fill this in during string merging.
             start_input_offset: LinearInputOffset(0),
         }
@@ -279,11 +277,13 @@ pub(crate) fn merge_strings<'data, P: Platform>(
 impl<'data> StringMergeInputs<'data> {
     pub(crate) fn new<P: Platform>(
         resolved: &mut [ResolvedGroup<'data, P>],
+        section_part_ids: &[crate::part_id::PartId],
         output_sections: &OutputSections<P>,
     ) -> Result<Self> {
         Ok(Self {
             input_sections_by_output: group_merge_string_sections_by_output(
                 resolved,
+                section_part_ids,
                 output_sections,
             )?,
         })
@@ -295,6 +295,7 @@ impl<'data> StringMergeInputs<'data> {
 // faster.
 fn group_merge_string_sections_by_output<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
+    section_part_ids: &[crate::part_id::PartId],
     output_sections: &OutputSections<P>,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
     verbose_timing_phase!("Find merge sectionns");
@@ -313,7 +314,9 @@ fn group_merge_string_sections_by_output<'data, P: Platform>(
                     bail!("Internal error: expected SectionSlot::MergeStrings");
                 };
 
-                let section_id = sec.part_id.output_section_id();
+                let part_id =
+                    section_part_ids[obj.section_id_range.start().as_usize() + extra.index.0];
+                let section_id = part_id.output_section_id();
                 let starting_offset = starting_offsets.get_mut(section_id);
                 sec.start_input_offset = *starting_offset;
 
@@ -1002,6 +1005,8 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     addend: i64,
     object: &P::File<'data>,
     sections: &[SectionSlot],
+    section_part_ids: &[PartId],
+    section_id_range: SectionIdRange,
     merged_strings: &OutputSectionMap<MergedStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,
     zero_unnamed: bool,
@@ -1010,6 +1015,9 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
     let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
         return Ok(None);
     };
+
+    let input_section_id = section_id_range.input_to_id(section_index);
+
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
@@ -1031,9 +1039,10 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
         input_offset = input_offset.wrapping_add(addend as u64);
     }
 
-    let section_id = merge_slot.part_id.output_section_id();
+    let part_id = section_part_ids[input_section_id.as_usize()];
+    let section_id = part_id.output_section_id();
     let strings_section = merged_strings.get(section_id);
-    let string_offset = find_string(merge_slot, input_offset, strings_section)?;
+    let string_offset = find_string(*merge_slot, input_offset, strings_section)?;
     let bucket_base =
         merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
     let mut address = bucket_base + string_offset.offset_in_bucket();
@@ -1044,7 +1053,7 @@ pub(crate) fn get_merged_string_output_address<'data, P: Platform>(
 }
 
 fn find_string(
-    merge_slot: &StringMergeSectionSlot,
+    merge_slot: StringMergeSectionSlot,
     input_offset: u64,
     strings_section: &MergedStringsSection<'_>,
 ) -> Result<BucketOffset> {

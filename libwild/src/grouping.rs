@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
+use crate::input_section_id::SectionIdRange;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
@@ -32,6 +33,7 @@ pub(crate) enum Group<'data, P: Platform> {
 pub(crate) struct SequencedInputObject<'data, P: Platform> {
     pub(crate) parsed: Box<ParsedInputObject<'data, P>>,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: SectionIdRange,
     pub(crate) file_id: FileId,
 }
 
@@ -114,6 +116,7 @@ pub(crate) fn create_groups<'data, P: Platform>(
     symbol_db.groups_reserve(parsed_objects.len() / max_files_per_group + 3);
 
     let mut next_symbol_id = symbol_db.next_symbol_id();
+    let mut next_input_section_id = symbol_db.next_input_section_id;
 
     let mut objects = parsed_objects.into_iter().peekable();
 
@@ -126,13 +129,23 @@ pub(crate) fn create_groups<'data, P: Platform>(
         let file_id = FileId::new(symbol_db.next_group_index(), group_objects.len() as u32);
         let num_symbols_in_file = parsed.object.num_symbols();
 
+        let section_count = if parsed.object.is_dynamic() {
+            // We don't copy sections from dynamic objects into the output, so for our purposes,
+            // there are no sections.
+            0
+        } else {
+            parsed.object.num_sections()
+        };
+
         group_objects.push(SequencedInputObject {
             parsed,
             symbol_id_range: SymbolIdRange::input(next_symbol_id, num_symbols_in_file),
+            section_id_range: SectionIdRange::input(next_input_section_id, section_count),
             file_id,
         });
 
         next_symbol_id = next_symbol_id.add_usize(num_symbols_in_file);
+        next_input_section_id = next_input_section_id.add_usize(section_count);
 
         num_symbols_in_group += num_symbols_in_file;
 
@@ -177,6 +190,8 @@ pub(crate) fn create_groups<'data, P: Platform>(
     if !linker_scripts.is_empty() {
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
+
+    symbol_db.next_input_section_id = next_input_section_id;
 
     tracing::trace!(
         "GROUPS:\n{}",

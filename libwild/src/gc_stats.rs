@@ -25,19 +25,25 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::platform::Platform;
 use crate::resolution::SectionSlot;
+use crate::symbol_db::SymbolDb;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use std::path::PathBuf;
 
 pub(crate) fn maybe_write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
-    args: &P::Args,
+    symbol_db: &SymbolDb<P>,
 ) -> Result {
-    let Some(stats_file) = args.gc_stats_output_file() else {
+    let Some(stats_file) = symbol_db.args.gc_stats_output_file() else {
         return Ok(());
     };
-    write_gc_stats(group_layouts, stats_file, args)
-        .with_context(|| format!("Failed to write GC stats to `{}`", stats_file.display()))
+    write_gc_stats(
+        group_layouts,
+        &symbol_db.section_part_ids,
+        stats_file,
+        symbol_db.args,
+    )
+    .with_context(|| format!("Failed to write GC stats to `{}`", stats_file.display()))
 }
 
 struct InputFile<'data> {
@@ -49,6 +55,7 @@ struct InputFile<'data> {
 
 fn write_gc_stats<'data, P: Platform>(
     group_layouts: &[GroupLayout<'data, P>],
+    section_part_ids: &[crate::part_id::PartId],
     stats_file: &std::path::Path,
     args: &P::Args,
 ) -> Result {
@@ -85,11 +92,18 @@ fn write_gc_stats<'data, P: Platform>(
 
             let mut file_kept = 0;
             let mut file_discarded = 0;
-            for (slot, section) in obj.sections.iter().zip(obj.object.section_iter()) {
+            let obj_part_ids = &section_part_ids[obj.section_id_range.as_usize()];
+
+            for ((slot, section), part_id) in obj
+                .sections
+                .iter()
+                .zip(obj.object.section_iter())
+                .zip(obj_part_ids)
+            {
+                let output_section_id = part_id.output_section_id();
+
                 match slot {
-                    SectionSlot::Unloaded(unloaded)
-                        if unloaded.part_id.output_section_id() == output_section_id::TEXT =>
-                    {
+                    SectionSlot::Unloaded(_) if output_section_id == output_section_id::TEXT => {
                         file_discarded += obj.object.section_size(section)?;
                         if args.verbose_gc_stats() {
                             file_record
@@ -97,9 +111,7 @@ fn write_gc_stats<'data, P: Platform>(
                                 .push(obj.object.section_name(section)?);
                         }
                     }
-                    SectionSlot::Loaded(s)
-                        if s.part_id.output_section_id() == output_section_id::TEXT =>
-                    {
+                    SectionSlot::Loaded(_) if output_section_id == output_section_id::TEXT => {
                         file_kept += obj.object.section_size(section)?;
                     }
                     _ => {}

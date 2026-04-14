@@ -16,6 +16,7 @@ use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
@@ -54,6 +55,7 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use object::SectionIndex;
 use rayon::Scope;
+use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
@@ -95,7 +97,12 @@ impl<'data, P: Platform> Resolver<'data, P> {
 
         let mut syn = symbol_db.new_synthetic_symbols_group();
 
-        assign_section_ids(&mut self.resolved_groups, output_sections, symbol_db.args);
+        assign_section_ids(
+            &mut self.resolved_groups,
+            &mut symbol_db.section_part_ids,
+            output_sections,
+            symbol_db.args,
+        );
 
         canonicalise_undefined_symbols(
             self.undefined_symbols,
@@ -297,6 +304,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
 
                     ResolvedFile::NotLoaded(NotLoaded {
                         symbol_id_range: s.symbol_id_range,
+                        section_id_range: s.section_id_range,
                     })
                 })
                 .collect();
@@ -358,6 +366,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
 
                     ResolvedFile::NotLoaded(NotLoaded {
                         symbol_id_range: o.symbol_id_range,
+                        section_id_range: o.section_id_range,
                     })
                 })
                 .collect(),
@@ -367,7 +376,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
 
 fn resolve_sections<'data, P: Platform>(
     groups: &mut [ResolvedGroup<'data, P>],
-    symbol_db: &SymbolDb<'data, P>,
+    symbol_db: &mut SymbolDb<'data, P>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
     timing_phase!("Resolve sections");
@@ -375,29 +384,73 @@ fn resolve_sections<'data, P: Platform>(
     let loaded_metrics: LoadedMetrics = Default::default();
     let herd = symbol_db.herd;
 
-    groups.par_iter_mut().try_for_each_init(
-        || herd.get(),
-        |allocator, group| -> Result {
-            verbose_timing_phase!("Resolve group sections");
+    let group_section_counts: Vec<usize> = groups
+        .iter()
+        .map(|group| {
+            group
+                .files
+                .iter()
+                .map(|f| match f {
+                    ResolvedFile::Object(obj) => obj.section_id_range.len(),
+                    ResolvedFile::NotLoaded(n) => n.section_id_range.len(),
+                    _ => 0,
+                })
+                .sum()
+        })
+        .collect();
 
-            for file in &mut group.files {
-                let ResolvedFile::<P>::Object(obj) = file else {
-                    continue;
-                };
+    let mut section_part_ids = Vec::with_capacity(symbol_db.next_input_section_id.as_usize());
 
-                obj.sections = resolve_sections_for_object(
-                    obj,
-                    symbol_db.args,
-                    allocator,
-                    &loaded_metrics,
-                    &layout_rules.section_rules,
-                )?;
+    let mut section_part_ids_writer = sharded_vec_writer::VecWriter::new(&mut section_part_ids);
+    let mut per_group_section_writers =
+        section_part_ids_writer.take_shards(group_section_counts.into_iter());
 
-                obj.relocations = obj.common.object.parse_relocations()?;
-            }
-            Ok(())
-        },
-    )?;
+    groups
+        .par_iter_mut()
+        .zip(per_group_section_writers.par_iter_mut())
+        .try_for_each_init(
+            || herd.get(),
+            |allocator,
+             (group, shard): (
+                &mut ResolvedGroup<'data, P>,
+                &mut sharded_vec_writer::Shard<PartId>,
+            )|
+             -> Result {
+                verbose_timing_phase!("Resolve group sections");
+
+                for file in &mut group.files {
+                    match file {
+                        ResolvedFile::Object(obj) => {
+                            let (sections, part_ids) = resolve_sections_for_object(
+                                &mut *obj,
+                                symbol_db.args,
+                                allocator,
+                                &loaded_metrics,
+                                &layout_rules.section_rules,
+                            )?;
+                            obj.sections = sections;
+                            for part_id in part_ids {
+                                shard.push(part_id);
+                            }
+                            obj.relocations = obj.common.object.parse_relocations()?;
+                        }
+                        ResolvedFile::NotLoaded(n) => {
+                            for _ in 0..n.section_id_range.len() {
+                                shard.push(part_id::UNMAPPED);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(())
+            },
+        )?;
+
+    for shard in per_group_section_writers {
+        section_part_ids_writer.return_shard(shard);
+    }
+
+    symbol_db.section_part_ids = section_part_ids;
 
     loaded_metrics.log();
 
@@ -501,7 +554,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
                 if let Some(dynamic_tag_values) = obj.parsed.object.dynamic_tag_values() {
                     ResolvedFile::Dynamic(ResolvedDynamic::new(common, dynamic_tag_values))
                 } else {
-                    ResolvedFile::Object(ResolvedObject::new(common))
+                    ResolvedFile::Object(ResolvedObject::new(common, obj.section_id_range))
                 };
             // Push won't fail because we allocated enough space for all the objects.
             outputs.loaded.push(resolved_object).unwrap();
@@ -515,6 +568,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
                 .push(ResolvedLtoInput {
                     file_id: obj.file_id,
                     symbol_id_range: obj.symbol_id_range,
+                    section_id_range: obj.section_id_range,
                 })
                 .unwrap();
 
@@ -572,6 +626,7 @@ pub(crate) enum ResolvedFile<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) struct NotLoaded {
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: SectionIdRange,
 }
 
 /// A section, but where we may or may not yet have decided to load it.
@@ -596,7 +651,7 @@ pub(crate) enum SectionSlot {
     MergeStrings(StringMergeSectionSlot),
 
     // The section contains a debug info section that might be loaded.
-    UnloadedDebugInfo(PartId),
+    UnloadedDebugInfo,
 
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
@@ -610,8 +665,6 @@ pub(crate) enum SectionSlot {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnloadedSection {
-    pub(crate) part_id: PartId,
-
     /// The index of the last FDE for this section. Previous FDEs will be linked from this.
     pub(crate) last_frame_index: Option<FrameIndex>,
 
@@ -621,9 +674,8 @@ pub(crate) struct UnloadedSection {
 }
 
 impl UnloadedSection {
-    fn new(part_id: PartId) -> Self {
+    fn new() -> Self {
         Self {
-            part_id,
             last_frame_index: None,
             start_stop_eligible: false,
         }
@@ -647,6 +699,7 @@ pub(crate) struct ResolvedCommon<'data, P: Platform> {
 #[derive(Debug)]
 pub(crate) struct ResolvedObject<'data, P: Platform> {
     pub(crate) common: ResolvedCommon<'data, P>,
+    pub(crate) section_id_range: SectionIdRange,
 
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: P::RelocationSections,
@@ -685,10 +738,12 @@ pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
 pub(crate) struct ResolvedLtoInput {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: SectionIdRange,
 }
 
 fn assign_section_ids<'data, P: Platform>(
     resolved: &mut [ResolvedGroup<'data, P>],
+    section_part_ids: &mut [PartId],
     output_sections: &mut OutputSections<'data, P>,
     args: &P::Args,
 ) {
@@ -697,10 +752,12 @@ fn assign_section_ids<'data, P: Platform>(
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
-                output_sections.add_sections(&s.custom_sections, s.sections.as_mut_slice(), args);
+                let obj_part_ids = &mut section_part_ids[s.section_id_range.as_usize()];
+                output_sections.add_sections(&s.custom_sections, obj_part_ids, args);
                 apply_init_fini_secondaries(
                     &s.init_fini_sections,
-                    s.sections.as_mut_slice(),
+                    s.sections.as_slice(),
+                    obj_part_ids,
                     output_sections,
                 );
             }
@@ -1015,29 +1072,31 @@ impl<'data, P: Platform> ResolvedCommon<'data, P> {
 
 fn apply_init_fini_secondaries<'data, P: Platform>(
     details: &[InitFiniSectionDetail],
-    sections: &mut [SectionSlot],
+    sections: &[SectionSlot],
+    section_part_ids: &mut [PartId],
     output_sections: &mut OutputSections<'data, P>,
 ) {
     for d in details {
-        let Some(slot) = sections.get_mut(d.index as usize) else {
+        let Some(slot) = sections.get(d.index as usize) else {
             continue;
         };
 
-        let unloaded = match slot {
-            SectionSlot::Unloaded(u) | SectionSlot::MustLoad(u) => u,
+        match slot {
+            SectionSlot::Unloaded(_) | SectionSlot::MustLoad(_) => {}
             _ => continue,
         };
 
         let sid =
             output_sections.get_or_create_init_fini_secondary(d.primary, d.priority, d.alignment);
-        unloaded.part_id = sid.part_id_with_alignment(d.alignment);
+        section_part_ids[d.index as usize] = sid.part_id_with_alignment(d.alignment);
     }
 }
 
 impl<'data, P: Platform> ResolvedObject<'data, P> {
-    fn new(common: ResolvedCommon<'data, P>) -> Self {
+    fn new(common: ResolvedCommon<'data, P>, section_id_range: SectionIdRange) -> Self {
         Self {
             common,
+            section_id_range,
             // We'll fill this the rest during section resolution.
             sections: Default::default(),
             relocations: Default::default(),
@@ -1070,13 +1129,15 @@ fn resolve_sections_for_object<'data, P: Platform>(
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
-) -> Result<Vec<SectionSlot>> {
+) -> Result<(Vec<SectionSlot>, Vec<PartId>)> {
     // Note, we build up the collection with push rather than collect because at the time of
     // writing, object's `SectionTable::enumerate` isn't an exact-size iterator, so using collect
     // would result in resizing.
     let mut sections = Vec::with_capacity(obj.common.object.num_sections());
+    let mut section_part_ids = Vec::with_capacity(obj.common.object.num_sections());
+
     for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
-        sections.push(resolve_section(
+        let (slot, part_id) = resolve_section(
             input_section_index,
             input_section,
             obj,
@@ -1084,9 +1145,12 @@ fn resolve_sections_for_object<'data, P: Platform>(
             allocator,
             loaded_metrics,
             rules,
-        )?);
+        )?;
+        sections.push(slot);
+        section_part_ids.push(part_id);
     }
-    Ok(sections)
+
+    Ok((sections, section_part_ids))
 }
 
 #[inline(always)]
@@ -1098,7 +1162,7 @@ fn resolve_section<'data, P: Platform>(
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
-) -> Result<SectionSlot> {
+) -> Result<(SectionSlot, PartId)> {
     let section_name = obj
         .common
         .object
@@ -1114,6 +1178,7 @@ fn resolve_section<'data, P: Platform>(
     let mut unloaded_section;
     let mut is_debug_info = false;
     let mut must_load = input_section.should_retain() || input_section.is_note();
+    let part_id: PartId;
 
     let file_name = if let Some(entry) = &obj.common.input.entry {
         // For archive members, match against the member name (e.g., "app.o"),
@@ -1136,7 +1201,7 @@ fn resolve_section<'data, P: Platform>(
 
     match rule_outcome {
         SectionRuleOutcome::Section(output_info) => {
-            let part_id = if output_info.section_id.is_regular() {
+            part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)
             } else {
                 output_info.section_id.base_part_id()
@@ -1144,10 +1209,10 @@ fn resolve_section<'data, P: Platform>(
 
             must_load |= output_info.must_keep;
 
-            unloaded_section = UnloadedSection::new(part_id);
+            unloaded_section = UnloadedSection::new();
         }
         SectionRuleOutcome::SortedSection(output_info) => {
-            let part_id = if output_info.section_id.is_regular() {
+            part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)
             } else {
                 output_info.section_id.base_part_id()
@@ -1163,38 +1228,49 @@ fn resolve_section<'data, P: Platform>(
 
             must_load |= output_info.must_keep;
 
-            unloaded_section = UnloadedSection::new(part_id);
+            unloaded_section = UnloadedSection::new();
         }
-        SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
+        SectionRuleOutcome::Discard => return Ok((SectionSlot::Discard, part_id::UNMAPPED)),
         SectionRuleOutcome::NoteGnuStack => {
             P::validate_stack_section(input_section, obj, args)?;
-            return Ok(SectionSlot::Discard);
+            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
         }
         SectionRuleOutcome::EhFrame => {
-            return Ok(SectionSlot::FrameData(input_section_index));
+            return Ok((
+                SectionSlot::FrameData(input_section_index),
+                part_id::UNMAPPED,
+            ));
         }
         SectionRuleOutcome::NoteGnuProperty => {
-            return Ok(SectionSlot::NoteGnuProperty(input_section_index));
+            return Ok((
+                SectionSlot::NoteGnuProperty(input_section_index),
+                part_id::UNMAPPED,
+            ));
         }
         SectionRuleOutcome::Debug => {
             if args.should_strip_debug() && !input_section.is_alloc() {
-                return Ok(SectionSlot::Discard);
+                return Ok((SectionSlot::Discard, part_id::UNMAPPED));
             }
 
             is_debug_info = !input_section.is_alloc();
 
-            unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+            part_id = part_id::CUSTOM_PLACEHOLDER;
+            unloaded_section = UnloadedSection::new();
         }
         SectionRuleOutcome::Custom => {
-            unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+            part_id = part_id::CUSTOM_PLACEHOLDER;
+            unloaded_section = UnloadedSection::new();
             unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
         }
         SectionRuleOutcome::RiscVAttribute => {
-            return Ok(SectionSlot::RiscvVAttributes(input_section_index));
+            return Ok((
+                SectionSlot::RiscvVAttributes(input_section_index),
+                part_id::UNMAPPED,
+            ));
         }
     };
 
-    if unloaded_section.part_id == part_id::CUSTOM_PLACEHOLDER {
+    if part_id == part_id::CUSTOM_PLACEHOLDER {
         let custom_section = CustomSectionDetails {
             name: SectionName(section_name),
             alignment,
@@ -1211,25 +1287,25 @@ fn resolve_section<'data, P: Platform>(
                 .section_data(input_section, allocator, loaded_metrics)?;
 
         if section_data.is_empty() {
-            SectionSlot::Discard
-        } else {
-            obj.string_merge_extras.push(StringMergeSectionExtra {
-                index: input_section_index,
-                section_data,
-                is_strings: input_section.is_strings(),
-            });
-
-            SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
+            return Ok((SectionSlot::Discard, part_id::UNMAPPED));
         }
+
+        obj.string_merge_extras.push(StringMergeSectionExtra {
+            index: input_section_index,
+            section_data,
+            is_strings: input_section.is_strings(),
+        });
+
+        SectionSlot::MergeStrings(StringMergeSectionSlot::new())
     } else if is_debug_info {
-        SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
+        SectionSlot::UnloadedDebugInfo
     } else if must_load {
         SectionSlot::MustLoad(unloaded_section)
     } else {
         SectionSlot::Unloaded(unloaded_section)
     };
 
-    Ok(slot)
+    Ok((slot, part_id))
 }
 
 fn resolve_symbols<'data, 'scope, P: Platform>(
@@ -1420,21 +1496,6 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
 impl SectionSlot {
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(self, SectionSlot::Discard | SectionSlot::Unloaded(..))
-    }
-
-    pub(crate) fn set_part_id(&mut self, part_id: PartId) {
-        match self {
-            SectionSlot::Unloaded(section) => section.part_id = part_id,
-            SectionSlot::MustLoad(section) => section.part_id = part_id,
-            SectionSlot::Loaded(section) => section.part_id = part_id,
-            SectionSlot::MergeStrings(section) => section.part_id = part_id,
-            SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
-            SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
-            SectionSlot::Discard
-            | SectionSlot::FrameData(_)
-            | SectionSlot::NoteGnuProperty(_)
-            | SectionSlot::RiscvVAttributes(_) => {}
-        }
     }
 
     pub(crate) fn unloaded_mut(&mut self) -> Option<&mut UnloadedSection> {

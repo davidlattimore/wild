@@ -67,6 +67,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Arch;
 use crate::platform::Args as _;
@@ -1522,8 +1523,14 @@ fn build_sym_index_map(layout: &ElfLayout<'_>) -> Vec<Option<u32>> {
                     && let Ok(Some(input_section_index)) =
                         object.object.symbol_section(sym, sym_index)
                     && let Some(output_section_id) = match object.sections[input_section_index.0] {
-                        SectionSlot::Loaded(sec) => Some(sec.output_section_id()),
-                        SectionSlot::MergeStrings(sec) => Some(sec.part_id.output_section_id()),
+                        SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
+                            object
+                                .section_part_id(
+                                    input_section_index,
+                                    &layout.symbol_db.section_part_ids,
+                                )
+                                .output_section_id(),
+                        ),
                         SectionSlot::FrameData(..) => Some(crate::output_section_id::EH_FRAME),
                         _ => None,
                     }
@@ -1696,10 +1703,11 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
+    let part_id = object.section_part_id(section.index, &layout.symbol_db.section_part_ids);
     if layout.args().should_output_partial_object() {
         let section_type = layout
             .output_sections
-            .output_info(section.output_section_id())
+            .output_info(part_id.output_section_id())
             .section_attributes
             .ty();
         if section_type.is_rela() || section_type.is_rel() {
@@ -1711,7 +1719,7 @@ fn write_object_section<'data, A: Arch<Platform = Elf>>(
 
     // We need to reverse the contents and adjust relocations because .ctors/.dtors are executed in
     // reverse order while .init_array/.fini_array are executed in forward order.
-    if should_reverse_contents(section, object.object, &layout.output_sections) {
+    if should_reverse_contents(section, part_id, object.object, &layout.output_sections) {
         return write_section_reversed::<A>(object, layout, section, table_writer, trace, out);
     }
 
@@ -1860,12 +1868,13 @@ fn write_section_raw<'out, 'data>(
     sec: &Section,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
+    let part_id = object.section_part_id(sec.index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(sec.output_section_id())
+        .has_data_in_file(part_id.output_section_id())
     {
-        let section_buffer = buffers.get_mut(sec.output_part_id());
-        let allocation_size = sec.capacity(&layout.output_sections) as usize;
+        let section_buffer = buffers.get_mut(part_id);
+        let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
         if section_buffer.len() < allocation_size {
             bail!(
                 "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
@@ -1954,9 +1963,11 @@ fn write_symbols<'data>(
             let section_id =
                 if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                     match &object.sections[section_index.0] {
-                        SectionSlot::Loaded(section) => section.output_section_id(),
-                        SectionSlot::LoadedDebugInfo(section) => section.output_section_id(),
-                        SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
+                        SectionSlot::Loaded(_)
+                        | SectionSlot::LoadedDebugInfo(_)
+                        | SectionSlot::MergeStrings(_) => object
+                            .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                            .output_section_id(),
                         SectionSlot::FrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!(
                             "Tried to copy a symbol in a section we didn't load. {}",
@@ -2119,7 +2130,11 @@ fn apply_relocations<
 
     layout
         .relocation_statistics
-        .get(section.part_id.output_section_id())
+        .get(
+            object
+                .section_part_id(section.index, &layout.symbol_db.section_part_ids)
+                .output_section_id(),
+        )
         .fetch_add(relocation_count, Relaxed);
     Ok(())
 }
@@ -2178,7 +2193,11 @@ fn apply_debug_relocations<
     }
     layout
         .relocation_statistics
-        .get(section.part_id.output_section_id())
+        .get(
+            object
+                .section_part_id(section.index, &layout.symbol_db.section_part_ids)
+                .output_section_id(),
+        )
         .fetch_add(relocation_count, Relaxed);
     Ok(())
 }
@@ -2595,6 +2614,7 @@ fn get_pair_subtraction_relocation_value<'data, A: Arch<Platform = Elf>, R: Relo
         set_rel.addend(),
         set_symbol_index,
         object_layout,
+        &layout.symbol_db.section_part_ids,
         &layout.merged_strings,
         &layout.merged_string_start_addresses,
     )?;
@@ -2602,6 +2622,7 @@ fn get_pair_subtraction_relocation_value<'data, A: Arch<Platform = Elf>, R: Relo
         addend,
         symbol_index,
         object_layout,
+        &layout.symbol_db.section_part_ids,
         &layout.merged_strings,
         &layout.merged_string_start_addresses,
     )?;
@@ -2708,6 +2729,7 @@ fn apply_relocation<
             addend,
             symbol_index,
             object_layout,
+            &layout.symbol_db.section_part_ids,
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?,
@@ -2716,6 +2738,7 @@ fn apply_relocation<
                 addend,
                 symbol_index,
                 object_layout,
+                &layout.symbol_db.section_part_ids,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
@@ -2725,6 +2748,7 @@ fn apply_relocation<
                 addend,
                 symbol_index,
                 object_layout,
+                &layout.symbol_db.section_part_ids,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
@@ -2736,6 +2760,7 @@ fn apply_relocation<
                 addend,
                 symbol_index,
                 object_layout,
+                &layout.symbol_db.section_part_ids,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?,
@@ -2755,6 +2780,7 @@ fn apply_relocation<
                     addend,
                     symbol_index,
                     object_layout,
+                    &layout.symbol_db.section_part_ids,
                     &layout.merged_strings,
                     &layout.merged_string_start_addresses,
                 )?
@@ -2794,6 +2820,8 @@ fn apply_relocation<
                         addend,
                         symbol_index,
                         object_layout,
+                        &layout.symbol_db.section_part_ids
+                            [object_layout.section_id_range.as_usize()],
                         &layout.merged_strings,
                         &layout.merged_string_start_addresses,
                     )?
@@ -2881,6 +2909,7 @@ fn apply_relocation<
                 addend,
                 symbol_index,
                 object_layout,
+                &layout.symbol_db.section_part_ids,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
@@ -3121,6 +3150,7 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
                     addend,
                     symbol_index,
                     object_layout,
+                    &layout.symbol_db.section_part_ids,
                     &layout.merged_strings,
                     &layout.merged_string_start_addresses,
                 )?;
@@ -3171,6 +3201,8 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
                 addend,
                 object_layout.object,
                 &object_layout.sections,
+                &layout.symbol_db.section_part_ids,
+                object_layout.section_id_range,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
                 false,
@@ -3207,6 +3239,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             addend,
             symbol_index,
             object_layout,
+            &layout.symbol_db.section_part_ids,
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )
@@ -3237,6 +3270,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             addend,
             symbol_index,
             object_layout,
+            &layout.symbol_db.section_part_ids,
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
@@ -3246,6 +3280,7 @@ fn write_absolute_relocation<'data, A: Arch<Platform = Elf>>(
             addend,
             symbol_index,
             object_layout,
+            &layout.symbol_db.section_part_ids,
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )
@@ -4022,10 +4057,14 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
                         .sections
                         .get(section_index.0)
                         .and_then(|slot| match slot {
-                            SectionSlot::Loaded(section) => Some(section.output_section_id()),
-                            SectionSlot::MergeStrings(section) => {
-                                Some(section.part_id.output_section_id())
-                            }
+                            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
+                                obj_layout
+                                    .section_part_id(
+                                        section_index,
+                                        &layout.symbol_db.section_part_ids,
+                                    )
+                                    .output_section_id(),
+                            ),
                             _ => None,
                         })
                         .and_then(|output_section_id| {
@@ -4238,8 +4277,9 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
     let name = sym_def.name;
     if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
         let output_section_id = match &object.sections[section_index.0] {
-            SectionSlot::Loaded(section) => section.output_section_id(),
-            SectionSlot::MergeStrings(merge_section) => merge_section.part_id.output_section_id(),
+            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => object
+                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                .output_section_id(),
             _ => bail!(
                 "Internal error: Defined symbols should always be for a loaded or merge-strings section"
             ),
@@ -5408,12 +5448,13 @@ impl<R> Default for RelocationCache<R> {
 /// Returns whether to reverse the contents of a section. This is true for .ctors/.dtors sections.
 fn should_reverse_contents(
     section: &layout::Section,
+    part_id: PartId,
     file: &crate::elf::File,
     output_sections: &OutputSections<Elf>,
 ) -> bool {
     // Getting the section name is expensive, so we only do it when the output section is
     // .init_array / .fini_array.
-    let section_id = output_sections.primary_output_section(section.part_id.output_section_id());
+    let section_id = output_sections.primary_output_section(part_id.output_section_id());
     if section_id != output_section_id::INIT_ARRAY && section_id != output_section_id::FINI_ARRAY {
         return false;
     }
