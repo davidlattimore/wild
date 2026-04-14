@@ -42,14 +42,21 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
     };
 
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| rewrite_body(m.body_bytes(i), &arities).map(|b| (i, b)))
+        .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i), &arities).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
+#[allow(dead_code)]
 fn rewrite_body(body: &[u8], arities: &HashMap<u32, Arity>) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body, arities).map(|(b, _)| b)
+}
+
+fn rewrite_body_with_edits(
+    body: &[u8], arities: &HashMap<u32, Arity>,
+) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     let start = opc::skip_locals(body)?;
     let mut off = start;
     // Rewrites are (span_start, span_end, num_drops_to_write).
@@ -84,14 +91,26 @@ fn rewrite_body(body: &[u8], arities: &HashMap<u32, Arity>) -> Option<Vec<u8>> {
     if edits.is_empty() { return None; }
 
     let mut out = Vec::with_capacity(body.len());
+    let mut body_edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for &(s, e, n) in &edits {
         out.extend_from_slice(&body[cursor..s]);
+        let out_start = out.len() as u32;
         for _ in 0..n { out.push(OP_DROP); }
+        let out_len = out.len() as u32 - out_start;
+        let in_len = (e - s) as u32;
+        body_edits.push(
+            if out_len == 0 {
+                crate::provenance::Edit::delete(s as u32, in_len, out_start)
+            } else {
+                crate::provenance::Edit::subst(s as u32, in_len, out_start, out_len)
+            },
+            None,
+        );
         cursor = e;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, body_edits))
 }
 
 fn compute_pure_arities(

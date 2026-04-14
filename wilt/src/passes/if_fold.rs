@@ -34,11 +34,16 @@ const OP_DROP: u8 = 0x1A;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| rewrite_body(m.body_bytes(i)).map(|b| (i, b)))
+        .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+}
+
+#[allow(dead_code)]
+fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body).map(|(b, _)| b)
 }
 
 fn has_if_else(body: &[u8]) -> bool {
@@ -55,7 +60,7 @@ fn has_if_else(body: &[u8]) -> bool {
     false
 }
 
-fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
+fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     if !has_if_else(body) { return None; }
 
     let ir = BodyIr::new(body)?;
@@ -103,15 +108,24 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
     if edits.is_empty() { return None; }
 
     let mut out = Vec::with_capacity(body.len());
+    let mut body_edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for &(from, to, keep) in &edits {
         out.extend_from_slice(&body[cursor..from]);
+        let out_start = out.len() as u32;
         out.push(OP_DROP);
         out.extend_from_slice(keep);
+        let out_len = out.len() as u32 - out_start;
+        body_edits.push(
+            crate::provenance::Edit::subst(
+                from as u32, (to - from) as u32, out_start, out_len,
+            ),
+            None,
+        );
         cursor = to;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, body_edits))
 }
 
 fn range_contains_branch(ir: &BodyIr, start: usize, end: usize) -> bool {

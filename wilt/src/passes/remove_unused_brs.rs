@@ -26,22 +26,31 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
     let Some(sigs) = ModuleSigs::from_module(&wm) else { return };
 
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
         .map_init(
             || Vec::with_capacity(16),
-            |frames, i| rewrite_body(m.body_bytes(i), &sigs, frames).map(|b| (i, b)),
+            |frames, i| rewrite_body_with_edits(m.body_bytes(i), &sigs, frames)
+                .map(|(b, e)| (i, b, e)),
         )
         .filter_map(|x| x)
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
+#[allow(dead_code)]
 fn rewrite_body(
+    body: &[u8], sigs: &ModuleSigs,
+    frames: &mut Vec<crate::block_walker::BlockFrame>,
+) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body, sigs, frames).map(|(b, _)| b)
+}
+
+fn rewrite_body_with_edits(
     body: &[u8],
     sigs: &ModuleSigs,
     frames: &mut Vec<crate::block_walker::BlockFrame>,
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     let instrs_start = opcode::skip_locals(body)?;
 
     // Two-instruction window so we can spot `br 0 ; end` pairs.
@@ -76,13 +85,19 @@ fn rewrite_body(
     if to_remove.is_empty() { return None; }
 
     let mut out = Vec::with_capacity(body.len());
+    let mut edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for &(p, len) in &to_remove {
         out.extend_from_slice(&body[cursor..p]);
+        let out_start = out.len() as u32;
+        edits.push(
+            crate::provenance::Edit::delete(p as u32, len as u32, out_start),
+            None,
+        );
         cursor = p + len;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, edits))
 }
 
 #[cfg(test)]

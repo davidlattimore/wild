@@ -27,15 +27,24 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
     let Some(sigs) = ModuleSigs::from_module(&wm) else { return };
 
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
         .map_init(
             || Vec::with_capacity(16),
-            |frames, i| rewrite_body(m.body_bytes(i), &sigs, frames).map(|b| (i, b)),
+            |frames, i| rewrite_body_with_edits(m.body_bytes(i), &sigs, frames)
+                .map(|(b, e)| (i, b, e)),
         )
         .filter_map(|x| x)
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+}
+
+#[allow(dead_code)]
+fn rewrite_body(
+    body: &[u8], sigs: &ModuleSigs,
+    frames_buf: &mut Vec<crate::block_walker::BlockFrame>,
+) -> Option<Vec<u8>> {
+    rewrite_body_with_edits(body, sigs, frames_buf).map(|(b, _)| b)
 }
 
 struct FrameInfo {
@@ -55,11 +64,11 @@ struct BrInfo {
     target_stack_idx: usize,
 }
 
-fn rewrite_body(
+fn rewrite_body_with_edits(
     body: &[u8],
     sigs: &ModuleSigs,
     frames_buf: &mut Vec<crate::block_walker::BlockFrame>,
-) -> Option<Vec<u8>> {
+) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     let instrs_start = opcode::skip_locals(body)?;
 
     let mut frame_infos: Vec<FrameInfo> = Vec::new();
@@ -160,21 +169,34 @@ fn rewrite_body(
     edits.sort_by_key(|e| e.pos());
 
     let mut out = Vec::with_capacity(body.len());
+    let mut body_edits = crate::provenance::BodyEdits::identity();
     let mut cursor = 0;
     for e in &edits {
         out.extend_from_slice(&body[cursor..e.pos()]);
+        let out_start = out.len() as u32;
         match e {
-            Edit::Delete(_, len) => {
+            Edit::Delete(pos, len) => {
+                body_edits.push(
+                    crate::provenance::Edit::delete(*pos as u32, *len as u32, out_start),
+                    None,
+                );
                 cursor = e.pos() + len;
             }
             Edit::Relabel { imm_pos, old_len, new_label } => {
                 leb128::write_u32(&mut out, *new_label);
+                let out_len = out.len() as u32 - out_start;
+                body_edits.push(
+                    crate::provenance::Edit::subst(
+                        *imm_pos as u32, *old_len as u32, out_start, out_len,
+                    ),
+                    None,
+                );
                 cursor = imm_pos + old_len;
             }
         }
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, body_edits))
 }
 
 enum Edit {
