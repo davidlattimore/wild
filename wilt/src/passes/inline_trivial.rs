@@ -511,7 +511,23 @@ fn rewrite_body(
             Trivial::ReplaceWithBodyParams {
                 param_types, declared_types, body: callee, wrap_for_return, result_blocktype,
             } => {
+                // Guard: local index is a u32 LEB. If adding the callee's
+                // locals would overflow — OR would push a single function's
+                // local count past what validators accept — we can't inline
+                // this site. Happens with deep fixpoint cascades where a hot
+                // caller inlines dozens of small helpers, each adding its
+                // locals slot-by-slot.
+                //
+                // Cap is deliberately conservative (50k). wasm's spec bound
+                // is 2^32 but real-world validators reject counts far below
+                // that; binaryen's corpus reproduces this with a handful of
+                // pathological .wast inputs.
+                const MAX_LOCALS_PER_FUNCTION: u32 = 50_000;
                 let n = param_types.len() as u32;
+                let extra = n.checked_add(declared_types.len() as u32);
+                let Some(extra) = extra else { continue };
+                let Some(total) = next_new_local.checked_add(extra) else { continue };
+                if total > MAX_LOCALS_PER_FUNCTION { continue; }
                 let first_new = next_new_local;
                 let Some(remapped) = rebase_locals(callee, first_new) else { continue };
                 // Body might still reference declared locals at indices
@@ -541,7 +557,7 @@ fn rewrite_body(
                 }
                 new_local_types.extend_from_slice(param_types);
                 new_local_types.extend_from_slice(declared_types);
-                next_new_local += n + declared_types.len() as u32;
+                next_new_local = next_new_local.saturating_add(extra);
                 edits.push((p, len, repl));
             }
         }
