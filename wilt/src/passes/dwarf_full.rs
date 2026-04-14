@@ -20,11 +20,14 @@
 //!   simpler address-carrying sections — `.debug_ranges` and
 //!   `.debug_loc` (DWARF 4 fixed formats) — for the "bodies byte-
 //!   identical, some moved" case.
-//! - **Step 3** (this commit): add `.debug_aranges` patching.
-//!   Header-prefixed (address, length) pair lists — fixed format,
-//!   small patch surface, common in Rust/C++ output.
-//! - **Step 4** (deferred): abbrev-driven DIE walker for
-//!   `.debug_info`. Big piece — needs its own session.
+//! - **Step 3**: add `.debug_aranges` patching.
+//! - **Step 4** (this commit): abbrev-driven DIE walker for
+//!   `.debug_info`. Parses `.debug_abbrev` tables, traverses each
+//!   CU's DIE tree byte-by-byte using the abbrev map, and patches
+//!   `DW_AT_low_pc` / `DW_AT_high_pc` / `DW_AT_entry_pc`
+//!   attributes encoded as `DW_FORM_addr`. `DW_AT_high_pc` with
+//!   non-address forms (constant offset from low_pc) is left
+//!   alone — its value is relative.
 //!
 //! Invariant: no stale addresses ever reach the output.
 
@@ -173,6 +176,16 @@ fn collect_debug_sections(
                     sections.push((name.to_string(), patched));
                 }
             }
+            (Some(sh), ".debug_info") => {
+                // Need the abbrev section too. Look it up from the
+                // module's customs.
+                let abbrev = collect_named_section(m, ".debug_abbrev");
+                if let Some(abbrev_bytes) = abbrev {
+                    if let Some(patched) = patch_debug_info(body, &abbrev_bytes, sh) {
+                        sections.push((name.to_string(), patched));
+                    }
+                }
+            }
             (Some(_), n) if NON_ADDRESS.contains(&n) => {
                 sections.push((n.to_string(), body.to_vec()));
             }
@@ -221,6 +234,287 @@ fn patch_debug_ranges(
         out[i..i + 4].copy_from_slice(&new_start.to_le_bytes());
         out[i + 4..i + 8].copy_from_slice(&new_end.to_le_bytes());
         i += 8;
+    }
+    Some(out)
+}
+
+fn collect_named_section(m: &WasmModule<'_>, target: &str) -> Option<Vec<u8>> {
+    let data = m.data();
+    for s in m.sections() {
+        if s.id != module::SECTION_CUSTOM { continue; }
+        let name_span = s.custom_name?;
+        if name_span.slice(data) != target.as_bytes() { continue; }
+        let p = s.payload.slice(data);
+        let (nlen, c) = crate::leb128::read_u32(p)?;
+        return Some(p[c + nlen as usize..].to_vec());
+    }
+    None
+}
+
+// DWARF abbrev codes (DW_AT_*).
+const DW_AT_LOW_PC: u64 = 0x11;
+const DW_AT_HIGH_PC: u64 = 0x12;
+const DW_AT_ENTRY_PC: u64 = 0x52;
+
+// DWARF form codes (DW_FORM_*).
+const DW_FORM_ADDR: u64 = 0x01;
+const DW_FORM_BLOCK2: u64 = 0x03;
+const DW_FORM_BLOCK4: u64 = 0x04;
+const DW_FORM_DATA2: u64 = 0x05;
+const DW_FORM_DATA4: u64 = 0x06;
+const DW_FORM_DATA8: u64 = 0x07;
+const DW_FORM_STRING: u64 = 0x08;
+const DW_FORM_BLOCK: u64 = 0x09;
+const DW_FORM_BLOCK1: u64 = 0x0A;
+const DW_FORM_DATA1: u64 = 0x0B;
+const DW_FORM_FLAG: u64 = 0x0C;
+const DW_FORM_SDATA: u64 = 0x0D;
+const DW_FORM_STRP: u64 = 0x0E;
+const DW_FORM_UDATA: u64 = 0x0F;
+const DW_FORM_REF_ADDR: u64 = 0x10;
+const DW_FORM_REF1: u64 = 0x11;
+const DW_FORM_REF2: u64 = 0x12;
+const DW_FORM_REF4: u64 = 0x13;
+const DW_FORM_REF8: u64 = 0x14;
+const DW_FORM_REF_UDATA: u64 = 0x15;
+const DW_FORM_INDIRECT: u64 = 0x16;
+const DW_FORM_SEC_OFFSET: u64 = 0x17;
+const DW_FORM_EXPRLOC: u64 = 0x18;
+const DW_FORM_FLAG_PRESENT: u64 = 0x19;
+const DW_FORM_STRX: u64 = 0x1A;
+const DW_FORM_ADDRX: u64 = 0x1B;
+const DW_FORM_REF_SUP4: u64 = 0x1C;
+const DW_FORM_STRP_SUP: u64 = 0x1D;
+const DW_FORM_DATA16: u64 = 0x1E;
+const DW_FORM_LINE_STRP: u64 = 0x1F;
+const DW_FORM_REF_SIG8: u64 = 0x20;
+const DW_FORM_IMPLICIT_CONST: u64 = 0x21;
+const DW_FORM_LOCLISTX: u64 = 0x22;
+const DW_FORM_RNGLISTX: u64 = 0x23;
+const DW_FORM_REF_SUP8: u64 = 0x24;
+const DW_FORM_STRX1: u64 = 0x25;
+const DW_FORM_STRX2: u64 = 0x26;
+const DW_FORM_STRX3: u64 = 0x27;
+const DW_FORM_STRX4: u64 = 0x28;
+const DW_FORM_ADDRX1: u64 = 0x29;
+const DW_FORM_ADDRX2: u64 = 0x2A;
+const DW_FORM_ADDRX3: u64 = 0x2B;
+const DW_FORM_ADDRX4: u64 = 0x2C;
+
+#[derive(Clone)]
+struct AttrSpec {
+    name: u64,
+    form: u64,
+    /// `Some(v)` for `DW_FORM_implicit_const` — value lives in the
+    /// abbrev rather than the DIE bytes.
+    implicit_const: Option<i64>,
+}
+
+#[derive(Clone)]
+struct Abbrev {
+    #[allow(dead_code)]
+    tag: u64,
+    has_children: bool,
+    attrs: Vec<AttrSpec>,
+}
+
+/// Read an unsigned LEB128 from `bytes`, returning `(value, consumed)`.
+fn read_uleb(bytes: &[u8]) -> Option<(u64, usize)> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        result |= ((b & 0x7F) as u64) << shift;
+        shift += 7;
+        if b < 0x80 { return Some((result, i + 1)); }
+        if shift >= 70 { return None; }
+    }
+    None
+}
+
+/// Signed LEB128 reader.
+fn read_sleb(bytes: &[u8]) -> Option<(i64, usize)> {
+    let mut result: i64 = 0;
+    let mut shift = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        result |= ((b & 0x7F) as i64) << shift;
+        shift += 7;
+        if b < 0x80 {
+            if shift < 64 && (b & 0x40) != 0 {
+                result |= !0i64 << shift;
+            }
+            return Some((result, i + 1));
+        }
+        if shift >= 70 { return None; }
+    }
+    None
+}
+
+/// Parse abbreviations starting at `offset` within `.debug_abbrev`
+/// until the end-of-set marker (abbrev code 0). Returns map from
+/// abbrev code → declaration.
+fn parse_abbrev_set(bytes: &[u8], offset: usize) -> Option<std::collections::HashMap<u64, Abbrev>> {
+    let mut map = std::collections::HashMap::new();
+    let mut off = offset;
+    loop {
+        let (code, c) = read_uleb(bytes.get(off..)?)?;
+        off += c;
+        if code == 0 { break; }
+        let (tag, c) = read_uleb(bytes.get(off..)?)?;
+        off += c;
+        let has_children = *bytes.get(off)? != 0;
+        off += 1;
+        let mut attrs = Vec::new();
+        loop {
+            let (name, c) = read_uleb(bytes.get(off..)?)?;
+            off += c;
+            let (form, c) = read_uleb(bytes.get(off..)?)?;
+            off += c;
+            if name == 0 && form == 0 { break; }
+            let implicit_const = if form == DW_FORM_IMPLICIT_CONST {
+                let (v, c) = read_sleb(bytes.get(off..)?)?;
+                off += c;
+                Some(v)
+            } else {
+                None
+            };
+            attrs.push(AttrSpec { name, form, implicit_const });
+        }
+        map.insert(code, Abbrev { tag, has_children, attrs });
+    }
+    Some(map)
+}
+
+/// Skip past an attribute value of given form, returning bytes consumed.
+/// Returns None on unknown form.
+fn skip_form(bytes: &[u8], form: u64, address_size: u8, dwarf_64: bool) -> Option<usize> {
+    let off_size = if dwarf_64 { 8 } else { 4 };
+    Some(match form {
+        DW_FORM_ADDR => address_size as usize,
+        DW_FORM_BLOCK1 => {
+            let n = *bytes.first()? as usize;
+            1 + n
+        }
+        DW_FORM_BLOCK2 => {
+            let n = u16::from_le_bytes(bytes.get(..2)?.try_into().ok()?) as usize;
+            2 + n
+        }
+        DW_FORM_BLOCK4 => {
+            let n = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+            4 + n
+        }
+        DW_FORM_BLOCK | DW_FORM_EXPRLOC => {
+            let (n, c) = read_uleb(bytes)?;
+            c + n as usize
+        }
+        DW_FORM_DATA1 | DW_FORM_FLAG | DW_FORM_REF1
+            | DW_FORM_STRX1 | DW_FORM_ADDRX1 => 1,
+        DW_FORM_DATA2 | DW_FORM_REF2 | DW_FORM_STRX2
+            | DW_FORM_ADDRX2 => 2,
+        DW_FORM_STRX3 | DW_FORM_ADDRX3 => 3,
+        DW_FORM_DATA4 | DW_FORM_REF4 | DW_FORM_STRX4
+            | DW_FORM_ADDRX4 | DW_FORM_REF_SUP4 => 4,
+        DW_FORM_DATA8 | DW_FORM_REF8 | DW_FORM_REF_SIG8
+            | DW_FORM_REF_SUP8 => 8,
+        DW_FORM_DATA16 => 16,
+        DW_FORM_STRING => bytes.iter().position(|&b| b == 0).map(|p| p + 1)?,
+        DW_FORM_SDATA => read_sleb(bytes)?.1,
+        DW_FORM_UDATA | DW_FORM_REF_UDATA | DW_FORM_STRX
+            | DW_FORM_ADDRX | DW_FORM_LOCLISTX | DW_FORM_RNGLISTX => read_uleb(bytes)?.1,
+        DW_FORM_STRP | DW_FORM_REF_ADDR | DW_FORM_SEC_OFFSET
+            | DW_FORM_STRP_SUP | DW_FORM_LINE_STRP => off_size,
+        DW_FORM_FLAG_PRESENT | DW_FORM_IMPLICIT_CONST => 0,
+        DW_FORM_INDIRECT => {
+            // The actual form comes inline.
+            let (actual, c) = read_uleb(bytes)?;
+            c + skip_form(bytes.get(c..)?, actual, address_size, dwarf_64)?
+        }
+        _ => return None,
+    })
+}
+
+/// Walk `.debug_info` CU by CU. For each address attribute encoded
+/// as `DW_FORM_addr`, look up the containing input function and
+/// patch the bytes to the new address.
+pub fn patch_debug_info(
+    info: &[u8], abbrev: &[u8], shifts: &[((u32, u32), i64)],
+) -> Option<Vec<u8>> {
+    let mut out = info.to_vec();
+    let mut off = 0;
+    while off < out.len() {
+        let cu_start = off;
+        // Parse CU header.
+        if off + 4 > out.len() { return None; }
+        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+        if unit_length == 0xFFFFFFFF { return None; }   // DWARF-64 unsupported
+        let cu_end = off + 4 + unit_length as usize;
+        if cu_end > out.len() { return None; }
+        off += 4;
+        let version = u16::from_le_bytes(out[off..off + 2].try_into().ok()?);
+        off += 2;
+
+        let (debug_abbrev_offset, address_size);
+        if version <= 4 {
+            // DWARF 4: abbrev_offset (4 bytes), address_size (1 byte).
+            debug_abbrev_offset = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+            off += 4;
+            address_size = out[off];
+            off += 1;
+        } else if version == 5 {
+            // DWARF 5: unit_type, address_size, debug_abbrev_offset.
+            let _unit_type = out[off];
+            off += 1;
+            address_size = out[off];
+            off += 1;
+            debug_abbrev_offset = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+            off += 4;
+        } else {
+            return None;
+        }
+        if address_size != 4 { return None; }   // wasm 32-bit only
+        let _ = cu_start;
+
+        let abbrev_map = parse_abbrev_set(abbrev, debug_abbrev_offset as usize)?;
+
+        // Walk DIEs.
+        while off < cu_end {
+            let (code, c) = read_uleb(out.get(off..)?)?;
+            off += c;
+            if code == 0 { continue; }   // end of children
+            let abbrev_decl = abbrev_map.get(&code)?.clone();
+            let _ = abbrev_decl.has_children;
+
+            for attr in &abbrev_decl.attrs {
+                if attr.form == DW_FORM_IMPLICIT_CONST {
+                    // No bytes in DIE.
+                    continue;
+                }
+                let attr_off = off;
+                let consumed = skip_form(
+                    out.get(attr_off..)?, attr.form, address_size, false,
+                )?;
+                let is_address_attr = matches!(
+                    attr.name, DW_AT_LOW_PC | DW_AT_ENTRY_PC
+                ) || (attr.name == DW_AT_HIGH_PC && attr.form == DW_FORM_ADDR);
+                if is_address_attr && attr.form == DW_FORM_ADDR
+                    && consumed == address_size as usize
+                {
+                    let addr = u32::from_le_bytes(
+                        out[attr_off..attr_off + 4].try_into().ok()?,
+                    );
+                    if let Some(d) = shifts.iter()
+                        .find(|((s, e), _)| addr >= *s && addr < *e)
+                        .map(|(_, d)| *d)
+                    {
+                        let new_addr = (addr as i64 + d).max(0) as u32;
+                        out[attr_off..attr_off + 4]
+                            .copy_from_slice(&new_addr.to_le_bytes());
+                    }
+                }
+                off += consumed;
+            }
+        }
+        // Should land exactly at cu_end. Sanity check.
+        if off != cu_end { return None; }
     }
     Some(out)
 }
@@ -470,6 +764,104 @@ mod tests {
         let shifts = vec![((0u32, 10000u32), 42i64)];
         let patched = patch_debug_ranges(&body, &shifts).unwrap();
         assert_eq!(patched, body);
+    }
+
+    #[test]
+    fn patch_debug_info_shifts_low_pc_addr() {
+        // Build a tiny synthetic CU with one DIE that has DW_AT_low_pc
+        // (form DW_FORM_addr) and DW_AT_high_pc (form DW_FORM_data4 —
+        // length, NOT shifted).
+        //
+        // Abbrev table: one entry, code=1, tag=0x2E (subprogram),
+        // no children, attrs=[(low_pc, addr), (high_pc, data4),
+        // (0,0)].
+        let mut abbrev = Vec::new();
+        abbrev.push(0x01);  // abbrev_code 1
+        abbrev.push(0x2E);  // tag = subprogram
+        abbrev.push(0x00);  // has_children = no
+        abbrev.push(DW_AT_LOW_PC as u8);
+        abbrev.push(DW_FORM_ADDR as u8);
+        abbrev.push(DW_AT_HIGH_PC as u8);
+        abbrev.push(DW_FORM_DATA4 as u8);
+        abbrev.push(0); abbrev.push(0); // end attrs
+        abbrev.push(0); // end of abbrev set
+
+        // .debug_info CU:
+        // - unit_length: u32 (computed)
+        // - version: u16 = 4
+        // - debug_abbrev_offset: u32 = 0
+        // - address_size: u8 = 4
+        // - DIE: abbrev_code (uleb 1), low_pc (4 bytes = 100),
+        //   high_pc (4 bytes = 50), end-of-children (0).
+        let mut info_body = Vec::new();
+        info_body.push(0x01);  // abbrev code 1
+        info_body.extend_from_slice(&100u32.to_le_bytes());
+        info_body.extend_from_slice(&50u32.to_le_bytes());
+        info_body.push(0);   // end of children sentinel
+
+        let mut info = Vec::new();
+        let header_len = 4 + 2 + 4 + 1;  // version+abbrev_off+addr_size
+        let unit_length = (header_len - 4 + info_body.len()) as u32; // bytes after unit_length
+        info.extend_from_slice(&unit_length.to_le_bytes());
+        info.extend_from_slice(&4u16.to_le_bytes());
+        info.extend_from_slice(&0u32.to_le_bytes());
+        info.push(4);
+        info.extend_from_slice(&info_body);
+
+        let shifts = vec![((50u32, 200u32), 50i64)];
+        let patched = patch_debug_info(&info, &abbrev, &shifts).unwrap();
+
+        // Find the low_pc field in patched bytes — at offset
+        // (4+2+4+1+1) = 12 (after unit header + abbrev code byte).
+        let low_pc_off = 4 + 2 + 4 + 1 + 1;
+        let new_low_pc = u32::from_le_bytes(
+            patched[low_pc_off..low_pc_off + 4].try_into().unwrap()
+        );
+        assert_eq!(new_low_pc, 150, "low_pc should be shifted by +50");
+
+        // high_pc is data4 (length, not absolute), so should NOT be
+        // patched.
+        let high_pc_off = low_pc_off + 4;
+        let new_high_pc = u32::from_le_bytes(
+            patched[high_pc_off..high_pc_off + 4].try_into().unwrap()
+        );
+        assert_eq!(new_high_pc, 50, "high_pc as data4 (length) must NOT shift");
+    }
+
+    #[test]
+    fn patch_debug_info_handles_high_pc_as_addr() {
+        // Same shape but high_pc is FORM_addr — must shift.
+        let mut abbrev = Vec::new();
+        abbrev.push(0x01);
+        abbrev.push(0x2E);
+        abbrev.push(0x00);
+        abbrev.push(DW_AT_LOW_PC as u8);
+        abbrev.push(DW_FORM_ADDR as u8);
+        abbrev.push(DW_AT_HIGH_PC as u8);
+        abbrev.push(DW_FORM_ADDR as u8);
+        abbrev.push(0); abbrev.push(0);
+        abbrev.push(0);
+
+        let mut info_body = Vec::new();
+        info_body.push(0x01);
+        info_body.extend_from_slice(&100u32.to_le_bytes());
+        info_body.extend_from_slice(&150u32.to_le_bytes());
+        info_body.push(0);
+
+        let mut info = Vec::new();
+        let header_len = 4 + 2 + 4 + 1;
+        let unit_length = (header_len - 4 + info_body.len()) as u32;
+        info.extend_from_slice(&unit_length.to_le_bytes());
+        info.extend_from_slice(&4u16.to_le_bytes());
+        info.extend_from_slice(&0u32.to_le_bytes());
+        info.push(4);
+        info.extend_from_slice(&info_body);
+
+        let shifts = vec![((50u32, 200u32), 50i64)];
+        let patched = patch_debug_info(&info, &abbrev, &shifts).unwrap();
+        let off = 4 + 2 + 4 + 1 + 1;
+        assert_eq!(u32::from_le_bytes(patched[off..off+4].try_into().unwrap()), 150);
+        assert_eq!(u32::from_le_bytes(patched[off+4..off+8].try_into().unwrap()), 200);
     }
 
     #[test]
