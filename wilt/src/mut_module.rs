@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use crate::leb128;
 use crate::module::{self, FunctionBody, Section, WasmModule};
+use crate::provenance::BodyEdits;
 
 /// Reusable scratch buffer. A single instance per pipeline; passes clear
 /// and reuse it instead of allocating fresh Vecs per body.
@@ -54,6 +55,20 @@ pub struct MutModule<'a> {
     /// One slot per defined function body; None = still in input.
     /// Lazily grown on first `set_body`.
     body_overrides: Vec<Option<Vec<u8>>>,
+    /// Input-to-current-override edit list per body. `Some(edits)`
+    /// means we can reconstruct byte-level provenance; `None` means
+    /// either (a) the body hasn't been overridden (identity) or (b)
+    /// a pass modified the body without providing edits, so we've
+    /// lost byte-provenance for it. Consumers check `has_edit_track`
+    /// to distinguish.
+    body_edits: Vec<Option<BodyEdits>>,
+    /// Parallel flag: once a pass called bare `set_body` without
+    /// edits, tracking is irrecoverable for that body. Subsequent
+    /// `set_body_with_edits` calls on the same body are *stored*
+    /// (for future passes to compose) but the accumulated chain is
+    /// `None` — the DWARF rewriter must treat that body as
+    /// "modified, provenance unknown".
+    body_edit_tracking_lost: Vec<bool>,
     pub facts: ModuleFacts,
     pub scratch: Scratch,
 }
@@ -71,10 +86,13 @@ impl<'a> MutModule<'a> {
         let section_overrides = vec![None; sections.len()];
         let section_removed = vec![false; sections.len()];
         let body_overrides = vec![None; bodies.len()];
+        let body_edits = vec![None; bodies.len()];
+        let body_edit_tracking_lost = vec![false; bodies.len()];
 
         Ok(Self {
             input, sections, section_overrides, section_removed,
-            bodies, body_overrides, facts, scratch: Scratch::default(),
+            bodies, body_overrides, body_edits, body_edit_tracking_lost,
+            facts, scratch: Scratch::default(),
         })
     }
 
@@ -118,6 +136,40 @@ impl<'a> MutModule<'a> {
 
     pub fn set_body(&mut self, local_idx: usize, bytes: Vec<u8>) {
         self.body_overrides[local_idx] = Some(bytes);
+        // No edits provided → tracking lost for this body.
+        self.body_edit_tracking_lost[local_idx] = true;
+    }
+
+    /// Like `set_body` but also composes the pass's edit list into
+    /// this body's running input→current map. Use this from passes
+    /// that can express what bytes they changed.
+    pub fn set_body_with_edits(
+        &mut self, local_idx: usize, bytes: Vec<u8>, pass_edits: BodyEdits,
+    ) {
+        self.body_overrides[local_idx] = Some(bytes);
+        if self.body_edit_tracking_lost[local_idx] {
+            // Can't compose onto an unknown base — tracking stays lost.
+            return;
+        }
+        let next = match self.body_edits[local_idx].take() {
+            Some(prev) => BodyEdits::compose(&prev, &pass_edits),
+            None => pass_edits,
+        };
+        self.body_edits[local_idx] = Some(next);
+    }
+
+    /// True iff this body's input→current edit list is known — i.e.
+    /// no pass has called `set_body` (bare) on it.
+    pub fn has_edit_track(&self, local_idx: usize) -> bool {
+        !self.body_edit_tracking_lost[local_idx]
+    }
+
+    /// The accumulated input→current edit list for this body. `None`
+    /// means either the body is identity (never modified) or
+    /// tracking was lost.
+    pub fn body_edits(&self, local_idx: usize) -> Option<&BodyEdits> {
+        if !self.has_edit_track(local_idx) { return None; }
+        self.body_edits[local_idx].as_ref()
     }
 
     /// A cheap hash of which sections / bodies have been overridden. Used

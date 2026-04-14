@@ -65,7 +65,14 @@ fn write_sleb128_i32(out: &mut Vec<u8>, mut value: i32) {
 
 /// Try to fold constants in a function body.
 /// Returns None if no folds were found (body unchanged).
+/// Back-compat wrapper: bytes only.
 fn fold_body(body: &[u8]) -> Option<Vec<u8>> {
+    fold_body_with_edits(body).map(|(bytes, _)| bytes)
+}
+
+/// Returns `(output_bytes, BodyEdits)` — the edits describe byte-
+/// level provenance of the rewrite. For Phase 2b's DWARF rewriter.
+fn fold_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     let instr_start = crate::opcode::skip_locals(body)?;
     let spans: Vec<(usize, usize)> = crate::opcode::walk(body, instr_start)?
         .into_iter()
@@ -115,20 +122,34 @@ fn fold_body(body: &[u8]) -> Option<Vec<u8>> {
     if replacements.is_empty() { return None; }
 
     let mut out = Vec::with_capacity(body.len());
-    let mut cursor = 0;
+    let mut edits = crate::provenance::BodyEdits::identity();
+    let mut cursor = 0usize;
     for (from, to, repl) in replacements {
         out.extend_from_slice(&body[cursor..from]);
+        let in_start = from as u32;
+        let in_len = (to - from) as u32;
+        let out_start = out.len() as u32;
         match repl {
             Repl::Const(val) => {
                 out.push(I32_CONST);
                 write_sleb128_i32(&mut out, val);
+                let out_len = out.len() as u32 - out_start;
+                edits.push(
+                    crate::provenance::Edit::subst(in_start, in_len, out_start, out_len),
+                    None,
+                );
             }
-            Repl::Empty => {}
+            Repl::Empty => {
+                edits.push(
+                    crate::provenance::Edit::delete(in_start, in_len, out_start),
+                    None,
+                );
+            }
         }
         cursor = to;
     }
     out.extend_from_slice(&body[cursor..]);
-    Some(out)
+    Some((out, edits))
 }
 
 /// True if `<x> ; i32.const v ; op` is semantically `<x>` — i.e. v is
@@ -164,11 +185,11 @@ fn evaluate(opcode: u8, a: i32, b: i32) -> Option<i32> {
 /// for those we folded. Zero-alloc for unchanged bodies.
 pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| fold_body(m.body_bytes(i)).map(|b| (i, b)))
+        .filter_map(|i| fold_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
@@ -314,6 +335,32 @@ mod tests {
         let body = vec![0, 0x01, I32_CONST, 3, I32_CONST, 4, I32_ADD, 0x1A, 0x0B];
         let folded = fold_body(&body).unwrap();
         assert_eq!(folded, vec![0, 0x01, I32_CONST, 7, 0x1A, 0x0B]);
+    }
+
+    #[test]
+    fn edits_reconstruct_output_for_two_const_fold() {
+        let body = vec![0, I32_CONST, 10, I32_CONST, 20, I32_ADD, 0x0B];
+        let (out, edits) = fold_body_with_edits(&body).unwrap();
+        // Apply the edits to the input, using the output bytes to
+        // supply substituted spans. If they match, edits correctly
+        // describe the rewrite.
+        let reconstructed = edits.apply(&body, |i, _src, _len| {
+            let e = edits.edits().get(i)?;
+            Some(out[e.out_start as usize .. e.out_end() as usize].to_vec())
+        }).unwrap();
+        assert_eq!(reconstructed, out);
+    }
+
+    #[test]
+    fn edits_reconstruct_output_for_identity_fold() {
+        // local.get 0 ; i32.const 0 ; i32.add → local.get 0
+        let body = vec![0, 0x20, 0, I32_CONST, 0, I32_ADD, 0x0B];
+        let (out, edits) = fold_body_with_edits(&body).unwrap();
+        let reconstructed = edits.apply(&body, |i, _src, _len| {
+            let e = edits.edits().get(i)?;
+            Some(out[e.out_start as usize .. e.out_end() as usize].to_vec())
+        }).unwrap();
+        assert_eq!(reconstructed, out);
     }
 
     #[test]
