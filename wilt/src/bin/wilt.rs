@@ -173,14 +173,6 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
-fn code_section_bytes<'a>(m: &'a wilt::WasmModule<'a>) -> &'a [u8] {
-    let data = m.data();
-    m.sections().iter()
-        .find(|s| s.id == 10 /* code */)
-        .map(|s| s.full.slice(data))
-        .unwrap_or(&[])
-}
-
 fn default_output_path(input: &std::path::Path) -> PathBuf {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
     let dir = input.parent().unwrap_or(std::path::Path::new("."));
@@ -242,25 +234,13 @@ fn main() -> ExitCode {
                             return ExitCode::from(1);
                         }
                     };
-                    // Pipe-through rewrite (only succeeds today when
-                    // wilt's pipeline produced no code changes).
-                    let Ok(in_bytes_m) = wilt::WasmModule::parse(&input_bytes) else {
-                        return ExitCode::from(1);
-                    };
-                    let Ok(out_bytes_m) = wilt::WasmModule::parse(&output_bytes) else {
-                        return ExitCode::from(1);
-                    };
-                    let code_unchanged = code_section_bytes(&in_bytes_m)
-                        == code_section_bytes(&out_bytes_m);
-                    let identity_remap = true; // CLI doesn't expose remap;
-                        // this is a best-effort heuristic. Step 2 will
-                        // thread the actual FuncRemap through.
-                    let fake_remap = wilt::remap::FuncRemap::identity(0);
-                    let rewritten = if identity_remap {
-                        wilt::passes::source_map::rewrite_v3(&in_json, &fake_remap, code_unchanged)
-                    } else { None };
-
-                    match rewritten {
+                    // Use the full-pipeline entry point: it threads
+                    // the real FuncRemap + per-function offsets into
+                    // the VLQ rewriter.
+                    let (new_bytes, maybe_new_map) =
+                        wilt::optimise_with_source_map(&input_bytes, Some(&in_json));
+                    output_bytes = new_bytes;
+                    match maybe_new_map {
                         Some(new_json) => {
                             if let Err(e) = std::fs::write(out_path, new_json) {
                                 eprintln!("wilt: could not write {}: {e}", out_path.display());
@@ -278,12 +258,11 @@ fn main() -> ExitCode {
                             }
                         }
                         None => {
-                            // Can't guarantee accuracy — strip and warn.
                             output_bytes = wilt::passes::source_map::strip_url(&output_bytes);
                             let _ = writeln!(
                                 std::io::stderr(),
-                                "wilt: source map {in_url:?} stripped — \
-                                 rewriting not yet possible when code has changed",
+                                "wilt: source map {in_url:?} stripped — bodies modified beyond \
+                                 what the source-map rewriter handles today",
                             );
                         }
                     }

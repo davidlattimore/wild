@@ -204,6 +204,56 @@ fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) ->
     if out.len() > input.len() { stripped } else { out }
 }
 
+/// Optimise + transform an external V3 source map.
+///
+/// Public entry point for workflows that carry a sibling `.wasm.map`
+/// file. The input map describes the input wasm's code positions;
+/// wilt's code-modifying passes invalidate those positions. This
+/// function runs the full optimise pipeline and — when the
+/// transformation is expressible as per-function byte-offset shifts
+/// — rewrites the map so its `mappings` field stays consistent with
+/// the output.
+///
+/// Returns `(optimised_wasm, maybe_rewritten_map)`. If map rewriting
+/// would produce stale data (bodies modified beyond what our shifter
+/// can express today), returns `None` for the map — callers should
+/// strip the reference rather than embed a lie.
+pub fn optimise_with_source_map(
+    input: &[u8], input_map_json: Option<&str>,
+) -> (Vec<u8>, Option<String>) {
+    let (optimised, cumulative_remap) = optimise_collecting_remap(input);
+    let core = if optimised.len() > input.len() { input.to_vec() } else { optimised };
+
+    let Some(map_json) = input_map_json else { return (core, None) };
+
+    // Compute per-function offsets in input and output.
+    let Ok(mut in_m) = WasmModule::parse(input) else {
+        return (core, Some(map_json.to_string()));
+    };
+    let Ok(mut out_m) = WasmModule::parse(&core) else {
+        return (core, Some(map_json.to_string()));
+    };
+    in_m.ensure_function_bodies_parsed();
+    out_m.ensure_function_bodies_parsed();
+
+    let in_offsets = passes::dwarf_line::function_file_offsets(&in_m).unwrap_or_default();
+    let out_offsets = passes::dwarf_line::function_file_offsets(&out_m).unwrap_or_default();
+    let code_unchanged = code_section_bytes_from(&in_m) == code_section_bytes_from(&out_m);
+
+    let rewritten = passes::source_map::rewrite_v3_with_shifts(
+        map_json, &cumulative_remap, code_unchanged, &in_offsets, &out_offsets,
+    );
+    (core, rewritten)
+}
+
+fn code_section_bytes_from<'a>(m: &'a WasmModule<'a>) -> &'a [u8] {
+    let data = m.data();
+    m.sections().iter()
+        .find(|s| s.id == module::SECTION_CODE)
+        .map(|s| s.full.slice(data))
+        .unwrap_or(&[])
+}
+
 /// Runs the fixpoint and returns `(optimised_bytes, input→output FuncRemap)`.
 fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
     use linker_hints::{DerivedHints, LinkerHints};
