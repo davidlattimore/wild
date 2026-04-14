@@ -292,16 +292,59 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Infer a coarse `BodyEdits` from input/output by finding the
+/// longest common prefix and suffix. The middle becomes one edit.
+/// Vacuum often makes multiple localized changes, so this loses
+/// finer-grained provenance inside the changed region — but it's
+/// strictly better than marking the body as tracking-lost, and the
+/// DWARF rewriter falls back to stub line info cleanly for the
+/// single coarse span.
+fn infer_coarse_edits(input: &[u8], output: &[u8]) -> crate::provenance::BodyEdits {
+    use crate::provenance::{BodyEdits, Edit};
+    let prefix = input.iter().zip(output.iter())
+        .take_while(|(a, b)| a == b).count();
+    // Suffix counted from the end, not overlapping the prefix on
+    // either side.
+    let max_suffix = (input.len() - prefix).min(output.len() - prefix);
+    let suffix = input[input.len() - max_suffix..].iter().rev()
+        .zip(output[output.len() - max_suffix..].iter().rev())
+        .take_while(|(a, b)| a == b).count();
+
+    if prefix == input.len() && prefix == output.len() {
+        return BodyEdits::identity();
+    }
+
+    let in_mid_start = prefix as u32;
+    let in_mid_len = (input.len() - prefix - suffix) as u32;
+    let out_mid_start = prefix as u32;
+    let out_mid_len = (output.len() - prefix - suffix) as u32;
+
+    let mut edits = BodyEdits::identity();
+    let edit = match (in_mid_len, out_mid_len) {
+        (0, 0) => return edits,
+        (_, 0) => Edit::delete(in_mid_start, in_mid_len, out_mid_start),
+        (0, _) => Edit::synth(in_mid_start, out_mid_start, out_mid_len),
+        _ => Edit::subst(in_mid_start, in_mid_len, out_mid_start, out_mid_len),
+    };
+    edits.push(edit, None);
+    edits
+}
+
 /// MutModule-style entry point. Iterates bodies once, sets overrides
 /// only for the ones we actually changed. Zero allocation for unchanged
 /// bodies.
 pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
     use rayon::prelude::*;
-    let updates: Vec<(usize, Vec<u8>)> = (0..m.num_bodies())
+    let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
-        .filter_map(|i| clean_body(m.body_bytes(i)).map(|b| (i, b)))
+        .filter_map(|i| {
+            let input_body = m.body_bytes(i);
+            let out = clean_body(input_body)?;
+            let edits = infer_coarse_edits(input_body, &out);
+            Some((i, out, edits))
+        })
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
 }
 
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
