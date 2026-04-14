@@ -16,14 +16,15 @@
 //!   byte-identical to the input's AND the FuncRemap is identity,
 //!   every input `.debug_*` section is still correct — preserve
 //!   them verbatim.
-//! - **Step 2** (this commit): per-function byte-level address
-//!   patching of the simpler address-carrying sections —
-//!   `.debug_ranges` and `.debug_loc` (DWARF 4 fixed formats) —
-//!   for the "bodies byte-identical, some moved" case. `.debug_info`
-//!   and DWARF-5 variants stay preserve-or-strip; step 3 extends
-//!   coverage.
-//! - **Step 3** (deferred): gimli-driven DIE-walker for
-//!   `.debug_info` address attributes + DWARF-5 rnglists/loclists.
+//! - **Step 2**: per-function byte-level address patching of the
+//!   simpler address-carrying sections — `.debug_ranges` and
+//!   `.debug_loc` (DWARF 4 fixed formats) — for the "bodies byte-
+//!   identical, some moved" case.
+//! - **Step 3** (this commit): add `.debug_aranges` patching.
+//!   Header-prefixed (address, length) pair lists — fixed format,
+//!   small patch surface, common in Rust/C++ output.
+//! - **Step 4** (deferred): abbrev-driven DIE walker for
+//!   `.debug_info`. Big piece — needs its own session.
 //!
 //! Invariant: no stale addresses ever reach the output.
 
@@ -167,6 +168,11 @@ fn collect_debug_sections(
                     sections.push((name.to_string(), patched));
                 }
             }
+            (Some(sh), ".debug_aranges") => {
+                if let Some(patched) = patch_debug_aranges(body, sh) {
+                    sections.push((name.to_string(), patched));
+                }
+            }
             (Some(_), n) if NON_ADDRESS.contains(&n) => {
                 sections.push((n.to_string(), body.to_vec()));
             }
@@ -216,6 +222,74 @@ fn patch_debug_ranges(
         out[i + 4..i + 8].copy_from_slice(&new_end.to_le_bytes());
         i += 8;
     }
+    Some(out)
+}
+
+/// DWARF `.debug_aranges`: sequence of address-range tables, one per
+/// compilation unit. Each table:
+///
+/// ```text
+/// unit_length   : u32 (or 12 bytes for DWARF-64)
+/// version       : u16 (= 2)
+/// debug_info_offset : u32 (or u64 for DWARF-64)
+/// address_size  : u8
+/// segment_size  : u8
+/// padding to align first tuple to 2*address_size
+/// (address, length) pairs of address_size bytes each
+/// terminated by (0, 0)
+/// ```
+///
+/// We handle DWARF-32 with address_size = 4 (wasm's case). DWARF-64
+/// (unit_length == 0xFFFFFFFF) is rejected — wilt's target corpus
+/// doesn't emit it.
+fn patch_debug_aranges(
+    body: &[u8], shifts: &[((u32, u32), i64)],
+) -> Option<Vec<u8>> {
+    let mut out = body.to_vec();
+    let mut off = 0;
+
+    while off < out.len() {
+        // Parse unit header.
+        if off + 12 > out.len() { return None; }
+        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+        if unit_length == 0xFFFFFFFF { return None; }  // DWARF-64
+        let table_end = off + 4 + unit_length as usize;
+        if table_end > out.len() { return None; }
+        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        if version != 2 { return None; }
+        let _debug_info_offset = u32::from_le_bytes(out[off + 6..off + 10].try_into().ok()?);
+        let address_size = out[off + 10];
+        let _segment_size = out[off + 11];
+        if address_size != 4 { return None; }
+
+        // Tuples align to 2 * address_size from unit_start. Header
+        // is 12 bytes; next multiple of 8 from unit_start = 16.
+        let tuple_start = off + ((12 + 7) & !7);
+        if tuple_start > table_end { return None; }
+
+        let mut t = tuple_start;
+        while t + 8 <= table_end {
+            let addr = u32::from_le_bytes(out[t..t + 4].try_into().ok()?);
+            let len = u32::from_le_bytes(out[t + 4..t + 8].try_into().ok()?);
+            if addr == 0 && len == 0 {
+                t += 8;
+                break;
+            }
+            // Find the shift; if address isn't in any known range, leave.
+            let end_addr = addr.saturating_add(len);
+            let shift = shifts.iter()
+                .find(|((s, e), _)| addr >= *s && end_addr <= *e)
+                .map(|(_, d)| *d);
+            if let Some(d) = shift {
+                let new_addr = (addr as i64 + d).max(0) as u32;
+                out[t..t + 4].copy_from_slice(&new_addr.to_le_bytes());
+                // Length doesn't change.
+            }
+            t += 8;
+        }
+        off = table_end;
+    }
+
     Some(out)
 }
 
@@ -396,6 +470,39 @@ mod tests {
         let shifts = vec![((0u32, 10000u32), 42i64)];
         let patched = patch_debug_ranges(&body, &shifts).unwrap();
         assert_eq!(patched, body);
+    }
+
+    #[test]
+    fn patch_debug_aranges_shifts_one_table() {
+        // Build a single aranges table: unit_length=20, version=2,
+        // debug_info_offset=0, addr_size=4, seg_size=0, padding=4,
+        // one (100, 50) tuple, then (0, 0) terminator. Total = 4 +
+        // 2 + 4 + 1 + 1 + 4 pad + 8 tuple + 8 term = 32 bytes; but
+        // unit_length counts bytes AFTER its own 4 bytes → 28.
+        //
+        // Actually correct total: header (12) + padding-to-next-8
+        // (4) = 16 bytes of header+pad, + 8 (tuple) + 8 (term) =
+        // 32 bytes total. unit_length = 28.
+        let mut body = Vec::new();
+        body.extend_from_slice(&28u32.to_le_bytes());   // unit_length
+        body.extend_from_slice(&2u16.to_le_bytes());    // version
+        body.extend_from_slice(&0u32.to_le_bytes());    // debug_info_offset
+        body.push(4);                                   // address_size
+        body.push(0);                                   // segment_size
+        body.extend_from_slice(&[0; 4]);                // padding to 16
+        body.extend_from_slice(&100u32.to_le_bytes());  // address
+        body.extend_from_slice(&50u32.to_le_bytes());   // length
+        body.extend_from_slice(&0u32.to_le_bytes());    // terminator
+        body.extend_from_slice(&0u32.to_le_bytes());
+
+        let shifts = vec![((50u32, 200u32), 50i64)];
+        let patched = patch_debug_aranges(&body, &shifts).unwrap();
+        let new_addr = u32::from_le_bytes(patched[16..20].try_into().unwrap());
+        let new_len = u32::from_le_bytes(patched[20..24].try_into().unwrap());
+        assert_eq!(new_addr, 150);
+        assert_eq!(new_len, 50);
+        // Terminator unchanged.
+        assert_eq!(&patched[24..32], &[0; 8]);
     }
 
     #[test]
