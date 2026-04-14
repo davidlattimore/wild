@@ -687,18 +687,29 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     // compression-friendly layout pass — but does NOT LEB-compress.
     // Compression is a separate, opt-in step below.
     //
-    // Gated on `--gc-sections`: aggressive index-changing passes are
-    // only safe when the caller has already asked for unused code to
-    // be removed. Without `--gc-sections`, wild aims for lld-wasm
-    // byte-compatibility and wilt stays out of the way.
+    // Gated on `-O<N>`: the default `-O0` keeps wild byte-compatible
+    // with wasm-ld. `-O1` enables wilt's index-changing passes, which
+    // are only safe once the caller has opted into post-link rewriting.
     //
-    // `DebugLevel::Full` keeps the name section index-consistent with
-    // post-DCE indices and preserves DWARF when the transformation
-    // permits. Stale names would otherwise fail downstream tools
-    // (obj2yaml / wasm-objdump) that re-validate name entries.
+    // Debug tier maps from wild's `--strip-*` flags:
+    //   Strip::Nothing → Full   — preserve DWARF + names where possible
+    //   Strip::Debug   → Names  — drop DWARF/source-maps, keep names
+    //   Strip::All     → None   — drop names and DWARF
+    // `Full`/`Names` both rewrite the name section so indices track
+    // post-DCE function numbering; stale entries otherwise fail
+    // obj2yaml / wasm-objdump validation.
     #[cfg(feature = "wilt")]
     let out = if layout.symbol_db.args.wasm_opt_level() >= 1 {
-        wilt::optimise_with_debug_level(&out, wilt::debug_level::DebugLevel::Full)
+        use wilt::debug_level::DebugLevel;
+        let level = match layout.symbol_db.args.strip {
+            crate::args::Strip::Nothing => DebugLevel::Full,
+            crate::args::Strip::Debug => DebugLevel::Names,
+            crate::args::Strip::All => DebugLevel::None,
+            // ELF `--retain-symbols-file=<path>` — not meaningful for
+            // wasm; treat as "no stripping" and let wilt preserve.
+            crate::args::Strip::Retain(_) => DebugLevel::Full,
+        };
+        wilt::optimise_with_debug_level(&out, level)
     } else {
         out
     };

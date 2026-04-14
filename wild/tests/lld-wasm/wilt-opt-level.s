@@ -13,8 +13,14 @@
 # RUN: wasm-ld -O1 --export=fold_me --export=_start -o %t.O1.wasm %t.o
 # RUN: obj2yaml %t.O1.wasm | FileCheck %s --check-prefix=O1
 
+# `--strip-all` at `-O1` must drop the name custom section entirely.
+# RUN: wasm-ld -O1 --strip-all --export=fold_me --export=_start \
+# RUN:     -o %t.O1-strip.wasm %t.o
+# RUN: obj2yaml %t.O1-strip.wasm | FileCheck %s --check-prefix=STRIP
+
 # O0: Body: 410141026A0B
 # O1: Body: 41030B
+# STRIP-NOT: Name: name
 
 .globl fold_me
 fold_me:
