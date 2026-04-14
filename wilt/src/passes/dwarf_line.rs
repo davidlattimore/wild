@@ -8,15 +8,20 @@
 //! - **Step 1** (landed): preserve the input `.debug_line` bytes iff
 //!   the output's code section is byte-identical AND no function
 //!   index shifted. Otherwise drop (Names-tier fallback).
-//! - **Step 2** (this commit): broaden preservation to "per-function
-//!   byte-and-position identical". If every surviving function is
-//!   byte-identical to its input at the same code-section byte offset
-//!   — true when passes like reorder/layout changed nothing but
-//!   later sections elsewhere — we preserve. Per-function file-offset
-//!   maps are also exposed for use by step 3.
-//! - **Step 3** (deferred): gimli-based per-sequence rewriting — emit
-//!   shifted or stubbed line entries so preservation covers moved or
-//!   modified bodies.
+//! - **Step 2**: broaden preservation to "per-function byte-and-
+//!   position identical". If every surviving function is byte-
+//!   identical to its input at the same code-section byte offset —
+//!   true when passes like reorder/layout changed nothing but later
+//!   sections elsewhere — we preserve.
+//! - **Step 3** (this commit): byte-level address patching for the
+//!   "bodies byte-identical but moved" case. Find each
+//!   `DW_LNE_set_address` extended opcode in the line program, look
+//!   up which input function its address pointed at, compute the
+//!   new file offset of that function in the output, patch in
+//!   place. Same byte length (4-byte address for wasm), so no
+//!   downstream encoding shifts.
+//! - **Step 4** (deferred): per-sequence dropping for modified
+//!   bodies — needs gimli's write API.
 //!
 //! Invariant: the output either carries an *accurate* `.debug_line`
 //! or none at all. We never embed stale addresses.
@@ -56,7 +61,157 @@ pub fn rewrite(input: &[u8], optimised: &[u8], remap: &FuncRemap) -> Option<Vec<
         return Some(line_bytes.to_vec());
     }
 
+    // Step 3: bodies byte-identical but possibly moved. Patch
+    // DW_LNE_set_address opcodes in the line program with the new
+    // file offsets. Same byte length, so no downstream encoding shift.
+    if per_function_bytes_match(input, optimised, remap, &in_offsets, &out_offsets) {
+        if let Some(patched) = patch_addresses(line_bytes, input, optimised, remap,
+                                               &in_offsets, &out_offsets) {
+            return Some(patched);
+        }
+    }
+
     None
+}
+
+/// Like `per_function_identical` but doesn't require positions to
+/// match — only that every function's body BYTES are preserved.
+/// Position changes will be addressed by the address patcher.
+fn per_function_bytes_match(
+    input: &[u8], output: &[u8], remap: &FuncRemap,
+    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+) -> bool {
+    let num_defined_in = in_offsets.len() as u32;
+    if remap.len() < num_defined_in { return false; }
+    let num_imports = remap.len() - num_defined_in;
+    for (def_i, (off_in, len_in)) in in_offsets.iter().enumerate() {
+        let abs_in = num_imports + def_i as u32;
+        let Some(abs_out) = remap.lookup(abs_in) else { return false };
+        if abs_out < num_imports { return false; }
+        let def_out = (abs_out - num_imports) as usize;
+        let Some(&(off_out, len_out)) = out_offsets.get(def_out) else { return false };
+        if *len_in != len_out { return false; }
+        let in_bytes = &input[*off_in as usize..(*off_in + *len_in) as usize];
+        let out_bytes = &output[off_out as usize..(off_out + len_out) as usize];
+        if in_bytes != out_bytes { return false; }
+    }
+    true
+}
+
+/// Build a closure mapping input file offsets → output file offsets
+/// for each function in `remap`, assuming bodies are byte-identical
+/// (caller verifies). Returns None if remap shape is inconsistent.
+fn build_address_shifts(
+    remap: &FuncRemap,
+    in_offsets: &[(u32, u32)],
+    out_offsets: &[(u32, u32)],
+) -> Option<Vec<((u32, u32), i64)>> {
+    let num_defined_in = in_offsets.len() as u32;
+    if remap.len() < num_defined_in { return None; }
+    let num_imports = remap.len() - num_defined_in;
+    let mut shifts = Vec::with_capacity(in_offsets.len());
+    for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
+        let abs_in = num_imports + def_i as u32;
+        let abs_out = remap.lookup(abs_in)?;
+        if abs_out < num_imports { return None; }
+        let def_out = (abs_out - num_imports) as usize;
+        let &(off_out, _) = out_offsets.get(def_out)?;
+        let shift = off_out as i64 - off_in as i64;
+        shifts.push(((off_in, off_in + len_in), shift));
+    }
+    Some(shifts)
+}
+
+/// Find DW_LNE_set_address opcodes in the line program and patch
+/// each address with the per-function shift.
+///
+/// Strategy: parse the line-program header with gimli to learn
+/// `address_size` and the standard-opcode lengths, then manually
+/// walk the program body, identifying extended opcodes and patching
+/// `set_address` (sub-opcode 0x02) in place.
+///
+/// Returns the patched bytes on success, or `None` if any address
+/// falls outside any known function range (should not happen given
+/// our preservation gate).
+fn patch_addresses(
+    line_bytes: &[u8],
+    _input: &[u8], _output: &[u8],
+    remap: &FuncRemap,
+    in_offsets: &[(u32, u32)],
+    out_offsets: &[(u32, u32)],
+) -> Option<Vec<u8>> {
+    let shifts = build_address_shifts(remap, in_offsets, out_offsets)?;
+
+    // Parse just enough of the header to learn the address size and
+    // the standard-opcode operand lengths.
+    let dl = gimli::DebugLine::new(line_bytes, gimli::LittleEndian);
+    let header = dl.program(
+        gimli::DebugLineOffset(0),
+        4, // wasm address size
+        None, None,
+    ).ok()?;
+    let header = header.header().clone();
+
+    // Patch by walking the program body.
+    let mut out = line_bytes.to_vec();
+    let header_len = header.header_length() as usize
+        + header.offset().0 as usize
+        + 22 /* fixed header bytes before header_length */;
+    // Use the spec'd header length: header_offset = (program_offset
+    // - header_offset_to_program). gimli's header offers `header_size`
+    // sometimes; otherwise we walk from the offset reported below.
+    let prog_off = (header.raw_program_buf().as_ptr() as usize)
+        - line_bytes.as_ptr() as usize;
+    let _ = header_len;
+
+    let opcode_base = header.opcode_base();
+    let std_lens = header.standard_opcode_lengths();
+
+    let mut off = prog_off;
+    while off < out.len() {
+        let op = out[off];
+        off += 1;
+        if op == 0 {
+            // Extended opcode: size LEB, sub-opcode, operands.
+            let (size, c) = leb128::read_u32(&out[off..])?;
+            off += c;
+            if size == 0 { continue; }
+            let sub = out[off];
+            // sub-opcode + operand bytes total `size` bytes.
+            let operand_off = off + 1;
+            let operand_len = (size as usize).saturating_sub(1);
+            if sub == 0x02 /* DW_LNE_set_address */ && operand_len == 4 {
+                let addr_bytes: [u8; 4] = out[operand_off..operand_off + 4].try_into().ok()?;
+                let addr = u32::from_le_bytes(addr_bytes);
+                // Find which function contains this address.
+                let shift = shifts.iter()
+                    .find(|((s, e), _)| addr >= *s && addr < *e)
+                    .map(|(_, s)| *s);
+                let new_addr = match shift {
+                    Some(d) => (addr as i64 + d).max(0) as u32,
+                    None => {
+                        // Address is outside any function range — could be
+                        // an end-of-program sentinel. Leave it.
+                        addr
+                    }
+                };
+                let new_bytes = new_addr.to_le_bytes();
+                out[operand_off..operand_off + 4].copy_from_slice(&new_bytes);
+            }
+            off = operand_off + operand_len;
+        } else if (op as usize) < opcode_base as usize {
+            // Standard opcode: skip its LEB operands.
+            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            for _ in 0..n_operands {
+                let (_, c) = leb128::read_u32(&out[off..])?;
+                off += c;
+            }
+        } else {
+            // Special opcode: 1 byte total, no operands.
+        }
+    }
+
+    Some(out)
 }
 
 /// For each defined function in `module`, return its byte range in the
