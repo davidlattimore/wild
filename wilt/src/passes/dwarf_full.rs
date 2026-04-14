@@ -21,13 +21,14 @@
 //!   `.debug_loc` (DWARF 4 fixed formats) — for the "bodies byte-
 //!   identical, some moved" case.
 //! - **Step 3**: add `.debug_aranges` patching.
-//! - **Step 4** (this commit): abbrev-driven DIE walker for
-//!   `.debug_info`. Parses `.debug_abbrev` tables, traverses each
-//!   CU's DIE tree byte-by-byte using the abbrev map, and patches
-//!   `DW_AT_low_pc` / `DW_AT_high_pc` / `DW_AT_entry_pc`
-//!   attributes encoded as `DW_FORM_addr`. `DW_AT_high_pc` with
-//!   non-address forms (constant offset from low_pc) is left
-//!   alone — its value is relative.
+//! - **Step 4**: abbrev-driven DIE walker for `.debug_info`.
+//! - **Step 5** (this commit): DWARF-5 long tail —
+//!   `.debug_rnglists`, `.debug_loclists`, `.debug_addr`. These
+//!   cover the same role as DWARF-4's ranges/loc/aranges but with
+//!   variable-length entry encodings driven by per-entry tag
+//!   bytes. Indexed forms (DW_RLE_base_addressx etc.) leave the
+//!   index alone — `.debug_addr` is patched separately so the
+//!   indices keep resolving to the right addresses.
 //!
 //! Invariant: no stale addresses ever reach the output.
 
@@ -177,13 +178,26 @@ fn collect_debug_sections(
                 }
             }
             (Some(sh), ".debug_info") => {
-                // Need the abbrev section too. Look it up from the
-                // module's customs.
                 let abbrev = collect_named_section(m, ".debug_abbrev");
                 if let Some(abbrev_bytes) = abbrev {
                     if let Some(patched) = patch_debug_info(body, &abbrev_bytes, sh) {
                         sections.push((name.to_string(), patched));
                     }
+                }
+            }
+            (Some(sh), ".debug_rnglists") => {
+                if let Some(patched) = patch_debug_rnglists(body, sh) {
+                    sections.push((name.to_string(), patched));
+                }
+            }
+            (Some(sh), ".debug_loclists") => {
+                if let Some(patched) = patch_debug_loclists(body, sh) {
+                    sections.push((name.to_string(), patched));
+                }
+            }
+            (Some(sh), ".debug_addr") => {
+                if let Some(patched) = patch_debug_addr(body, sh) {
+                    sections.push((name.to_string(), patched));
                 }
             }
             (Some(_), n) if NON_ADDRESS.contains(&n) => {
@@ -515,6 +529,263 @@ pub fn patch_debug_info(
         }
         // Should land exactly at cu_end. Sanity check.
         if off != cu_end { return None; }
+    }
+    Some(out)
+}
+
+// DWARF-5 range-list entry kinds.
+const DW_RLE_END_OF_LIST: u8 = 0x00;
+const DW_RLE_BASE_ADDRESSX: u8 = 0x01;
+const DW_RLE_STARTX_ENDX: u8 = 0x02;
+const DW_RLE_STARTX_LENGTH: u8 = 0x03;
+const DW_RLE_OFFSET_PAIR: u8 = 0x04;
+const DW_RLE_BASE_ADDRESS: u8 = 0x05;
+const DW_RLE_START_END: u8 = 0x06;
+const DW_RLE_START_LENGTH: u8 = 0x07;
+
+// DWARF-5 location-list entry kinds (mirror DW_RLE_*).
+const DW_LLE_END_OF_LIST: u8 = 0x00;
+const DW_LLE_BASE_ADDRESSX: u8 = 0x01;
+const DW_LLE_STARTX_ENDX: u8 = 0x02;
+const DW_LLE_STARTX_LENGTH: u8 = 0x03;
+const DW_LLE_OFFSET_PAIR: u8 = 0x04;
+const DW_LLE_DEFAULT_LOCATION: u8 = 0x05;
+const DW_LLE_BASE_ADDRESS: u8 = 0x06;
+const DW_LLE_START_END: u8 = 0x07;
+const DW_LLE_START_LENGTH: u8 = 0x08;
+
+/// DWARF-5 `.debug_rnglists`: header + range-list bodies. Each list
+/// is a stream of entries tagged with a 1-byte kind. Walks the
+/// section, patches addresses in entries that carry raw addresses
+/// (DW_RLE_base_address / start_end / start_length); leaves
+/// indexed (`*x`) variants and offset pairs alone — those resolve
+/// via `.debug_addr` (which we patch separately) or via base+offset
+/// arithmetic on already-correct values.
+fn patch_debug_rnglists(
+    body: &[u8], shifts: &[((u32, u32), i64)],
+) -> Option<Vec<u8>> {
+    let mut out = body.to_vec();
+    let mut off = 0;
+    while off < out.len() {
+        // Header.
+        if off + 12 > out.len() { return None; }
+        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+        if unit_length == 0xFFFFFFFF { return None; }
+        let unit_end = off + 4 + unit_length as usize;
+        if unit_end > out.len() { return None; }
+        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        if version != 5 { return None; }
+        let address_size = out[off + 6];
+        let _segment_selector_size = out[off + 7];
+        let offset_entry_count = u32::from_le_bytes(
+            out[off + 8..off + 12].try_into().ok()?
+        ) as usize;
+        if address_size != 4 { return None; }
+
+        let mut p = off + 12;
+        // Skip the offset table if present.
+        p += offset_entry_count * 4;   // DWARF-32: 4 bytes per offset
+        if p > unit_end { return None; }
+
+        // Range list bodies up to unit_end.
+        while p < unit_end {
+            let kind = out[p];
+            p += 1;
+            match kind {
+                DW_RLE_END_OF_LIST => { /* zero operands */ }
+                DW_RLE_BASE_ADDRESSX | DW_RLE_BASE_ADDRESS if kind == DW_RLE_BASE_ADDRESSX => {
+                    let (_, c) = read_uleb(out.get(p..)?)?;
+                    p += c;
+                }
+                DW_RLE_STARTX_ENDX | DW_RLE_STARTX_LENGTH => {
+                    let (_, c1) = read_uleb(out.get(p..)?)?;
+                    p += c1;
+                    let (_, c2) = read_uleb(out.get(p..)?)?;
+                    p += c2;
+                }
+                DW_RLE_OFFSET_PAIR => {
+                    let (_, c1) = read_uleb(out.get(p..)?)?;
+                    p += c1;
+                    let (_, c2) = read_uleb(out.get(p..)?)?;
+                    p += c2;
+                }
+                DW_RLE_BASE_ADDRESS => {
+                    if p + 4 > out.len() { return None; }
+                    let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
+                    if let Some(d) = shifts.iter()
+                        .find(|((s, e), _)| addr >= *s && addr < *e)
+                        .map(|(_, d)| *d)
+                    {
+                        let new_addr = (addr as i64 + d).max(0) as u32;
+                        out[p..p + 4].copy_from_slice(&new_addr.to_le_bytes());
+                    }
+                    p += 4;
+                }
+                DW_RLE_START_END => {
+                    if p + 8 > out.len() { return None; }
+                    patch_addr_pair(&mut out, p, shifts);
+                    p += 8;
+                }
+                DW_RLE_START_LENGTH => {
+                    if p + 4 > out.len() { return None; }
+                    let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
+                    if let Some(d) = shifts.iter()
+                        .find(|((s, e), _)| addr >= *s && addr < *e)
+                        .map(|(_, d)| *d)
+                    {
+                        let new_addr = (addr as i64 + d).max(0) as u32;
+                        out[p..p + 4].copy_from_slice(&new_addr.to_le_bytes());
+                    }
+                    p += 4;
+                    let (_, c) = read_uleb(out.get(p..)?)?;
+                    p += c;
+                }
+                _ => return None,
+            }
+        }
+        off = unit_end;
+    }
+    Some(out)
+}
+
+fn patch_addr_pair(out: &mut [u8], p: usize, shifts: &[((u32, u32), i64)]) {
+    let start = u32::from_le_bytes(out[p..p + 4].try_into().unwrap_or([0; 4]));
+    let end = u32::from_le_bytes(out[p + 4..p + 8].try_into().unwrap_or([0; 4]));
+    if let Some(d) = shifts.iter()
+        .find(|((s, e), _)| start >= *s && end <= *e)
+        .map(|(_, d)| *d)
+    {
+        let new_start = (start as i64 + d).max(0) as u32;
+        let new_end = (end as i64 + d).max(0) as u32;
+        out[p..p + 4].copy_from_slice(&new_start.to_le_bytes());
+        out[p + 4..p + 8].copy_from_slice(&new_end.to_le_bytes());
+    }
+}
+
+/// DWARF-5 `.debug_loclists`: same shape as rnglists, but each
+/// location entry has a counted-bytes location-expression payload
+/// trailing the addresses. Pass the expression bytes through.
+fn patch_debug_loclists(
+    body: &[u8], shifts: &[((u32, u32), i64)],
+) -> Option<Vec<u8>> {
+    let mut out = body.to_vec();
+    let mut off = 0;
+    while off < out.len() {
+        if off + 12 > out.len() { return None; }
+        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+        if unit_length == 0xFFFFFFFF { return None; }
+        let unit_end = off + 4 + unit_length as usize;
+        if unit_end > out.len() { return None; }
+        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        if version != 5 { return None; }
+        let address_size = out[off + 6];
+        let _seg = out[off + 7];
+        let offset_entry_count = u32::from_le_bytes(
+            out[off + 8..off + 12].try_into().ok()?
+        ) as usize;
+        if address_size != 4 { return None; }
+
+        let mut p = off + 12 + offset_entry_count * 4;
+        if p > unit_end { return None; }
+
+        while p < unit_end {
+            let kind = out[p];
+            p += 1;
+            // Decode addresses (if any), then the trailing location
+            // expression. All non-end_of_list entries have an expr.
+            match kind {
+                DW_LLE_END_OF_LIST => continue,
+                DW_LLE_BASE_ADDRESSX => {
+                    let (_, c) = read_uleb(out.get(p..)?)?;
+                    p += c;
+                    continue;   // base entries have no expr
+                }
+                DW_LLE_STARTX_ENDX | DW_LLE_STARTX_LENGTH => {
+                    let (_, c1) = read_uleb(out.get(p..)?)?; p += c1;
+                    let (_, c2) = read_uleb(out.get(p..)?)?; p += c2;
+                }
+                DW_LLE_OFFSET_PAIR => {
+                    let (_, c1) = read_uleb(out.get(p..)?)?; p += c1;
+                    let (_, c2) = read_uleb(out.get(p..)?)?; p += c2;
+                }
+                DW_LLE_DEFAULT_LOCATION => { /* no addresses */ }
+                DW_LLE_BASE_ADDRESS => {
+                    if p + 4 > out.len() { return None; }
+                    let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
+                    if let Some(d) = shifts.iter()
+                        .find(|((s, e), _)| addr >= *s && addr < *e)
+                        .map(|(_, d)| *d)
+                    {
+                        let new_addr = (addr as i64 + d).max(0) as u32;
+                        out[p..p + 4].copy_from_slice(&new_addr.to_le_bytes());
+                    }
+                    p += 4;
+                    continue;   // base entries have no expr
+                }
+                DW_LLE_START_END => {
+                    if p + 8 > out.len() { return None; }
+                    patch_addr_pair(&mut out, p, shifts);
+                    p += 8;
+                }
+                DW_LLE_START_LENGTH => {
+                    if p + 4 > out.len() { return None; }
+                    let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
+                    if let Some(d) = shifts.iter()
+                        .find(|((s, e), _)| addr >= *s && addr < *e)
+                        .map(|(_, d)| *d)
+                    {
+                        let new_addr = (addr as i64 + d).max(0) as u32;
+                        out[p..p + 4].copy_from_slice(&new_addr.to_le_bytes());
+                    }
+                    p += 4;
+                    let (_, c) = read_uleb(out.get(p..)?)?;
+                    p += c;
+                }
+                _ => return None,
+            }
+            // Counted-bytes location expression.
+            let (expr_len, c) = read_uleb(out.get(p..)?)?;
+            p += c + expr_len as usize;
+        }
+        off = unit_end;
+    }
+    Some(out)
+}
+
+/// DWARF-5 `.debug_addr`: array of addresses (per CU). Header is
+/// 8 bytes (unit_length + version + address_size + segment_size);
+/// rest is `address_size`-byte addresses. Patch each address by
+/// the function-shift table.
+fn patch_debug_addr(
+    body: &[u8], shifts: &[((u32, u32), i64)],
+) -> Option<Vec<u8>> {
+    let mut out = body.to_vec();
+    let mut off = 0;
+    while off < out.len() {
+        if off + 8 > out.len() { return None; }
+        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
+        if unit_length == 0xFFFFFFFF { return None; }
+        let unit_end = off + 4 + unit_length as usize;
+        if unit_end > out.len() { return None; }
+        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        if version != 5 { return None; }
+        let address_size = out[off + 6];
+        let _seg = out[off + 7];
+        if address_size != 4 { return None; }
+
+        let mut p = off + 8;
+        while p + 4 <= unit_end {
+            let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
+            if let Some(d) = shifts.iter()
+                .find(|((s, e), _)| addr >= *s && addr < *e)
+                .map(|(_, d)| *d)
+            {
+                let new_addr = (addr as i64 + d).max(0) as u32;
+                out[p..p + 4].copy_from_slice(&new_addr.to_le_bytes());
+            }
+            p += 4;
+        }
+        off = unit_end;
     }
     Some(out)
 }
@@ -862,6 +1133,56 @@ mod tests {
         let off = 4 + 2 + 4 + 1 + 1;
         assert_eq!(u32::from_le_bytes(patched[off..off+4].try_into().unwrap()), 150);
         assert_eq!(u32::from_le_bytes(patched[off+4..off+8].try_into().unwrap()), 200);
+    }
+
+    #[test]
+    fn patch_debug_addr_shifts_array() {
+        // Header: unit_length (4) + version=5 (2) + addr_size=4 (1)
+        // + seg=0 (1) = 8 bytes. Then 2 addresses (8 bytes total).
+        // unit_length excludes its own 4 bytes → 4 + 8 = 12.
+        let mut body = Vec::new();
+        body.extend_from_slice(&12u32.to_le_bytes());  // unit_length
+        body.extend_from_slice(&5u16.to_le_bytes());   // version
+        body.push(4);                                  // address_size
+        body.push(0);                                  // segment_size
+        body.extend_from_slice(&100u32.to_le_bytes()); // addr 0
+        body.extend_from_slice(&200u32.to_le_bytes()); // addr 1
+
+        let shifts = vec![((50u32, 250u32), 50i64)];
+        let patched = patch_debug_addr(&body, &shifts).unwrap();
+        let a0 = u32::from_le_bytes(patched[8..12].try_into().unwrap());
+        let a1 = u32::from_le_bytes(patched[12..16].try_into().unwrap());
+        assert_eq!(a0, 150);
+        assert_eq!(a1, 250);
+    }
+
+    #[test]
+    fn patch_debug_rnglists_shifts_start_end_entry() {
+        // Header (12 bytes) + 0 offset entries + one entry:
+        //   tag = DW_RLE_start_end (0x06)
+        //   start (4) = 100, end (4) = 200
+        //   tag = DW_RLE_end_of_list (0x00)
+        // Total content after unit_length: 2 (version) + 1 (addr_size)
+        // + 1 (seg) + 4 (offset_entry_count) + 1 (entry tag) + 8 (pair)
+        // + 1 (eol) = 18 bytes. unit_length = 18.
+        let mut body = Vec::new();
+        body.extend_from_slice(&18u32.to_le_bytes());
+        body.extend_from_slice(&5u16.to_le_bytes());
+        body.push(4);
+        body.push(0);
+        body.extend_from_slice(&0u32.to_le_bytes());   // offset_entry_count
+        body.push(DW_RLE_START_END);
+        body.extend_from_slice(&100u32.to_le_bytes());
+        body.extend_from_slice(&200u32.to_le_bytes());
+        body.push(DW_RLE_END_OF_LIST);
+
+        let shifts = vec![((50u32, 250u32), 50i64)];
+        let patched = patch_debug_rnglists(&body, &shifts).unwrap();
+        let start_off = 4 + 2 + 1 + 1 + 4 + 1;
+        let s = u32::from_le_bytes(patched[start_off..start_off + 4].try_into().unwrap());
+        let e = u32::from_le_bytes(patched[start_off + 4..start_off + 8].try_into().unwrap());
+        assert_eq!(s, 150);
+        assert_eq!(e, 250);
     }
 
     #[test]
