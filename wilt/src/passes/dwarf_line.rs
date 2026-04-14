@@ -13,15 +13,17 @@
 //!   identical to its input at the same code-section byte offset —
 //!   true when passes like reorder/layout changed nothing but later
 //!   sections elsewhere — we preserve.
-//! - **Step 3** (this commit): byte-level address patching for the
-//!   "bodies byte-identical but moved" case. Find each
-//!   `DW_LNE_set_address` extended opcode in the line program, look
-//!   up which input function its address pointed at, compute the
-//!   new file offset of that function in the output, patch in
-//!   place. Same byte length (4-byte address for wasm), so no
-//!   downstream encoding shifts.
-//! - **Step 4** (deferred): per-sequence dropping for modified
-//!   bodies — needs gimli's write API.
+//! - **Step 3**: byte-level address patching for the "bodies byte-
+//!   identical but moved" case. Find each `DW_LNE_set_address`
+//!   extended opcode in the line program, look up which input
+//!   function its address pointed at, compute the new file offset
+//!   of that function in the output, patch in place.
+//! - **Step 4** (this commit): per-sequence splicing for the
+//!   "some bodies modified" case. Walk the program, delimit each
+//!   sequence by its `DW_LNE_end_sequence` boundary, drop sequences
+//!   for modified/eliminated functions, patch addresses for kept
+//!   ones, then stitch the surviving sequences into a new program
+//!   body and update the header's `unit_length`.
 //!
 //! Invariant: the output either carries an *accurate* `.debug_line`
 //! or none at all. We never embed stale addresses.
@@ -71,7 +73,206 @@ pub fn rewrite(input: &[u8], optimised: &[u8], remap: &FuncRemap) -> Option<Vec<
         }
     }
 
-    None
+    // Step 4: some bodies modified. Walk the program, drop
+    // sequences for modified/eliminated functions, keep sequences
+    // for preserved ones (with patched addresses).
+    splice_preserved_sequences(
+        line_bytes, input, optimised, remap, &in_offsets, &out_offsets,
+    )
+}
+
+/// Build a per-input-function "preservation" map: Some(output offset)
+/// if the body survives byte-identical, None if modified or removed.
+fn preservation_map(
+    input: &[u8], output: &[u8], remap: &FuncRemap,
+    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+) -> Option<Vec<Option<u32>>> {
+    let num_defined_in = in_offsets.len() as u32;
+    if remap.len() < num_defined_in { return None; }
+    let num_imports = remap.len() - num_defined_in;
+    let mut out = Vec::with_capacity(in_offsets.len());
+    for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
+        let abs_in = num_imports + def_i as u32;
+        let result = match remap.lookup(abs_in) {
+            None => None,
+            Some(abs_out) if abs_out < num_imports => None,
+            Some(abs_out) => {
+                let def_out = (abs_out - num_imports) as usize;
+                out_offsets.get(def_out).and_then(|&(off_out, len_out)| {
+                    if len_in != len_out { return None; }
+                    let in_bytes = &input[off_in as usize..(off_in + len_in) as usize];
+                    let out_bytes = &output[off_out as usize..(off_out + len_out) as usize];
+                    (in_bytes == out_bytes).then_some(off_out)
+                })
+            }
+        };
+        out.push(result);
+    }
+    Some(out)
+}
+
+/// Splice out sequences whose input function was modified or
+/// eliminated; keep sequences for preserved functions (applying
+/// step-3 address patches in the process). Re-emit program body
+/// and update the header's `unit_length` prefix.
+///
+/// Returns `None` if any invariant breaks (malformed program,
+/// unexpected DWARF v5 encoding, etc.) — caller falls back to drop.
+fn splice_preserved_sequences(
+    line_bytes: &[u8],
+    input: &[u8], output: &[u8], remap: &FuncRemap,
+    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+) -> Option<Vec<u8>> {
+    let preserved = preservation_map(input, output, remap, in_offsets, out_offsets)?;
+
+    // Parse header with gimli.
+    let dl = gimli::DebugLine::new(line_bytes, gimli::LittleEndian);
+    let header = dl.program(
+        gimli::DebugLineOffset(0),
+        4, None, None,
+    ).ok()?.header().clone();
+    let opcode_base = header.opcode_base();
+    let std_lens = header.standard_opcode_lengths();
+    let prog_off = (header.raw_program_buf().as_ptr() as usize)
+        - line_bytes.as_ptr() as usize;
+
+    // Build shifts for kept functions (step 3's model).
+    let mut shifts: Vec<((u32, u32), i64)> = Vec::new();
+    let _ = remap;
+    for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
+        if let Some(off_out) = preserved[def_i] {
+            shifts.push(((off_in, off_in + len_in), off_out as i64 - off_in as i64));
+        }
+    }
+
+    // Walk program, collecting (sequence_byte_start, sequence_byte_end,
+    // first_address) for each sequence.
+    let mut off = prog_off;
+    let mut seq_start = off;
+    let mut seq_first_addr: Option<u32> = None;
+    let mut sequences: Vec<(usize, usize, Option<u32>)> = Vec::new();
+
+    while off < line_bytes.len() {
+        let op_off = off;
+        let op = line_bytes[off];
+        off += 1;
+        if op == 0 {
+            // Extended opcode.
+            let (size, c) = leb128::read_u32(&line_bytes[off..])?;
+            off += c;
+            if size == 0 { continue; }
+            let sub = line_bytes[off];
+            let operand_off = off + 1;
+            let operand_len = (size as usize).saturating_sub(1);
+            let extended_end = operand_off + operand_len;
+
+            if sub == 0x02 /* DW_LNE_set_address */ && operand_len == 4 {
+                let addr_bytes: [u8; 4] = line_bytes[operand_off..operand_off + 4].try_into().ok()?;
+                let addr = u32::from_le_bytes(addr_bytes);
+                if seq_first_addr.is_none() {
+                    seq_first_addr = Some(addr);
+                    seq_start = op_off;
+                }
+            } else if sub == 0x01 /* DW_LNE_end_sequence */ {
+                sequences.push((seq_start, extended_end, seq_first_addr));
+                seq_first_addr = None;
+                seq_start = extended_end;
+            }
+            off = extended_end;
+        } else if (op as usize) < opcode_base as usize {
+            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            for _ in 0..n_operands {
+                let (_, c) = leb128::read_u32(&line_bytes[off..])?;
+                off += c;
+            }
+        }
+        // Special opcodes: 1 byte, no operands. Already advanced.
+    }
+
+    // Any trailing opcodes after the last end_sequence (shouldn't
+    // happen in valid DWARF but handle gracefully): drop them.
+
+    // Decide per sequence: keep or drop. Keep if its first address
+    // falls in a preserved function.
+    let mut new_body: Vec<u8> = line_bytes[..prog_off].to_vec();
+    let mut kept = 0usize;
+    for &(s, e, first_addr) in &sequences {
+        let Some(addr) = first_addr else { continue };
+        let is_preserved = shifts.iter().any(|((lo, hi), _)| addr >= *lo && addr < *hi);
+        if !is_preserved { continue; }
+        // Copy sequence bytes, then patch any DW_LNE_set_address
+        // within them.
+        let seq_slice = &line_bytes[s..e];
+        let mut buf = seq_slice.to_vec();
+        patch_seq_addresses(&mut buf, opcode_base, std_lens, &shifts)?;
+        new_body.extend_from_slice(&buf);
+        kept += 1;
+    }
+
+    if kept == 0 {
+        // Nothing preserved → caller can just drop the section.
+        return None;
+    }
+
+    // Update the `unit_length` field in the new header. It's the
+    // first 4 bytes (DWARF-32) or 12 bytes (DWARF-64). LLVM wasm
+    // emits DWARF-32, which is "first 4 bytes give unit_length =
+    // total size after these 4 bytes".
+    //
+    // Sanity: first-4-bytes != 0xFFFFFFFF (the DWARF-64 escape).
+    if new_body.len() < 4 { return None; }
+    let ul_first_bytes = &new_body[..4];
+    if ul_first_bytes == [0xFF, 0xFF, 0xFF, 0xFF] {
+        // DWARF-64. Bail — we haven't implemented.
+        return None;
+    }
+    let new_unit_len = (new_body.len() - 4) as u32;
+    new_body[0..4].copy_from_slice(&new_unit_len.to_le_bytes());
+
+    Some(new_body)
+}
+
+/// Like `patch_addresses` but scoped to a single sequence-byte slice.
+/// Only walks one sequence; doesn't need to track cross-sequence
+/// state. Used after splicing to apply step-3-style address shifts.
+fn patch_seq_addresses(
+    buf: &mut [u8],
+    opcode_base: u8,
+    std_lens: &[u8],
+    shifts: &[((u32, u32), i64)],
+) -> Option<()> {
+    let mut off = 0;
+    while off < buf.len() {
+        let op = buf[off];
+        off += 1;
+        if op == 0 {
+            let (size, c) = leb128::read_u32(&buf[off..])?;
+            off += c;
+            if size == 0 { continue; }
+            let sub = buf[off];
+            let operand_off = off + 1;
+            let operand_len = (size as usize).saturating_sub(1);
+            if sub == 0x02 && operand_len == 4 {
+                let addr_bytes: [u8; 4] = buf[operand_off..operand_off + 4].try_into().ok()?;
+                let addr = u32::from_le_bytes(addr_bytes);
+                let shift = shifts.iter()
+                    .find(|((s, e), _)| addr >= *s && addr < *e)
+                    .map(|(_, sh)| *sh);
+                if let Some(d) = shift {
+                    let new_addr = (addr as i64 + d).max(0) as u32;
+                    buf[operand_off..operand_off + 4].copy_from_slice(&new_addr.to_le_bytes());
+                }
+            }
+            off = operand_off + operand_len;
+        } else if (op as usize) < opcode_base as usize {
+            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            for _ in 0..n_operands {
+                let (_, c) = leb128::read_u32(&buf[off..])?;
+                off += c;
+            }
+        }
+    }
+    Some(())
 }
 
 /// Like `per_function_identical` but doesn't require positions to
