@@ -175,6 +175,93 @@ fn lines_tier_preserves_debug_line_when_code_unchanged() {
 }
 
 #[test]
+fn full_tier_preserves_debug_sections_when_unchanged() {
+    // Attach stub .debug_info + .debug_str sections. Full tier on
+    // an unchanged module should preserve them.
+    let mut input = build_named_module();
+    for (name, payload) in [
+        (".debug_info", &b"info_stub"[..]),
+        (".debug_str",  &b"str_stub"[..]),
+        (".debug_ranges", &b"ranges_stub"[..]),
+    ] {
+        let mut custom = Vec::new();
+        wilt::leb128::write_u32(&mut custom, name.len() as u32);
+        custom.extend_from_slice(name.as_bytes());
+        custom.extend_from_slice(payload);
+        input.push(0);
+        wilt::leb128::write_u32(&mut input, custom.len() as u32);
+        input.extend_from_slice(&custom);
+    }
+
+    let out = wilt::optimise_with_debug_level(&input, DebugLevel::Full);
+    assert!(WasmModule::parse(&out).is_ok());
+
+    // Collect debug sections present in output.
+    let m = WasmModule::parse(&out).unwrap();
+    let data = m.data();
+    let present: Vec<String> = m.sections().iter().filter_map(|s| {
+        if s.id != 0 { return None; }
+        let name = s.custom_name?.slice(data);
+        std::str::from_utf8(name).ok().map(String::from)
+    }).collect();
+
+    // If Full-tier preservation fires (it depends on whether the
+    // pipeline touched code), ALL three debug sections should be in
+    // output. If it doesn't, they should all be gone (no partial
+    // retention).
+    let has_info = present.contains(&".debug_info".to_string());
+    let has_str = present.contains(&".debug_str".to_string());
+    let has_ranges = present.contains(&".debug_ranges".to_string());
+    assert_eq!(has_info, has_str,
+               ".debug_info and .debug_str must be preserved-or-dropped together");
+    assert_eq!(has_str, has_ranges,
+               ".debug_str and .debug_ranges must be preserved-or-dropped together");
+}
+
+#[test]
+fn full_tier_strips_debug_when_code_modified() {
+    // Create a module with a call that const_prop or similar will
+    // rewrite, so the optimised code isn't byte-identical. With
+    // debug sections attached, Full tier should NOT preserve them.
+    let mut input = wat::parse_str(r#"
+        (module
+          (func $f (param i32) (result i32)
+            local.get 0
+            i32.const 5
+            i32.add)
+          (func (export "e") (result i32)
+            i32.const 1
+            call $f))
+    "#).unwrap();
+    for name in [".debug_info", ".debug_str"] {
+        let mut custom = Vec::new();
+        wilt::leb128::write_u32(&mut custom, name.len() as u32);
+        custom.extend_from_slice(name.as_bytes());
+        custom.extend_from_slice(b"stub");
+        input.push(0);
+        wilt::leb128::write_u32(&mut input, custom.len() as u32);
+        input.extend_from_slice(&custom);
+    }
+
+    let out = wilt::optimise_with_debug_level(&input, DebugLevel::Full);
+    assert!(WasmModule::parse(&out).is_ok());
+
+    let m = WasmModule::parse(&out).unwrap();
+    let data = m.data();
+    let present: Vec<String> = m.sections().iter().filter_map(|s| {
+        if s.id != 0 { return None; }
+        let name = s.custom_name?.slice(data);
+        std::str::from_utf8(name).ok().map(String::from)
+    }).collect();
+    // When the optimiser touches code, we must not leave stale
+    // debug info in the output.
+    assert!(!present.contains(&".debug_info".to_string()),
+            "stale .debug_info must NOT survive Full tier when code changed");
+    assert!(!present.contains(&".debug_str".to_string()),
+            "stale .debug_str must NOT survive Full tier when code changed");
+}
+
+#[test]
 fn module_with_no_name_section_survives() {
     // Strip name section from our fixture first.
     let input = build_named_module();

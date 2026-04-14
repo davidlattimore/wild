@@ -111,13 +111,39 @@ pub fn optimise_with_debug_level(input: &[u8], level: debug_level::DebugLevel) -
         DebugLevel::Names => {
             apply_names_tier(&core, input, &cumulative_remap)
         }
-        DebugLevel::Lines | DebugLevel::Full => {
-            // Names rewrite + try to preserve an accurate `.debug_line`.
-            // Falls back to strip behavior for line info when we can't
-            // guarantee accuracy (body modified or code layout shifted).
+        DebugLevel::Lines => {
             apply_lines_tier(&core, input, &cumulative_remap)
         }
+        DebugLevel::Full => {
+            // Lines + preserve the rest of the DWARF sections when
+            // provably accurate (step 1); broader handling in future
+            // steps.
+            apply_full_tier(&core, input, &cumulative_remap)
+        }
     }
+}
+
+fn apply_full_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) -> Vec<u8> {
+    // Build on the Lines-tier output (names rewritten, .debug_line
+    // preserved-if-accurate-or-stripped). Then layer preserved .debug_*
+    // sections on top when conditions permit.
+    let mut out = apply_lines_tier(optimised, input, remap);
+
+    if let Some(preserved) = passes::dwarf_full::preserve_full_debug(input, optimised, remap) {
+        for (name, payload) in &preserved.sections {
+            let mut custom_payload = Vec::new();
+            leb128::write_u32(&mut custom_payload, name.len() as u32);
+            custom_payload.extend_from_slice(name.as_bytes());
+            custom_payload.extend_from_slice(payload);
+
+            let mut sec = Vec::new();
+            sec.push(module::SECTION_CUSTOM);
+            leb128::write_u32(&mut sec, custom_payload.len() as u32);
+            sec.extend_from_slice(&custom_payload);
+            out.extend_from_slice(&sec);
+        }
+    }
+    out
 }
 
 fn apply_lines_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) -> Vec<u8> {
