@@ -214,20 +214,18 @@ fn splice_preserved_sequences(
         return None;
     }
 
-    // Update the `unit_length` field in the new header. It's the
-    // first 4 bytes (DWARF-32) or 12 bytes (DWARF-64). LLVM wasm
-    // emits DWARF-32, which is "first 4 bytes give unit_length =
-    // total size after these 4 bytes".
-    //
-    // Sanity: first-4-bytes != 0xFFFFFFFF (the DWARF-64 escape).
+    // Update the `unit_length` field in the new header. First 4
+    // bytes are the DWARF-32 length, OR the DWARF-64 escape
+    // 0xFFFFFFFF followed by a u64 length. Handle both honestly.
     if new_body.len() < 4 { return None; }
-    let ul_first_bytes = &new_body[..4];
-    if ul_first_bytes == [0xFF, 0xFF, 0xFF, 0xFF] {
-        // DWARF-64. Bail — we haven't implemented.
-        return None;
+    if new_body[..4] == [0xFF, 0xFF, 0xFF, 0xFF] {
+        if new_body.len() < 12 { return None; }
+        let new_unit_len = (new_body.len() - 12) as u64;
+        new_body[4..12].copy_from_slice(&new_unit_len.to_le_bytes());
+    } else {
+        let new_unit_len = (new_body.len() - 4) as u32;
+        new_body[0..4].copy_from_slice(&new_unit_len.to_le_bytes());
     }
-    let new_unit_len = (new_body.len() - 4) as u32;
-    new_body[0..4].copy_from_slice(&new_unit_len.to_le_bytes());
 
     Some(new_body)
 }

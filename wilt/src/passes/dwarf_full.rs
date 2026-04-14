@@ -22,13 +22,16 @@
 //!   identical, some moved" case.
 //! - **Step 3**: add `.debug_aranges` patching.
 //! - **Step 4**: abbrev-driven DIE walker for `.debug_info`.
-//! - **Step 5** (this commit): DWARF-5 long tail —
-//!   `.debug_rnglists`, `.debug_loclists`, `.debug_addr`. These
-//!   cover the same role as DWARF-4's ranges/loc/aranges but with
-//!   variable-length entry encodings driven by per-entry tag
-//!   bytes. Indexed forms (DW_RLE_base_addressx etc.) leave the
-//!   index alone — `.debug_addr` is patched separately so the
-//!   indices keep resolving to the right addresses.
+//! - **Step 5**: DWARF-5 long tail — `.debug_rnglists`,
+//!   `.debug_loclists`, `.debug_addr`.
+//! - **Step 6** (this commit): honour DWARF-64 faithfully —
+//!   detect the `unit_length == 0xFFFFFFFF` escape, widen offset
+//!   reads to u64, thread the flag through every form skipper
+//!   and header parser. Addresses stay `address_size` (4 bytes for
+//!   wasm) regardless of the 32/64 flag — only SECTION offsets
+//!   widen. Eliminates the "silent strip on DWARF-64 input" bug.
+//!   A follow-up will add DWARF-64 → DWARF-32 downconversion when
+//!   offsets fit in u32 (the common case for wasm).
 //!
 //! Invariant: no stale addresses ever reach the output.
 
@@ -455,56 +458,49 @@ pub fn patch_debug_info(
     let mut out = info.to_vec();
     let mut off = 0;
     while off < out.len() {
-        let cu_start = off;
-        // Parse CU header.
-        if off + 4 > out.len() { return None; }
-        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-        if unit_length == 0xFFFFFFFF { return None; }   // DWARF-64 unsupported
-        let cu_end = off + 4 + unit_length as usize;
+        // Parse CU header — honoring DWARF-64 escape.
+        let (unit_length, dwarf_64, ul_consumed) = read_unit_length(&out[off..])?;
+        let cu_end = off + ul_consumed + unit_length as usize;
         if cu_end > out.len() { return None; }
-        off += 4;
+        off += ul_consumed;
         let version = u16::from_le_bytes(out[off..off + 2].try_into().ok()?);
         off += 2;
 
-        let (debug_abbrev_offset, address_size);
+        let address_size;
+        let debug_abbrev_offset;
         if version <= 4 {
-            // DWARF 4: abbrev_offset (4 bytes), address_size (1 byte).
-            debug_abbrev_offset = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-            off += 4;
+            // DWARF 4: abbrev_offset (offset_size), address_size (1 byte).
+            debug_abbrev_offset = read_offset(&out[off..], dwarf_64)?;
+            off += offset_size(dwarf_64);
             address_size = out[off];
             off += 1;
         } else if version == 5 {
-            // DWARF 5: unit_type, address_size, debug_abbrev_offset.
+            // DWARF 5: unit_type (u8), address_size (u8), debug_abbrev_offset.
             let _unit_type = out[off];
             off += 1;
             address_size = out[off];
             off += 1;
-            debug_abbrev_offset = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-            off += 4;
+            debug_abbrev_offset = read_offset(&out[off..], dwarf_64)?;
+            off += offset_size(dwarf_64);
         } else {
             return None;
         }
         if address_size != 4 { return None; }   // wasm 32-bit only
-        let _ = cu_start;
 
         let abbrev_map = parse_abbrev_set(abbrev, debug_abbrev_offset as usize)?;
 
-        // Walk DIEs.
+        // Walk DIEs, threading dwarf_64 through skip_form.
         while off < cu_end {
             let (code, c) = read_uleb(out.get(off..)?)?;
             off += c;
-            if code == 0 { continue; }   // end of children
+            if code == 0 { continue; }
             let abbrev_decl = abbrev_map.get(&code)?.clone();
-            let _ = abbrev_decl.has_children;
 
             for attr in &abbrev_decl.attrs {
-                if attr.form == DW_FORM_IMPLICIT_CONST {
-                    // No bytes in DIE.
-                    continue;
-                }
+                if attr.form == DW_FORM_IMPLICIT_CONST { continue; }
                 let attr_off = off;
                 let consumed = skip_form(
-                    out.get(attr_off..)?, attr.form, address_size, false,
+                    out.get(attr_off..)?, attr.form, address_size, dwarf_64,
                 )?;
                 let is_address_attr = matches!(
                     attr.name, DW_AT_LOW_PC | DW_AT_ENTRY_PC
@@ -527,10 +523,37 @@ pub fn patch_debug_info(
                 off += consumed;
             }
         }
-        // Should land exactly at cu_end. Sanity check.
         if off != cu_end { return None; }
     }
     Some(out)
+}
+
+/// Parse a DWARF unit_length field. Returns `(length, is_dwarf_64,
+/// bytes_consumed)`. The DWARF-64 escape is `0xFFFFFFFF` in the first
+/// 4 bytes followed by a u64 length.
+fn read_unit_length(bytes: &[u8]) -> Option<(u64, bool, usize)> {
+    if bytes.len() < 4 { return None; }
+    let first = u32::from_le_bytes(bytes[..4].try_into().ok()?);
+    if first == 0xFFFFFFFF {
+        if bytes.len() < 12 { return None; }
+        let len = u64::from_le_bytes(bytes[4..12].try_into().ok()?);
+        Some((len, true, 12))
+    } else {
+        Some((first as u64, false, 4))
+    }
+}
+
+/// Byte size of a DWARF section-internal offset in the given format.
+fn offset_size(dwarf_64: bool) -> usize { if dwarf_64 { 8 } else { 4 } }
+
+/// Read a section-internal offset (u32 in DWARF-32, u64 in DWARF-64)
+/// at `bytes[0..offset_size(dwarf_64)]`. Returns the value.
+fn read_offset(bytes: &[u8], dwarf_64: bool) -> Option<u64> {
+    if dwarf_64 {
+        Some(u64::from_le_bytes(bytes.get(..8)?.try_into().ok()?))
+    } else {
+        Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as u64)
+    }
 }
 
 // DWARF-5 range-list entry kinds.
@@ -567,24 +590,22 @@ fn patch_debug_rnglists(
     let mut out = body.to_vec();
     let mut off = 0;
     while off < out.len() {
-        // Header.
-        if off + 12 > out.len() { return None; }
-        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-        if unit_length == 0xFFFFFFFF { return None; }
-        let unit_end = off + 4 + unit_length as usize;
+        let (unit_length, dwarf_64, ul_consumed) = read_unit_length(&out[off..])?;
+        let unit_end = off + ul_consumed + unit_length as usize;
         if unit_end > out.len() { return None; }
-        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        let header_pos = off + ul_consumed;
+        let version = u16::from_le_bytes(out[header_pos..header_pos + 2].try_into().ok()?);
         if version != 5 { return None; }
-        let address_size = out[off + 6];
-        let _segment_selector_size = out[off + 7];
+        let address_size = out[header_pos + 2];
+        let _segment_selector_size = out[header_pos + 3];
         let offset_entry_count = u32::from_le_bytes(
-            out[off + 8..off + 12].try_into().ok()?
+            out[header_pos + 4..header_pos + 8].try_into().ok()?
         ) as usize;
         if address_size != 4 { return None; }
 
-        let mut p = off + 12;
-        // Skip the offset table if present.
-        p += offset_entry_count * 4;   // DWARF-32: 4 bytes per offset
+        let mut p = header_pos + 8;
+        // Offset table entries: offset_size bytes each.
+        p += offset_entry_count * offset_size(dwarf_64);
         if p > unit_end { return None; }
 
         // Range list bodies up to unit_end.
@@ -671,21 +692,20 @@ fn patch_debug_loclists(
     let mut out = body.to_vec();
     let mut off = 0;
     while off < out.len() {
-        if off + 12 > out.len() { return None; }
-        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-        if unit_length == 0xFFFFFFFF { return None; }
-        let unit_end = off + 4 + unit_length as usize;
+        let (unit_length, dwarf_64, ul_consumed) = read_unit_length(&out[off..])?;
+        let unit_end = off + ul_consumed + unit_length as usize;
         if unit_end > out.len() { return None; }
-        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        let header_pos = off + ul_consumed;
+        let version = u16::from_le_bytes(out[header_pos..header_pos + 2].try_into().ok()?);
         if version != 5 { return None; }
-        let address_size = out[off + 6];
-        let _seg = out[off + 7];
+        let address_size = out[header_pos + 2];
+        let _seg = out[header_pos + 3];
         let offset_entry_count = u32::from_le_bytes(
-            out[off + 8..off + 12].try_into().ok()?
+            out[header_pos + 4..header_pos + 8].try_into().ok()?
         ) as usize;
         if address_size != 4 { return None; }
 
-        let mut p = off + 12 + offset_entry_count * 4;
+        let mut p = header_pos + 8 + offset_entry_count * offset_size(dwarf_64);
         if p > unit_end { return None; }
 
         while p < unit_end {
@@ -762,18 +782,17 @@ fn patch_debug_addr(
     let mut out = body.to_vec();
     let mut off = 0;
     while off < out.len() {
-        if off + 8 > out.len() { return None; }
-        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-        if unit_length == 0xFFFFFFFF { return None; }
-        let unit_end = off + 4 + unit_length as usize;
+        let (unit_length, _dwarf_64, ul_consumed) = read_unit_length(&out[off..])?;
+        let unit_end = off + ul_consumed + unit_length as usize;
         if unit_end > out.len() { return None; }
-        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        let header_pos = off + ul_consumed;
+        let version = u16::from_le_bytes(out[header_pos..header_pos + 2].try_into().ok()?);
         if version != 5 { return None; }
-        let address_size = out[off + 6];
-        let _seg = out[off + 7];
+        let address_size = out[header_pos + 2];
+        let _seg = out[header_pos + 3];
         if address_size != 4 { return None; }
 
-        let mut p = off + 8;
+        let mut p = header_pos + 4;
         while p + 4 <= unit_end {
             let addr = u32::from_le_bytes(out[p..p + 4].try_into().ok()?);
             if let Some(d) = shifts.iter()
@@ -814,22 +833,26 @@ fn patch_debug_aranges(
     let mut off = 0;
 
     while off < out.len() {
-        // Parse unit header.
-        if off + 12 > out.len() { return None; }
-        let unit_length = u32::from_le_bytes(out[off..off + 4].try_into().ok()?);
-        if unit_length == 0xFFFFFFFF { return None; }  // DWARF-64
-        let table_end = off + 4 + unit_length as usize;
+        let unit_start = off;
+        let (unit_length, dwarf_64, ul_consumed) = read_unit_length(&out[off..])?;
+        let table_end = off + ul_consumed + unit_length as usize;
         if table_end > out.len() { return None; }
-        let version = u16::from_le_bytes(out[off + 4..off + 6].try_into().ok()?);
+        off += ul_consumed;
+        let version = u16::from_le_bytes(out[off..off + 2].try_into().ok()?);
         if version != 2 { return None; }
-        let _debug_info_offset = u32::from_le_bytes(out[off + 6..off + 10].try_into().ok()?);
-        let address_size = out[off + 10];
-        let _segment_size = out[off + 11];
+        off += 2;
+        let _debug_info_offset = read_offset(&out[off..], dwarf_64)?;
+        off += offset_size(dwarf_64);
+        let address_size = out[off];
+        let _segment_size = out[off + 1];
+        off += 2;
         if address_size != 4 { return None; }
 
-        // Tuples align to 2 * address_size from unit_start. Header
-        // is 12 bytes; next multiple of 8 from unit_start = 16.
-        let tuple_start = off + ((12 + 7) & !7);
+        // Tuples align to 2 * address_size from UNIT_START.
+        let header_end_from_unit = off - unit_start;
+        let align = (2 * address_size as usize).max(1);
+        let padding = (align - header_end_from_unit % align) % align;
+        let tuple_start = off + padding;
         if tuple_start > table_end { return None; }
 
         let mut t = tuple_start;
@@ -840,7 +863,6 @@ fn patch_debug_aranges(
                 t += 8;
                 break;
             }
-            // Find the shift; if address isn't in any known range, leave.
             let end_addr = addr.saturating_add(len);
             let shift = shifts.iter()
                 .find(|((s, e), _)| addr >= *s && end_addr <= *e)
@@ -848,7 +870,6 @@ fn patch_debug_aranges(
             if let Some(d) = shift {
                 let new_addr = (addr as i64 + d).max(0) as u32;
                 out[t..t + 4].copy_from_slice(&new_addr.to_le_bytes());
-                // Length doesn't change.
             }
             t += 8;
         }
@@ -1133,6 +1154,89 @@ mod tests {
         let off = 4 + 2 + 4 + 1 + 1;
         assert_eq!(u32::from_le_bytes(patched[off..off+4].try_into().unwrap()), 150);
         assert_eq!(u32::from_le_bytes(patched[off+4..off+8].try_into().unwrap()), 200);
+    }
+
+    #[test]
+    fn read_unit_length_detects_dwarf64_escape() {
+        let dwarf32 = [0x10, 0x00, 0x00, 0x00];
+        let (len, d64, c) = read_unit_length(&dwarf32).unwrap();
+        assert_eq!(len, 16);
+        assert!(!d64);
+        assert_eq!(c, 4);
+
+        let mut dwarf64 = Vec::new();
+        dwarf64.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        dwarf64.extend_from_slice(&0x1234_5678_9ABCu64.to_le_bytes());
+        let (len, d64, c) = read_unit_length(&dwarf64).unwrap();
+        assert_eq!(len, 0x1234_5678_9ABC);
+        assert!(d64);
+        assert_eq!(c, 12);
+    }
+
+    #[test]
+    fn patch_debug_addr_handles_dwarf64() {
+        // DWARF-64 .debug_addr: 0xFFFFFFFF + u64 length + u16 version
+        // + u8 addr_size + u8 seg + addresses. DWARF-64 escape adds
+        // 8 bytes of header (on top of the 4-byte sentinel); body
+        // content (after the 12-byte preamble) is 2 + 1 + 1 + 4 + 4
+        // = 12 bytes (two addresses). unit_length excludes its own
+        // 12 preamble bytes → 12.
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        body.extend_from_slice(&12u64.to_le_bytes());
+        body.extend_from_slice(&5u16.to_le_bytes());
+        body.push(4);
+        body.push(0);
+        body.extend_from_slice(&100u32.to_le_bytes());
+        body.extend_from_slice(&200u32.to_le_bytes());
+
+        let shifts = vec![((50u32, 250u32), 50i64)];
+        let patched = patch_debug_addr(&body, &shifts).unwrap();
+        // Addresses are at offsets 16 and 20 (after the 16-byte
+        // DWARF-64 header).
+        let a0 = u32::from_le_bytes(patched[16..20].try_into().unwrap());
+        let a1 = u32::from_le_bytes(patched[20..24].try_into().unwrap());
+        assert_eq!(a0, 150);
+        assert_eq!(a1, 250);
+    }
+
+    #[test]
+    fn patch_debug_info_handles_dwarf64() {
+        // DWARF-64 DWARF-4 CU: 0xFFFFFFFF + u64 length + u16 version
+        // + u64 debug_abbrev_offset + u8 address_size + DIEs.
+        let mut abbrev = Vec::new();
+        abbrev.push(0x01);
+        abbrev.push(0x2E);        // subprogram tag
+        abbrev.push(0x00);        // no children
+        abbrev.push(DW_AT_LOW_PC as u8);
+        abbrev.push(DW_FORM_ADDR as u8);
+        abbrev.push(0); abbrev.push(0);
+        abbrev.push(0);
+
+        let mut info_body = Vec::new();
+        info_body.push(0x01);                                 // abbrev code
+        info_body.extend_from_slice(&100u32.to_le_bytes());   // low_pc addr
+        info_body.push(0);                                    // end sentinel
+
+        let mut info = Vec::new();
+        info.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);    // DWARF-64 escape
+        // unit_length: 2 (version) + 8 (abbrev_off) + 1 (addr_size) + info_body.
+        let ul = (2 + 8 + 1 + info_body.len()) as u64;
+        info.extend_from_slice(&ul.to_le_bytes());
+        info.extend_from_slice(&4u16.to_le_bytes());          // version
+        info.extend_from_slice(&0u64.to_le_bytes());          // abbrev_off (u64)
+        info.push(4);                                         // address_size
+        info.extend_from_slice(&info_body);
+
+        let shifts = vec![((50u32, 200u32), 50i64)];
+        let patched = patch_debug_info(&info, &abbrev, &shifts).unwrap();
+        // low_pc lives at: 12 (escape+u64) + 2 (version) + 8 (abbrev_off)
+        // + 1 (addr_size) + 1 (abbrev code) = 24.
+        let low_pc_off = 12 + 2 + 8 + 1 + 1;
+        let new_low_pc = u32::from_le_bytes(
+            patched[low_pc_off..low_pc_off + 4].try_into().unwrap(),
+        );
+        assert_eq!(new_low_pc, 150, "DWARF-64 CU low_pc must shift");
     }
 
     #[test]
