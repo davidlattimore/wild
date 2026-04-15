@@ -352,10 +352,10 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
-    for sec in &object.sections {
+    for (i, sec) in object.sections.iter().enumerate() {
         match sec {
             SectionSlot::Loaded(sec) => {
-                write_object_section::<A>(object, layout, sec, buffers)?;
+                write_object_section::<A>(object, layout, sec, object::SectionIndex(i), buffers)?;
             }
             _ => (),
         }
@@ -368,9 +368,10 @@ fn write_object_section<'data, A: Arch<Platform = MachO>>(
     object: &ObjectLayout<'data, MachO>,
     layout: &MachOLayout<'data>,
     section: &Section,
+    section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    write_section_raw(object, layout, section, buffers)?;
+    write_section_raw(object, layout, section, section_index, buffers)?;
     Ok(())
 
     // TODO: process relocations
@@ -380,9 +381,10 @@ fn write_section_raw<'out, 'data>(
     object: &ObjectLayout<'data, MachO>,
     layout: &MachOLayout,
     sec: &Section,
+    section_index: object::SectionIndex,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
-    let part_id = object.section_part_id(sec.index, &layout.symbol_db.section_part_ids);
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
         .has_data_in_file(part_id.output_section_id())
@@ -392,13 +394,13 @@ fn write_section_raw<'out, 'data>(
         if section_buffer.len() < allocation_size {
             bail!(
                 "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
-                object.object.section_display_name(sec.index),
+                object.object.section_display_name(section_index),
                 allocation_size,
                 section_buffer.len()
             );
         }
         let out = section_buffer.split_off_mut(..allocation_size).unwrap();
-        let object_section = object.object.section(sec.index)?;
+        let object_section = object.object.section(section_index)?;
 
         let section_size = object.object.section_size(object_section)?;
         let (out, padding) = out.split_at_mut(section_size as usize);
