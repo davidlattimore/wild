@@ -1391,7 +1391,8 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         args: &Self::Args,
     ) {
-        let has_dynamic_symbol = flags.is_dynamic() || flags.needs_export_dynamic();
+        let has_dynamic_symbol =
+            flags.is_dynamic() || (flags.needs_export_dynamic() && flags.is_interposable());
 
         if flags.needs_got() && !flags.is_tls() {
             mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
@@ -1400,7 +1401,7 @@ impl platform::Platform for Elf {
             }
             if flags.is_ifunc() {
                 mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
-            } else if flags.is_interposable() && has_dynamic_symbol {
+            } else if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if flags.is_address() && output_kind.is_relocatable() {
                 if args.is_relr_enabled() {
@@ -1436,7 +1437,7 @@ impl platform::Platform for Elf {
             if !output_kind.is_executable() || flags.is_dynamic() {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             }
-            if flags.is_interposable() && has_dynamic_symbol {
+            if has_dynamic_symbol {
                 mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             }
         }
