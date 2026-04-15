@@ -12,6 +12,7 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
+use colored::Colorize as _;
 use std::fmt::Write as _;
 
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
@@ -105,9 +106,9 @@ impl SymbolInfoPrinter {
             let flags = per_symbol_flags.flags_for_symbol(symbol_id);
 
             let file_state = if state.loaded_file_ids.contains(&file_id) {
-                "LOADED"
+                "LOADED".green()
             } else {
-                "NOT LOADED"
+                "NOT LOADED".red()
             };
 
             let Ok(sym_name) = symbol_db.symbol_name(symbol_id) else {
@@ -175,17 +176,20 @@ impl SymbolInfoPrinter {
                     .symbol_version_debug(symbol_id)
                     .map_or_else(String::new, |v| format!(" version `{v}`"));
 
-                let canon = if symbol_id == canonical {
-                    "".to_owned()
+                let id_string = if symbol_id == canonical {
+                    format!("{}", symbol_id.to_string().green())
                 } else {
-                    format!(" -> {canonical}")
+                    format!("{symbol_id} {arrow} {canonical}", arrow = "->".yellow())
                 };
 
                 let _ = writeln!(
                     &mut out,
-                    "  {symbol_id}{canon}: {sym_debug}: {flags} \
+                    " • {id_string}: {sym_debug}: {flags} \
                             \n    {sym_name}{version_str}\n    \
-                            #{local_index} in File #{file_id} {input} ({file_state})"
+                            #{local_index} in File #{file_id} {input} ({file_state})",
+                    input = input.yellow(),
+                    sym_name = sym_name.to_string().purple(),
+                    flags = flags.to_string().blue(),
                 );
             }
         }
