@@ -62,6 +62,14 @@
 //#ExpectMessage:this_function_is_not_used
 //#ExpectMessage:#[0-9]+ in File #256 \(1/0\) .* \(LOADED\)
 
+//#Config:write-gc-stats:default
+//#SkipLinker:ld
+//#CompArgs:-ffunction-sections
+//#Object:runtime.c
+//#LinkArgs:--gc-sections --write-gc-stats=$OUT_DIR/gc-stats.txt
+//#NoSym:this_function_is_not_used
+//#AssertOutputFileMatches:gc-stats.txt:Discarded .* of executable code
+
 //#Config:unsupported-z-flag
 //#Object:runtime.c
 //#LinkArgs:-z foobar

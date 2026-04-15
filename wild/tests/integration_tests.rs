@@ -20,7 +20,8 @@
 //!
 //! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
 //! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
-//! `./<filename>` will be replaced with the path to the input file.
+//! `./<filename>` will be replaced with the path to the input file. `$OUT_DIR` will be replaced
+//! with the path to the test's build directory.
 //!
 //! LinkSoArgs:... Arguments to pass when linking a shared object.
 //!
@@ -136,6 +137,10 @@
 //! This testing runs wild twice with the second run having the --update-in-place and the file
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
+//!
+//! AssertOutputFileMatches:{filename}:{regex} Verifies that a file in the output directory contains
+//! at least one line matching the specified regex. Such output files are generally written by
+//! specifying a flag in LinkArgs that uses $OUT_DIR.
 //!
 //! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
@@ -1047,12 +1052,19 @@ struct Assertions {
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
+    output_file_matches: Vec<OutputFileMatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSectionBytes {
     section_name: String,
     expected_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct OutputFileMatch {
+    filename: String,
+    pattern: regex::Regex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1304,6 +1316,7 @@ fn process_directive(
             if is_rust {
                 bail!("LinkArgs is not used when building Rust code");
             }
+            let arg = &arg.replace("$OUT_DIR", &config.build_dir().display().to_string());
             if let Some((_, rest)) = arg.split_once("./") {
                 let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
                 let src_path = config.test_src_dir.join(filename);
@@ -1481,6 +1494,12 @@ fn process_directive(
             })
         }
         "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
+        "AssertOutputFileMatches" => {
+            config
+                .assertions
+                .output_file_matches
+                .push(OutputFileMatch::parse(arg)?);
+        }
         "Compiler" => config.compiler = arg.trim().to_owned(),
         "Arch" => {
             config.support_architectures = arg
@@ -3070,7 +3089,29 @@ fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
 
 impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
-        self.check_path(&link_output.binary, &link_output.linker_used)
+        self.check_path(&link_output.binary, &link_output.linker_used)?;
+        self.check_output_files(link_output)?;
+        Ok(())
+    }
+
+    fn check_output_files(&self, link_output: &LinkOutput) -> Result {
+        let output_dir = link_output.binary.parent().unwrap();
+
+        for matcher in &self.output_file_matches {
+            let path = output_dir.join(&matcher.filename);
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read output file `{}`", path.display()))?;
+
+            if !matcher.pattern.is_match(&content) {
+                bail!(
+                    "Output file `{}` does not match pattern `{}`\nFile contents:\n{}",
+                    path.display(),
+                    matcher.pattern,
+                    content,
+                );
+            }
+        }
+        Ok(())
     }
 
     fn check_path(&self, path: &PathBuf, linker_used: &Linker) -> Result {
@@ -4233,3 +4274,25 @@ impl Filter {
         }
     }
 }
+
+impl OutputFileMatch {
+    fn parse(arg: &str) -> Result<Self> {
+        let (filename, pattern) = arg.split_once(':').with_context(|| {
+            format!("AssertOutputFileMatches requires filename:regex, got `{arg}`")
+        })?;
+        Ok(Self {
+            filename: filename.to_owned(),
+            pattern: regex::Regex::new(pattern).with_context(|| {
+                format!("Invalid regex in AssertOutputFileMatches: `{pattern}`")
+            })?,
+        })
+    }
+}
+
+impl PartialEq for OutputFileMatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.filename == other.filename && self.pattern.as_str() == other.pattern.as_str()
+    }
+}
+
+impl Eq for OutputFileMatch {}
