@@ -1,89 +1,89 @@
 # Linker Script Support
 
 This page documents which linker script features Wild supports, which are partially implemented,
-and which are planned for the future. Each feature is marked with one of four statuses: Supported,
-Partial, Planned, or Not planned. A dedicated section at the end lists the features required to
-link the Linux kernel.
+and which are planned for the future. Each feature is marked with one of four statuses: `✅`
+(supported), `🧪` (partial), `📅` (planned), or `❌` (not planned). A dedicated section at the
+end lists the features required to link the Linux kernel.
 
 ## Top-Level Commands
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `GROUP(files...)` | Supported | |
-| `INPUT(files...)` | Supported | |
-| `AS_NEEDED(files...)` | Supported | |
-| `INCLUDE(file)` | Planned | |
-| `OUTPUT_FORMAT(...)` | Supported | Parsed and ignored |
-| `OUTPUT_ARCH(arch)` | Not planned | |
-| `OUTPUT(filename)` | Not planned | |
-| `SECTIONS { ... }` | Supported | |
-| `ENTRY(symbol)` | Supported | |
-| `VERSION { ... }` | Supported | |
-| `PROVIDE(sym = expr)` | Supported | |
-| `PROVIDE_HIDDEN(sym = expr)` | Supported | |
-| `ASSERT(expr, "msg")` | Supported | |
-| `MEMORY { ... }` | Partial | Region parsing supported; attribute flags and `>region` placement not yet implemented |
-| `REGION_ALIAS(alias, region)` | Not planned | |
-| `SEARCH_DIR(path)` | Not planned | |
-| `STARTUP(filename)` | Not planned | |
-| `TARGET(bfdname)` | Not planned | |
-| `NOCROSSREFS(sections...)` | Not planned | |
-| `INSERT [AFTER\|BEFORE] section` | Not planned | |
-| Top-level symbol assignment (`sym = expr`) | Supported | |
-| Compound assignment operators (`+=`, `-=`, etc.) | Not planned | |
+| `GROUP(files...)` | ✅ | |
+| `INPUT(files...)` | ✅ | |
+| `AS_NEEDED(files...)` | ✅ | |
+| `INCLUDE(file)` | 📅 | |
+| `OUTPUT_FORMAT(...)` | ✅ | Parsed and ignored |
+| `OUTPUT_ARCH(arch)` | ❌ | |
+| `OUTPUT(filename)` | ❌ | |
+| `SECTIONS { ... }` | ✅ | |
+| `ENTRY(symbol)` | ✅ | |
+| `VERSION { ... }` | ✅ | |
+| `PROVIDE(sym = expr)` | ✅ | |
+| `PROVIDE_HIDDEN(sym = expr)` | ✅ | |
+| `ASSERT(expr, "msg")` | ✅ | |
+| `MEMORY { ... }` | 🧪 | Region parsing supported; attribute flags and `>region` placement not yet implemented |
+| `REGION_ALIAS(alias, region)` | ❌ | |
+| `SEARCH_DIR(path)` | ❌ | |
+| `STARTUP(filename)` | ❌ | |
+| `TARGET(bfdname)` | ❌ | |
+| `NOCROSSREFS(sections...)` | ❌ | |
+| `INSERT [AFTER\|BEFORE] section` | ❌ | |
+| Top-level symbol assignment (`sym = expr`) | ✅ | |
+| Compound assignment operators (`+=`, `-=`, etc.) | ❌ | |
 
 ## SECTIONS Block
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Output section definitions (`name : { ... }`) | Supported | |
-| Input section matchers (`*(pattern)`, `file(pattern)`) | Supported | |
-| Glob patterns in section and file names | Supported | |
-| `KEEP(...)` to prevent garbage collection | Supported | |
-| `PROVIDE(sym = expr)` inside sections | Supported | |
-| `PROVIDE_HIDDEN(sym = expr)` inside sections | Supported | |
-| Symbol assignment inside sections (`sym = .`) | Partial | Only assignment of the location counter (`sym = .`) is supported; arbitrary expressions on the right-hand side are not |
-| Location counter assignment (`. = expr`) | Partial | Hex address literals (e.g. `. = 0x1000`) supported between output sections only; not inside section contents |
-| `ALIGN(n)` on the location counter (`. = ALIGN(n)`) | Supported | |
-| Per-section `ALIGN(n)` specifier | Supported | |
-| `ASSERT(expr, "msg")` inside `SECTIONS` | Supported | |
-| `OVERLAY { ... }` | Not planned | |
-| Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | Planned | |
-| `FILL(value)` and `=fillexp` | Planned | |
-| `AT(addr)` load-address specifier on output sections | Planned | |
-| Numeric address between section name and `:` (e.g. `name 0 : { ... }`) | Planned | |
-| `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | Planned | |
-| `EXCLUDE_FILE(...)` inside input section matchers | Planned | |
-| `BYTE(expr)`, `SHORT(expr)`, `LONG(expr)`, `QUAD(expr)` output data | Not planned | |
-| `SUBALIGN(n)` forced input alignment | Not planned | |
-| `ONLY_IF_RO` / `ONLY_IF_RW` output section constraints | Not planned | |
+| Output section definitions (`name : { ... }`) | ✅ | |
+| Input section matchers (`*(pattern)`, `file(pattern)`) | ✅ | |
+| Glob patterns in section and file names | ✅ | |
+| `KEEP(...)` to prevent garbage collection | ✅ | |
+| `PROVIDE(sym = expr)` inside sections | ✅ | |
+| `PROVIDE_HIDDEN(sym = expr)` inside sections | ✅ | |
+| Symbol assignment inside sections (`sym = .`) | 🧪 | Only assignment of the location counter (`sym = .`) is supported; arbitrary expressions on the right-hand side are not |
+| Location counter assignment (`. = expr`) | 🧪 | Hex address literals (e.g. `. = 0x1000`) supported between output sections only; not inside section contents |
+| `ALIGN(n)` on the location counter (`. = ALIGN(n)`) | ✅ | |
+| Per-section `ALIGN(n)` specifier | ✅ | |
+| `ASSERT(expr, "msg")` inside `SECTIONS` | ✅ | |
+| `OVERLAY { ... }` | ❌ | |
+| Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 📅 | |
+| `FILL(value)` and `=fillexp` | 📅 | |
+| `AT(addr)` load-address specifier on output sections | 📅 | |
+| Numeric address between section name and `:` (e.g. `name 0 : { ... }`) | 📅 | |
+| `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
+| `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
+| `BYTE(expr)`, `SHORT(expr)`, `LONG(expr)`, `QUAD(expr)` output data | ❌ | |
+| `SUBALIGN(n)` forced input alignment | ❌ | |
+| `ONLY_IF_RO` / `ONLY_IF_RW` output section constraints | ❌ | |
 
 ## Expressions and Functions
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Arithmetic operators: `+`, `-`, `*`, `/` | Supported | |
-| Comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=` | Supported | |
-| Bitwise operators: `&`, `\|`, `^`, `~`, `<<`, `>>` | Supported | |
-| Logical operators: `&&`, `\|\|` | Supported | |
-| Unary operators: `-`, `!`, `~` | Supported | |
-| Numeric literals: decimal and hexadecimal | Supported | |
-| Numeric literal K/M suffixes (e.g. `64K`, `2M`) | Supported | |
-| Symbol references and location counter (`.`) | Supported | |
-| Parenthesised sub-expressions | Supported | |
-| `SIZEOF(section)` | Supported | |
-| `ALIGNOF(section)` | Supported | |
-| `ADDR(section)` | Supported | |
-| `LOADADDR(section)` | Partial | Implemented as alias for `ADDR` (returns VMA); full LMA requires `AT(addr)` support |
-| `ALIGN(expr)` | Supported | |
-| `LENGTH(region)` | Supported | |
-| `ORIGIN(region)` | Supported | |
-| `MIN(a, b)` | Supported | |
-| `MAX(a, b)` | Supported | |
-| Ternary operator (`condition ? a : b`) | Planned | |
-| `DEFINED(sym)` | Planned | |
-| `SIZEOF_HEADERS` | Planned | |
-| `SEGMENT_START(segment, default)` | Planned | |
+| Arithmetic operators: `+`, `-`, `*`, `/` | ✅ | |
+| Comparison operators: `<`, `>`, `<=`, `>=`, `==`, `!=` | ✅ | |
+| Bitwise operators: `&`, `\|`, `^`, `~`, `<<`, `>>` | ✅ | |
+| Logical operators: `&&`, `\|\|` | ✅ | |
+| Unary operators: `-`, `!`, `~` | ✅ | |
+| Numeric literals: decimal and hexadecimal | ✅ | |
+| Numeric literal K/M suffixes (e.g. `64K`, `2M`) | ✅ | |
+| Symbol references and location counter (`.`) | ✅ | |
+| Parenthesised sub-expressions | ✅ | |
+| `SIZEOF(section)` | ✅ | |
+| `ALIGNOF(section)` | ✅ | |
+| `ADDR(section)` | ✅ | |
+| `LOADADDR(section)` | 🧪 | Implemented as alias for `ADDR` (returns VMA); full LMA requires `AT(addr)` support |
+| `ALIGN(expr)` | ✅ | |
+| `LENGTH(region)` | ✅ | |
+| `ORIGIN(region)` | ✅ | |
+| `MIN(a, b)` | ✅ | |
+| `MAX(a, b)` | ✅ | |
+| Ternary operator (`condition ? a : b`) | 📅 | |
+| `DEFINED(sym)` | 📅 | |
+| `SIZEOF_HEADERS` | 📅 | |
+| `SEGMENT_START(segment, default)` | 📅 | |
 
 ## MEMORY Command
 
@@ -94,13 +94,13 @@ assign an output section to a named region (`>region`, `AT>region`) are not yet 
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `MEMORY { ... }` block parsing | Supported | |
-| Region name | Supported | |
-| `ORIGIN`/`org`/`o` attribute | Supported | |
-| `LENGTH`/`len`/`l` attribute | Supported | |
-| Attribute flags (`(rwx)`, `(rx)`, etc.) | Planned | |
-| `>region` output section placement | Planned | |
-| `AT>region` load-region placement | Planned | |
+| `MEMORY { ... }` block parsing | ✅ | |
+| Region name | ✅ | |
+| `ORIGIN`/`org`/`o` attribute | ✅ | |
+| `LENGTH`/`len`/`l` attribute | ✅ | |
+| Attribute flags (`(rwx)`, `(rx)`, etc.) | 📅 | |
+| `>region` output section placement | 📅 | |
+| `AT>region` load-region placement | 📅 | |
 
 ## Linux Kernel Requirements
 
@@ -111,15 +111,15 @@ see at a glance what remains before Wild can link the kernel.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `OVERLAY { ... }` sections | Not planned | |
-| Output section type specifiers (`(NOLOAD)`, `(COPY)`) | Planned | |
-| `FILL(value)` and `=fillexp` | Planned | |
-| `AT(addr)` load-address specifier on output sections | Planned | |
-| `>region` and `AT>region` memory region placement | Planned | |
-| `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | Planned | |
-| `EXCLUDE_FILE(...)` inside input section matchers | Planned | |
-| `CONSTRUCTORS` command | Planned | |
-| `PHDRS` command for explicit program header definition | Planned | |
-| Ternary operator (`condition ? a : b`) | Planned | |
-| `DEFINED(sym)` function | Planned | |
-| `SIZEOF_HEADERS` built-in symbol | Planned | |
+| `OVERLAY { ... }` sections | ❌ | |
+| Output section type specifiers (`(NOLOAD)`, `(COPY)`) | 📅 | |
+| `FILL(value)` and `=fillexp` | 📅 | |
+| `AT(addr)` load-address specifier on output sections | 📅 | |
+| `>region` and `AT>region` memory region placement | 📅 | |
+| `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
+| `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
+| `CONSTRUCTORS` command | 📅 | |
+| `PHDRS` command for explicit program header definition | 📅 | |
+| Ternary operator (`condition ? a : b`) | 📅 | |
+| `DEFINED(sym)` function | 📅 | |
+| `SIZEOF_HEADERS` built-in symbol | 📅 | |
