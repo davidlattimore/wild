@@ -234,7 +234,10 @@ use strum::EnumString;
 use wait_timeout::ChildExt;
 
 fn main() -> Result<std::process::ExitCode> {
-    let args = libtest_mimic::Arguments::from_args();
+    let mut args = libtest_mimic::Arguments::from_args();
+    if should_emit_colour() {
+        args.color = Some(libtest_mimic::ColorSetting::Always);
+    }
     let filter = Filter::new(&args);
     let mut tests = Vec::new();
     collect_tests(&mut tests, &filter)?;
@@ -2195,10 +2198,7 @@ fn build_obj(
 
             // Ask GCC to colourise its output even though we're capturing it, but only if we think
             // our output is likely to support colours.
-            if std::io::stdout().is_terminal()
-                || std::env::var("CARGO_TERM_COLOR").as_deref() == Ok("always")
-                || std::env::var("NEXTEST").is_ok()
-            {
+            if should_emit_colour() {
                 command.arg("-fdiagnostics-color=always");
             }
 
@@ -2334,6 +2334,12 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+fn should_emit_colour() -> bool {
+    std::io::stdout().is_terminal()
+        || std::env::var("CARGO_TERM_COLOR").as_deref() == Ok("always")
+        || std::env::var("NEXTEST").is_ok()
 }
 
 fn cmd_path(output_path: &Path) -> PathBuf {
