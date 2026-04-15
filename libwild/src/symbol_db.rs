@@ -30,6 +30,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
+use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -95,6 +96,16 @@ pub struct SymbolDb<'data, P: Platform> {
 
     pub(crate) output_kind: OutputKind,
     pub(crate) herd: &'data bumpalo_herd::Herd,
+
+    /// The next input section ID to assign. Updated by `create_groups` so that subsequent calls
+    /// (e.g. for LTO output objects) continue from where the previous call left off.
+    pub(crate) next_input_section_id: crate::input_section_id::InputSectionId,
+
+    /// Output part IDs for all input sections across all files, indexed by `InputSectionId`.
+    /// Populated after section resolution and `assign_section_ids`. Note that for non-loaded
+    /// sections, this will indicate the part that the section would have been placed in had it
+    /// been loaded.
+    pub(crate) section_part_ids: Vec<PartId>,
 }
 
 /// Borrows from a SymbolDb, but allows temporary atomic access to some of the tables. These tables
@@ -356,6 +367,8 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             entry: None,
             output_kind,
             herd,
+            section_part_ids: Vec::new(),
+            next_input_section_id: crate::input_section_id::InputSectionId::from_usize(0),
         };
 
         for symbol in args.force_export_symbol_names() {

@@ -29,7 +29,6 @@ use crate::platform::ProgramSegmentDef;
 use crate::platform::SectionAttributes as _;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
-use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use core::slice;
 use hashbrown::HashMap;
@@ -569,7 +568,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn add_sections(
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
-        sections: &mut [SectionSlot],
+        section_part_ids: &mut [PartId],
         args: &P::Args,
     ) {
         for custom in custom_sections {
@@ -578,9 +577,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 .map(|address| linker_script::Location { address });
             let section_id = self.add_named_section(custom.name, custom.alignment, location);
 
-            if let Some(slot) = sections.get_mut(custom.index.0) {
-                slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
-            }
+            section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
         }
     }
 

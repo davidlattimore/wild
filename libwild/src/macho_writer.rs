@@ -382,12 +382,13 @@ fn write_section_raw<'out, 'data>(
     sec: &Section,
     buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result<&'out mut [u8]> {
+    let part_id = object.section_part_id(sec.index, &layout.symbol_db.section_part_ids);
     if layout
         .output_sections
-        .has_data_in_file(sec.output_section_id())
+        .has_data_in_file(part_id.output_section_id())
     {
-        let section_buffer = buffers.get_mut(sec.output_part_id());
-        let allocation_size = sec.capacity(&layout.output_sections) as usize;
+        let section_buffer = buffers.get_mut(part_id);
+        let allocation_size = sec.capacity(part_id, &layout.output_sections) as usize;
         if section_buffer.len() < allocation_size {
             bail!(
                 "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",

@@ -249,7 +249,8 @@ fn test_merge_parts() {
     let mut num_sections_with_17 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
 
-    const MACHO_SPECIFIC_SECTIONS: &[OutputSectionId] = &[
+    const SKIP_SECTIONS: &[OutputSectionId] = &[
+        crate::part_id::UNMAPPED.output_section_id(),
         output_section_id::PAGEZERO_SEGMENT,
         output_section_id::TEXT_SEGMENT,
         output_section_id::DATA_SEGMENT,
@@ -266,7 +267,7 @@ fn test_merge_parts() {
         if *sum == 17 {
             num_sections_with_17 += 1;
         }
-        if MACHO_SPECIFIC_SECTIONS.contains(&section_id) {
+        if SKIP_SECTIONS.contains(&section_id) {
             assert!(*sum == 0, "Expected zero sum for section {section_id:?}");
         } else {
             assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");

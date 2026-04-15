@@ -15,48 +15,52 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct PartId(u32);
 
+// Part ID for stuff that isn't directly mapped to an output part. Discarded sections will be placed
+// here. GCed sections won't - they'll have the part ID they would have been placed in had they not
+// been GCed. This is also used for various sections that we don't just copy, e.g. eh_frame.
+pub(crate) const UNMAPPED: PartId = PartId(0);
 // Sections that we generate ourselves rather than copying directly from input objects.
-pub(crate) const FILE_HEADER: PartId = PartId(0);
-pub(crate) const PROGRAM_HEADERS: PartId = PartId(1);
-pub(crate) const SECTION_HEADERS: PartId = PartId(2);
-pub(crate) const SHSTRTAB: PartId = PartId(3);
-pub(crate) const STRTAB: PartId = PartId(4);
-pub(crate) const GOT: PartId = PartId(5);
-pub(crate) const PLT_GOT: PartId = PartId(6);
-pub(crate) const RELA_PLT: PartId = PartId(7);
-pub(crate) const EH_FRAME: PartId = PartId(8);
-pub(crate) const EH_FRAME_HDR: PartId = PartId(9);
-pub(crate) const SFRAME: PartId = PartId(10);
-pub(crate) const DYNAMIC: PartId = PartId(11);
-pub(crate) const SYSV_HASH: PartId = PartId(12);
-pub(crate) const GNU_HASH: PartId = PartId(13);
-pub(crate) const DYNSYM: PartId = PartId(14);
-pub(crate) const DYNSTR: PartId = PartId(15);
-pub(crate) const INTERP: PartId = PartId(16);
-pub(crate) const GNU_VERSION: PartId = PartId(17);
-pub(crate) const GNU_VERSION_D: PartId = PartId(18);
-pub(crate) const GNU_VERSION_R: PartId = PartId(19);
-pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(20);
-pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(21);
-pub(crate) const SYMTAB_LOCAL: PartId = PartId(22);
-pub(crate) const SYMTAB_GLOBAL: PartId = PartId(23);
-pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(24);
-pub(crate) const RELA_DYN_GENERAL: PartId = PartId(25);
-pub(crate) const RISCV_ATTRIBUTES: PartId = PartId(26);
-pub(crate) const RELRO_PADDING: PartId = PartId(27);
-pub(crate) const RELR_DYN: PartId = PartId(28);
-pub(crate) const SYMTAB_SHNDX_LOCAL: PartId = PartId(29);
-pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(30);
+pub(crate) const FILE_HEADER: PartId = PartId(1);
+pub(crate) const PROGRAM_HEADERS: PartId = PartId(2);
+pub(crate) const SECTION_HEADERS: PartId = PartId(3);
+pub(crate) const SHSTRTAB: PartId = PartId(4);
+pub(crate) const STRTAB: PartId = PartId(5);
+pub(crate) const GOT: PartId = PartId(6);
+pub(crate) const PLT_GOT: PartId = PartId(7);
+pub(crate) const RELA_PLT: PartId = PartId(8);
+pub(crate) const EH_FRAME: PartId = PartId(9);
+pub(crate) const EH_FRAME_HDR: PartId = PartId(10);
+pub(crate) const SFRAME: PartId = PartId(11);
+pub(crate) const DYNAMIC: PartId = PartId(12);
+pub(crate) const SYSV_HASH: PartId = PartId(13);
+pub(crate) const GNU_HASH: PartId = PartId(14);
+pub(crate) const DYNSYM: PartId = PartId(15);
+pub(crate) const DYNSTR: PartId = PartId(16);
+pub(crate) const INTERP: PartId = PartId(17);
+pub(crate) const GNU_VERSION: PartId = PartId(18);
+pub(crate) const GNU_VERSION_D: PartId = PartId(19);
+pub(crate) const GNU_VERSION_R: PartId = PartId(20);
+pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(21);
+pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(22);
+pub(crate) const SYMTAB_LOCAL: PartId = PartId(23);
+pub(crate) const SYMTAB_GLOBAL: PartId = PartId(24);
+pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(25);
+pub(crate) const RELA_DYN_GENERAL: PartId = PartId(26);
+pub(crate) const RISCV_ATTRIBUTES: PartId = PartId(27);
+pub(crate) const RELRO_PADDING: PartId = PartId(28);
+pub(crate) const RELR_DYN: PartId = PartId(29);
+pub(crate) const SYMTAB_SHNDX_LOCAL: PartId = PartId(30);
+pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(31);
 // Mach-O specific sections
-pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(31);
-pub(crate) const TEXT_SEGMENT: PartId = PartId(32);
-pub(crate) const DATA_SEGMENT: PartId = PartId(33);
-pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(34);
-pub(crate) const ENTRY_POINT: PartId = PartId(35);
-pub(crate) const DYLD_CHAINED_FIXUPS: PartId = PartId(36);
-pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(37);
+pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(32);
+pub(crate) const TEXT_SEGMENT: PartId = PartId(33);
+pub(crate) const DATA_SEGMENT: PartId = PartId(34);
+pub(crate) const LINK_EDIT_SEGMENT: PartId = PartId(35);
+pub(crate) const ENTRY_POINT: PartId = PartId(36);
+pub(crate) const DYLD_CHAINED_FIXUPS: PartId = PartId(37);
+pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(38);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 38;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 39;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

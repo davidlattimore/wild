@@ -5008,6 +5008,7 @@ impl Resolution<Elf> {
         addend: i64,
         symbol_index: object::SymbolIndex,
         object_layout: &ObjectLayout<'data, Elf>,
+        section_part_ids: &[crate::part_id::PartId],
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
@@ -5024,6 +5025,8 @@ impl Resolution<Elf> {
                 addend,
                 object_layout.object,
                 &object_layout.sections,
+                section_part_ids,
+                object_layout.section_id_range,
                 merged_strings,
                 merged_string_start_addresses,
                 false,

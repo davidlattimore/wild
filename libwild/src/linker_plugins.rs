@@ -92,6 +92,7 @@ pub(crate) struct LoadedPlugin {
 pub(crate) struct LtoInput<'data> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: crate::input_section_id::SectionIdRange,
     pub(crate) input_ref: InputRef<'data>,
     pub(crate) symbols: Vec<PluginSymbol<'data>>,
     /// Set to false once symbols from this object should be ignored. This is done once LTO has
@@ -499,6 +500,7 @@ impl<'data> LtoInputInfo<'data> {
         LtoInput {
             file_id,
             symbol_id_range,
+            section_id_range: crate::input_section_id::SectionIdRange::empty(),
             input_ref: self.input_ref,
             symbols: self.symbols,
             enabled: true,

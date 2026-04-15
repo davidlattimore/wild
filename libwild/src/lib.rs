@@ -24,6 +24,7 @@ pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
 pub(crate) mod input_data;
+pub(crate) mod input_section_id;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 #[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]

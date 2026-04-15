@@ -18,6 +18,7 @@ use crate::grouping::Group;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
@@ -112,8 +113,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut symbol_info_printer = SymbolInfoPrinter::new(symbol_db.args, &groups);
     symbol_info_printer.update(&symbol_db, &atomic_per_symbol_flags);
 
-    let string_merge_inputs =
-        crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
+    let string_merge_inputs = crate::string_merging::StringMergeInputs::new(
+        &mut groups,
+        &symbol_db.section_part_ids,
+        &output_sections,
+    )?;
 
     let (merged_strings, gc_outputs) = rayon::join(
         || {
@@ -297,7 +301,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &mut symbol_resolutions.resolutions,
     );
     update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
-    crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
+    crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
 
     // Evaluate ASSERT commands from all linker scripts now that layout is complete.
     crate::expression_eval::evaluate_assertions(
@@ -686,6 +690,7 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) relocations: P::RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: SectionIdRange,
     /// SFrame section ranges for this object, relative to the start of the .sframe output section.
     pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
     /// Sparse map from section index to relaxation delta details.
@@ -1046,7 +1051,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         section: Section,
         output_sections: &OutputSections<P>,
     ) {
-        self.allocate(part_id, section.capacity(output_sections));
+        self.allocate(part_id, section.capacity(part_id, output_sections));
         self.store_section_attributes(part_id, header);
     }
 
@@ -1067,6 +1072,7 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) section_id_range: SectionIdRange,
     pub(crate) object: &'data P::File<'data>,
 
     /// Info about each of our sections. Indexed the same as the sections in the input object.
@@ -1112,7 +1118,6 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Section {
     pub(crate) index: object::SectionIndex,
-    pub(crate) part_id: PartId,
     /// Size in the output. This starts as the input section size, then may be reduced by
     /// relaxation-induced byte deletions during `scan_relaxations`.
     pub(crate) size: u64,
@@ -2544,12 +2549,11 @@ impl Section {
         header: &P::SectionHeader,
         object_state: &ObjectLayoutState<'data, P>,
         section_index: object::SectionIndex,
-        part_id: PartId,
+        _part_id: PartId,
     ) -> Result<Section> {
         let size = object_state.object.section_size(header)?;
         let section = Section {
             index: section_index,
-            part_id,
             size,
             flags: ValueFlags::empty(),
         };
@@ -2558,25 +2562,16 @@ impl Section {
 
     // How much space we take up. This is our size rounded up to the next multiple of our
     // alignment, unless we're in a packed section, in which case it's just our size.
-    pub(crate) fn capacity<P: Platform>(&self, output_sections: &OutputSections<P>) -> u64 {
-        if self.part_id.should_pack() {
+    pub(crate) fn capacity<P: Platform>(
+        &self,
+        part_id: PartId,
+        output_sections: &OutputSections<P>,
+    ) -> u64 {
+        if part_id.should_pack() {
             self.size
         } else {
-            self.alignment(output_sections).align_up(self.size)
+            part_id.alignment(output_sections).align_up(self.size)
         }
-    }
-
-    pub(crate) fn output_section_id(&self) -> OutputSectionId {
-        self.part_id.output_section_id()
-    }
-
-    pub(crate) fn output_part_id(&self) -> PartId {
-        self.part_id
-    }
-
-    /// Returns the alignment for this section.
-    fn alignment<P: Platform>(&self, output_sections: &OutputSections<P>) -> Alignment {
-        self.part_id.alignment(output_sections)
     }
 }
 
@@ -3479,6 +3474,7 @@ fn new_object_layout_state<P: Platform>(
     FileLayoutState::Object(ObjectLayoutState {
         file_id: input_state.common.file_id,
         symbol_id_range: input_state.common.symbol_id_range,
+        section_id_range: input_state.section_id_range,
         input: input_state.common.input,
         object: input_state.common.object,
         sections: input_state.sections,
@@ -3519,7 +3515,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         for (i, section) in self.sections.iter().enumerate() {
             match section {
                 SectionSlot::MustLoad(..)
-                | SectionSlot::UnloadedDebugInfo(..)
+                | SectionSlot::UnloadedDebugInfo
                 | SectionSlot::MergeStrings(_) => {
                     queue
                         .local_work
@@ -3537,9 +3533,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                                 object::SectionIndex(i),
                             )));
                     } else if sec.start_stop_eligible {
+                        let part_id = self.section_part_id(
+                            object::SectionIndex(i),
+                            &resources.symbol_db.section_part_ids,
+                        );
                         resources
                             .start_stop_sections
-                            .get(sec.part_id.output_section_id())
+                            .get(part_id.output_section_id())
                             .push(SectionLoadRequest {
                                 file_id: self.file_id,
                                 section_index: i as u32,
@@ -3614,10 +3614,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                 self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
             }
-            SectionSlot::UnloadedDebugInfo(part_id) => {
+            SectionSlot::UnloadedDebugInfo => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
                 // labels).
-                self.load_debug_section::<A>(common, *part_id, section_index, resources)?;
+                self.load_debug_section::<A>(common, section_index, resources)?;
             }
             SectionSlot::Discard => {
                 bail!(
@@ -3630,12 +3630,14 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..)
             | SectionSlot::RiscvVAttributes(..) => {}
-            SectionSlot::MergeStrings(sec) => {
+            SectionSlot::MergeStrings(_) => {
                 // We currently always load everything in merge-string sections. i.e. we don't GC
                 // unreferenced data. So the only thing we need to do here is propagate section
                 // flags.
                 let header = self.object.section(section_index)?;
-                common.store_section_attributes(sec.part_id, header);
+                let part_id =
+                    self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
+                common.store_section_attributes(part_id, header);
             }
         };
 
@@ -3651,7 +3653,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         resources: &'scope GraphResources<'data, 'scope, P>,
         scope: &Scope<'scope>,
     ) -> Result {
-        let part_id = unloaded.part_id;
+        let part_id = self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
 
@@ -3663,7 +3665,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         common.section_loaded(part_id, header, section, resources.output_sections);
 
-        let section_id = section.output_section_id();
+        let section_id = part_id.output_section_id();
 
         if section.size > 0 {
             P::non_empty_section_loaded::<A>(self, common, queue, unloaded, resources, scope)?;
@@ -3679,10 +3681,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn load_debug_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        part_id: PartId,
         section_index: SectionIndex,
         resources: &'scope GraphResources<'data, '_, P>,
     ) -> Result {
+        let part_id = self.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
 
@@ -3758,14 +3760,17 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         let mut sframe_ranges = Vec::new();
 
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
-        for slot in &mut self.sections {
+        let section_id_range = self.section_id_range;
+        let object_part_ids = &resources.symbol_db.section_part_ids[section_id_range.as_usize()];
+
+        for (slot, &part_id) in self.sections.iter_mut().zip(object_part_ids) {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    let part_id = sec.part_id;
                     let address = *memory_offsets.get(part_id);
                     // TODO: We probably need to be able to handle sections that are ifuncs and
                     // sections that need a TLS GOT struct.
-                    *memory_offsets.get_mut(part_id) += sec.capacity(resources.output_sections);
+                    *memory_offsets.get_mut(part_id) +=
+                        sec.capacity(part_id, resources.output_sections);
                     // Collect SFrame section ranges while we're already iterating
                     if part_id.output_section_id() == output_section_id::SFRAME {
                         let offset = (address - sframe_start_address) as usize;
@@ -3775,8 +3780,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     SectionResolution { address }
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
-                    let address = *memory_offsets.get(sec.part_id);
-                    *memory_offsets.get_mut(sec.part_id) += sec.capacity(resources.output_sections);
+                    let address = *memory_offsets.get(part_id);
+                    *memory_offsets.get_mut(part_id) +=
+                        sec.capacity(part_id, resources.output_sections);
                     SectionResolution { address }
                 }
                 SectionSlot::FrameData(..) => {
@@ -3814,6 +3820,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
+            section_id_range: self.section_id_range,
             sframe_ranges,
             section_relax_deltas: self.section_relax_deltas,
         })
@@ -3874,6 +3881,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     0,
                     self.object,
                     &self.sections,
+                    &resources.symbol_db.section_part_ids,
+                    self.section_id_range,
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
                     true,
@@ -3992,6 +4001,14 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
     pub(crate) fn relocations(&self, index: SectionIndex) -> Result<P::RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
+    }
+
+    pub(crate) fn section_part_id(
+        &self,
+        section_index: SectionIndex,
+        global_part_ids: &[PartId],
+    ) -> PartId {
+        global_part_ids[self.section_id_range.start().as_usize() + section_index.0]
     }
 }
 
@@ -4114,6 +4131,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             #[cfg(feature = "plugins")]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
+                section_id_range: s.section_id_range,
             }),
         }
     }
@@ -4214,13 +4232,23 @@ fn compute_section_and_symbol_addresses<'data, P: Platform>(
                         for (sec_idx, slot) in obj.sections.iter().enumerate() {
                             match slot {
                                 SectionSlot::Loaded(sec) => {
-                                    addresses[sec_idx] = *offsets.get(sec.part_id);
-                                    *offsets.get_mut(sec.part_id) += sec.capacity(output_sections);
+                                    let part_id = obj.section_part_id(
+                                        object::SectionIndex(sec_idx),
+                                        &symbol_db.section_part_ids,
+                                    );
+                                    addresses[sec_idx] = *offsets.get(part_id);
+                                    *offsets.get_mut(part_id) +=
+                                        sec.capacity(part_id, output_sections);
                                 }
                                 SectionSlot::LoadedDebugInfo(sec) => {
                                     // Advance offsets so subsequent sections are placed
                                     // correctly, but we don't need the address for relaxation.
-                                    *offsets.get_mut(sec.part_id) += sec.capacity(output_sections);
+                                    let part_id = obj.section_part_id(
+                                        object::SectionIndex(sec_idx),
+                                        &symbol_db.section_part_ids,
+                                    );
+                                    *offsets.get_mut(part_id) +=
+                                        sec.capacity(part_id, output_sections);
                                 }
                                 _ => {}
                             }
@@ -4398,13 +4426,14 @@ fn relaxation_scan_pass<'data, A: Arch>(
                             raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
 
                         if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
-                            let old_capacity = sec.capacity(output_sections);
+                            let part_id = symbol_db.section_part_ids
+                                [obj.section_id_range.start().as_usize() + sec_idx];
+                            let old_capacity = sec.capacity(part_id, output_sections);
                             sec.size -= new_total_deleted;
-                            let new_capacity = sec.capacity(output_sections);
+                            let new_capacity = sec.capacity(part_id, output_sections);
                             debug_assert!(old_capacity >= new_capacity);
                             let capacity_reduction = old_capacity - new_capacity;
                             if capacity_reduction > 0 {
-                                let part_id = sec.part_id;
                                 group
                                     .common
                                     .mem_sizes
@@ -4930,6 +4959,14 @@ pub(crate) fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
 impl<'data, P: Platform> ObjectLayout<'data, P> {
     pub(crate) fn relocations(&self, index: SectionIndex) -> Result<P::RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
+    }
+
+    pub(crate) fn section_part_id(
+        &self,
+        section_index: SectionIndex,
+        part_ids: &[PartId],
+    ) -> PartId {
+        part_ids[self.section_id_range.input_to_id(section_index).as_usize()]
     }
 }
 
