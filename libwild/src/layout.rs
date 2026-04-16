@@ -3034,7 +3034,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         let header_info = HeaderInfo {
             num_output_sections_with_content: num_sections
                 .try_into()
-                .expect("output section count must fit in a u16"),
+                .expect("output section count must fit in a u32"),
 
             active_segment_ids,
         };

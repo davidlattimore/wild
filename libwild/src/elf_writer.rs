@@ -158,6 +158,19 @@ struct RelocationCache<R> {
     high_part_symbols: HashMap<u64, R>,
 }
 
+#[derive(Clone, Copy)]
+enum SymbolSection {
+    /// One of the SHN values.
+    Raw(u16),
+    Index(u32),
+}
+
+impl From<u16> for SymbolSection {
+    fn from(value: u16) -> Self {
+        SymbolSection::Raw(value)
+    }
+}
+
 pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
     sized_output: &mut SizedOutput,
     layout: &ElfLayout<'data>,
@@ -430,20 +443,26 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         .e_phnum
         .set(e, header_info.active_segment_ids.len() as u16);
     header.e_shentsize.set(e, elf::SECTION_HEADER_SIZE);
+    let shnum = header_info.num_output_sections_with_content;
     header.e_shnum.set(
         e,
-        header_info
-            .num_output_sections_with_content
-            .try_into()
-            .unwrap_or(0),
+        if shnum >= u32::from(object::elf::SHN_LORESERVE) {
+            0
+        } else {
+            shnum as u16
+        },
     );
+    let shstrndx = layout
+        .output_sections
+        .output_index_of_section(output_section_id::SHSTRTAB)
+        .expect("we always write .shstrtab");
     header.e_shstrndx.set(
         e,
-        layout
-            .output_sections
-            .output_index_of_section(output_section_id::SHSTRTAB)
-            .map(|size| size.try_into().unwrap_or(object::elf::SHN_XINDEX))
-            .expect("we always write .shstrtab"),
+        if shstrndx >= u32::from(object::elf::SHN_LORESERVE) {
+            object::elf::SHN_XINDEX
+        } else {
+            shstrndx as u16
+        },
     );
     Ok(())
 }
@@ -1264,7 +1283,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let e = LittleEndian;
         let is_local = flags.is_symtab_local(sym);
         let size = sym.st_size(e);
-        let entry = self.define_symbol(is_local, shndx, value, size, name)?;
+        let entry = self.define_symbol(is_local, SymbolSection::Index(shndx), value, size, name)?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
         // Fix binding if symbol was downgraded to local by version script
@@ -1284,8 +1303,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let is_local = flags.is_symtab_local(sym);
         let value = sym.st_value(e);
         let size = sym.st_size(e);
-        let entry =
-            self.define_symbol(is_local, u32::from(object::elf::SHN_ABS), value, size, name)?;
+        let entry = self.define_symbol(is_local, object::elf::SHN_ABS.into(), value, size, name)?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
         // Fix binding if symbol was downgraded to local by version script
@@ -1299,7 +1317,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn define_symbol(
         &mut self,
         is_local: bool,
-        shndx: u32,
+        section: SymbolSection,
         value: u64,
         size: u64,
         name: &[u8],
@@ -1347,20 +1365,21 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         };
         let string_offset = self.strtab_writer.write_str(name);
 
-        let shndx = if shndx < u32::from(object::elf::SHN_LORESERVE)
-            || shndx == u32::from(object::elf::SHN_ABS)
-            || shndx == u32::from(object::elf::SHN_COMMON)
-        {
-            if let Some(s) = symtab_shndx_entries {
-                *s = 0;
+        let (index, shndx) = match section {
+            SymbolSection::Raw(shndx) => (0, shndx),
+            SymbolSection::Index(index) if index >= u32::from(object::elf::SHN_LORESERVE) => {
+                (index, object::elf::SHN_XINDEX)
             }
-            shndx as u16
-        } else {
-            symtab_shndx_entries.map(|s| *s = shndx).with_context(|| {
-                format!("Expected .symtab_shndx section when writing symbol {} with shndx set to SHN_XINDEX.", String::from_utf8_lossy(name))
-            })?;
-            object::elf::SHN_XINDEX
+            SymbolSection::Index(index) => (0, index as u16),
         };
+        if let Some(s) = symtab_shndx_entries {
+            *s = index;
+        } else if shndx == object::elf::SHN_XINDEX {
+            bail!(
+                "Expected .symtab_shndx section when writing symbol {} with shndx set to SHN_XINDEX.",
+                String::from_utf8_lossy(name)
+            );
+        }
         entry.st_name.set(e, string_offset);
         entry.st_info = 0;
         entry.st_other = 0;
@@ -1390,14 +1409,19 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
 
-        if let Some(symtab_shndx_local_entries) = self.symtab_shndx_local_entries.as_ref()
-            && let Some(symtab_shndx_global_entries) = self.symtab_shndx_global_entries.as_ref()
-            && (!symtab_shndx_global_entries.is_empty() || !symtab_shndx_local_entries.is_empty())
-        {
+        let symtab_shndx_local_len = self
+            .symtab_shndx_local_entries
+            .as_ref()
+            .map_or(0, |s| s.len());
+        let symtab_shndx_global_len = self
+            .symtab_shndx_global_entries
+            .as_ref()
+            .map_or(0, |s| s.len());
+        if symtab_shndx_local_len > 0 || symtab_shndx_global_len > 0 {
             bail!(
                 "Didn't use up all allocated symtab_shndx space. local={} global={}",
-                symtab_shndx_local_entries.len(),
-                symtab_shndx_global_entries.len()
+                symtab_shndx_local_len,
+                symtab_shndx_global_len,
             );
         }
         Ok(())
@@ -2065,7 +2089,7 @@ fn write_symbols<'data>(
             }
             let name = RawSymbolName::parse(name).name;
             let entry = symbol_writer
-                .define_symbol(false, u32::from(object::elf::SHN_UNDEF), 0, 0, name)
+                .define_symbol(false, object::elf::SHN_UNDEF.into(), 0, 0, name)
                 .with_context(|| {
                     format!(
                         "Failed to write undefined symbol `{}` for partial link",
@@ -2553,7 +2577,13 @@ fn write_got_plt_syms(
         let value = get_value(resolution)?;
 
         symbol_writer
-            .define_symbol(true, shndx, value, 0, symbol_name.as_bytes())
+            .define_symbol(
+                true,
+                SymbolSection::Index(shndx),
+                value,
+                0,
+                symbol_name.as_bytes(),
+            )
             .with_context(|| {
                 format!(
                     "Failed to copy {} symbol for {}",
@@ -3363,7 +3393,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
     if layout.symbol_db.output_kind.needs_dynsym() {
         table_writer
             .dynsym_writer
-            .define_symbol(false, 0, 0, 0, &[])?;
+            .define_symbol(false, 0.into(), 0, 0, &[])?;
     }
 
     Ok(())
@@ -3468,7 +3498,7 @@ fn write_symbol_table_entries(
     layout: &ElfLayout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
+    symbol_writer.define_symbol(true, 0.into(), 0, 0, &[])?;
 
     if layout.args().should_output_partial_object() {
         write_section_symbols(symbol_writer, layout)?;
@@ -3499,7 +3529,7 @@ fn write_section_symbols(symbol_writer: &mut SymbolTableWriter, layout: &ElfLayo
             .name(section_id)
             .map(|x| x.0)
             .unwrap_or_default();
-        let entry = symbol_writer.define_symbol(true, shndx, 0, 0, name)?;
+        let entry = symbol_writer.define_symbol(true, SymbolSection::Index(shndx), 0, 0, name)?;
         entry.set_st_info(object::elf::STB_LOCAL, object::elf::STT_SECTION);
     }
     Ok(())
@@ -4065,7 +4095,7 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32, u8)> {
+fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(SymbolSection, u8)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     let file = layout.symbol_db.file(file_id);
 
@@ -4100,7 +4130,7 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
                         }),
                     _ => None,
                 })
-                .unwrap_or(u32::from(object::elf::SHN_ABS));
+                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
             let st_type = sym.st_type();
 
@@ -4113,13 +4143,11 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
                 .symbol_defs
                 .get(local_index.0)
                 .and_then(|def_info| def_info.section_id())
-                .map_or(u32::from(object::elf::SHN_ABS), |section_id| {
+                .and_then(|section_id| {
                     let section_id = layout.output_sections.primary_output_section(section_id);
-                    layout
-                        .output_sections
-                        .output_index_of_section(section_id)
-                        .unwrap_or(u32::from(object::elf::SHN_ABS))
-                });
+                    layout.output_sections.output_index_of_section(section_id)
+                })
+                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
@@ -4128,25 +4156,22 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(u32
             let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
                 format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
             })?;
-            let shndx =
-                def_info
-                    .section_id()
-                    .map_or(u32::from(object::elf::SHN_ABS), |section_id| {
-                        let section_id = layout.output_sections.primary_output_section(section_id);
-                        layout
-                            .output_sections
-                            .output_index_of_section(section_id)
-                            .unwrap_or(u32::from(object::elf::SHN_ABS))
-                    });
+            let shndx = def_info
+                .section_id()
+                .and_then(|section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout.output_sections.output_index_of_section(section_id)
+                })
+                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
             Ok((shndx, def_info.symbol.st_type()))
         }
         crate::grouping::SequencedInput::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
-            Ok((u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE))
+            Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
         #[cfg(feature = "plugins")]
         crate::grouping::SequencedInput::LtoInput(_) => {
-            Ok((u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE))
+            Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
     }
 }
@@ -4198,7 +4223,13 @@ fn write_internal_dynsym(
     let address = resolution.address()?;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
-    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
+    let entry = dynsym_writer.define_symbol(
+        false,
+        SymbolSection::Index(shndx),
+        address,
+        0,
+        name.bytes(),
+    )?;
     entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
     Ok(())
@@ -4243,7 +4274,7 @@ fn write_defsym_dynsym(
                     .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
-            (u32::from(object::elf::SHN_ABS), object::elf::STT_NOTYPE)
+            (object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)
         };
 
     let entry = dynsym_writer
@@ -4344,7 +4375,7 @@ fn write_regular_object_dynamic_symbol_definition<'data>(
             let size = sym.st_size(e);
             let entry = dynamic_symbol_writer.define_symbol(
                 false,
-                shndx,
+                SymbolSection::Index(shndx),
                 plt_address.into(),
                 size,
                 name,
@@ -4471,15 +4502,15 @@ fn write_internal_symbols(
                         })
                 })
                 .transpose()?
-                .unwrap_or(u32::from(object::elf::SHN_ABS));
+                .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
             (shndx, def_info.symbol.st_type())
         };
 
         // Move symbols that are in our header (section 0) into the first section, otherwise they'll
         // show up as undefined.
-        if shndx == 0 {
-            shndx = 1;
+        if matches!(shndx, SymbolSection::Index(0)) {
+            shndx = SymbolSection::Index(1);
         }
 
         let mut address = resolution.value();
@@ -4963,7 +4994,7 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
 
         if section_type == sht::NULL {
             alignment = 0;
-            if entries.len() > u16::MAX as usize {
+            if entries.len() >= usize::from(object::elf::SHN_LORESERVE) {
                 size = entries.len() as u64;
             } else {
                 size = 0;
@@ -4975,6 +5006,8 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
                 .unwrap();
             if shstrndx >= u32::from(object::elf::SHN_LORESERVE) {
                 link = shstrndx;
+            } else {
+                link = 0;
             }
         } else {
             size = section_layout.mem_size;
@@ -5183,9 +5216,10 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     ValueFlags::empty(),
                 )?;
             } else {
-                let entry = table_writer
-                    .dynsym_writer
-                    .define_symbol(false, 0, 0, 0, name)?;
+                let entry =
+                    table_writer
+                        .dynsym_writer
+                        .define_symbol(false, 0.into(), 0, 0, name)?;
 
                 // Note, we copy st_info, but not st_other since we don't want to copy the
                 // visibility. We want to emit the symbol with default visibility, otherwise the
