@@ -12,6 +12,8 @@ use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::linker_script;
 use crate::linker_script::ContentsCommand;
+use crate::linker_script::Expression;
+use crate::linker_script::Location;
 use crate::linker_script::SectionCommand;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
@@ -172,10 +174,23 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 .unwrap_or(alignment::MIN)
                                 .max(replace(&mut extra_min_alignment, alignment::MIN));
 
+                            let section_location = match &sec.start_address_expression {
+                                Some(Expression::Number(address)) => {
+                                    location.take();
+                                    Some(Location { address: *address })
+                                }
+                                Some(_) => {
+                                    return Err(crate::error!(
+                                        "Only numeric output section start expressions are currently supported"
+                                    ));
+                                }
+                                None => location.take(),
+                            };
+
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
                                 min_alignment,
-                                location.take(),
+                                section_location,
                             );
 
                             let mut last_section_id = None;

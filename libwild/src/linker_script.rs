@@ -100,6 +100,7 @@ pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
     pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<Alignment>,
+    pub(crate) start_address_expression: Option<Expression<'a>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -894,6 +895,14 @@ fn parse_section_command<'input>(
         return Ok(cmd);
     }
 
+    let start_address_expression = if input.starts_with(b":") {
+        None
+    } else {
+        Some(parse_expression.parse_next(input)?)
+    };
+
+    skip_comments_and_whitespace(input)?;
+
     ':'.parse_next(input)?;
 
     skip_comments_and_whitespace(input)?;
@@ -915,6 +924,7 @@ fn parse_section_command<'input>(
         output_section_name: name,
         commands,
         alignment,
+        start_address_expression,
     }))
 }
 
@@ -1227,6 +1237,24 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                start_address_expression: None,
+            }),
+        );
+    }
+
+    #[test]
+    fn test_section_command_with_start_address_expression() {
+        check_section_command(
+            "__ksymtab 0 : ALIGN(8) { *(___ksymtab+) }",
+            &SectionCommand::Section(Section {
+                output_section_name: b"__ksymtab",
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![b"___ksymtab+"],
+                })],
+                alignment: Some(Alignment::new(8).unwrap()),
+                start_address_expression: Some(Expression::Number(0)),
             }),
         );
     }
@@ -1277,6 +1305,7 @@ mod tests {
                                     }),
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),
+                                start_address_expression: None,
                             }),
                         ],
                     }),
@@ -1412,6 +1441,7 @@ mod tests {
                     }),
                 ],
                 alignment: None,
+                start_address_expression: None,
             }),
         );
     }
@@ -1428,6 +1458,7 @@ mod tests {
                     input_section_name_patterns: vec![b".ctors"],
                 })],
                 alignment: None,
+                start_address_expression: None,
             }),
         );
     }
@@ -1444,6 +1475,7 @@ mod tests {
                     input_section_name_patterns: vec![b".init"],
                 })],
                 alignment: None,
+                start_address_expression: None,
             }),
         );
     }
@@ -1468,6 +1500,7 @@ mod tests {
                                 input_section_name_patterns: vec![b".text"],
                             })],
                             alignment: None,
+                            start_address_expression: None,
                         })],
                     }),
                     Command::Assert(AssertCommand {
@@ -1503,6 +1536,7 @@ mod tests {
                                 input_section_name_patterns: vec![b".text"],
                             })],
                             alignment: None,
+                            start_address_expression: None,
                         }),
                         SectionCommand::Assert(AssertCommand {
                             expression: Expression::LessThan(
