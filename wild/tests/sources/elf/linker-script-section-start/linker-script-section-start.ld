@@ -1,8 +1,10 @@
+ENTRY(begin_here)
+
 SECTIONS
 {
-    .foo 0x1000000 : { *(.foo) }
-    .text : { *(.text) }
-    .rodata : { *(.rodata*) }
-    .data : { *(.data) }
-    .bss : { *(.bss) }
+    . = 0x600000;
+    .text : { *(.text .text.*) }
+    .foo 0x1000000 : { KEEP(*(.foo)) }
+    .data : { *(.data .data.*) }
+    .bss : { *(.bss .bss.*) }
 }

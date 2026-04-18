@@ -1,20 +1,13 @@
 //#LinkerScript:linker-script-section-start.ld
-//#LinkerDriver:gcc
-//#LinkArgs:-no-pie
+//#Object:runtime.c
+//#DiffIgnore:segment.LOAD.RW.alignment
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default
+// linker script)
+//#SkipArch:riscv64
 //#ExpectSym:foo address=0x1000000
-//#DiffIgnore:section.rodata.alignment
-//#DiffIgnore:section.data
-//#DiffIgnore:section.sdata
-//#SkipArch:loongarch64
 
-/* BFD rejects similar absolute-placement code on loongarch with relocation
-   truncation. */
+#include "../common/runtime.h"
 
-#include <stdio.h>
+__attribute__((used, section(".foo"))) int foo = 7;
 
-__attribute__((section(".foo"))) void foo() { printf("foo\n"); }
-
-int main() {
-  foo();
-  return 42;
-}
+void begin_here(void) { exit_syscall(42); }
