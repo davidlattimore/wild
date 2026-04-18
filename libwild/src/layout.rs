@@ -3174,6 +3174,15 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
     }
 }
 
+fn segment_name_matches(name: &str, def: impl crate::platform::ProgramSegmentDef) -> bool {
+    match name {
+        "text" => def.is_executable() && !def.is_writable(),
+        "data" | "bss" => def.is_writable() && !def.is_executable(),
+        "rodata" => !def.is_writable() && !def.is_executable(),
+        _ => false,
+    }
+}
+
 fn create_start_end_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
@@ -3238,6 +3247,16 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
             .iter()
             .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
+
+        SymbolPlacement::SegmentStart(name, default) => resources
+            .segment_layouts
+            .segments
+            .iter()
+            .find(|seg| {
+                let def = resources.program_segments.segment_def(seg.id);
+                def.is_loadable() && segment_name_matches(name, *def)
+            })
+            .map_or(default, |seg| seg.sizes.mem_offset),
     };
 
     Some(P::create_resolution(

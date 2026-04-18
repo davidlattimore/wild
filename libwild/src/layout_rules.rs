@@ -26,6 +26,77 @@ use hashbrown::HashTable;
 use std::borrow::Cow;
 use std::mem::replace;
 
+/// Evaluate a linker script expression that must be a compile-time constant.
+/// Returns `Err` for any expression that requires runtime context (symbols, location counter,
+/// etc.).
+fn eval_constant_expr(expr: &crate::linker_script::Expression<'_>) -> crate::error::Result<u64> {
+    use crate::linker_script::Expression;
+    match expr {
+        Expression::Number(n) => Ok(*n),
+        Expression::Add(l, r) => Ok(eval_constant_expr(l)?.wrapping_add(eval_constant_expr(r)?)),
+        Expression::Subtract(l, r) => {
+            Ok(eval_constant_expr(l)?.wrapping_sub(eval_constant_expr(r)?))
+        }
+        Expression::Multiply(l, r) => {
+            Ok(eval_constant_expr(l)?.wrapping_mul(eval_constant_expr(r)?))
+        }
+        Expression::Divide(l, r) => {
+            let d = eval_constant_expr(r)?;
+            if d == 0 {
+                return Err(crate::error!("division by zero in constant expression"));
+            }
+            Ok(eval_constant_expr(l)? / d)
+        }
+        Expression::Negate(e) => Ok(eval_constant_expr(e)?.wrapping_neg()),
+        _ => Err(crate::error!("expression is not a compile-time constant")),
+    }
+}
+
+/// Determine the `SymbolPlacement` for a top-level symbol definition (`name = value;`).
+///
+/// Tries to parse `value` as a full linker script expression first (to handle `SEGMENT_START`
+/// and other builtins). Falls back to the legacy `parse_symbol_expression` path for simple
+/// cases like `0x1234` or `other_symbol+8`.
+///
+/// Returns `None` if the expression is unsupported (the symbol is silently skipped).
+fn placement_from_symbol_definition_value<'data>(
+    name: &[u8],
+    value: &'data [u8],
+) -> crate::error::Result<Option<SymbolPlacement<'data>>> {
+    use crate::linker_script::Expression;
+    use winnow::BStr;
+
+    // Try parsing as a full expression first.
+    let mut input = BStr::new(value);
+    if let Ok(expr) = crate::linker_script::parse_expression_pub(&mut input) {
+        let placement = match expr {
+            Expression::SegmentStart(seg_name, default_expr) => {
+                let default = eval_constant_expr(&default_expr).unwrap_or(0);
+                let name_str = std::str::from_utf8(seg_name)
+                    .map_err(|_| crate::error!("SEGMENT_START: segment name is not valid UTF-8"))?;
+                Some(SymbolPlacement::SegmentStart(name_str, default))
+            }
+            Expression::Number(n) => Some(SymbolPlacement::DefsymAbsolute(n)),
+            // For other expressions fall through to the legacy path below.
+            _ => None,
+        };
+        if let Some(p) = placement {
+            return Ok(Some(p));
+        }
+    }
+
+    // Legacy path: handles `0x1234`, `symbol`, `symbol+offset`.
+    let value_str = std::str::from_utf8(value).map_err(|_| {
+        crate::error!(
+            "Invalid UTF-8 in symbol value for '{}'",
+            String::from_utf8_lossy(name)
+        )
+    })?;
+    Ok(Some(
+        crate::parsing::parse_symbol_expression(value_str).to_placement(),
+    ))
+}
+
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
 }
@@ -147,11 +218,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let value_str = std::str::from_utf8(value)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
-
-                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
-                symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
+                let placement = placement_from_symbol_definition_value(name, value)?;
+                if let Some(placement) = placement {
+                    symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
+                }
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
@@ -209,17 +279,35 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_section_id = Some(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        symbol_defs.push(if let Some(id) = last_section_id {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionEnd(id),
-                                                assignment.name,
-                                            )
-                                        } else {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionStart(primary_section_id),
-                                                assignment.name,
-                                            )
-                                        });
+                                        use crate::linker_script::Expression;
+                                        let placement = match &assignment.expr {
+                                            Expression::LocationCounter => {
+                                                if let Some(id) = last_section_id {
+                                                    SymbolPlacement::SectionEnd(id)
+                                                } else {
+                                                    SymbolPlacement::SectionStart(
+                                                        primary_section_id,
+                                                    )
+                                                }
+                                            }
+                                            Expression::SegmentStart(name, default_expr) => {
+                                                let default =
+                                                    eval_constant_expr(default_expr).unwrap_or(0);
+                                                let name_str = std::str::from_utf8(name).map_err(|_| {
+                                                    crate::error!("SEGMENT_START: segment name is not valid UTF-8")
+                                                })?;
+                                                SymbolPlacement::SegmentStart(name_str, default)
+                                            }
+                                            _other => {
+                                                // Unsupported RHS expression: skip this symbol
+                                                // definition
+                                                continue;
+                                            }
+                                        };
+                                        symbol_defs.push(InternalSymDefInfo::new(
+                                            placement,
+                                            assignment.name,
+                                        ));
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
