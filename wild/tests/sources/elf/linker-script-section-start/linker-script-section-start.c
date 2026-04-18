@@ -7,7 +7,8 @@
 //#DiffIgnore:section.sdata
 //#SkipArch:loongarch64
 
-/* BFD rejects similar absolute-placement code on loongarch with relocation truncation. */
+/* BFD rejects similar absolute-placement code on loongarch with relocation
+   truncation. */
 
 #include <stdio.h>
 
