@@ -3183,6 +3183,10 @@ fn segment_name_matches(name: &str, def: impl crate::platform::ProgramSegmentDef
     }
 }
 
+fn is_known_segment_name(name: &str) -> bool {
+    matches!(name, "text" | "data" | "bss" | "rodata")
+}
+
 fn create_start_end_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
@@ -3248,15 +3252,22 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
             .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
 
-        SymbolPlacement::SegmentStart(name, default) => resources
-            .segment_layouts
-            .segments
-            .iter()
-            .find(|seg| {
-                let def = resources.program_segments.segment_def(seg.id);
-                def.is_loadable() && segment_name_matches(name, *def)
-            })
-            .map_or(default, |seg| seg.sizes.mem_offset),
+        SymbolPlacement::SegmentStart(name, default) => {
+            if !is_known_segment_name(name) {
+                resources.symbol_db.args.warning(format!(
+                    "SEGMENT_START: unknown segment name '{name}', using default 0x{default:x}"
+                ));
+            }
+            resources
+                .segment_layouts
+                .segments
+                .iter()
+                .find(|seg| {
+                    let def = resources.program_segments.segment_def(seg.id);
+                    def.is_loadable() && segment_name_matches(name, *def)
+                })
+                .map_or(default, |seg| seg.sizes.mem_offset)
+        }
     };
 
     Some(P::create_resolution(

@@ -54,47 +54,78 @@ fn eval_constant_expr(expr: &crate::linker_script::Expression<'_>) -> crate::err
 
 /// Determine the `SymbolPlacement` for a top-level symbol definition (`name = value;`).
 ///
-/// Tries to parse `value` as a full linker script expression first (to handle `SEGMENT_START`
-/// and other builtins). Falls back to the legacy `parse_symbol_expression` path for simple
-/// cases like `0x1234` or `other_symbol+8`.
-///
-/// Returns `None` if the expression is unsupported (the symbol is silently skipped).
+/// Parses `value` as a full linker script expression and maps it to a `SymbolPlacement`.
+/// Returns an error if the value cannot be parsed or is not fully consumed.
 fn placement_from_symbol_definition_value<'data>(
     name: &[u8],
     value: &'data [u8],
-) -> crate::error::Result<Option<SymbolPlacement<'data>>> {
+) -> crate::error::Result<SymbolPlacement<'data>> {
     use crate::linker_script::Expression;
     use winnow::BStr;
 
-    // Try parsing as a full expression first.
     let mut input = BStr::new(value);
-    if let Ok(expr) = crate::linker_script::parse_expression_pub(&mut input) {
-        let placement = match expr {
-            Expression::SegmentStart(seg_name, default_expr) => {
-                let default = eval_constant_expr(&default_expr).unwrap_or(0);
-                let name_str = std::str::from_utf8(seg_name)
-                    .map_err(|_| crate::error!("SEGMENT_START: segment name is not valid UTF-8"))?;
-                Some(SymbolPlacement::SegmentStart(name_str, default))
-            }
-            Expression::Number(n) => Some(SymbolPlacement::DefsymAbsolute(n)),
-            // For other expressions fall through to the legacy path below.
-            _ => None,
-        };
-        if let Some(p) = placement {
-            return Ok(Some(p));
-        }
-    }
-
-    // Legacy path: handles `0x1234`, `symbol`, `symbol+offset`.
-    let value_str = std::str::from_utf8(value).map_err(|_| {
+    let expr = crate::linker_script::parse_expression_pub(&mut input).map_err(|_| {
         crate::error!(
-            "Invalid UTF-8 in symbol value for '{}'",
+            "Failed to parse symbol value for '{}'",
             String::from_utf8_lossy(name)
         )
     })?;
-    Ok(Some(
-        crate::parsing::parse_symbol_expression(value_str).to_placement(),
-    ))
+
+    // Reject partial parses — trailing non-whitespace means the expression only
+    // matched a prefix of the value.
+    if !input.trim_ascii().is_empty() {
+        return Err(crate::error!(
+            "Unexpected trailing tokens in symbol value for '{}'",
+            String::from_utf8_lossy(name)
+        ));
+    }
+
+    let placement = match expr {
+        Expression::SegmentStart(seg_name, default_expr) => {
+            let default = eval_constant_expr(&default_expr).unwrap_or(0);
+            let name_str = std::str::from_utf8(seg_name)
+                .map_err(|_| crate::error!("SEGMENT_START: segment name is not valid UTF-8"))?;
+            SymbolPlacement::SegmentStart(name_str, default)
+        }
+        Expression::Number(n) => SymbolPlacement::DefsymAbsolute(n),
+        Expression::Symbol(sym) => {
+            let sym_str = std::str::from_utf8(sym)
+                .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+            SymbolPlacement::DefsymSymbol(sym_str, 0)
+        }
+        Expression::Add(l, r) => {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (*l, *r) {
+                let sym_str = std::str::from_utf8(sym)
+                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+                SymbolPlacement::DefsymSymbol(sym_str, offset as i64)
+            } else {
+                return Err(crate::error!(
+                    "Unsupported expression in symbol definition for '{}'",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+        }
+        Expression::Subtract(l, r) => {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (*l, *r) {
+                let sym_str = std::str::from_utf8(sym)
+                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+                SymbolPlacement::DefsymSymbol(sym_str, -(offset as i64))
+            } else {
+                return Err(crate::error!(
+                    "Unsupported expression in symbol definition for '{}'",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+        }
+        _ => {
+            return Err(crate::error!(
+                "Unsupported expression in symbol definition for '{}'",
+                String::from_utf8_lossy(name)
+            ));
+        }
+    };
+
+    Ok(placement)
 }
 
 pub(crate) struct LayoutRules<'data> {
@@ -219,9 +250,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
                 let placement = placement_from_symbol_definition_value(name, value)?;
-                if let Some(placement) = placement {
-                    symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
-                }
+                symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 

@@ -83,7 +83,7 @@ end lists the features required to link the Linux kernel.
 | Ternary operator (`condition ? a : b`) | 📅 | |
 | `DEFINED(sym)` | 📅 | |
 | `SIZEOF_HEADERS` | 📅 | |
-| `SEGMENT_START(segment, default)` | 📅 | |
+| `SEGMENT_START(segment, default)` | ✅ | Supports `"text"`, `"data"`, `"bss"`, `"rodata"`; unknown names use `default` with a warning |
 
 ## MEMORY Command
 
