@@ -899,8 +899,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         let Ok(obj_symbol) = obj.common.object.symbol(local_index) else {
             return false;
         };
-
-        let section_index = obj_symbol.section_index();
+        let Ok(Some(section_index)) = obj.common.object.symbol_section(obj_symbol, local_index)
+        else {
+            return false;
+        };
         let Ok(header) = obj.common.object.section(section_index) else {
             return false;
         };

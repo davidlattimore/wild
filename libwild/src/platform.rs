@@ -908,8 +908,6 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
 
     fn size(&self) -> u64;
 
-    fn section_index(&self) -> object::SectionIndex;
-
     fn has_name(&self) -> bool;
 
     fn debug_string(&self) -> String;

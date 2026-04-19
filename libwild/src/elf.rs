@@ -2857,13 +2857,6 @@ impl platform::Symbol for SymtabEntry {
         object::read::elf::Sym::st_size(self, LittleEndian)
     }
 
-    fn section_index(&self) -> object::SectionIndex {
-        object::SectionIndex(usize::from(object::read::elf::Sym::st_shndx(
-            self,
-            LittleEndian,
-        )))
-    }
-
     fn has_name(&self) -> bool {
         object::read::elf::Sym::st_name(self, LittleEndian) != 0
     }
@@ -5245,12 +5238,13 @@ fn allocate_for_copy_relocations<'data>(
     for value in state.format_specific_state.copy_relocations.values() {
         let symbol_id = value.symbol_id;
 
-        let symbol = state
+        let symbol_index = state.symbol_id_range().id_to_input(symbol_id);
+        let symbol = state.object.symbol(symbol_index)?;
+
+        let section_index = state
             .object
-            .symbol(state.symbol_id_range().id_to_input(symbol_id))?;
-
-        let section_index = symbol.section_index();
-
+            .symbol_section(symbol, symbol_index)?
+            .context("Copy relocation for undefined symbol")?;
         let section = state.object.section(section_index)?;
 
         let alignment = Alignment::new(state.object.section_alignment(section)?)?;
@@ -5277,14 +5271,20 @@ fn assign_copy_relocation_addresses<'data>(
     copy_relocation_symbols
         .iter()
         .map(|symbol_id| {
-            let symbol = state
+            let symbol_index = state.symbol_id_range.id_to_input(*symbol_id);
+            let symbol = state.object.symbol(symbol_index)?;
+
+            let section_index = state
                 .object
-                .symbol(state.symbol_id_range.id_to_input(*symbol_id))?;
+                .symbol_section(symbol, symbol_index)?
+                .context("Copy relocation for undefined symbol")?;
+            let section = state.object.section(section_index)?;
+
+            let alignment = Alignment::new(state.object.section_alignment(section)?)?;
 
             let input_address = symbol.value();
-
             let output_address =
-                assign_copy_relocation_address(state.object, symbol, memory_offsets)?;
+                assign_copy_relocation_address(alignment, symbol.size(), memory_offsets);
 
             Ok((input_address, output_address))
         })
@@ -5292,18 +5292,15 @@ fn assign_copy_relocation_addresses<'data>(
 }
 
 /// Assigns the address in BSS for the copy relocation of a symbol.
-fn assign_copy_relocation_address<'data>(
-    file: &File<'data>,
-    local_symbol: &SymtabEntry,
+fn assign_copy_relocation_address(
+    alignment: Alignment,
+    size: u64,
     memory_offsets: &mut OutputSectionPartMap<u64>,
-) -> Result<u64> {
-    let section_index = local_symbol.section_index();
-    let section = file.section(section_index)?;
-    let alignment = Alignment::new(file.section_alignment(section)?)?;
+) -> u64 {
     let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
-    *bss += alignment.align_up(local_symbol.size());
-    Ok(a)
+    *bss += alignment.align_up(size);
+    a
 }
 
 impl CopyRelocationInfo {
