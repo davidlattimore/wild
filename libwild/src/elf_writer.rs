@@ -1768,6 +1768,25 @@ fn write_rela_sections<'data>(
             let Some(out) = rela_iter.next() else {
                 return;
             };
+
+            let section_discarded = sym
+                .and_then(|s| object.object.symbol(s).ok())
+                .filter(|sym_entry| sym_entry.st_type() == object::elf::STT_SECTION)
+                .and_then(|sym_entry| {
+                    let s = sym.unwrap();
+                    object.object.symbol_section(sym_entry, s).ok().flatten()
+                })
+                .is_some_and(|sec_idx| {
+                    matches!(object.sections.get(sec_idx.0), Some(SectionSlot::Discard))
+                });
+
+            if section_discarded {
+                out.r_offset.set(e, section_address + offset);
+                out.r_addend.set(e, 0);
+                out.set_r_info(e, false, 0, 0);
+                return;
+            }
+
             let sym_idx = sym
                 .and_then(|s| {
                     let symbol_id = object.symbol_id_range.input_to_id(s);
@@ -1984,7 +2003,7 @@ fn write_group_section<'data>(
     let section_buffer = buffers.get_mut(part_id);
     let out = section_buffer
         .split_off_mut(..allocation_size)
-        .with_context(|| format!("Insufficient buffer for group section {:?}", section_index))?;
+        .with_context(|| format!("Insufficient buffer for group section {section_index:?}"))?;
 
     out[..4].copy_from_slice(&GRP_COMDAT.to_le_bytes());
 
@@ -2475,7 +2494,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
-                    if is_pc_begin {
+                    if is_pc_begin && rel.raw_type() != object::elf::R_X86_64_NONE {
                         let Some(index) = rel.symbol() else {
                             bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                         };
