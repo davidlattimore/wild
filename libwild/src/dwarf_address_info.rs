@@ -136,7 +136,7 @@ fn apply_section_relocations<A: Arch, R: Relocation>(
     relocations: impl Iterator<Item = R>,
 ) -> Result {
     for rel in relocations {
-        let sym_index = rel.symbol().context("Relocation for undefine symbol")?;
+        let sym_index = rel.symbol().context("Relocation has no symbol")?;
         let symbol = object.symbol(sym_index)?;
 
         let mut value = symbol
@@ -144,9 +144,10 @@ fn apply_section_relocations<A: Arch, R: Relocation>(
             .get(LittleEndian)
             .wrapping_add(rel.addend() as u64);
 
-        let symbol_section = object.section(object::SectionIndex(
-            symbol.st_shndx.get(LittleEndian) as usize,
-        ))?;
+        let section_index = object
+            .symbol_section(symbol, sym_index)?
+            .context("Relocation for undefined symbol")?;
+        let symbol_section = object.section(section_index)?;
 
         let data_offset = rel.offset() as usize;
 

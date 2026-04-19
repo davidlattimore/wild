@@ -33,6 +33,7 @@ use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
 use object::macho::N_PEXT;
+use object::macho::N_SECT;
 use object::macho::N_TYPE;
 use object::macho::N_WEAK_DEF;
 use object::macho::SEG_DATA;
@@ -254,9 +255,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn symbol_section(
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        index: object::SymbolIndex,
+        _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
-        todo!()
+        if symbol.n_type & N_TYPE == N_SECT && symbol.n_sect != 0 {
+            Ok(Some(object::SectionIndex(usize::from(symbol.n_sect))))
+        } else {
+            Ok(None)
+        }
     }
 
     fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
@@ -554,10 +559,6 @@ impl platform::Symbol for SymtabEntry {
     fn size(&self) -> u64 {
         // TODO
         0
-    }
-
-    fn section_index(&self) -> object::SectionIndex {
-        object::SectionIndex(usize::from(self.n_sect))
     }
 
     fn has_name(&self) -> bool {
