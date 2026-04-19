@@ -27,7 +27,6 @@ tests = [
   "oformat-binary.sh",
   "omagic.sh",
   "package-metadata.sh",
-  "relocatable-exception.sh",
   "relocatable-merge-sections.sh",
   "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "require-defined.sh",
