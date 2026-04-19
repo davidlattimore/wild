@@ -55,7 +55,7 @@ impl FileKind {
                     }
                 }
                 object::elf::ET_DYN => Ok(FileKind::ElfDynamic),
-                t => bail!("Unsupported ELF kind {t}"),
+                t => bail!("Unsupported ELF kind {t:?}"),
             }
         } else if bytes.starts_with(macho::MH_MAGIC_64.as_bytes()) {
             let header = macho::MachHeader64::<object::Endianness>::parse(bytes, 0)?;

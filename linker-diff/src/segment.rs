@@ -28,13 +28,13 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
 
         if p_type == PT_LOAD {
             let mut flag_str = String::new();
-            if p_flags & 4 != 0 {
+            if p_flags.contains(object::elf::PF_R) {
                 flag_str.push('R');
             }
-            if p_flags & 2 != 0 {
+            if p_flags.contains(object::elf::PF_W) {
                 flag_str.push('W');
             }
-            if p_flags & 1 != 0 {
+            if p_flags.contains(object::elf::PF_X) {
                 flag_str.push('X');
             }
 
@@ -55,7 +55,7 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
             );
             values.insert(
                 format!("{segment_type}.flags"),
-                p_flags,
+                p_flags.0,
                 Converter::None,
                 object,
             );

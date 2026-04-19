@@ -1,7 +1,5 @@
 use crate::bit_misc::BitRange;
 use anyhow::Result;
-use object::LittleEndian;
-use object::read::elf::ProgramHeader as _;
 use std::borrow::Cow;
 use std::fmt;
 
@@ -706,88 +704,30 @@ pub mod secnames {
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct SegmentFlags(u32);
-
-impl SegmentFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
-        Self(header.p_flags(LittleEndian))
-    }
-
-    #[must_use]
-    pub fn contains(self, flag: SegmentFlags) -> bool {
-        self.0 & flag.0 != 0
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> SegmentFlags {
-        SegmentFlags(raw)
-    }
-
-    /// Returns self with the specified flags set.
-    #[must_use]
-    pub const fn with(self, flags: SegmentFlags) -> SegmentFlags {
-        SegmentFlags(self.0 | flags.0)
-    }
-
-    /// Returns self with the specified flags cleared.
-    #[must_use]
-    pub const fn without(self, flags: SegmentFlags) -> SegmentFlags {
-        SegmentFlags(self.0 & !flags.0)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
+pub use object::elf::PhdrFlags as SegmentFlags;
 
 pub mod pf {
     use super::SegmentFlags;
 
-    pub const EXECUTABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_X);
-    pub const WRITABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_W);
-    pub const READABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_R);
-}
+    pub const EXECUTABLE: SegmentFlags = object::elf::PF_X;
+    pub const WRITABLE: SegmentFlags = object::elf::PF_W;
+    pub const READABLE: SegmentFlags = object::elf::PF_R;
 
-impl std::fmt::Display for SegmentFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.contains(pf::WRITABLE) {
-            f.write_str("W")?;
+    pub struct Display(pub SegmentFlags);
+
+    impl std::fmt::Display for Display {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.0.contains(WRITABLE) {
+                f.write_str("W")?;
+            }
+            if self.0.contains(READABLE) {
+                f.write_str("R")?;
+            }
+            if self.0.contains(EXECUTABLE) {
+                f.write_str("X")?;
+            }
+            Ok(())
         }
-        if self.contains(pf::READABLE) {
-            f.write_str("R")?;
-        }
-        if self.contains(pf::EXECUTABLE) {
-            f.write_str("X")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for SegmentFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
-impl std::ops::BitOrAssign for SegmentFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl std::ops::BitAnd for SegmentFlags {
-    type Output = SegmentFlags;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
     }
 }
 

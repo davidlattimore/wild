@@ -476,8 +476,8 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     let header = obj.elf_file.elf_header();
     let e = LittleEndian;
     values.insert_string("ident", format!("{:?}", header.e_ident.magic));
-    values.insert("type", header.e_type.get(e), Converter::None, obj);
-    values.insert("machine", header.e_machine.get(e), Converter::None, obj);
+    values.insert("type", header.e_type.get(e).0, Converter::None, obj);
+    values.insert("machine", header.e_machine.get(e).0, Converter::None, obj);
     values.insert("version", header.e_version.get(e), Converter::None, obj);
     values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
     values.insert("phoff", header.e_phoff.get(e), Converter::None, obj);
@@ -487,7 +487,7 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     values.insert("shentsize", header.e_shentsize.get(e), Converter::None, obj);
     values.insert(
         "shstrndx",
-        header.e_shstrndx.get(e),
+        header.e_shstrndx.get(e).0,
         Converter::SectionIndex,
         obj,
     );
@@ -635,11 +635,6 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_VERDEFNUM => (Cow::Borrowed("DT_VERDEFNUM"), Converter::None),
             DT_VERNEEDNUM => (Cow::Borrowed("DT_VERNEEDNUM"), Converter::None),
             DT_VERNEED => (Cow::Borrowed("DT_VERNEED"), Converter::SectionAddress),
-            DT_LOOS => (Cow::Borrowed("DT_LOOS"), Converter::None),
-            DT_HIOS => (Cow::Borrowed("DT_HIOS"), Converter::None),
-            DT_LOPROC => (Cow::Borrowed("DT_LOPROC"), Converter::None),
-            DT_HIPROC => (Cow::Borrowed("DT_HIPROC"), Converter::None),
-            DT_VALRNGLO => (Cow::Borrowed("DT_VALRNGLO"), Converter::None),
             DT_GNU_PRELINKED => (Cow::Borrowed("DT_GNU_PRELINKED"), Converter::None),
             DT_GNU_CONFLICTSZ => (Cow::Borrowed("DT_GNU_CONFLICTSZ"), Converter::None),
             DT_GNU_LIBLISTSZ => (Cow::Borrowed("DT_GNU_LIBLISTSZ"), Converter::None),
@@ -651,7 +646,6 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_POSFLAG_1 => (Cow::Borrowed("DT_POSFLAG_1"), Converter::None),
             DT_SYMINSZ => (Cow::Borrowed("DT_SYMINSZ"), Converter::None),
             DT_SYMINENT => (Cow::Borrowed("DT_SYMINENT"), Converter::None),
-            DT_ADDRRNGLO => (Cow::Borrowed("DT_ADDRRNGLO"), Converter::None),
             DT_TLSDESC_PLT => (Cow::Borrowed("DT_TLSDESC_PLT"), Converter::None),
             DT_TLSDESC_GOT => (Cow::Borrowed("DT_TLSDESC_GOT"), Converter::None),
             DT_GNU_CONFLICT => (Cow::Borrowed("DT_GNU_CONFLICT"), Converter::None),

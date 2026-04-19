@@ -27,6 +27,7 @@ use linker_utils::riscv64::relocation_type_from_raw;
 use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
+use object::read::elf::Sym as _;
 
 pub(crate) struct ElfRiscV64;
 
@@ -112,7 +113,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_FLOAT_ABI)
+                .map(|flag| flag & EF_RISCV_FLOAT_ABI.0)
                 .unique()
                 .exactly_one()
                 .is_ok(),
@@ -121,7 +122,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_RVE)
+                .map(|flag| flag & EF_RISCV_RVE.0)
                 .unique()
                 .exactly_one()
                 .is_ok(),
@@ -130,7 +131,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_RV64ILP32)
+                .map(|flag| flag & EF_RISCV_RV64ILP32.0)
                 .unique()
                 .exactly_one()
                 .is_ok(),
@@ -172,7 +173,7 @@ impl crate::platform::Arch for ElfRiscV64 {
     ) -> bool {
         object
             .symbol(symbol_index)
-            .is_ok_and(|sym| (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0)
+            .is_ok_and(|sym| sym.st_other().contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
     #[allow(unused_variables)]
