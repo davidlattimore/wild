@@ -274,7 +274,7 @@ impl ArchKind {
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
             object::elf::EM_RISCV => Ok(ArchKind::RISCV64),
             object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
-            other => bail!("Unsupported object architecture {other}",),
+            other => bail!("Unsupported object architecture {other:?}",),
         }
     }
 }

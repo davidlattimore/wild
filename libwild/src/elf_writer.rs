@@ -98,7 +98,6 @@ use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
-use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -124,8 +123,10 @@ use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
+use object::elf::SymType;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
@@ -161,12 +162,12 @@ struct RelocationCache<R> {
 #[derive(Clone, Copy)]
 enum SymbolSection {
     /// One of the SHN values.
-    Raw(u16),
+    Raw(object::elf::ShdrIndex),
     Index(u32),
 }
 
-impl From<u16> for SymbolSection {
-    fn from(value: u16) -> Self {
+impl From<object::elf::ShdrIndex> for SymbolSection {
+    fn from(value: object::elf::ShdrIndex) -> Self {
         SymbolSection::Raw(value)
     }
 }
@@ -365,9 +366,7 @@ fn write_program_headers(
         let e = LittleEndian;
         let segment_details = layout.program_segments.segment_def(segment_id);
 
-        segment_header
-            .p_type
-            .set(e, segment_details.segment_type.raw());
+        segment_header.p_type.set(e, segment_details.segment_type);
 
         // Support executable stack (Wild defaults to non-executable stack)
         let mut segment_flags = segment_details.segment_flags;
@@ -375,7 +374,7 @@ fn write_program_headers(
             segment_flags |= pf::EXECUTABLE;
         }
 
-        segment_header.p_flags.set(e, segment_flags.raw());
+        segment_header.p_flags.set(e, segment_flags);
         segment_header
             .p_offset
             .set(e, segment_sizes.file_offset as u64);
@@ -407,13 +406,15 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header.e_ident.magic = object::elf::ELFMAG;
     header.e_ident.class = object::elf::ELFCLASS64;
     header.e_ident.data = object::elf::ELFDATA2LSB; // Little endian
-    header.e_ident.version = 1;
+    header.e_ident.version = object::elf::EV_CURRENT;
     header.e_ident.os_abi = object::elf::ELFOSABI_NONE;
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty);
     header.e_machine.set(e, A::arch_identifier());
-    header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
+    header
+        .e_version
+        .set(e, u32::from(object::elf::EV_CURRENT.0));
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(
         e,
@@ -461,7 +462,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         if shstrndx >= u32::from(object::elf::SHN_LORESERVE) {
             object::elf::SHN_XINDEX
         } else {
-            shstrndx as u16
+            object::elf::ShdrIndex(shstrndx as u16)
         },
     );
     Ok(())
@@ -511,7 +512,7 @@ impl<'out> VersionWriter<'out> {
         }
     }
 
-    fn set_next_symbol_version(&mut self, index: u16) -> Result {
+    fn set_next_symbol_version(&mut self, index: object::elf::VerIndex) -> Result {
         if let Some(versym_table) = self.versym.as_mut() {
             let versym = versym_table
                 .split_off_first_mut()
@@ -1370,7 +1371,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             SymbolSection::Index(index) if index >= u32::from(object::elf::SHN_LORESERVE) => {
                 (index, object::elf::SHN_XINDEX)
             }
-            SymbolSection::Index(index) => (0, index as u16),
+            SymbolSection::Index(index) => (0, object::elf::ShdrIndex(index as u16)),
         };
         if let Some(s) = symtab_shndx_entries {
             *s = index;
@@ -1381,8 +1382,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
         entry.st_name.set(e, string_offset);
-        entry.st_info = 0;
-        entry.st_other = 0;
+        entry.st_info = object::elf::SymInfo(0);
+        entry.st_other = object::elf::SymFlags(0);
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
         entry.st_size.set(e, size);
@@ -2132,7 +2133,7 @@ fn apply_relocations<
         .address()
         .context("Attempted to apply relocations to a section that we didn't load")?;
     let object_section = object.object.section(section_index)?;
-    let section_flags = SectionFlags::from_header(object_section);
+    let section_flags = object_section.sh_flags(LittleEndian);
     let mut modifier = RelocationModifier::Normal;
 
     let mut relocation_count = 0;
@@ -2301,7 +2302,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let section_flags = SectionFlags::from_header(eh_frame_section);
+    let section_flags = eh_frame_section.sh_flags(LittleEndian);
     let mut relocations = relocations.peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
@@ -3401,9 +3402,13 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
 
     // Define the null dynamic symbol.
     if layout.symbol_db.output_kind.needs_dynsym() {
-        table_writer
-            .dynsym_writer
-            .define_symbol(false, 0.into(), 0, 0, &[])?;
+        table_writer.dynsym_writer.define_symbol(
+            false,
+            object::elf::SHN_UNDEF.into(),
+            0,
+            0,
+            &[],
+        )?;
     }
 
     Ok(())
@@ -3508,7 +3513,7 @@ fn write_symbol_table_entries(
     layout: &ElfLayout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    symbol_writer.define_symbol(true, 0.into(), 0, 0, &[])?;
+    symbol_writer.define_symbol(true, object::elf::SHN_UNDEF.into(), 0, 0, &[])?;
 
     if layout.args().should_output_partial_object() {
         write_section_symbols(symbol_writer, layout)?;
@@ -3586,12 +3591,18 @@ fn write_verdef(
 
         verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
         // Mark first entry as base version
-        verdef_out
-            .vd_flags
-            .set(e, if i == 0 { object::elf::VER_FLG_BASE } else { 0 });
-        verdef_out
-            .vd_ndx
-            .set(e, i as u16 + object::elf::VER_NDX_GLOBAL);
+        verdef_out.vd_flags.set(
+            e,
+            if i == 0 {
+                object::elf::VER_FLG_BASE
+            } else {
+                object::elf::VerFlags(0)
+            },
+        );
+        verdef_out.vd_ndx.set(
+            e,
+            object::elf::VerIndex(i as u16 + object::elf::VER_NDX_GLOBAL.0),
+        );
         let aux_count = if verdef.parent_index.is_some() { 2 } else { 1 };
         verdef_out.vd_cnt.set(e, aux_count);
         verdef_out.vd_hash.set(e, object::elf::hash(name));
@@ -3803,7 +3814,7 @@ fn write_gnu_property_notes(
     for note in &layout.properties_and_attributes.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
-        property.pr_type = note.ptype;
+        property.pr_type = note.ptype.0;
         property.pr_datasz = size_of_val(&property.pr_data) as u32;
         property.pr_data = note.data;
         property.pr_padding = 0;
@@ -4105,7 +4116,10 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(SymbolSection, u8)> {
+fn get_symbol_attributes(
+    layout: &ElfLayout,
+    symbol_id: SymbolId,
+) -> Result<(SymbolSection, SymType)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
     let file = layout.symbol_db.file(file_id);
 
@@ -4726,7 +4740,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(
         object::elf::DT_PLTREL,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
-        |_| object::elf::DT_RELA as u64,
+        |_| object::elf::DT_RELA.0 as u64,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTRELSZ,
@@ -4779,35 +4793,32 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
-        |inputs| inputs.args.enable_new_dtags && inputs.dt_flags() != 0,
-        |inputs| inputs.dt_flags(),
+        |inputs| inputs.args.enable_new_dtags && inputs.dt_flags().0 != 0,
+        |inputs| inputs.dt_flags().0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS_1,
-        |inputs| inputs.dt_flags_1() != 0,
-        |inputs| inputs.dt_flags_1(),
+        |inputs| inputs.dt_flags_1().0 != 0,
+        |inputs| inputs.dt_flags_1().0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_BIND_NOW,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_BIND_NOW)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_BIND_NOW)
         },
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_SYMBOLIC,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_SYMBOLIC)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_SYMBOLIC)
         },
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_TEXTREL,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_TEXTREL)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_TEXTREL)
         },
         |_inputs| 0,
     ),
@@ -4825,7 +4836,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
 ];
 
 struct DynamicEntryWriter {
-    tag: i64,
+    tag: object::elf::DynTag,
     is_present_cb: fn(&DynamicEntryInputs) -> bool,
     cb: fn(&DynamicEntryInputs) -> u64,
 }
@@ -4841,8 +4852,8 @@ struct DynamicEntryInputs<'layout> {
 }
 
 impl DynamicEntryInputs<'_> {
-    fn dt_flags(&self) -> u64 {
-        let mut flags = 0;
+    fn dt_flags(&self) -> object::elf::DynFlags {
+        let mut flags = object::elf::DynFlags(0);
         flags |= object::elf::DF_BIND_NOW;
 
         if !self.output_kind.is_executable() && self.has_static_tls {
@@ -4853,11 +4864,11 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_ORIGIN;
         }
 
-        u64::from(flags)
+        flags
     }
 
-    fn dt_flags_1(&self) -> u64 {
-        let mut flags = 0;
+    fn dt_flags_1(&self) -> object::elf::DynFlags1 {
+        let mut flags = object::elf::DynFlags1(0);
         flags |= object::elf::DF_1_NOW;
 
         if self.output_kind.is_executable() && self.output_kind.is_relocatable() {
@@ -4878,7 +4889,7 @@ impl DynamicEntryInputs<'_> {
             }
         }
 
-        u64::from(flags)
+        flags
     }
 
     fn vma_of_section(&self, section_id: OutputSectionId) -> u64 {
@@ -4895,7 +4906,10 @@ impl DynamicEntryInputs<'_> {
 }
 
 impl DynamicEntryWriter {
-    const fn new(tag: i64, cb: fn(&DynamicEntryInputs) -> u64) -> DynamicEntryWriter {
+    const fn new(
+        tag: object::elf::DynTag,
+        cb: fn(&DynamicEntryInputs) -> u64,
+    ) -> DynamicEntryWriter {
         DynamicEntryWriter {
             tag,
             is_present_cb: |_| true,
@@ -4904,7 +4918,7 @@ impl DynamicEntryWriter {
     }
 
     const fn optional(
-        tag: i64,
+        tag: object::elf::DynTag,
         is_present_cb: fn(&DynamicEntryInputs) -> bool,
         cb: fn(&DynamicEntryInputs) -> u64,
     ) -> DynamicEntryWriter {
@@ -4939,7 +4953,7 @@ impl<'out> DynamicEntriesWriter<'out> {
         }
     }
 
-    fn write(&mut self, tag: i64, value: u64) -> Result {
+    fn write(&mut self, tag: object::elf::DynTag, value: u64) -> Result {
         let entry = self
             .out
             .split_off_first_mut()
@@ -4958,7 +4972,7 @@ impl<'out> DynamicEntriesWriter<'out> {
                 return;
             };
             let e = LittleEndian;
-            entry.d_tag.set(e, 0);
+            entry.d_tag.set(e, object::elf::DT_NULL);
             entry.d_val.set(e, 0);
         }
     }
@@ -5039,15 +5053,14 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_type.raw());
+        entry.sh_type.set(e, section_type);
 
         // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
             output_sections
                 .section_flags(section_id)
-                .without(shf::COMPRESSED)
-                .raw(),
+                .without(shf::COMPRESSED),
         );
 
         let name = layout.output_sections.name(section_id).with_context(|| {
@@ -5226,10 +5239,13 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     ValueFlags::empty(),
                 )?;
             } else {
-                let entry =
-                    table_writer
-                        .dynsym_writer
-                        .define_symbol(false, 0.into(), 0, 0, name)?;
+                let entry = table_writer.dynsym_writer.define_symbol(
+                    false,
+                    object::elf::SHN_UNDEF.into(),
+                    0,
+                    0,
+                    name,
+                )?;
 
                 // Note, we copy st_info, but not st_other since we don't want to copy the
                 // visibility. We want to emit the symbol with default visibility, otherwise the
@@ -5284,7 +5300,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
         while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
             let input_version = verdef.vd_ndx.get(e);
             let flags = verdef.vd_flags.get(e);
-            let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+            let is_base = flags.contains(object::elf::VER_FLG_BASE);
 
             if is_base {
                 let name_offset = table_writer
@@ -5296,18 +5312,18 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 continue;
             }
 
-            if input_version == 0 {
+            if input_version.is_local() {
                 bail!("Invalid version index");
             }
 
             let output_version = object
                 .format_specific_layout
                 .version_mapping
-                .get(usize::from(input_version - 1))
+                .get(usize::from(input_version.index() - 1))
                 .copied()
                 .unwrap_or_default();
 
-            if output_version != object::elf::VER_NDX_GLOBAL {
+            if !output_version.is_global() {
                 // Every VERDEF entry should have at least one AUX entry.
                 let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                 let name = aux_in.name(e, strings)?;
@@ -5329,7 +5345,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 aux_out.vna_other.set(e, output_version);
                 aux_out.vna_name.set(e, name_offset);
                 aux_out.vna_hash.set(e, sysv_name_hash);
-                aux_out.vna_flags.set(e, 0);
+                aux_out.vna_flags.set(e, object::elf::VerFlags(0));
                 aux_index += 1;
             }
         }
@@ -5393,25 +5409,25 @@ fn write_copy_relocation_for_symbol<A: Arch<Platform = Elf>>(
 fn copy_symbol_version(
     versym_in: &[Versym],
     local_symbol_index: usize,
-    version_mapping: &[u16],
+    version_mapping: &[object::elf::VerIndex],
     versym_out: &mut &mut [Versym],
 ) -> Result {
     let output_version =
         versym_in
             .get(local_symbol_index)
             .map_or(object::elf::VER_NDX_GLOBAL, |versym| {
-                let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-                if input_version <= object::elf::VER_NDX_GLOBAL {
+                let input_version = versym.get(LittleEndian);
+                if input_version.is_reserved() {
                     input_version
                 } else {
-                    version_mapping[usize::from(input_version) - 1]
+                    version_mapping[usize::from(input_version.index()) - 1]
                 }
             });
 
     write_symbol_version(versym_out, output_version)
 }
 
-fn write_symbol_version(versym_out: &mut &mut [Versym], version: u16) -> Result {
+fn write_symbol_version(versym_out: &mut &mut [Versym], version: object::elf::VerIndex) -> Result {
     versym_out
         .split_off_first_mut()
         .context("Insufficient .gnu.version allocation")?

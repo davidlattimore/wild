@@ -3300,7 +3300,7 @@ impl Assertions {
                 found_tags.insert(name.to_string());
             }
 
-            if tag == object::elf::DT_NULL {
+            if tag == object::elf::DT_NULL.0 {
                 break;
             }
         }
@@ -3326,7 +3326,7 @@ impl Assertions {
 
 fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
     use object::elf::*;
-    Some(match tag {
+    Some(match object::elf::DynTag(tag) {
         DT_NULL => "DT_NULL",
         DT_NEEDED => "DT_NEEDED",
         DT_PLTRELSZ => "DT_PLTRELSZ",

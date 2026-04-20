@@ -482,9 +482,9 @@ impl<'data> RegularVersionScript<'data> {
             // (visible as `1h <whitespaces>` in `readelf -V`), even if that symbol appears in the
             // version script.
             if version_name.is_empty() {
-                return Ok(Some(object::elf::VER_NDX_GLOBAL));
+                return Ok(Some(object::elf::VER_NDX_GLOBAL.0));
             } else if let Some(&number) = self.version_name_mapping.get(version_name) {
-                return Ok(Some(number as u16 + object::elf::VER_NDX_GLOBAL));
+                return Ok(Some(number as u16 + object::elf::VER_NDX_GLOBAL.0));
             }
             bail!(
                 "Symbol {} has undefined version {}",
@@ -498,7 +498,7 @@ impl<'data> RegularVersionScript<'data> {
                 // Ignore the implicit version!
                 None
             } else {
-                Some(number as u16 + object::elf::VER_NDX_GLOBAL)
+                Some(number as u16 + object::elf::VER_NDX_GLOBAL.0)
             }
         }))
     }

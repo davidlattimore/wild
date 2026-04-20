@@ -81,6 +81,7 @@ use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::RelocationTarget;
 use object::SectionKind;
+use object::read::elf::Dyn as _;
 use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
@@ -755,9 +756,9 @@ fn get_original_referent<'data, R: RType>(
         if let Some(section_index) = symbol.section_index() {
             let section = input_file.elf_file.section_by_index(section_index)?;
 
-            let flags = section.elf_section_header().sh_flags(LittleEndian) as u32;
+            let flags = section.elf_section_header().sh_flags(LittleEndian);
 
-            if flags & object::elf::SHF_MERGE != 0 && flags & object::elf::SHF_STRINGS != 0 {
+            if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
                 let section_data = section.data()?;
                 let string_plus_rest = &section_data[symbol.address() as usize..];
                 if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
@@ -2619,7 +2620,10 @@ fn symbol_versions_by_name<'data>(
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
 fn is_merge_section(section: &ElfSection64<LittleEndian>) -> bool {
-    section.elf_section_header().sh_flags(LittleEndian) as u32 & object::elf::SHF_MERGE != 0
+    section
+        .elf_section_header()
+        .sh_flags(LittleEndian)
+        .contains(object::elf::SHF_MERGE)
 }
 
 /// Returns information about sections where we can uniquely locate that section in each input file
@@ -3031,7 +3035,7 @@ impl<'data> AddressIndex<'data> {
         while let Some((_verneed, mut aux_iterator)) = verneed_iterator.next()? {
             while let Some(aux) = aux_iterator.next()? {
                 let name = aux.name(e, strings)?;
-                let index = aux.vna_other.get(e) as usize;
+                let index = aux.vna_other.get(e).index() as usize;
                 if index >= versions.len() {
                     versions.resize(index + 1, None);
                 }
@@ -3064,7 +3068,8 @@ impl<'data> AddressIndex<'data> {
             max_index = max_index.max(sym_index);
             let version_index = symbol_version_indexes
                 .and_then(|indexes| indexes.get(sym_index))
-                .copied();
+                .copied()
+                .map(object::elf::VerIndex);
 
             let version: Option<&[u8]> = match version_index {
                 Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
@@ -3078,10 +3083,10 @@ impl<'data> AddressIndex<'data> {
                 }
                 Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
                 Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
-                Some(version_index) if version_index > object::elf::VER_NDX_GLOBAL => self
+                Some(version_index) if !version_index.is_reserved() => self
                     .verdef
-                    .get(version_index as usize - 1)
-                    .or_else(|| self.verneed.get(version_index as usize))
+                    .get(version_index.index() as usize - 1)
+                    .or_else(|| self.verneed.get(version_index.index() as usize))
                     .copied()
                     .flatten(),
                 _ => None,
@@ -3257,7 +3262,7 @@ impl<'data> AddressIndex<'data> {
                     self.versym_address = Some(entry.d_val.get(e));
                 }
                 object::elf::DT_FLAGS_1
-                    if entry.d_val.get(e) & u64::from(object::elf::DF_1_PIE) != 0 =>
+                    if object::elf::DynFlags1(entry.val(e)).contains(object::elf::DF_1_PIE) =>
                 {
                     self.bin_attributes.output_kind = OutputKind::Executable;
                 }
@@ -3755,7 +3760,7 @@ impl Visibility {
             object::elf::STV_DEFAULT => Visibility::Default,
             object::elf::STV_PROTECTED => Visibility::Protected,
             object::elf::STV_HIDDEN => Visibility::Hidden,
-            other => Visibility::Other(other),
+            other => Visibility::Other(other.0),
         }
     }
 }

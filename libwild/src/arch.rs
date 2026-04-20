@@ -15,10 +15,10 @@ pub(crate) enum Architecture {
     Unsupported,
 }
 
-impl TryFrom<u16> for Architecture {
+impl TryFrom<object::elf::Machine> for Architecture {
     type Error = crate::error::Error;
 
-    fn try_from(arch: u16) -> Result<Self, Self::Error> {
+    fn try_from(arch: object::elf::Machine) -> Result<Self, Self::Error> {
         match arch {
             EM_X86_64 => Ok(Self::X86_64),
             EM_AARCH64 => Ok(Self::AArch64),

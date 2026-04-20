@@ -19,6 +19,7 @@ use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
+use object::read::elf::Sym as _;
 
 pub(crate) struct ElfAArch64;
 
@@ -100,7 +101,7 @@ impl crate::platform::Arch for ElfAArch64 {
     }
 
     fn get_property_class(property_type: u32) -> Option<PropertyClass> {
-        match property_type {
+        match object::elf::GnuPropertyType(property_type) {
             GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
             _ => None,
         }
@@ -278,9 +279,10 @@ impl crate::platform::Arch for ElfAArch64 {
         object: &<Self::Platform as Platform>::File<'_>,
         symbol_index: object::SymbolIndex,
     ) -> bool {
-        object
-            .symbol(symbol_index)
-            .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
+        object.symbol(symbol_index).is_ok_and(|sym| {
+            sym.st_other()
+                .contains(object::elf::STO_AARCH64_VARIANT_PCS)
+        })
     }
 
     fn get_source_info<'data>(
