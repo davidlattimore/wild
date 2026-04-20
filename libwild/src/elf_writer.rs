@@ -1707,6 +1707,16 @@ fn write_rela_sections<'data>(
                         .flatten()
                 })
                 .unwrap_or(0);
+            let addend = sym
+                .and_then(|s| {
+                    let sym_entry = object.object.symbol(s).ok()?;
+                    if sym_entry.st_type() != object::elf::STT_SECTION {
+                        return None;
+                    }
+                    let sec_idx = object.object.symbol_section(sym_entry, s).ok()??;
+                    object.section_resolutions[sec_idx.0].address()
+                })
+                .map_or(addend, |offset| addend + offset as i64);
             out.r_offset.set(e, section_address + offset);
             out.r_addend.set(e, addend);
             out.set_r_info(e, false, sym_idx, r_type);
