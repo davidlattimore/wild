@@ -131,6 +131,7 @@ use std::mem::offset_of;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::ops::Range;
+use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -666,6 +667,7 @@ impl platform::Platform for Elf {
         LayoutResourcesExt {
             sonames: Sonames::new(groups),
             uses_tlsld: AtomicBool::new(false),
+            comdat_groups: Mutex::new(hashbrown::HashSet::new()),
         }
     }
 
@@ -1965,7 +1967,16 @@ impl platform::Platform for Elf {
                 continue;
             }
 
-            if !resources.symbol_db.is_canonical(symbol_id) {
+            let sym = object.object.symbol(symbol_index)?;
+            let sig_name = object.object.symbol_name(sym)?;
+            let is_first = resources
+                .layout_resources_ext
+                .comdat_groups
+                .lock()
+                .unwrap()
+                .insert(sig_name);
+
+            if !is_first {
                 object.sections[index.0] = SectionSlot::Discard;
                 let num_members = (raw_data.len() - 4) / 4;
                 for i in 0..num_members {
@@ -4195,6 +4206,7 @@ fn has_complete_deps<'data>(
 pub(crate) struct LayoutResourcesExt<'data> {
     sonames: Sonames<'data>,
     uses_tlsld: AtomicBool,
+    comdat_groups: Mutex<hashbrown::HashSet<&'data [u8]>>,
 }
 
 #[derive(Debug)]
