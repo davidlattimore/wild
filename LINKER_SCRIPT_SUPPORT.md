@@ -51,7 +51,7 @@ end lists the features required to link the Linux kernel.
 | Output section type specifiers (`(NOLOAD)`, `(COPY)`, etc.) | 📅 | |
 | `FILL(value)` and `=fillexp` | 📅 | |
 | `AT(addr)` load-address specifier on output sections | 📅 | |
-| Numeric address between section name and `:` (e.g. `name 0 : { ... }`) | 📅 | |
+| Numeric address between section name and `:` (e.g. `name 0 : { ... }`) | 🧪 | Only numeric literals are currently supported |
 | `SORT_BY_NAME(...)`, `SORT_BY_ALIGNMENT(...)`, `SORT_BY_INIT_PRIORITY(...)` | 📅 | |
 | `EXCLUDE_FILE(...)` inside input section matchers | 📅 | |
 | `BYTE(expr)`, `SHORT(expr)`, `LONG(expr)`, `QUAD(expr)` output data | ❌ | |
