@@ -554,6 +554,11 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
                 continue;
             }
             DT_RELRENT => (Cow::Borrowed("DT_RELRENT"), Converter::None),
+            DT_ANDROID_RELR => (Cow::Borrowed("DT_ANDROID_RELR"), Converter::SectionAddress),
+            DT_ANDROID_RELRSZ => {
+                continue;
+            }
+            DT_ANDROID_RELRENT => (Cow::Borrowed("DT_ANDROID_RELRENT"), Converter::None),
             DT_STRSZ => {
                 // Ignore sizes for now.
                 continue;

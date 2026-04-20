@@ -13,21 +13,37 @@
 //#DiffIgnore:dynsym.__global_pointer$.section
 //#DiffIgnore:section.got.plt.entsize
 //#Mode:dynamic
-//#ExpectDynamic:DT_RELR
-//#ExpectDynamic:DT_RELRSZ
-//#ExpectDynamic:DT_RELRENT
 //#Contains:.relr.dyn
 //#DoesNotContain:GLIBC_ABI_DT_RELR
 
 //#Config:z-pack-relative-relocs:default
 //#LinkArgs:-pie -z now -z pack-relative-relocs --pack-dyn-relocs=none
+//#ExpectDynamic:DT_RELR
+//#ExpectDynamic:DT_RELRSZ
+//#ExpectDynamic:DT_RELRENT
 // GNU ld ignores `-z pack-relative-relocs` on RISC-V.
 //#EnableLinker:lld
 //#SkipLinker:ld
 
 //#Config:pack-dyn-relocs-relr:default
 //#LinkArgs:-pie -z now --pack-dyn-relocs=relr -z nopack-relative-relocs
-// GNU ld doesn't support `--pack-dyn-relocs.
+//#ExpectDynamic:DT_RELR
+//#ExpectDynamic:DT_RELRSZ
+//#ExpectDynamic:DT_RELRENT
+// GNU ld doesn't support `--pack-dyn-relocs`.
+//#EnableLinker:lld
+//#SkipLinker:ld
+
+//#Config:android-relr:default
+//#LinkArgs:-pie -z now --pack-dyn-relocs=relr --use-android-relr-tags
+//#ExpectDynamic:DT_ANDROID_RELR
+//#ExpectDynamic:DT_ANDROID_RELRSZ
+//#ExpectDynamic:DT_ANDROID_RELRENT
+//#NoDynamic:DT_RELR
+//#NoDynamic:DT_RELRSZ
+//#NoDynamic:DT_RELRENT
+//#RunEnabled:false
+// GNU ld doesn't support `--use-android-relr-tags`.
 //#EnableLinker:lld
 //#SkipLinker:ld
 
