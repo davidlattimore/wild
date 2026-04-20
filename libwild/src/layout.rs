@@ -3174,17 +3174,20 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
     }
 }
 
-fn segment_name_matches(name: &str, def: impl crate::platform::ProgramSegmentDef) -> bool {
+fn segment_name_matches(name: &[u8], def: impl crate::platform::ProgramSegmentDef) -> bool {
     match name {
-        "text" => def.is_executable() && !def.is_writable(),
-        "data" | "bss" => def.is_writable() && !def.is_executable(),
-        "rodata" => !def.is_writable() && !def.is_executable(),
+        b"text" => def.is_executable() && !def.is_writable(),
+        b"data" | b"bss" => def.is_writable() && !def.is_executable(),
+        // rodata lives in a dedicated RO segment when one exists, but in a typical Linux
+        // executable it shares the RX segment with .text. Match any non-writable loadable
+        // segment so we find whichever one actually contains read-only data.
+        b"rodata" => !def.is_writable(),
         _ => false,
     }
 }
 
-fn is_known_segment_name(name: &str) -> bool {
-    matches!(name, "text" | "data" | "bss" | "rodata")
+fn is_known_segment_name(name: &[u8]) -> bool {
+    matches!(name, b"text" | b"data" | b"bss" | b"rodata")
 }
 
 fn create_start_end_symbol_resolution<'data, P: Platform>(
@@ -3255,7 +3258,8 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
         SymbolPlacement::SegmentStart(name, default) => {
             if !is_known_segment_name(name) {
                 resources.symbol_db.args.warning(format!(
-                    "SEGMENT_START: unknown segment name '{name}', using default 0x{default:x}"
+                    "SEGMENT_START: unknown segment name '{}', using default 0x{default:x}",
+                    String::from_utf8_lossy(name)
                 ));
             }
             resources
@@ -3264,7 +3268,7 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
                 .iter()
                 .find(|seg| {
                     let def = resources.program_segments.segment_def(seg.id);
-                    def.is_loadable() && segment_name_matches(name, *def)
+                    def.is_loadable() && seg.sizes.mem_size > 0 && segment_name_matches(name, *def)
                 })
                 .map_or(default, |seg| seg.sizes.mem_offset)
         }

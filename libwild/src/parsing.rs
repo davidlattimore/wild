@@ -100,9 +100,9 @@ pub(crate) enum SymbolPlacement<'data> {
     LoadBaseAddress,
 
     /// Symbol will point to the start of the named program segment.
-    /// `name` is the conventional GNU ld segment name ("text", "data", "bss", "rodata").
+    /// `name` is the conventional GNU ld segment name (e.g. b"text", b"data", b"bss", b"rodata").
     /// `default` is the fallback address when no matching segment is found.
-    SegmentStart(&'data str, u64),
+    SegmentStart(&'data [u8], u64),
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".

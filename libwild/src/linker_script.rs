@@ -70,7 +70,7 @@ pub(crate) enum Command<'a> {
     Version(&'a [u8]),
     SymbolDefinition {
         name: &'a [u8],
-        value: &'a [u8],
+        value: Expression<'a>,
     },
     Provide(ProvideSymbolDefinition<'a>),
     Assert(AssertCommand<'a>),
@@ -315,8 +315,8 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
                 // Symbol definition
                 '='.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
-                let value = take_while(1.., |b| b != b';').parse_next(input)?;
-                let value = value.trim_ascii_end();
+                let value = parse_expression.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
                 opt(';').parse_next(input)?;
                 Command::SymbolDefinition { name: other, value }
             } else {
@@ -429,11 +429,6 @@ fn parse_memory<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<MemoryRe
 /// Parse an expression - entry point for expression parsing
 fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     parse_logical_or.parse_next(input)
-}
-
-/// Public wrapper around `parse_expression` for use in other modules.
-pub(crate) fn parse_expression_pub<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
-    parse_expression(input)
 }
 
 /// Parse logical OR: expression || expression

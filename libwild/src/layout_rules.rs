@@ -26,78 +26,32 @@ use hashbrown::HashTable;
 use std::borrow::Cow;
 use std::mem::replace;
 
-/// Evaluate a linker script expression that must be a compile-time constant.
-/// Returns `Err` for any expression that requires runtime context (symbols, location counter,
-/// etc.).
-fn eval_constant_expr(expr: &crate::linker_script::Expression<'_>) -> crate::error::Result<u64> {
-    use crate::linker_script::Expression;
-    match expr {
-        Expression::Number(n) => Ok(*n),
-        Expression::Add(l, r) => Ok(eval_constant_expr(l)?.wrapping_add(eval_constant_expr(r)?)),
-        Expression::Subtract(l, r) => {
-            Ok(eval_constant_expr(l)?.wrapping_sub(eval_constant_expr(r)?))
-        }
-        Expression::Multiply(l, r) => {
-            Ok(eval_constant_expr(l)?.wrapping_mul(eval_constant_expr(r)?))
-        }
-        Expression::Divide(l, r) => {
-            let d = eval_constant_expr(r)?;
-            if d == 0 {
-                return Err(crate::error!("division by zero in constant expression"));
-            }
-            Ok(eval_constant_expr(l)? / d)
-        }
-        Expression::Negate(e) => Ok(eval_constant_expr(e)?.wrapping_neg()),
-        _ => Err(crate::error!("expression is not a compile-time constant")),
-    }
-}
-
 /// Determine the `SymbolPlacement` for a top-level symbol definition (`name = value;`).
 ///
-/// Parses `value` as a full linker script expression and maps it to a `SymbolPlacement`.
-/// Returns an error if the value cannot be parsed or is not fully consumed.
+/// Maps a parsed linker script expression to a `SymbolPlacement`.
 fn placement_from_symbol_definition_value<'data>(
     name: &[u8],
-    value: &'data [u8],
+    value: &crate::linker_script::Expression<'data>,
 ) -> crate::error::Result<SymbolPlacement<'data>> {
     use crate::linker_script::Expression;
-    use winnow::BStr;
 
-    let mut input = BStr::new(value);
-    let expr = crate::linker_script::parse_expression_pub(&mut input).map_err(|_| {
-        crate::error!(
-            "Failed to parse symbol value for '{}'",
-            String::from_utf8_lossy(name)
-        )
-    })?;
-
-    // Reject partial parses — trailing non-whitespace means the expression only
-    // matched a prefix of the value.
-    if !input.trim_ascii().is_empty() {
-        return Err(crate::error!(
-            "Unexpected trailing tokens in symbol value for '{}'",
-            String::from_utf8_lossy(name)
-        ));
-    }
-
-    let placement = match expr {
+    let placement = match value {
         Expression::SegmentStart(seg_name, default_expr) => {
-            let default = eval_constant_expr(&default_expr).unwrap_or(0);
-            let name_str = std::str::from_utf8(seg_name)
-                .map_err(|_| crate::error!("SEGMENT_START: segment name is not valid UTF-8"))?;
-            SymbolPlacement::SegmentStart(name_str, default)
+            let default = crate::expression_eval::eval_constant_expr(default_expr).unwrap_or(0);
+            SymbolPlacement::SegmentStart(seg_name, default)
         }
-        Expression::Number(n) => SymbolPlacement::DefsymAbsolute(n),
+        Expression::Number(n) => SymbolPlacement::DefsymAbsolute(*n),
         Expression::Symbol(sym) => {
             let sym_str = std::str::from_utf8(sym)
                 .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
             SymbolPlacement::DefsymSymbol(sym_str, 0)
         }
         Expression::Add(l, r) => {
-            if let (Expression::Symbol(sym), Expression::Number(offset)) = (*l, *r) {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
+            {
                 let sym_str = std::str::from_utf8(sym)
                     .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
-                SymbolPlacement::DefsymSymbol(sym_str, offset as i64)
+                SymbolPlacement::DefsymSymbol(sym_str, *offset as i64)
             } else {
                 return Err(crate::error!(
                     "Unsupported expression in symbol definition for '{}'",
@@ -106,10 +60,11 @@ fn placement_from_symbol_definition_value<'data>(
             }
         }
         Expression::Subtract(l, r) => {
-            if let (Expression::Symbol(sym), Expression::Number(offset)) = (*l, *r) {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
+            {
                 let sym_str = std::str::from_utf8(sym)
                     .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
-                SymbolPlacement::DefsymSymbol(sym_str, -(offset as i64))
+                SymbolPlacement::DefsymSymbol(sym_str, -(*offset as i64))
             } else {
                 return Err(crate::error!(
                     "Unsupported expression in symbol definition for '{}'",
@@ -321,11 +276,11 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             }
                                             Expression::SegmentStart(name, default_expr) => {
                                                 let default =
-                                                    eval_constant_expr(default_expr).unwrap_or(0);
-                                                let name_str = std::str::from_utf8(name).map_err(|_| {
-                                                    crate::error!("SEGMENT_START: segment name is not valid UTF-8")
-                                                })?;
-                                                SymbolPlacement::SegmentStart(name_str, default)
+                                                    crate::expression_eval::eval_constant_expr(
+                                                        default_expr,
+                                                    )
+                                                    .unwrap_or(0);
+                                                SymbolPlacement::SegmentStart(name, default)
                                             }
                                             _other => {
                                                 // Unsupported RHS expression: skip this symbol

@@ -24,6 +24,31 @@ fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
     consumed.iter().filter(|&&b| b == b'\n').count() as u32 + 1
 }
 
+/// Evaluate a linker script expression that must be a compile-time constant.
+/// Returns `Err` for any expression that requires runtime context (symbols, location counter,
+/// etc.).
+pub(crate) fn eval_constant_expr(expr: &Expression<'_>) -> crate::error::Result<u64> {
+    match expr {
+        Expression::Number(n) => Ok(*n),
+        Expression::Add(l, r) => Ok(eval_constant_expr(l)?.wrapping_add(eval_constant_expr(r)?)),
+        Expression::Subtract(l, r) => {
+            Ok(eval_constant_expr(l)?.wrapping_sub(eval_constant_expr(r)?))
+        }
+        Expression::Multiply(l, r) => {
+            Ok(eval_constant_expr(l)?.wrapping_mul(eval_constant_expr(r)?))
+        }
+        Expression::Divide(l, r) => {
+            let d = eval_constant_expr(r)?;
+            if d == 0 {
+                return Err(crate::error!("division by zero in constant expression"));
+            }
+            Ok(eval_constant_expr(l)? / d)
+        }
+        Expression::Negate(e) => Ok(eval_constant_expr(e)?.wrapping_neg()),
+        _ => Err(crate::error!("expression is not a compile-time constant")),
+    }
+}
+
 /// Evaluate all ASSERT commands from all processed linker scripts.
 /// Must be called after layout is complete so section sizes/addresses are known.
 pub(crate) fn evaluate_assertions<'data, P: Platform>(
