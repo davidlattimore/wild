@@ -3,7 +3,7 @@
 //#CompArgs:default:
 //#CompArgs:-static -pie
 
-#include "init.h"
+#include "../common/init.h"
 
 #include "../common/runtime.h"
 
