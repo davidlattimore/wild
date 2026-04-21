@@ -1886,7 +1886,6 @@ impl platform::Platform for Elf {
             }
             secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
             secnames::NOTE_GNU_PROPERTY_SECTION_NAME => return SectionRuleOutcome::NoteGnuProperty,
-            secnames::EH_FRAME_SECTION_NAME => return SectionRuleOutcome::EhFrame,
             secnames::NOTE_ABI_TAG_SECTION_NAME => {
                 return SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
                     output_section_id::NOTE_ABI_TAG,

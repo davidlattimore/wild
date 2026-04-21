@@ -1771,7 +1771,6 @@ fn write_rela_sections<'data>(
 
             let section_discarded = sym
                 .and_then(|s| object.object.symbol(s).ok())
-                .filter(|sym_entry| sym_entry.st_type() == object::elf::STT_SECTION)
                 .and_then(|sym_entry| {
                     let s = sym.unwrap();
                     object.object.symbol_section(sym_entry, s).ok().flatten()
@@ -2034,11 +2033,13 @@ fn output_section_idx_for_input<'data>(
     let Some(section_id) = (match slot {
         SectionSlot::Loaded(_)
         | SectionSlot::LoadedGroup { .. }
+        | SectionSlot::MergeStrings(_)
         | SectionSlot::LoadedDebugInfo(_) => Some(
             object
                 .section_part_id(input_section_idx, &layout.symbol_db.section_part_ids)
                 .output_section_id(),
         ),
+        SectionSlot::FrameData(..) => Some(crate::output_section_id::EH_FRAME),
         _ => return 0,
     }) else {
         return 0;
@@ -2494,7 +2495,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
-                    if is_pc_begin && rel.raw_type() != object::elf::R_X86_64_NONE {
+                    if is_pc_begin && rel.raw_type() != 0 {
                         let Some(index) = rel.symbol() else {
                             bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                         };
