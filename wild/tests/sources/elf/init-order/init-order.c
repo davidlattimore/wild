@@ -4,8 +4,8 @@
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
 
+#include "../common/init.h"
 #include "../common/runtime.h"
-#include "init.h"
 
 static int ctors_init_val = 0;
 

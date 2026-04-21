@@ -2225,9 +2225,6 @@ fn build_obj(
 
             command.arg("-c");
 
-            command.arg("-iquote");
-            command.arg(config.common_dir());
-
             command.arg("-MF");
             command.arg(&deps_path);
             command.arg("-MD");

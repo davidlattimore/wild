@@ -1,4 +1,4 @@
-#include "ifunc_init.h"
+#include "../common/ifunc_init.h"
 
 #include <stdint.h>
 #include <sys/types.h>
