@@ -81,9 +81,31 @@ fn has_wasip2_target() -> bool {
 }
 
 /// Fingerprint the bug we expect this test to eventually catch —
-/// "type mismatch" and "initializer expression" complaints from
-/// wasmparser on wild's output. When wild's fix lands the assertion
-/// becomes "no validation errors at all".
+/// "type mismatch" complaints from wasmparser on wild's output.
+/// When wild's fix lands the assertion becomes "no validation
+/// errors at all".
+///
+/// As of 0339e36 wild produces an invalid wasm module from a
+/// rustc-driven hello-world build. Two distinct sub-bugs surfaced:
+///
+/// 1. **Element-segment init expr** — fixed in 08f3d02. Wild was
+///    emitting `global.get <__table_base>` even when __table_base
+///    is a defined (synth) global; spec §3.4.5 requires the
+///    referenced global to be imported. Static-PIC mode now folds
+///    to `i32.const 1` directly.
+///
+/// 2. **Function-type / index desync** — STILL OPEN. Reproduces at
+///    `-O0` (wilt off) on the simplest possible Rust input:
+///    `fn main() { println!("hi"); }`. wasm-validate reports
+///    "type mismatch in call, expected [i32, i32, i32, i32] but
+///    got [i32]" at calls to functions whose name-section entry
+///    matches a 2-arg signature but whose type-table entry says
+///    4 args. So either wild's GC / type-compaction phase remaps
+///    function indices without updating the per-function type
+///    assignment, or vice versa. Investigation breadcrumb: look at
+///    `wasm_writer::gc_functions` + `mark_used_types` — the
+///    type_map computed there must stay consistent with the
+///    function index space.
 #[test]
 #[ignore = "needs installed wasm32-wasip2 target + a bundled rust-lld"]
 fn rustc_hello_produces_valid_wasm() {
