@@ -1,0 +1,36 @@
+#!/bin/sh
+# Thin wrapper that invokes wild with `-ld64_compat` prepended. Used
+# to benchmark wild's Apple-compat mode alongside plain wild and ld64
+# (see benchmarks/runner `LinkerKind::WildCompat`). The banner is
+# rewritten so the runner's LinkerIdentifier::parse tags this as a
+# distinguishable kind rather than plain Wild.
+#
+# Resolution order for the real wild binary:
+#   1. $WILD_BIN   — explicit override
+#   2. $(dirname "$0")/wild — same directory (e.g. target/release)
+#   3. $(command -v wild) — anything on PATH
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -z "${WILD_BIN:-}" ]; then
+    if [ -x "$self_dir/wild" ]; then
+        WILD_BIN="$self_dir/wild"
+    elif command -v wild >/dev/null 2>&1; then
+        WILD_BIN=$(command -v wild)
+    else
+        echo "wild-ld64-compat: cannot find wild binary (set \$WILD_BIN)" >&2
+        exit 1
+    fi
+fi
+
+case "${1:-}" in
+    --version|-v|"")
+        # Munge wild's version banner so the runner sees a separate
+        # LinkerKind. "Wild 0.8.0 <hash> ..." becomes
+        # "Wild-ld64compat 0.8.0 <hash> ...".
+        "$WILD_BIN" -v 2>&1 | sed '1s/^Wild /Wild-ld64compat /' | head -1
+        exit 0
+        ;;
+esac
+
+exec "$WILD_BIN" -ld64_compat "$@"

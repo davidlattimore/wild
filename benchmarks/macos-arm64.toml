@@ -1,0 +1,93 @@
+name = "macos-arm64"
+
+# Mach-O benchmark matrix. Entries are Mach-O-only (`platform = "macho"`)
+# so the runner skips them when invoked on a Linux host, and vice versa
+# for the ELF configs. Run with:
+#
+#   cargo run --release -p benchmark-runner -- \
+#     bench --config benchmarks/macos-arm64.toml \
+#           --saves /tmp/wild-saves-macho \
+#           --tmp /tmp/linker-bench-out \
+#           --allow-non-tmpfs \
+#           $WILD_BIN /usr/bin/ld
+#
+# `--allow-non-tmpfs` is required — macOS has no native tmpfs filesystem.
+# A RAM disk (`diskutil erasevolume APFS ...`) is recommended for
+# serious numbers.
+#
+# Every bench below needs a save-dir at <saves>/<bench-name>/run-with.
+# Generate those by building each workload with
+# `WILD_SAVE_BASE=/tmp/wild-saves-macho/<bench-name>` + wild as the
+# linker, then moving the resulting numbered subdirectory up one level.
+# See BENCHMARKING.md §"Benchmarking wild on macOS" for the template.
+
+# --- Tiny / sanity ---
+
+[bench.c-hello-world]
+# Smallest real output: one C file, libSystem dylib bind, adhoc
+# codesign. Good noise-floor check.
+platform = "macho"
+
+[bench.rust-hello-world]
+# Tiny Rust exe. Exercises std's entry shim + liballoc dylib binds.
+platform = "macho"
+
+# --- Medium rust binaries ---
+
+[bench.ripgrep]
+# Canonical medium-size Rust bin (~8 MB release). Covers regex, mmap,
+# simd, crossbeam — good mix of std features.
+platform = "macho"
+
+[bench.bevy-dylib]
+# Bevy's dylib target forces the large-dylib path on Mach-O
+# (`-dylib`, chained fixups, MH_DEAD_STRIPPABLE_DYLIB). Comparable
+# to the ELF bevy-dylib bench.
+platform = "macho"
+
+# --- Large rust binaries ---
+
+[bench.rust-analyzer]
+# Biggest mainstream portable Rust bin (~200 MB with debuginfo).
+# Stresses symbol resolution scaling more than anything else in the
+# matrix.
+platform = "macho"
+
+[bench.wild]
+# Self-dogfood: linking wild with wild. On Mach-O this exercises
+# rustc's build of an executable against libstd + libunwind.
+platform = "macho"
+
+# --- Incremental / dev-loop scenarios ---
+
+[bench.rust-analyzer-incremental]
+# Simulates the inner dev loop: one rlib's mtime was just bumped by
+# rustc (as if you edited one crate and rebuilt it). Every other
+# input is identical to the previous link. Wild has no incremental
+# implementation yet (README: "end-goal"), so today this bench reads
+# exactly the same as `rust-analyzer` — that's the point. It pins a
+# baseline number so future incremental work (input-cache reuse,
+# content-hash-skipping, output patch-in-place) shows up as a
+# proper wall-clock delta in this row rather than being invisible.
+#
+# The save-dir `rust-analyzer-incremental/run-with` wraps the plain
+# rust-analyzer invocation with a `touch` of
+# `librust_analyzer-*.rlib` (the main workload crate — the one a
+# developer actually edits). Touching only updates mtime; content
+# stays identical, which is conservative: a content-change variant
+# would also force rustc to emit new `.rlib` bytes, but that's
+# already accounted for in the compiler side of the dev loop, not
+# the linker's.
+platform = "macho"
+
+# --- Known wild gaps (uncomment once these Mach-O features land) ---
+
+# [bench.tls-dylib]
+# platform = "macho"
+# # Requires TLS-across-dylib resolution — tracked at
+# # sold_macho_tests.rs:119 and project_midnight_node_wild.md entry #7.
+
+# [bench.libunwind]
+# platform = "macho"
+# # Requires libunwind.a integration (separate from __unwind_info,
+# # which already works) — tracked at sold_macho_tests.rs:132.

@@ -25,11 +25,11 @@ Follow-these steps:
 
 * Chose the crate that you wish to use in your benchmark, clone it, `cd` into it's root directory
   and make sure it builds with `cargo build` (for a rust project)
-    * Examples: [`ripgrep`](https://github.com/BurntSushi/ripgrep.git)
+  * Examples: [`ripgrep`](https://github.com/BurntSushi/ripgrep.git)
 * Clean the build using `cargo clean`
 * To force the build of your chosen crate to link using wild, we have a couple of options:
-    * Prefix the cargo build command with `RUSTFLAGS="-Clinker=clang -Clink-arg=--ld-path=wild"`
-    * Modify (or add) the `.cargo/config.toml` file in your chosen crate (example for `ripgrep`)
+  * Prefix the cargo build command with `RUSTFLAGS="-Clinker=clang -Clink-arg=--ld-path=wild"`
+  * Modify (or add) the `.cargo/config.toml` file in your chosen crate (example for `ripgrep`)
 
 ```toml
 [target.x86_64-unknown-linux-gnu]
@@ -42,11 +42,11 @@ rustflags = ["-Clink-arg=--ld-path=wild"]
 * Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include
   `RUSTFLAGS` as above if you have chosen that method)
 * You will get a few numbered subdirectories in `/tmp/wild/ripgrep` as part of the build process.
-    * Directories will be created for builds of build scripts, proc macros and crate binaries built
-    * Usually the last numbered subdirectory will be the build of crate's binary (if a single binary
-      is built)
-    * You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
-    * In the case of ripgrep it is '6'
+  * Directories will be created for builds of build scripts, proc macros and crate binaries built
+  * Usually the last numbered subdirectory will be the build of crate's binary (if a single binary
+    is built)
+  * You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
+  * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
 
 When you run `run-with wild`, the linker may print warnings for unsupported flags. It's a good idea
@@ -69,15 +69,15 @@ That should produce output similar to this (with different values):
 Benchmark 1: /tmp/wild/ripgrep/6/run-with ld
   Time (mean ± σ):     954.1 ms ±  13.6 ms    [User: 683.4 ms, System: 268.8 ms]
   Range (min … max):   920.6 ms … 970.7 ms    10 runs
- 
+
 Benchmark 2: /tmp/wild/ripgrep/6/run-with mold
   Time (mean ± σ):     146.1 ms ±   3.6 ms    [User: 52.0 ms, System: 2.4 ms]
   Range (min … max):   139.1 ms … 154.7 ms    19 runs
- 
+
 Benchmark 3: /tmp/wild/ripgrep/6/run-with wild
   Time (mean ± σ):      87.7 ms ±   2.8 ms    [User: 2.4 ms, System: 2.0 ms]
   Range (min … max):    81.5 ms …  92.5 ms    34 runs
- 
+
 Summary
   /tmp/wild/ripgrep/6/run-with wild ran
     1.67 ± 0.07 times faster than /tmp/wild/ripgrep/6/run-with mold
@@ -240,6 +240,165 @@ You should now have a few subdirectories under `/tmp/rustc-link`. You can identi
 If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
 link.
 
+### Benchmarking wild on macOS (Mach-O)
+
+Wild supports Mach-O on aarch64-apple-darwin, and the `benchmark-runner`
+crate now understands the `ld64` linker kind so the same harness works
+there. The runner filters benchmarks by `platform` — entries default to
+`elf` (so every existing `ryzen-9955hx.toml` / `raspberrypi.toml` entry
+round-trips unchanged); add `platform = "macho"` to mark a bench as
+Mach-O-only.
+
+Smallest end-to-end run (timings below on an M-series host):
+
+```sh
+# 1. Build a release wild.
+cargo build --release --bin wild
+
+# 2. Capture a wild-linker invocation for a tiny rust bin.
+mkdir -p /tmp/wild-saves-macho
+cd /tmp && cargo new --bin hello-mac && cd hello-mac
+WILD_SAVE_BASE=/tmp/wild-saves/hello-mac \
+  RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=$WILD_REPO/target/release/wild" \
+  cargo build --release
+# pick the save-dir that links the binary (tail -n1 of each run-with
+# identifies the output path); move it under the bench name:
+mv /tmp/wild-saves/hello-mac/0 /tmp/wild-saves-macho/rust-hello-world
+
+# 3. Run the benchmark.
+cargo run --release -p benchmark-runner -- \
+    bench --config benchmarks/macos-arm64.toml \
+          --saves /tmp/wild-saves-macho \
+          --tmp /tmp/linker-bench-out \
+          --allow-non-tmpfs \
+          $WILD_REPO/target/release/wild /usr/bin/ld
+
+# 4. Produce the report.
+cargo run --release -p benchmark-runner -- \
+    report --config benchmarks/macos-arm64.toml --print-stats
+```
+
+Notes on Mach-O specifics:
+
+* `--allow-non-tmpfs` is needed because macOS lacks the tmpfs invariant
+  the runner enforces on Linux. Writing to a RAM-disk still helps.
+* ld64 prints its version to stderr; the runner reads both streams and
+  parses either `@(#)PROGRAM:ld PROJECT:ld-<ver>` or the legacy
+  `PROJECT:ld64-<ver>` format.
+* `--no-fork` is wild-only on Mach-O (ld64 has no equivalent). The
+  `peak_rss` figure for ld64 reflects the full process tree.
+
+#### Benchmarking wild's `-ld64_compat` mode
+
+A third `LinkerKind::WildCompat` exists so the report shows wild's
+Apple-compat mode (bit-for-bit output against ld64) as a separate bar
+alongside default wild and ld64. It is driven by a thin wrapper at
+`benchmarks/runner/bin/wild-ld64-compat` that prepends `-ld64_compat`
+to every link invocation and rewrites wild's `-v` banner so the runner
+tags it distinctly.
+
+```sh
+# Point the wrapper at your release wild (or put them in the same dir):
+export WILD_BIN=$WILD_REPO/target/release/wild
+
+cargo run --release -p benchmark-runner -- \
+    bench --config benchmarks/macos-arm64.toml \
+          --saves /tmp/wild-saves-macho \
+          --tmp /tmp/linker-bench-out \
+          --allow-non-tmpfs \
+          $WILD_BIN \
+          $WILD_REPO/benchmarks/runner/bin/wild-ld64-compat \
+          /usr/bin/ld
+```
+
+In typical runs `-ld64_compat` costs wild ~5–10 ms of extra link time
+but produces smaller output than default-mode wild — matching ld64's
+size almost exactly. If you care about bit-for-bit reproducibility
+against the Apple toolchain, the cost is negligible.
+
+#### Generating save-dirs for each Mach-O bench
+
+Each entry in `benchmarks/macos-arm64.toml` needs a directory
+`/tmp/wild-saves-macho/<bench-name>/run-with` before the runner can
+time it. The pattern is always the same: run the workload's native
+build with `WILD_SAVE_BASE` + wild as the linker, then move the
+numbered subdirectory that links the primary artefact up one level.
+
+`tail -n 1 /tmp/wild-saves/*/run-with` shows which subdirectory links
+which output file — pick the one whose artefact matches the bench.
+
+Recipes for the entries currently in the matrix (assumes
+`$WILD_REPO=/path/to/wild` and a release-built `$WILD_REPO/target/release/wild`):
+
+```sh
+# c-hello-world — trivial C program, noise floor.
+mkdir -p /tmp/c-hello && cat > /tmp/c-hello/hello.c <<'EOF'
+#include <stdio.h>
+int main(void) { puts("hello"); return 0; }
+EOF
+WILD_SAVE_BASE=/tmp/wild-saves/c-hello-world \
+  clang -fuse-ld=$WILD_REPO/target/release/wild \
+        /tmp/c-hello/hello.c -o /tmp/c-hello/hello
+mv /tmp/wild-saves/c-hello-world/0 \
+   /tmp/wild-saves-macho/c-hello-world
+
+# rust-hello-world — `cargo new --bin`, build --release.
+cd /tmp && cargo new --bin rust-hello-world && cd rust-hello-world
+WILD_SAVE_BASE=/tmp/wild-saves/rust-hello-world \
+  RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=$WILD_REPO/target/release/wild" \
+  cargo build --release
+mv /tmp/wild-saves/rust-hello-world/0 \
+   /tmp/wild-saves-macho/rust-hello-world
+
+# ripgrep — git clone https://github.com/BurntSushi/ripgrep.git, same
+# RUSTFLAGS as above, `cargo build --release`. Pick the save-dir
+# whose run-with tail links `.../target/release/rg` (usually last).
+
+# bevy-dylib — cd into a bevy-using project, build with
+# `--features bevy/dynamic_linking`. The dylib save-dir is the one
+# linking `.../libbevy_dylib-*.dylib`.
+
+# rust-analyzer — git clone https://github.com/rust-lang/rust-analyzer.
+# Set the RUSTFLAGS globally (via .cargo/config.toml), build with
+# `cargo xtask install --server`. Pick the save-dir linking
+# `rust-analyzer` itself.
+
+# wild (self-bench) — cd into this repo, build the bin under wild:
+cd $WILD_REPO
+WILD_SAVE_BASE=/tmp/wild-saves/wild \
+  RUSTFLAGS="-Clinker=clang -Clink-arg=-fuse-ld=$WILD_REPO/target/release/wild" \
+  cargo build --release --bin wild
+# The save-dir that links .../target/release/wild becomes the bench.
+mv /tmp/wild-saves/wild/<N> /tmp/wild-saves-macho/wild
+
+# rust-analyzer-incremental — simulates the inner dev loop (one
+# rlib's mtime bumped as if rustc just rebuilt the workload crate).
+# Reuses the rust-analyzer save-dir's inputs; only needs a thin
+# `run-with` wrapper that touches the main workload rlib before
+# exec'ing into rust-analyzer/run-with. Wild has no incremental
+# today (README calls it out as the end-goal), so this bench
+# currently reads identically to the plain `rust-analyzer` bench
+# plus ~25 ms of bash-wrapper overhead (paid equally by every
+# linker). The point is to land a named row in the matrix so
+# future incremental-linking work shows up as a wall-clock delta
+# here rather than being invisible.
+mkdir -p /tmp/wild-saves-macho/rust-analyzer-incremental
+cat > /tmp/wild-saves-macho/rust-analyzer-incremental/run-with <<'EOF'
+#!/usr/bin/env bash
+set -e
+D=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+for f in $D/../rust-analyzer/private/tmp/rust-analyzer/target/release/deps/librust_analyzer-*.rlib; do
+  [ -e "$f" ] && touch -h "$f"
+done
+exec "$D/../rust-analyzer/run-with" "$@"
+EOF
+chmod +x /tmp/wild-saves-macho/rust-analyzer-incremental/run-with
+```
+
+Save-dirs contain absolute paths and are NOT committed to git — they
+must be regenerated on each machine. `.gitignore` covers the
+`*.bench-results` output files already.
+
 ### Other tools
 
 * [poop](https://github.com/andrewrk/poop) - gives a lot of measurements other than just time. Note
@@ -253,7 +412,7 @@ link.
 To figure out where wild is spending time, the first option is to run with `--time`. It's
 recommended to combine this with `--no-fork`. For example:
 
-```
+```text
 ~/tmp/rustc-link/0/run-with target/release/wild --strip-debug --time --no-fork
 ┌───    3.84 Open input files
 ├───    7.45 Split archives
@@ -362,7 +521,7 @@ Then run the linker on some input. e.g:
 
 This should print some stats on exit. e.g.:
 
-```
+```text
 dhat: Total:     250,699,127 bytes in 130,224 blocks
 dhat: At t-gmax: 111,265,627 bytes in 14,117 blocks
 dhat: At t-end:  96,320 bytes in 109 blocks
