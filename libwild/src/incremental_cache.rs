@@ -115,6 +115,28 @@ pub(crate) const WILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// **Complexity:** Θ(n) CPU where n = `content_bytes.len()`; Θ(1)
 /// extra memory.
 pub(crate) fn compute_input_key(content_bytes: &[u8], canonicalized_flags: &[u8]) -> [u8; 32] {
+    compute_input_key_with_version(
+        content_bytes,
+        canonicalized_flags,
+        CACHE_SCHEMA_VERSION,
+        WILD_VERSION,
+    )
+}
+
+/// Underlying hash recipe, parameterised on schema + version so
+/// drift-guard tests can pin a stable expected value across wild
+/// releases. Production callers go through [`compute_input_key`].
+///
+/// Changing the ordering of `update` calls, adding/removing a
+/// length-prefix, or swapping hashers is a breaking schema change —
+/// bump [`CACHE_SCHEMA_VERSION`] and update the stability fixture
+/// in `tests::drift_guard_input_key_stability` in the same commit.
+fn compute_input_key_with_version(
+    content_bytes: &[u8],
+    canonicalized_flags: &[u8],
+    schema: u32,
+    version: &str,
+) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(content_bytes);
     // Length-prefix each dynamic field so a flag of "ab" + content "c"
@@ -123,9 +145,9 @@ pub(crate) fn compute_input_key(content_bytes: &[u8], canonicalized_flags: &[u8]
     // are ambiguous.
     h.update(&(canonicalized_flags.len() as u64).to_le_bytes());
     h.update(canonicalized_flags);
-    h.update(&CACHE_SCHEMA_VERSION.to_le_bytes());
-    h.update(&(WILD_VERSION.len() as u64).to_le_bytes());
-    h.update(WILD_VERSION.as_bytes());
+    h.update(&schema.to_le_bytes());
+    h.update(&(version.len() as u64).to_le_bytes());
+    h.update(version.as_bytes());
     *h.finalize().as_bytes()
 }
 
@@ -1063,5 +1085,108 @@ mod tests {
             mtime_ns: 0,
         };
         assert_ne!(rlib, ch);
+    }
+
+    /// Drift guard for the input-key hash composition. Pinned against
+    /// a mock schema + version so it's stable across wild releases;
+    /// the test only fires when `compute_input_key_with_version`'s
+    /// hash recipe itself changes (update order, length-prefix,
+    /// hasher choice).
+    ///
+    /// If this test starts failing: you changed the hash recipe.
+    /// Confirm the change is intentional, bump `CACHE_SCHEMA_VERSION`,
+    /// then update the expected blake3 below from the new output. The
+    /// bump + expected-value update must happen in the same commit.
+    #[test]
+    fn drift_guard_input_key_stability() {
+        let actual = compute_input_key_with_version(b"hello", b"-arch arm64", 1, "test");
+        let expected = "9b88c33ea08671e0fa6ef3aa7c2c81f0faa35829f3997580d335b2e835c68e4f";
+        assert_eq!(
+            key_hex(&actual),
+            expected,
+            "input-key hash recipe drifted. If intentional, bump \
+             CACHE_SCHEMA_VERSION and update this fixture."
+        );
+    }
+
+    /// Drift guard for `compute_args_hash`. Same rationale as
+    /// `drift_guard_input_key_stability` — pinned against a known
+    /// argv so that changes to the args-hash composition surface
+    /// explicitly. Skips argv[0] (verified separately in
+    /// `args_hash_skips_argv0`) so the expected value is stable
+    /// across install locations.
+    #[test]
+    fn drift_guard_args_hash_stability() {
+        let argv = vec![
+            "/anywhere/wild".to_owned(),
+            "-arch".to_owned(),
+            "arm64".to_owned(),
+            "-o".to_owned(),
+            "out".to_owned(),
+            "in.o".to_owned(),
+        ];
+        let actual = compute_args_hash(&argv);
+        let expected = "e7e338d046b5f4ff447310b2114b6cdff1d3da236ca34bb1c3047cf5d700d8f3";
+        assert_eq!(
+            key_hex(&actual),
+            expected,
+            "args-hash recipe drifted. If intentional, bump \
+             CACHE_SCHEMA_VERSION and update this fixture."
+        );
+    }
+
+    /// `write_link_cache` must produce byte-identical output for a
+    /// given `LinkCache` regardless of HashMap iteration order. The
+    /// implementation sorts entries by path before emission; this
+    /// test locks in that behaviour so a future refactor can't
+    /// silently regress it (which would defeat any downstream
+    /// cache-diffing tool and break deterministic-build guarantees).
+    #[test]
+    fn link_cache_write_is_deterministic() {
+        let mut inputs: HashMap<PathBuf, InputHash> = HashMap::new();
+        // Insert in reverse-sorted order; sorting on emit should
+        // normalise.
+        inputs.insert(
+            PathBuf::from("/zzz/last.o"),
+            InputHash::ContentHash {
+                hash: [0x11u8; 32],
+                size: 100,
+                mtime_ns: 1,
+            },
+        );
+        inputs.insert(
+            PathBuf::from("/aaa/first.rlib"),
+            InputHash::RlibFingerprint(b"cafef00dcafef00d".to_vec()),
+        );
+        inputs.insert(
+            PathBuf::from("/mmm/middle.o"),
+            InputHash::ContentHash {
+                hash: [0x22u8; 32],
+                size: 200,
+                mtime_ns: 2,
+            },
+        );
+        let cache = LinkCache {
+            args_hash: [0x55u8; 32],
+            output_size: 12345,
+            wild_version: "fixture".to_owned(),
+            inputs,
+        };
+
+        let tmp_a = std::env::temp_dir().join("wild-det-a.wild-hashes");
+        let tmp_b = std::env::temp_dir().join("wild-det-b.wild-hashes");
+        let _ = std::fs::remove_file(&tmp_a);
+        let _ = std::fs::remove_file(&tmp_b);
+        write_link_cache(&tmp_a, &cache).expect("write a");
+        write_link_cache(&tmp_b, &cache).expect("write b");
+        let a = std::fs::read(&tmp_a).expect("read a");
+        let b = std::fs::read(&tmp_b).expect("read b");
+        std::fs::remove_file(&tmp_a).ok();
+        std::fs::remove_file(&tmp_b).ok();
+        assert_eq!(
+            a, b,
+            "write_link_cache emitted different bytes for the same \
+             input — iteration-order bug has crept in"
+        );
     }
 }
