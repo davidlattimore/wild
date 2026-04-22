@@ -85,8 +85,7 @@ fn has_wasip2_target() -> bool {
 /// When wild's fix lands the assertion becomes "no validation
 /// errors at all".
 ///
-/// As of 0339e36 wild produces an invalid wasm module from a
-/// rustc-driven hello-world build. Two distinct sub-bugs surfaced:
+/// History — both sub-bugs now fixed:
 ///
 /// 1. **Element-segment init expr** — fixed in 08f3d02. Wild was
 ///    emitting `global.get <__table_base>` even when __table_base
@@ -94,18 +93,23 @@ fn has_wasip2_target() -> bool {
 ///    referenced global to be imported. Static-PIC mode now folds
 ///    to `i32.const 1` directly.
 ///
-/// 2. **Function-type / index desync** — STILL OPEN. Reproduces at
-///    `-O0` (wilt off) on the simplest possible Rust input:
-///    `fn main() { println!("hi"); }`. wasm-validate reports
-///    "type mismatch in call, expected [i32, i32, i32, i32] but
-///    got [i32]" at calls to functions whose name-section entry
-///    matches a 2-arg signature but whose type-table entry says
-///    4 args. So either wild's GC / type-compaction phase remaps
-///    function indices without updating the per-function type
-///    assignment, or vice versa. Investigation breadcrumb: look at
-///    `wasm_writer::gc_functions` + `mark_used_types` — the
-///    type_map computed there must stay consistent with the
-///    function index space.
+/// 2. **Per-input function-import-index → output-import-index
+///    remap missing** — fixed in this commit. Each input's bodies
+///    encode `call <input-import-idx>` (with a R_WASM_FUNCTION_INDEX_LEB
+///    reloc on the LEB), but pre-fix wild only had a name-based
+///    lookup keyed on rust-mangled symbol names — which never
+///    match wit-bindgen import field names like `output-stream`.
+///    The body then kept the input's local view, and the post-merge
+///    shift turned `call N` into `call N + num_imported_functions`
+///    landing on whatever defined function happened to sit there
+///    (e.g. `Error::_new` for what should have been `OutputStream::drop`).
+///    Now `per_obj_func_imp_remap` (built right before Pass 2 so
+///    `__wasm_call_ctors` is already in `function_name_map`) gives
+///    each input's import index the correct output index, and the
+///    post-shift fixup pass re-applies it via `import_call_fixups`.
+///    Recorded indices get +1'd when the ctor function is inserted
+///    at `functions[0]` — without that, every recorded fixup would
+///    overwrite the wrong body.
 #[test]
 #[ignore = "needs installed wasm32-wasip2 target + a bundled rust-lld"]
 fn rustc_hello_produces_valid_wasm() {

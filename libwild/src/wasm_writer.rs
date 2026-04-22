@@ -3302,10 +3302,92 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         }
     }
 
+    // --- Per-object input-import-index → output-function-index map ---
+    //
+    // Without this, every input's function-import indices remain as the
+    // input saw them (rustc emits `call <input-import-idx>` with a
+    // R_WASM_FUNCTION_INDEX_LEB reloc on the LEB immediate). Pass 2's
+    // body-reloc-apply needs to translate those input-local positions
+    // into the output's deduplicated import index space; otherwise the
+    // body keeps the input's view, and `call N` lands on whatever
+    // function happens to sit at output position N — typically a
+    // signature-incompatible function, which `wasm-validate` then
+    // rightly rejects with "type mismatch in call".
+    //
+    // Constructed RIGHT BEFORE Pass 2 (rather than alongside the GOT
+    // simulator above) so that linker-synthesised function names —
+    // most importantly `__wasm_call_ctors`, registered in
+    // `function_name_map` between this block and the GOT one — are
+    // visible. Otherwise an input's `env.__wasm_call_ctors` import
+    // would be allocated a fresh import index here while Pass 4's
+    // dedup loop correctly recognises it's resolved by the synth
+    // and skips emitting it — leading to a stable off-by-one between
+    // our prediction and the actual `output_func_idx`. Mirrors Pass
+    // 4's iteration order and skip rules so the indices line up.
+    let per_obj_func_imp_remap: Vec<Vec<u32>> = {
+        let mut out: Vec<Vec<u32>> = Vec::with_capacity(objects.len());
+        let mut seen: std::collections::HashMap<(Vec<u8>, Vec<u8>, u8, u32), u32> =
+            Default::default();
+        let mut next = 0u32;
+        for obj in &objects {
+            let mut local_remap: Vec<u32> =
+                Vec::with_capacity(obj.parsed.import_function_names.len());
+            for imp in &obj.parsed.imports {
+                if imp.kind != 0 {
+                    continue;
+                }
+                // Resolved-by-definition: skip emitting the import,
+                // route call sites to the defining function.
+                if let Some(&def_idx) = function_name_map.get(imp.field.as_slice()) {
+                    local_remap.push(def_idx);
+                    continue;
+                }
+                let remapped_type = obj
+                    .type_map
+                    .get(imp.type_index as usize)
+                    .copied()
+                    .unwrap_or(imp.type_index);
+                let key = (
+                    imp.module.clone(),
+                    imp.field.clone(),
+                    imp.kind,
+                    remapped_type,
+                );
+                let output_idx = match seen.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        let idx = next;
+                        next += 1;
+                        e.insert(idx);
+                        idx
+                    }
+                };
+                local_remap.push(output_idx);
+            }
+            out.push(local_remap);
+        }
+        out
+    };
+
     // --- Pass 2: apply relocations with global symbol resolution ---
     let mut functions: Vec<MergedFunction> = Vec::new();
     // Store deferred table relocs: (function_output_idx, offset_in_body, reloc_type, sym→func_idx)
     let mut deferred_table_relocs: Vec<(usize, usize, u8, u32)> = Vec::new();
+
+    // Fix-ups for `R_WASM_FUNCTION_INDEX_LEB` relocs that resolved to
+    // an *imported* function. Pass 4-5's shift loop below adds
+    // `num_imported_functions` to every call operand to convert
+    // pre-shift defined-only indices into post-shift unified-namespace
+    // indices. That works for calls to defined functions, but it
+    // CORRUPTS calls to imports — the import index is *already* in
+    // the unified namespace and gets wrongly bumped by N. We can't
+    // skip the shift selectively (the walker has no way to tell what
+    // the body originally encoded), so we record (merged_fn_idx,
+    // off_in_body, output_import_idx) here and re-apply the correct
+    // value AFTER the shift below. Without this, every call to an
+    // imported function lands on the wrong defined function and
+    // wasm-validate explodes with "type mismatch in call".
+    let mut import_call_fixups: Vec<(usize, usize, u32)> = Vec::new();
 
     for (obj_idx, obj_info) in objects.iter().enumerate() {
         let parsed = &obj_info.parsed;
@@ -3344,24 +3426,62 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         local_output_idx
                     };
                     symbol_to_output_func.insert(sym_idx as u32, output_idx);
-                } else {
-                    // Undefined or import-referencing — resolve by name.
-                    // Per spec §4.3: if undefined without EXPLICIT_NAME, name
-                    // comes from the import entry.
+                } else if is_undefined && sym.index < parsed.num_function_imports {
+                    // Undefined function symbol pointing at an *imported*
+                    // function. Two sub-cases, distinguished by name:
+                    //
+                    // 1. **Resolved by a definition elsewhere.** Some
+                    //    other input defines the symbol (extern shim
+                    //    resolved by a real impl). Insert into
+                    //    `symbol_to_output_func` so the body-reloc-apply
+                    //    patches the call to the defined function's
+                    //    pre-shift index — the post-merge shift then
+                    //    converts it to the unified namespace correctly.
+                    //
+                    // 2. **Stays as an import.** No defining input — the
+                    //    function lives in `output_imports`, at the
+                    //    output-import-index given by
+                    //    `per_obj_func_imp_remap[obj_idx][sym.index]`.
+                    //    For this case we DELIBERATELY don't insert
+                    //    into `symbol_to_output_func`. If we did, Pass 2
+                    //    would write the (already-unified) import index
+                    //    into the body, and the post-merge shift would
+                    //    then add N a second time, landing the call on
+                    //    a defined function with the wrong signature.
+                    //    Instead we record (merged_fn_idx, off_in_body,
+                    //    output_import_idx) and re-apply the correct
+                    //    value AFTER the shift below.
                     let resolve_name = if !sym.name.is_empty() {
                         Some(sym.name.as_slice())
-                    } else if is_undefined {
+                    } else {
                         parsed
                             .import_function_names
                             .get(sym.index as usize)
                             .map(|v| v.as_slice())
+                    };
+                    if let Some(name) = resolve_name
+                        && let Some(&def_idx) = function_name_map.get(name)
+                    {
+                        // Sub-case 1: resolved by a definition.
+                        symbol_to_output_func.insert(sym_idx as u32, def_idx);
+                    }
+                    // Sub-case 2 is handled by the post-shift fixup
+                    // (gathered in the body-reloc loop below using
+                    // `per_obj_func_imp_remap`).
+                } else {
+                    // Defined-out-of-range / synthetic / other edge cases
+                    // — fall back to name resolution against defined
+                    // functions (no import lookup since sym.index doesn't
+                    // index the import table here).
+                    let resolve_name = if !sym.name.is_empty() {
+                        Some(sym.name.as_slice())
                     } else {
                         None
                     };
-                    if let Some(name) = resolve_name {
-                        if let Some(&output_idx) = function_name_map.get(name) {
-                            symbol_to_output_func.insert(sym_idx as u32, output_idx);
-                        }
+                    if let Some(name) = resolve_name
+                        && let Some(&output_idx) = function_name_map.get(name)
+                    {
+                        symbol_to_output_func.insert(sym_idx as u32, output_idx);
                     }
                 }
             } else if sym.kind == 1 {
@@ -3504,6 +3624,33 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         // R_WASM_FUNCTION_INDEX_LEB (spec §2: 5-byte varuint32)
                         if let Some(&output_idx) = symbol_to_output_func.get(&reloc.symbol_index) {
                             write_padded_leb128(&mut body, off_in_body, output_idx);
+                        } else {
+                            // No defined-function resolution. If the
+                            // symbol was an import reference we still
+                            // need to redirect the call to the right
+                            // output import index — record a post-shift
+                            // fixup. The body's bytes stay at whatever
+                            // rustc emitted (the input's local import
+                            // index); the shift adds N to it; our
+                            // fixup overwrites with the correct
+                            // unified output-import index.
+                            let sym = parsed.symbols.get(reloc.symbol_index as usize);
+                            let is_undef_import = sym.is_some_and(|s| {
+                                s.kind == 0
+                                    && (s.flags & 0x10) != 0
+                                    && s.index < parsed.num_function_imports
+                            });
+                            if is_undef_import
+                                && let Some(&out_imp_idx) = per_obj_func_imp_remap
+                                    .get(obj_idx)
+                                    .and_then(|v| v.get(sym.unwrap().index as usize))
+                            {
+                                import_call_fixups.push((
+                                    functions.len(),
+                                    off_in_body,
+                                    out_imp_idx,
+                                ));
+                            }
                         }
                     }
                     6 => {
@@ -4035,6 +4182,13 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                 body,
             },
         );
+        // Insertion at index 0 shifts every existing function up by 1.
+        // The recorded import-call fixups stored their target as the
+        // pre-insertion `functions.len()`, so they need the same shift
+        // to keep pointing at the right body.
+        for fixup in &mut import_call_fixups {
+            fixup.0 += 1;
+        }
         // Shift table entries for the ctor insertion — but skip entries
         // whose funcidx is an already-post-shift import index (those were
         // seeded by GOT.func references to undefined functions in
@@ -4441,6 +4595,18 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
             for (off, new_idx) in patches {
                 debug_assert!(off + 5 <= body_len);
                 write_padded_leb128(&mut func.body, off, new_idx);
+            }
+        }
+        // Fixup: re-apply correct output-import indices for calls that
+        // resolved to imports in Pass 2. The shift above wrongly added
+        // `num_imported_functions` to the input's local import index
+        // (left in the body bytes when Pass 2 deliberately didn't
+        // patch). Overwrite with the right value now.
+        for (merged_fn_idx, off_in_body, out_imp_idx) in &import_call_fixups {
+            if let Some(func) = functions.get_mut(*merged_fn_idx)
+                && *off_in_body + 5 <= func.body.len()
+            {
+                write_padded_leb128(&mut func.body, *off_in_body, *out_imp_idx);
             }
         }
         for idx in function_name_map.values_mut() {
