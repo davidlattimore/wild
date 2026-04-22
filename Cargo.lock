@@ -2474,6 +2474,7 @@ dependencies = [
  "tempfile",
  "toml",
  "wait-timeout",
+ "wasmparser 0.221.3",
  "which",
 ]
 

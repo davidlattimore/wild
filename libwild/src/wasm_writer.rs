@@ -160,9 +160,7 @@ pub(crate) fn output_size_upper_bound(layout: &Layout<'_, Wasm>) -> u64 {
     }
     // 2× envelope + 64 KiB synth headroom; floor at 64 KiB so the
     // empty-input edge case still has room for the linker's headers.
-    let bound = sum_inputs
-        .saturating_mul(2)
-        .saturating_add(64 * 1024);
+    let bound = sum_inputs.saturating_mul(2).saturating_add(64 * 1024);
     bound.max(64 * 1024)
 }
 
@@ -901,14 +899,12 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     Ok(())
 }
 
-
 /// Write relocatable output (-r flag).
 /// Merges input objects into a single .o file with linking section.
 fn write_relocatable<A: Arch<Platform = Wasm>>(
     sized_output: &mut crate::file_writer::SizedOutput,
     layout: &Layout<'_, Wasm>,
 ) -> crate::error::Result {
-
     // Parse all input objects and merge types/functions.
     let mut types: Vec<FuncType> = Vec::new();
     let mut functions: Vec<(u32, Vec<u8>)> = Vec::new(); // (type_index, body)

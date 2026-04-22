@@ -698,8 +698,8 @@ mod tests {
         // path-doesn't-contain-version so version is still parsed.
         let line = "LLD 19.1.4 (https://github.com/rust-lang/llvm-project.git abc)";
 
-        let ld_lld = LinkerIdentifier::parse(line, Path::new("/usr/bin/ld.lld"))
-            .expect("ld.lld parse");
+        let ld_lld =
+            LinkerIdentifier::parse(line, Path::new("/usr/bin/ld.lld")).expect("ld.lld parse");
         assert_eq!(ld_lld.kind, LinkerKind::Lld);
         assert_eq!(ld_lld.version, "19.1.4");
 

@@ -168,13 +168,7 @@ panic = "abort"
     std::fs::create_dir_all(&save_dir).unwrap();
 
     let status = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "--target",
-            "wasm32-wasip2",
-            "--quiet",
-        ])
+        .args(["build", "--release", "--target", "wasm32-wasip2", "--quiet"])
         .current_dir(root)
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("CARGO_TARGET_WASM32_WASIP2_LINKER", &capture)
