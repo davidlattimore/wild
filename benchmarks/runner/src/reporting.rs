@@ -398,6 +398,10 @@ fn colour_for(linker: LinkerKind) -> &'static str {
         // A muted variant of Wild's green so the two Wild bars read
         // as "same family, different mode" in charts.
         LinkerKind::WildCompat => "#66AA66",
+        // Same family as `Lld` but a distinguishable hue so wasm
+        // baseline bars don't visually merge with ELF Lld bars in
+        // multi-platform reports.
+        LinkerKind::WasmLd => "#3366FF",
     }
 }
 

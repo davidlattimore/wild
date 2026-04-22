@@ -312,8 +312,9 @@ fn find_benchmarks(args: &BenchArgs, config: &Config) -> Result<Vec<Benchmark>> 
 
 /// Filter benchmarks by host output format. Mach-O benches need a
 /// macOS host (ld64) and ELF benches need a Linux host (ld.lld/mold).
-/// Benches without a matching host-format linker are silently skipped
-/// so a single TOML can declare a mixed-platform matrix.
+/// Wasm benches are host-agnostic — wasm32 is target-only — so they
+/// pass this filter on every host. The decision goes through
+/// `Platform::runs_on_host` to keep that policy in one place.
 fn filter_benchmarks_by_host_platform(
     benchmarks: Vec<Benchmark>,
     host: Platform,
@@ -321,7 +322,7 @@ fn filter_benchmarks_by_host_platform(
     benchmarks
         .into_iter()
         .filter(|bench| {
-            if bench.config.platform == host {
+            if bench.config.platform.runs_on_host(host) {
                 true
             } else {
                 println!(

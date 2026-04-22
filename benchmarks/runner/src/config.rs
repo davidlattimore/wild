@@ -36,6 +36,12 @@ pub(crate) struct BenchConfig {
 pub(crate) enum Platform {
     Elf,
     Macho,
+    /// `wasm32` (and `wasm64`) outputs. Linked by either `wild
+    /// --target wasm32` or rust-lld's `wasm-ld` symlink. Unlike
+    /// ELF/Mach-O, wasm has no notion of "native" host — the same
+    /// linker invocation works from a Linux or macOS box — so wasm
+    /// benches are NOT subject to the `Platform::host()` filter.
+    Wasm,
 }
 
 impl Default for Platform {
@@ -47,11 +53,24 @@ impl Default for Platform {
 impl Platform {
     /// The platform that the *current host* produces natively. Used to
     /// skip benches that need a cross-platform linker we don't ship.
+    /// Wasm benches deliberately live outside this filter (they run
+    /// on either host); see `runs_on_host` below.
     pub(crate) fn host() -> Self {
         if cfg!(target_os = "macos") {
             Platform::Macho
         } else {
             Platform::Elf
+        }
+    }
+
+    /// Whether this benchmark's output format can be produced on the
+    /// current host without a cross-toolchain. Mach-O ⇒ macOS only;
+    /// ELF ⇒ Linux only; Wasm ⇒ everywhere (wasm32 is target-only,
+    /// no host-format dependency).
+    pub(crate) fn runs_on_host(self, host: Platform) -> bool {
+        match self {
+            Platform::Wasm => true,
+            other => other == host,
         }
     }
 }

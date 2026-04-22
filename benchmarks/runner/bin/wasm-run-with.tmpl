@@ -1,0 +1,60 @@
+#!/bin/bash
+# Template `run-with` for a wasm benchmark save-dir.
+#
+# Copy this to `<saves>/<bench-name>/run-with`, mark executable,
+# and edit the INPUTS block + LINKER_FLAGS to suit the workload.
+# The benchmark-runner invokes:
+#
+#     OUT=<tmpfile> ./run-with <linker> [extra flags…]
+#
+# Convention for wasm benches:
+#   - $1 is the linker binary (wild, wasm-ld, or anything that
+#     accepts the `--no-entry --export-all -o <out>` interface).
+#   - "$@" after the shift carries any extra flags the runner
+#     wants to pass (e.g. `--no-fork` for wild's memory pass).
+#   - $OUT is the path to write the linked .wasm to.
+#
+# Inputs are expected to be pre-assembled .o files alongside this
+# script — typically generated once by the workload build and
+# cached here so the runner just measures the link, not the
+# host-side compile.
+
+set -euo pipefail
+
+LINKER="$1"
+shift
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# === Edit this block ========================================================
+# List the .o files this bench links. They must already exist in
+# DIR (or wherever you point them).
+INPUTS=(
+    "$DIR/main.o"
+    # "$DIR/lib.o"
+)
+
+# Per-workload linker flags. wild and rust-lld's wasm-ld both
+# accept this baseline.
+LINKER_FLAGS=(
+    --no-entry
+    --export-all
+    # Add `--target wasm32` if invoking wild; wasm-ld doesn't
+    # accept it, so prefer wrapping the wild path in a per-linker
+    # shim if the bench needs target-specific flags.
+)
+# ============================================================================
+
+# wild expects `--target wasm32` to pick the wasm backend; wasm-ld
+# infers it from the binary name. Detect by filename so a single
+# `run-with` can drive both.
+case "$(basename "$LINKER")" in
+    wild|wild-*)
+        LINKER_FLAGS=(--target wasm32 "${LINKER_FLAGS[@]}")
+        ;;
+esac
+
+# Expand `${@}` (the runner's extra flags) safely even when empty —
+# `set -u` + bash 3.2 (macOS) treats unset arrays as undefined,
+# so use the `${arr[@]+"${arr[@]}"}` "expand only if set" trick.
+exec "$LINKER" "${LINKER_FLAGS[@]}" "$@" -o "$OUT" "${INPUTS[@]}"

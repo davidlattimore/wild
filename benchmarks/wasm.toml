@@ -1,0 +1,79 @@
+name = "wasm"
+
+# Wasm benchmark matrix. Every entry has `platform = "wasm"` so the
+# host filter accepts them on either Linux or macOS — wasm32 is
+# target-only, no host-format dependency.
+#
+# Generating save-dirs:
+#   Wild doesn't currently emit `WILD_SAVE_BASE`-style replay dirs
+#   for wasm, so each save-dir's `run-with` script is hand-authored.
+#   Convention follows the ELF / Mach-O harness:
+#
+#     <saves>/<bench-name>/run-with    # executable script
+#
+#   The runner invokes:
+#
+#     OUT=<tmpfile> ./run-with <linker> [extra flags…]
+#
+#   so `run-with` should:
+#     - assemble its inputs into wasm32 `.o` files (cached alongside
+#       the script if expensive),
+#     - exec `$1` (the linker binary path) with those inputs and
+#       `--no-entry --export-all -o "$OUT"` (or whatever flags suit
+#       the workload),
+#     - shift "$@" so trailing args land on the linker invocation.
+#
+# A reference template lives at `benchmarks/runner/bin/wasm-run-with.tmpl`.
+#
+# Linkers to compare:
+#   wild                                              (default)
+#   ~/.rustup/toolchains/<…>/bin/gcc-ld/wasm-ld       (rust-lld baseline)
+#
+# Run with:
+#   cargo run --release -p benchmark-runner -- \
+#     bench --config benchmarks/wasm.toml \
+#           --saves /tmp/wild-saves-wasm \
+#           --tmp /tmp/wasm-bench-out \
+#           --allow-non-tmpfs \
+#           $WILD_BIN $WASM_LD_BIN
+
+# --- Tiny / sanity ---
+
+[bench.wasm-hello-c]
+# Minimal C program → wasm32 .o → linked. Output ~1-2 KB. Sanity
+# check that wild + wasm-ld both produce a valid module; numbers
+# here are dominated by process startup, not link work.
+platform = "wasm"
+
+[bench.wasm-hello-rust]
+# Tiny rust no_std executable for wasm32-unknown-unknown. Exercises
+# wild's Rust-shim path (panic_abort, alloc nostd).
+platform = "wasm"
+
+# --- Medium ---
+
+[bench.wasm-many-functions]
+# Synthetic ~5-20k tiny functions, ~500 KB-1 MB output. Stresses
+# the symbol table and code-section assembly. Useful for spotting
+# super-linear regressions in the writer.
+platform = "wasm"
+
+[bench.wasm-ripgrep-equiv]
+# ripgrep-shaped workload (text search + regex + simd) compiled to
+# wasm32-wasi. ~5-10 MB output. Representative of "reasonably
+# sized real Rust app".
+platform = "wasm"
+
+# --- Large (opt-in: needs an external workload checkout) ---
+
+[bench.wasm-substrate-runtime]
+# A Substrate-style runtime built via `substrate-wasm-builder`
+# (e.g. partner-chains-demo-runtime). ~5-15 MB raw, ~1 MB
+# zstd-compressed. The current `benches/wasm-lto-bench.sh`
+# operates on this same workload and can be migrated to feed
+# this save-dir.
+#
+# Skipped by default — uncomment `skip = false` and provide the
+# save-dir to enable.
+platform = "wasm"
+skip = true

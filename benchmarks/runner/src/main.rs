@@ -223,6 +223,13 @@ enum LinkerKind {
     /// report distinguishes plain wild's default output from the
     /// bit-for-bit-vs-ld64 mode.
     WildCompat,
+    /// rust-lld's `wasm-ld` symlink (or any LLD invoked under that
+    /// name). Same binary as `Lld` — disambiguated by filename in the
+    /// `LinkerIdentifier::parse` path. Exists as its own kind so the
+    /// report keeps the wasm baseline visually separate from the ELF
+    /// `lld` line, and so `supports_platform(Platform::Wasm)` returns
+    /// true for it (and false for the same binary if invoked as `ld.lld`).
+    WasmLd,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -241,6 +248,7 @@ impl LinkerKind {
             LinkerKind::Bfd => "GNU ld",
             LinkerKind::Ld64 => "ld64",
             LinkerKind::WildCompat => "Wild-compat",
+            LinkerKind::WasmLd => "wasm-ld",
         }
     }
 
@@ -254,15 +262,19 @@ impl LinkerKind {
         }
     }
 
-    /// Which output formats this linker can produce. Wild handles both;
-    /// everything else is single-format. WildCompat is Mach-O-only
-    /// because `-ld64_compat` has no meaning for ELF outputs.
+    /// Which output formats this linker can produce. Wild handles all
+    /// three (ELF, Mach-O, Wasm); the rest are single-format.
+    /// `WildCompat` is Mach-O-only because `-ld64_compat` has no
+    /// meaning for ELF / Wasm outputs. `WasmLd` is the same LLD
+    /// binary as `Lld` but invoked under the `wasm-ld` filename, so
+    /// it produces wasm32/64 output.
     fn supports_platform(&self, platform: crate::config::Platform) -> bool {
         use crate::config::Platform as P;
         match self {
             LinkerKind::Wild => true,
             LinkerKind::Lld | LinkerKind::Mold | LinkerKind::Bfd => platform == P::Elf,
             LinkerKind::Ld64 | LinkerKind::WildCompat => platform == P::Macho,
+            LinkerKind::WasmLd => platform == P::Wasm,
         }
     }
 }
@@ -386,7 +398,16 @@ impl LinkerIdentifier {
 
             kind = LinkerKind::Wild;
         } else if let Some(mut rest) = version_line.strip_prefix("LLD ") {
-            kind = LinkerKind::Lld;
+            // Same `LLD <ver>` banner is shared by `ld.lld`, `wasm-ld`,
+            // and `ld64.lld`. Disambiguate from the binary's filename:
+            // anything matching `wasm-ld` (with or without extension)
+            // is the Wasm flavour, even when invoked through a symlink
+            // — rust-lld ships its wasm front-end as `wasm-ld`.
+            kind = if is_wasm_ld_path(bin_path) {
+                LinkerKind::WasmLd
+            } else {
+                LinkerKind::Lld
+            };
             version = take_word(&mut rest)?.to_owned();
         } else if let Some(mut rest) = version_line.strip_prefix("Ubuntu LLD ") {
             kind = LinkerKind::Lld;
@@ -451,6 +472,18 @@ impl LinkerIdentifier {
         }
         parts
     }
+}
+
+/// True when the binary path is `…/wasm-ld[.exe]`. Used to flag the
+/// rust-lld wasm front-end vs the regular ELF lld, since both print
+/// the same `LLD <ver>` banner. We check the file *name*, not the
+/// whole path — rust-lld ships its symlink as `wasm-ld` regardless
+/// of where it's installed.
+fn is_wasm_ld_path(bin_path: &Path) -> bool {
+    bin_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|stem| stem == "wasm-ld")
 }
 
 fn take_word<'a>(input: &mut &'a str) -> Option<&'a str> {
@@ -627,5 +660,69 @@ mod tests {
         assert!(!LinkerKind::Mold.supports_platform(Platform::Macho));
         assert!(LinkerKind::WildCompat.supports_platform(Platform::Macho));
         assert!(!LinkerKind::WildCompat.supports_platform(Platform::Elf));
+    }
+
+    #[test]
+    fn test_wasm_platform_routing() {
+        use crate::config::Platform;
+        // Wild handles all three; WasmLd is wasm-only; ELF/Mach-O
+        // linkers refuse Wasm.
+        assert!(LinkerKind::Wild.supports_platform(Platform::Wasm));
+        assert!(LinkerKind::WasmLd.supports_platform(Platform::Wasm));
+        assert!(!LinkerKind::WasmLd.supports_platform(Platform::Elf));
+        assert!(!LinkerKind::WasmLd.supports_platform(Platform::Macho));
+        assert!(!LinkerKind::Lld.supports_platform(Platform::Wasm));
+        assert!(!LinkerKind::Mold.supports_platform(Platform::Wasm));
+        assert!(!LinkerKind::Bfd.supports_platform(Platform::Wasm));
+        assert!(!LinkerKind::Ld64.supports_platform(Platform::Wasm));
+        assert!(!LinkerKind::WildCompat.supports_platform(Platform::Wasm));
+    }
+
+    #[test]
+    fn test_wasm_runs_on_any_host() {
+        use crate::config::Platform;
+        // Wasm output is target-only; both hosts can produce it.
+        assert!(Platform::Wasm.runs_on_host(Platform::Macho));
+        assert!(Platform::Wasm.runs_on_host(Platform::Elf));
+        // ELF / Mach-O still gated to their native host.
+        assert!(Platform::Elf.runs_on_host(Platform::Elf));
+        assert!(!Platform::Elf.runs_on_host(Platform::Macho));
+        assert!(Platform::Macho.runs_on_host(Platform::Macho));
+        assert!(!Platform::Macho.runs_on_host(Platform::Elf));
+    }
+
+    #[test]
+    fn test_lld_banner_disambig_by_filename() {
+        // Same `LLD <ver>` first line, two different filenames.
+        // ld.lld stays Lld; wasm-ld becomes WasmLd. Both with
+        // path-doesn't-contain-version so version is still parsed.
+        let line = "LLD 19.1.4 (https://github.com/rust-lang/llvm-project.git abc)";
+
+        let ld_lld = LinkerIdentifier::parse(line, Path::new("/usr/bin/ld.lld"))
+            .expect("ld.lld parse");
+        assert_eq!(ld_lld.kind, LinkerKind::Lld);
+        assert_eq!(ld_lld.version, "19.1.4");
+
+        let wasm_ld = LinkerIdentifier::parse(
+            line,
+            Path::new(
+                "/Users/x/.rustup/toolchains/nightly/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/wasm-ld",
+            ),
+        )
+        .expect("wasm-ld parse");
+        assert_eq!(wasm_ld.kind, LinkerKind::WasmLd);
+        assert_eq!(wasm_ld.version, "19.1.4");
+    }
+
+    #[test]
+    fn test_is_wasm_ld_path() {
+        assert!(is_wasm_ld_path(Path::new("/foo/bar/wasm-ld")));
+        assert!(is_wasm_ld_path(Path::new("./wasm-ld")));
+        assert!(is_wasm_ld_path(Path::new("wasm-ld")));
+        assert!(is_wasm_ld_path(Path::new("/foo/wasm-ld.exe"))); // Windows-style
+        // Negatives — shouldn't false-positive on similar names.
+        assert!(!is_wasm_ld_path(Path::new("/usr/bin/ld.lld")));
+        assert!(!is_wasm_ld_path(Path::new("/usr/bin/lld")));
+        assert!(!is_wasm_ld_path(Path::new("/foo/wasm-something-else")));
     }
 }
