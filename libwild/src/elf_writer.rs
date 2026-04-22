@@ -480,7 +480,7 @@ fn write_file<'data, A: Arch<Platform = Elf>>(
             write_object::<A>(s, buffers, table_writer, layout, trace, sym_index_map)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
-        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout, trace)?,
         FileLayout::SyntheticSymbols(s) => write_synthetic_symbols::<A>(s, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
         FileLayout::NotLoaded => {}
@@ -1453,11 +1453,28 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
+    
+    // Fast O(1) lookup to skip harvested sections
+    let epilogue = layout.group_layouts.iter().find_map(|g| g.files.iter().find_map(|f| match f {
+        FileLayout::Epilogue(e) => Some(e),
+        _ => None,
+    })).unwrap();
+
+    let mut is_harvested = vec![false; object.sections.len()];
+    for h in &epilogue.script_sorted_sections {
+        if h.file_id == object.file_id {
+            is_harvested[h.section_index.0] = true;
+        }
+    }
+
     for (i, sec) in object.sections.iter().enumerate() {
         let section_index = object::SectionIndex(i);
 
         match sec {
             SectionSlot::Loaded(sec) => {
+                // Skip if handled by Harvester
+                if is_harvested[i] { continue; }
+                
                 write_object_section::<A>(
                     object,
                     layout,
@@ -3734,6 +3751,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &ElfLayout,
+    trace: &TraceOutput,
 ) -> Result {
     verbose_timing_phase!("Write epilogue");
 
@@ -3775,11 +3793,23 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     // The actual build-id will be filled in later once all writing has completed. It's important
     // that we fill it with zeros now however, since if we're overwriting an existing file, there
     // might be other data there and we don't zero it, then the build ID will be hashing that data.
+
     let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
     build_id_buffer.fill(0);
 
+    for harvested in &epilogue.script_sorted_sections {
+        let crate::layout::FileLayout::Object(object) = layout.file_layout(harvested.file_id) else {
+            continue;
+        };
+
+        if let SectionSlot::Loaded(sec) = &object.sections[harvested.section_index.0] {
+            write_object_section::<A>(object, layout, sec, harvested.section_index, buffers, table_writer, trace)?;
+        }
+    }
+
     Ok(())
 }
+
 
 fn write_gnu_property_notes(
     layout: &ElfLayout,

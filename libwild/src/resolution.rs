@@ -695,6 +695,11 @@ pub(crate) struct ResolvedCommon<'data, P: Platform> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
+#[derive(Debug, Clone)]
+pub(crate) struct ScriptSortedSectionDetail<'data> {
+    pub(crate) name: &'data [u8],
+    pub(crate) index: object::SectionIndex,
+}
 
 #[derive(Debug)]
 pub(crate) struct ResolvedObject<'data, P: Platform> {
@@ -710,6 +715,7 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
+    pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
 }
 
 #[derive(Debug)]
@@ -1103,6 +1109,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             string_merge_extras: Default::default(),
             custom_sections: Default::default(),
             init_fini_sections: Default::default(),
+            script_sorted_sections: Default::default(),
         }
     }
 }
@@ -1230,6 +1237,23 @@ fn resolve_section<'data, P: Platform>(
 
             unloaded_section = UnloadedSection::new();
         }
+            SectionRuleOutcome::ScriptSortedSection(output_info) => {
+            part_id = if output_info.section_id.is_regular() {
+                output_info.section_id.part_id_with_alignment(alignment)
+            } else {
+                output_info.section_id.base_part_id()
+            };
+
+            obj.script_sorted_sections.push(ScriptSortedSectionDetail {
+                name: section_name,
+                index: input_section_index,
+            });
+
+            must_load |= output_info.must_keep;
+
+            unloaded_section = UnloadedSection::new();
+        }
+        
         SectionRuleOutcome::Discard => return Ok((SectionSlot::Discard, part_id::UNMAPPED)),
         SectionRuleOutcome::NoteGnuStack => {
             P::validate_stack_section(input_section, obj, args)?;

@@ -103,6 +103,7 @@ pub(crate) enum SectionRuleOutcome {
     Debug,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
+    ScriptSortedSection(SectionOutputInfo),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +175,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 .unwrap_or(alignment::MIN)
                                 .max(replace(&mut extra_min_alignment, alignment::MIN));
 
+                            // Choose starting location for this output section.
                             let section_location = match &sec.start_address_expression {
                                 Some(Expression::Number(address)) => {
                                     location.take();
@@ -209,15 +211,22 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         };
 
                                         for pattern in &matcher.input_section_name_patterns {
+                                            let output_info = SectionOutputInfo {
+                                                section_id,
+                                                must_keep: matcher.must_keep,
+                                            };
+
+                                            // If the script requested sorting, tag it for the global Harvester instead of standard placement.
+                                            let outcome = if pattern.sorted {
+                                                SectionRuleOutcome::ScriptSortedSection(output_info)
+                                            } else {
+                                                crate::layout_rules::SectionRuleOutcome::Section(output_info)
+                                            };
+
                                             self.add_section_rule(SectionRule::new(
-                                                pattern,
+                                                pattern.name,
                                                 matcher.input_file_pattern,
-                                                crate::layout_rules::SectionRuleOutcome::Section(
-                                                    SectionOutputInfo {
-                                                        section_id,
-                                                        must_keep: matcher.must_keep,
-                                                    },
-                                                ),
+                                                outcome,
                                             )?);
                                         }
 
@@ -394,10 +403,11 @@ impl<'data> SectionRule<'data> {
         name: &'data [u8],
         section_id: OutputSectionId,
     ) -> SectionRule<'data> {
-        Self::prefix(
-            name,
-            SectionRuleOutcome::SortedSection(SectionOutputInfo::keep(section_id)),
-        )
+        SectionRule {
+            name_matcher: SectionNameMatcher::Prefix(name),
+            input_file_pattern: None,
+            outcome: SectionRuleOutcome::SortedSection(SectionOutputInfo::keep(section_id)),
+        }
     }
 
     pub(crate) const fn exact(
