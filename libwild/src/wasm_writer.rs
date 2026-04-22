@@ -614,12 +614,24 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
         write_leb128(&mut payload, 1); // 1 element segment
         // Active element segment for table 0.
         payload.push(0x00); // flags: active, table 0
-        // Init expression: when wild has a `__table_base` global — either
-        // imported under shared/PIE mode or synthesised under static-PIC —
-        // reference it via `global.get` so the element segment honours
-        // the runtime base. Falls back to the absolute `i32.const 1`
-        // when no such global exists (plain static, no PIC).
-        if let Some(tb_idx) = merged.table_base_global_idx {
+        // Init expression: per spec §3.4.5, init exprs accept only
+        // constants or `global.get` of an *imported* global. Under
+        // shared / PIE mode `__table_base` IS imported (the host /
+        // dynamic linker supplies it at runtime), so `global.get`
+        // works and lets the element segment honour the runtime
+        // base. Under static-PIC mode `__table_base` is a *defined*
+        // global initialised to `i32.const 1`; `global.get` of a
+        // defined global is invalid in this context, so we fold to
+        // the constant directly. Plain-static (no PIC) also folds
+        // to `i32.const 1`.
+        //
+        // Pre-fix wild emitted `global.get <defined-tb>` in the
+        // static-PIC case, producing a structurally-invalid module
+        // that wasm-validate rejected with "initializer expression
+        // can only reference an imported global" — surfaced by the
+        // rustc-driven hello-world integration test
+        // (`wild/tests/wasm_rustc_integration.rs`).
+        if is_shared && let Some(tb_idx) = merged.table_base_global_idx {
             payload.push(0x23); // global.get
             write_leb128(&mut payload, tb_idx);
         } else {
