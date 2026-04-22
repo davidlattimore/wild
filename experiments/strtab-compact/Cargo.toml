@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "strtab-compact"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[[bin]]
+name = "strtab-compact"
+path = "src/main.rs"
+
+[dependencies]
+object = { version = "0.36", features = ["read", "write"] }
+rayon = "1.10"
