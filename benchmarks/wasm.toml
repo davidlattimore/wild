@@ -50,6 +50,33 @@ platform = "wasm"
 # wild's Rust-shim path (panic_abort, alloc nostd).
 platform = "wasm"
 
+# --- Small (curated micro-suite from the rust-wasm WG) ---
+#
+# Sourced from https://github.com/fitzgen/code-size-benchmarks. The
+# whole set is a few hundred KB combined; each individual case is
+# 1-50 KB after link. Useful as a *spread* — they exercise different
+# rust-shim paths (panics, allocator choice, regex) rather than a
+# single hot path.
+
+[bench.wasm-codesize-allocator]
+# `allocator-system` from the code-size suite. Smallest meaningful
+# Rust→wasm output: bare alloc + dealloc through the system
+# allocator. Exercises wild's handling of synthesized stack/memory
+# globals.
+platform = "wasm"
+
+[bench.wasm-codesize-panic]
+# `panic-with-static-message` from the code-size suite. Exercises
+# the rust panic shim — string literal data section + the unwind
+# / abort selector.
+platform = "wasm"
+
+[bench.wasm-codesize-regex]
+# `regular-expressions` from the code-size suite. Pulls in the
+# `regex` crate; representative of "small rust output that depends
+# on a heavy library".
+platform = "wasm"
+
 # --- Medium ---
 
 [bench.wasm-many-functions]
@@ -58,10 +85,34 @@ platform = "wasm"
 # super-linear regressions in the writer.
 platform = "wasm"
 
-[bench.wasm-ripgrep-equiv]
-# ripgrep-shaped workload (text search + regex + simd) compiled to
-# wasm32-wasi. ~5-10 MB output. Representative of "reasonably
-# sized real Rust app".
+[bench.wasm-libsodium]
+# libsodium's bench suite compiled to wasm32 (the
+# `jedisct1/webassembly-benchmarks` 2021-Q1 set). Each .wasm is a
+# single primitive (chacha, sha2, ed25519, …); whole set ~250-400 KB
+# combined. The de-facto "real-world" wasm benchmark — pure C →
+# wasm, exercises crypto / SIMD / register allocation.
+platform = "wasm"
+
+[bench.wasm-tokei]
+# `tokei` (XAMPPRocky/tokei) — line-of-code counter, pure-rust file
+# walker, no PCRE / no syscalls beyond fs walk. Builds to
+# `wasm32-wasip2` cleanly today, no patches. ~2-5 MB output. Picked
+# over ripgrep because ripgrep's WASI support is still in an
+# unmerged PR (#2994).
+platform = "wasm"
+
+# --- Large ---
+
+[bench.wasm-bevy-experiments]
+# `topheman/bevy-rust-wasm-experiments` — a small playable Bevy
+# game compiled with wasm-bindgen. ~15-30 MB raw .wasm. Exercises
+# every part of the writer at scale: SIMD, large code section,
+# wasm-bindgen glue, lots of cross-crate deps. Best stress test
+# we'll find without proprietary blobs.
+#
+# Save-dir builder must run wasm-bindgen first; the bench measures
+# ONLY the link step on the post-bindgen .o set (cached in the
+# save-dir). Same pattern as the substrate harness.
 platform = "wasm"
 
 # --- Large (opt-in: needs an external workload checkout) ---
