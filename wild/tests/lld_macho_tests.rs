@@ -167,6 +167,10 @@ fn run_lld_test(
 }
 
 fn main() {
+    if cfg!(not(target_os = "macos")) {
+        eprintln!("lld MachO tests only run on macOS — skipping.");
+        return;
+    }
     let mut tests = Vec::new();
     collect_tests(&mut tests);
     let args = libtest_mimic::Arguments::from_args();

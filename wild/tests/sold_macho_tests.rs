@@ -192,6 +192,10 @@ fn run_sold_test(test_path: &Path, work_dir: &Path) -> Result<(), String> {
 }
 
 fn main() {
+    if cfg!(not(target_os = "macos")) {
+        eprintln!("sold MachO tests only run on macOS — skipping.");
+        return;
+    }
     let mut tests = Vec::new();
     collect_tests(&mut tests);
     let args = libtest_mimic::Arguments::from_args();

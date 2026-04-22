@@ -914,12 +914,10 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(
     let mut data_segments: Vec<(Vec<u8>, u32)> = Vec::new(); // (data, alignment)
     let mut segment_names: Vec<Vec<u8>> = Vec::new();
     let mut code_relocs: Vec<WasmReloc> = Vec::new();
-    let mut data_relocs: Vec<WasmReloc> = Vec::new();
     let mut custom_sections: Vec<CustomSection> = Vec::new();
     let mut custom_section_index: std::collections::HashMap<Vec<u8>, usize> = Default::default();
     let mut total_functions = 0u32;
     let mut total_data_segments = 0u32;
-    let mut func_sym_count = 0u32;
 
     for group in &layout.group_layouts {
         for file in &group.files {
@@ -1007,7 +1005,6 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(
                     _ => {}
                 }
                 symbol_entries.push((sym.kind, sym.name.clone(), sym.flags, new_index));
-                func_sym_count += 1;
                 let _ = new_seg; // TODO: use for data symbol relocation
             }
 
@@ -1116,7 +1113,6 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(
     }
 
     // Code section.
-    let code_section_offset = out.len();
     if !functions.is_empty() {
         let mut payload = Vec::new();
         write_leb128(&mut payload, functions.len() as u32);
@@ -1309,8 +1305,6 @@ struct MergedModule {
     exported_indices: Vec<u32>,
     /// Linker-defined globals (e.g. __stack_pointer).
     globals: Vec<OutputGlobal>,
-    /// Map from global name to output global index.
-    global_name_map: std::collections::HashMap<Vec<u8>, u32>,
     /// Merged data segments.
     data_segments: Vec<OutputDataSegment>,
     /// Total data size (for memory section computation).
@@ -3557,7 +3551,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                     obj_info.func_base,
                     input_func.body.len(),
                     input_func.code_section_offset
-                );
+                )
+                .ok();
                 let matching: Vec<_> = parsed
                     .code_relocations
                     .iter()
@@ -3567,7 +3562,7 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                                 < input_func.code_section_offset + input_func.body.len() as u32
                     })
                     .collect();
-                writeln!(f, "  {} relocations targeting this body:", matching.len());
+                writeln!(f, "  {} relocations targeting this body:", matching.len()).ok();
                 for r in &matching {
                     writeln!(
                         f,
@@ -3577,7 +3572,8 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
                         r.offset - input_func.code_section_offset,
                         r.symbol_index,
                         r.addend
-                    );
+                    )
+                    .ok();
                 }
                 writeln!(f, "  input body bytes:").ok();
                 for (j, chunk) in input_func.body.chunks(16).enumerate() {
@@ -4845,7 +4841,6 @@ fn merge_inputs(layout: &Layout<'_, Wasm>) -> crate::error::Result<MergedModule>
         table_entries,
         func_to_table_index,
         globals,
-        global_name_map,
         data_segments,
         data_size: data_size as Addr,
         stack_pointer_value: stack_pointer_value as Addr,
@@ -5688,7 +5683,7 @@ fn parse_linking_data(data: &[u8], num_imports: u32) -> LinkingData {
     }
 }
 
-fn parse_symbol_table_entries(data: &[u8], num_imports: u32) -> Vec<WasmSymbolInfo> {
+fn parse_symbol_table_entries(data: &[u8], _num_imports: u32) -> Vec<WasmSymbolInfo> {
     let Ok((count, mut off)) = read_leb128(data) else {
         return Vec::new();
     };
