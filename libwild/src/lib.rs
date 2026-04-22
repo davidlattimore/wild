@@ -29,6 +29,7 @@ pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 pub(crate) mod sdk_cache;
+pub(crate) mod suffix_share;
 // The ELF Gold-plugin LTO code lives physically under `lto/` as part
 // of the LtoDriver family (see `wild-lto-plan.md`). The `mod
 // linker_plugins` alias is kept so existing callers continue to use
