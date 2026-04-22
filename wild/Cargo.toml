@@ -42,6 +42,10 @@ name = "wasm_regression_tests"
 path = "tests/wasm_regression_tests.rs"
 
 [[test]]
+name = "wasm_rustc_integration"
+path = "tests/wasm_rustc_integration.rs"
+
+[[test]]
 name = "macho_ld64_compat_tests"
 path = "tests/macho_ld64_compat_tests.rs"
 harness = false
@@ -77,6 +81,10 @@ serde-keyvalue = { workspace =  true }
 strum = { workspace = true }
 tempfile = { workspace = true }
 toml = { workspace = true }
+# Used by `wasm_rustc_integration` to validate wild's wasm output
+# in-process, since the bench test gates on a class of bug that
+# external `wasm-validate` may or may not be installed to catch.
+wasmparser = "0.221"
 which = { workspace = true }
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
