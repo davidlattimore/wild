@@ -49,18 +49,134 @@ const VALTYPE_I64: u8 = 0x7E;
 /// Default stack size (64KB, same as wasm-ld).
 const DEFAULT_STACK_SIZE: u32 = 65536;
 
+// ---------------------------------------------------------------------------
+// Append-only buffer abstraction
+// ---------------------------------------------------------------------------
+//
+// The wasm writer assembles its output by repeatedly pushing bytes
+// and slices onto a buffer. Pre-Phase 2 that buffer was always a
+// `Vec<u8>`; Phase 2 lets the *outermost* buffer be a `Cursor` over
+// the mmap'd `SizedOutput.out`, so the linked image is built
+// directly into the output mapping with no end-of-link memcpy.
+//
+// Sub-section payloads (type table, import table, function bodies
+// etc.) are still built into transient `Vec<u8>`s — they're tiny
+// and need to know their final length before the section LEB
+// header gets written, which a fixed-size mmap slice can't easily
+// support without an over-reserve dance. Both kinds of buffer
+// implement `Buf`, so `write_section` / `write_leb128` / `write_name`
+// don't care which they're handed.
+
+/// A small append-only sink. Sized to the surface the wasm writer
+/// helpers actually need (push, extend, current length); we
+/// deliberately don't expose `clear` / `truncate` / random-write —
+/// those would need a different abstraction for `Cursor`.
+pub(crate) trait Buf {
+    fn push(&mut self, byte: u8);
+    fn extend_from_slice(&mut self, data: &[u8]);
+    fn len(&self) -> usize;
+}
+
+impl Buf for Vec<u8> {
+    fn push(&mut self, byte: u8) {
+        Vec::push(self, byte);
+    }
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        Vec::extend_from_slice(self, data);
+    }
+    fn len(&self) -> usize {
+        Vec::len(self)
+    }
+}
+
+/// Position-tracking cursor over a fixed-size byte slice.
+///
+/// Used to build the wasm image directly into the mmap'd output
+/// buffer. Out-of-bounds writes panic — the caller is responsible
+/// for sizing the backing slice via
+/// `output_size_upper_bound(layout)`. A panic here means the upper
+/// bound is too tight; bump it before reaching for `unsafe`.
+pub(crate) struct Cursor<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    pub(crate) fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+}
+
+impl Buf for Cursor<'_> {
+    fn push(&mut self, byte: u8) {
+        self.buf[self.pos] = byte;
+        self.pos += 1;
+    }
+    fn extend_from_slice(&mut self, data: &[u8]) {
+        let end = self.pos + data.len();
+        self.buf[self.pos..end].copy_from_slice(data);
+        self.pos = end;
+    }
+    fn len(&self) -> usize {
+        self.pos
+    }
+}
+
 /// Write a WASM module from the layout.
+/// Upper bound on the linked wasm size, used by
+/// `Wasm::write_output_file` to pre-size the mmap output buffer
+/// (mirrors the Mach-O `alloc_size + blob_reserve` pattern).
+///
+/// Sized as `2 × sum(input wasm bytes) + 64 KiB`. The bulk of the
+/// output is the merged code + data sections, which can't exceed
+/// the input envelope — de-dup, COMDAT skip, and GC only ever
+/// shrink them, and wilt's never-grow guard keeps post-processing
+/// within bounds. The doubling and the 64 KiB tail cover sources
+/// that *can* grow vs the inputs:
+///
+/// - Linker-synthesised globals (`__stack_pointer`, `__memory_base`,
+///   `__table_base`, `__tls_base`, GOT slots).
+/// - Synthesised exports / imports under shared / `--export-dynamic`.
+/// - The element segment for indirect-call targets.
+/// - Re-emitted custom sections (relocs, linking, name) — wild may
+///   write a richer reloc table than the inputs collectively did.
+/// - Padding/alignment between sections.
+///
+/// For tiny fixtures (≤ 200-byte inputs) the linker overhead
+/// genuinely doubles the output; for real workloads the +64 KiB
+/// tail is rounding error. The over-allocation is trimmed by
+/// `SizedOutput::set_final_size`.
+pub(crate) fn output_size_upper_bound(layout: &Layout<'_, Wasm>) -> u64 {
+    let mut sum_inputs: u64 = 0;
+    for group in &layout.group_layouts {
+        for file in &group.files {
+            if let crate::layout::FileLayout::Object(obj) = file {
+                let data = obj.object.data;
+                if data.len() >= 8 && &data[..4] == b"\0asm" {
+                    sum_inputs = sum_inputs.saturating_add(data.len() as u64);
+                }
+            }
+        }
+    }
+    // 2× envelope + 64 KiB synth headroom; floor at 64 KiB so the
+    // empty-input edge case still has room for the linker's headers.
+    let bound = sum_inputs
+        .saturating_mul(2)
+        .saturating_add(64 * 1024);
+    bound.max(64 * 1024)
+}
+
 pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
+    sized_output: &mut crate::file_writer::SizedOutput,
     layout: &Layout<'_, Wasm>,
 ) -> crate::error::Result {
-    let output_path = layout.symbol_db.args.output();
     let entry_name = layout.symbol_db.args.entry_symbol_name(None);
 
     let is_shared = layout.symbol_db.args.is_shared;
 
     // Relocatable output (-r): emit merged .o file without linking.
     if layout.symbol_db.args.is_relocatable {
-        return write_relocatable::<A>(layout);
+        return write_relocatable::<A>(sized_output, layout);
     }
 
     // Collect functions from all input objects.
@@ -82,8 +198,12 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     // Also: in shared mode, __stack_pointer, __memory_base, __table_base
     // are all imports, not definitions.
 
-    // Build the output module.
-    let mut out = Vec::new();
+    // Build the output module directly into the mmap'd
+    // `sized_output.out`. The Cursor borrows the mmap slice for as
+    // long as it lives, so we must drop it before reading the bytes
+    // back for wilt / validate / set_final_size below — see the
+    // explicit `final_len = out.len(); drop(out);` rendezvous.
+    let mut out = Cursor::new(&mut sized_output.out[..]);
 
     // Header: \0asm + version 1
     out.extend_from_slice(b"\0asm");
@@ -710,8 +830,25 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
     // `Full`/`Names` both rewrite the name section so indices track
     // post-DCE function numbering; stale entries otherwise fail
     // obj2yaml / wasm-objdump validation.
+    // Rendezvous: capture the linked length, then drop the cursor
+    // so we can talk to `sized_output.out` through other paths
+    // (wilt input snapshot, validate, set_final_size).
+    let mut final_len = out.len();
+    drop(out);
+
+    // Post-link rewrites (wilt, LEB compression) operate on a
+    // complete wasm module. Both the input (the bytes we just
+    // wrote) and the output (the rewritten module) need their own
+    // backing memory because the rewriter reads sequentially while
+    // emitting; we snapshot the in-buffer bytes into a transient
+    // `Vec` to give the rewriter a stable input view, then call
+    // the `_into` API which writes directly back into the mmap'd
+    // buffer (no extra wasm-writer-side copy). Wilt's internals
+    // currently still allocate a `Vec<u8>` to assemble each pass
+    // — making those in-place is a separate refactor; the API
+    // shape lets us land that without touching this caller again.
     #[cfg(feature = "wilt")]
-    let out = if layout.symbol_db.args.wasm_opt_level() >= 1 {
+    if layout.symbol_db.args.wasm_opt_level() >= 1 {
         use wilt::debug_level::DebugLevel;
         let level = match layout.symbol_db.args.strip {
             crate::args::Strip::Nothing => DebugLevel::Full,
@@ -721,38 +858,44 @@ pub(crate) fn write_direct<A: Arch<Platform = Wasm>>(
             // wasm; treat as "no stripping" and let wilt preserve.
             crate::args::Strip::Retain(_) => DebugLevel::Full,
         };
-        wilt::optimise_with_debug_level(&out, level)
-    } else {
-        out
-    };
+        let snapshot = sized_output.out[..final_len].to_vec();
+        final_len = wilt::optimise_into(&snapshot, &mut sized_output.out[..], level)
+            .map_err(|e| crate::error!("wilt::optimise_into: {e}"))?;
+    }
 
-    // LEB128 compression of padded relocation payloads (opt-in, via
-    // `--compress-relocations`). wasm-ld behaves the same — default
-    // preserves padded form for downstream tools.
     #[cfg(feature = "wasm-opt")]
-    let out = if layout.symbol_db.args.compress_relocations {
-        let module = wilt::WasmModule::parse(&out)
+    if layout.symbol_db.args.compress_relocations {
+        let snapshot = sized_output.out[..final_len].to_vec();
+        let module = wilt::WasmModule::parse(&snapshot)
             .unwrap_or_else(|_| panic!("wilt: failed to parse wild's output for LEB compression"));
-        wilt::passes::compress::apply(&module)
-    } else {
-        out
-    };
-
-    std::fs::write(output_path.as_ref(), &out)?;
+        final_len = wilt::passes::compress::apply_into(&module, &mut sized_output.out[..])
+            .map_err(|e| crate::error!("wilt::compress::apply_into: {e}"))?;
+    }
 
     // Validate output if requested.
     if std::env::var("WILD_VALIDATE_OUTPUT").is_ok() {
-        validate_output(&out)?;
-        validate_memory_layout(&out, args.import_memory, is_shared)?;
+        validate_output(&sized_output.out[..final_len])?;
+        validate_memory_layout(
+            &sized_output.out[..final_len],
+            args.import_memory,
+            is_shared,
+        )?;
     }
+
+    // Tell `flush` to truncate the unused trailing bytes (mirrors
+    // the Mach-O codesign-reserve trim).
+    sized_output.set_final_size(final_len as u64);
 
     Ok(())
 }
 
+
 /// Write relocatable output (-r flag).
 /// Merges input objects into a single .o file with linking section.
-fn write_relocatable<A: Arch<Platform = Wasm>>(layout: &Layout<'_, Wasm>) -> crate::error::Result {
-    let output_path = layout.symbol_db.args.output();
+fn write_relocatable<A: Arch<Platform = Wasm>>(
+    sized_output: &mut crate::file_writer::SizedOutput,
+    layout: &Layout<'_, Wasm>,
+) -> crate::error::Result {
 
     // Parse all input objects and merge types/functions.
     let mut types: Vec<FuncType> = Vec::new();
@@ -897,8 +1040,11 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(layout: &Layout<'_, Wasm>) -> cra
         }
     }
 
-    // Build output.
-    let mut out = Vec::new();
+    // Build output directly into the mmap'd `sized_output.out`.
+    // Same Cursor pattern as `write_direct`; no post-link rewrite
+    // pass runs in the relocatable path so we can set_final_size
+    // straight off the cursor's length.
+    let mut out = Cursor::new(&mut sized_output.out[..]);
     out.extend_from_slice(b"\0asm");
     out.extend_from_slice(&1u32.to_le_bytes());
 
@@ -1070,7 +1216,12 @@ fn write_relocatable<A: Arch<Platform = Wasm>>(layout: &Layout<'_, Wasm>) -> cra
         }
     }
 
-    std::fs::write(output_path.as_ref(), &out)?;
+    // No post-link rewrite for `-r`; the cursor's length IS the
+    // final length. Drop the cursor (releases the borrow on
+    // `sized_output.out`) before set_final_size.
+    let final_len = out.len();
+    drop(out);
+    sized_output.set_final_size(final_len as u64);
     Ok(())
 }
 
@@ -5969,15 +6120,21 @@ fn validate_output(data: &[u8]) -> crate::error::Result {
 }
 
 // --- Binary encoding helpers ---
+//
+// All of these used to take `&mut Vec<u8>`. Phase 2 of the wasm
+// writer unification made them generic over `Buf` so the same
+// helpers work whether the caller is building a transient sub-
+// section payload (still a `Vec<u8>`) or appending to the
+// outermost `Cursor` over the mmap'd output.
 
 /// Write a WASM name: LEB128 length + bytes.
-fn write_name(out: &mut Vec<u8>, name: &[u8]) {
+fn write_name<B: Buf>(out: &mut B, name: &[u8]) {
     write_leb128(out, name.len() as u32);
     out.extend_from_slice(name);
 }
 
 /// Write a WASM section: id byte + LEB128 size + payload.
-fn write_section(out: &mut Vec<u8>, section_id: u8, payload: &[u8]) {
+fn write_section<B: Buf>(out: &mut B, section_id: u8, payload: &[u8]) {
     out.push(section_id);
     write_leb128(out, payload.len() as u32);
     out.extend_from_slice(payload);
@@ -5994,7 +6151,7 @@ fn leb128_len(mut value: u32) -> usize {
 }
 
 /// Write an unsigned LEB128 value.
-fn write_leb128(out: &mut Vec<u8>, mut value: u32) {
+fn write_leb128<B: Buf>(out: &mut B, mut value: u32) {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
@@ -6009,7 +6166,7 @@ fn write_leb128(out: &mut Vec<u8>, mut value: u32) {
 }
 
 /// Write a signed LEB128 value.
-fn write_sleb128(out: &mut Vec<u8>, mut value: i32) {
+fn write_sleb128<B: Buf>(out: &mut B, mut value: i32) {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
@@ -6071,7 +6228,7 @@ fn debug_assert_padded_leb5(buf: &[u8], offset: usize, value: u32) {
 }
 
 /// Write a signed LEB128 value up to 64 bits wide. Emits 1–10 bytes.
-fn write_sleb128_i64(out: &mut Vec<u8>, mut value: i64) {
+fn write_sleb128_i64<B: Buf>(out: &mut B, mut value: i64) {
     loop {
         let byte = (value as u8) & 0x7F;
         value >>= 7; // arithmetic shift sign-extends
@@ -6085,7 +6242,7 @@ fn write_sleb128_i64(out: &mut Vec<u8>, mut value: i64) {
 }
 
 /// Write an unsigned LEB128 value up to 64 bits wide. Emits 1–10 bytes.
-fn write_leb128_u64(out: &mut Vec<u8>, mut value: u64) {
+fn write_leb128_u64<B: Buf>(out: &mut B, mut value: u64) {
     loop {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
@@ -6101,7 +6258,7 @@ fn write_leb128_u64(out: &mut Vec<u8>, mut value: u64) {
 
 /// Write an unsigned LEB128 for an `Addr`. Picks the right width depending
 /// on the Cargo feature.
-fn write_leb128_addr(out: &mut Vec<u8>, value: Addr) {
+fn write_leb128_addr<B: Buf>(out: &mut B, value: Addr) {
     #[cfg(not(feature = "wasm-addr64"))]
     write_leb128(out, value);
     #[cfg(feature = "wasm-addr64")]

@@ -85,6 +85,61 @@ pub fn optimise(input: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Error returned when the caller-provided output buffer is too
+/// small to hold the optimised module. Carries both the requested
+/// and available byte counts so the caller can produce a useful
+/// diagnostic. Currently the only failure mode for the `*_into`
+/// family — wilt itself can't fail (passes that hit unsupported
+/// shapes degrade to no-op).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferTooSmall {
+    pub needed: usize,
+    pub available: usize,
+}
+
+impl std::fmt::Display for BufferTooSmall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "wilt: output buffer too small (needed {} bytes, available {})",
+            self.needed, self.available
+        )
+    }
+}
+
+impl std::error::Error for BufferTooSmall {}
+
+/// Like [`optimise_with_debug_level`] but writes the result into a
+/// caller-provided byte slice and returns the number of bytes
+/// written. Lets the wasm linker target an mmap'd output buffer
+/// without an end-of-pipeline `Vec<u8>` → mmap memcpy.
+///
+/// Internally still allocates `Vec<u8>` for intermediate states
+/// (refactoring 25+ passes to be in-place is a separate effort);
+/// the win is removing the boundary copy on the
+/// `optimise → caller` edge.
+pub fn optimise_into(
+    input: &[u8],
+    out_buf: &mut [u8],
+    level: debug_level::DebugLevel,
+) -> Result<usize, BufferTooSmall> {
+    let bytes = optimise_with_debug_level(input, level);
+    copy_into(&bytes, out_buf)
+}
+
+/// Helper: copy `bytes` into `out_buf` and return the length, or
+/// fail with a `BufferTooSmall` carrying both counts.
+pub(crate) fn copy_into(bytes: &[u8], out_buf: &mut [u8]) -> Result<usize, BufferTooSmall> {
+    if bytes.len() > out_buf.len() {
+        return Err(BufferTooSmall {
+            needed: bytes.len(),
+            available: out_buf.len(),
+        });
+    }
+    out_buf[..bytes.len()].copy_from_slice(bytes);
+    Ok(bytes.len())
+}
+
 /// Optimise + strip debug / source-map / name custom sections.
 ///
 /// Matches what `wasm-opt -O` emits: drops `.debug_*`, source maps,

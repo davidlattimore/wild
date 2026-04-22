@@ -295,6 +295,18 @@ fn write_sleb128_i64(out: &mut Vec<u8>, mut value: i64) {
     }
 }
 
+/// Like [`apply`] but writes the result into a caller-provided
+/// byte slice and returns the number of bytes written. Mirrors
+/// `wilt::optimise_into` — used by the wasm linker when targeting
+/// the mmap'd output buffer.
+pub fn apply_into(
+    module: &WasmModule<'_>,
+    out_buf: &mut [u8],
+) -> Result<usize, crate::BufferTooSmall> {
+    let bytes = apply(module);
+    crate::copy_into(&bytes, out_buf)
+}
+
 /// Apply LEB128 compression to all function bodies in the module.
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();

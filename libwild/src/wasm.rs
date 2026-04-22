@@ -786,19 +786,30 @@ impl platform::Platform for Wasm {
         output: &mut crate::file_writer::Output,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
-        output.write(layout, |_sized_output, lay| {
-            crate::wasm_writer::write_direct::<A>(lay)
+        // Mirror the Mach-O pattern: compute an upper bound for the
+        // output, kick off background file creation + mmap at that
+        // size, write through `sized_output.out`, then call
+        // `set_final_size` so `flush` truncates the unused tail. The
+        // upper bound is just the sum of input wasm bytes — output
+        // can never exceed the sum (de-dup + GC only ever shrink) and
+        // wilt's never-grow guard keeps post-processing within the
+        // same envelope. Empty / no-input cases get a nominal floor.
+        let upper_bound = crate::wasm_writer::output_size_upper_bound(layout).max(8);
+        output.set_size(upper_bound);
+        output.write(layout, |sized_output, lay| {
+            crate::wasm_writer::write_direct::<A>(sized_output, lay)
         })
     }
 
     fn output_file_size_at_layout(
-        section_layouts: &crate::output_section_map::OutputSectionMap<
+        _section_layouts: &crate::output_section_map::OutputSectionMap<
             crate::layout::OutputRecordLayout,
         >,
     ) -> Option<u64> {
-        // Wasm writer also bypasses `sized_output` today; keep the
-        // pre-refactor behaviour (size set from section_layouts).
-        Some(crate::layout::compute_total_file_size(section_layouts))
+        // Wasm computes its own upper-bound size in `write_output_file`
+        // (same shape as Mach-O); the layout-time guess from
+        // `compute_total_file_size` is ELF-shaped and meaningless here.
+        None
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
