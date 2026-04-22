@@ -49,19 +49,24 @@ pub fn optimise_with_hints<H: linker_hints::LinkerHints>(input: &[u8], hints: &H
     if WasmModule::parse(input).is_err() {
         return input.to_vec();
     }
+    // `best` deferred to the first improvement; input length is the
+    // baseline. See `optimise_collecting_remap` for rationale. Saves
+    // one upfront module-size clone per call.
     let mut current = input.to_vec();
-    let mut best = current.clone();
+    let mut best: Option<Vec<u8>> = None;
+    let mut best_len = current.len();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let (next, _remap) = optimise_once_with_hints(&current, Some(hints));
         if next == current {
             break;
         }
-        if next.len() < best.len() {
-            best = next.clone();
+        if next.len() < best_len {
+            best_len = next.len();
+            best = Some(next.clone());
         }
         current = next;
     }
-    best
+    best.unwrap_or(current)
 }
 
 /// Optimise a WASM module. Returns the optimised bytes.
@@ -382,6 +387,13 @@ fn code_section_bytes_from<'a>(m: &'a WasmModule<'a>) -> &'a [u8] {
 }
 
 /// Runs the fixpoint and returns `(optimised_bytes, input→output FuncRemap)`.
+///
+/// `best` starts as `None` — the input is the implicit baseline (length
+/// known up-front, no clone needed). The first `next` shorter than that
+/// baseline takes over as `best`; later iterations replace it only when
+/// strictly shorter. At return, fall back to the most-recent `current`
+/// when no iteration ever beat the baseline (e.g. fixpoint converged
+/// without producing anything smaller than the input).
 fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
     use linker_hints::DerivedHints;
     use linker_hints::LinkerHints;
@@ -392,9 +404,9 @@ fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
     let hints_ref: Option<&dyn LinkerHints> = hints.as_ref().map(|h| h as &dyn LinkerHints);
 
     let mut current = input.to_vec();
-    let mut best = current.clone();
+    let mut best: Option<(Vec<u8>, remap::FuncRemap)> = None;
+    let mut best_len = current.len();
     let mut cumulative = identity_remap_for(input);
-    let mut best_remap = cumulative.clone();
 
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let (next, iter_remap) = optimise_once_with_hints(&current, hints_ref);
@@ -402,13 +414,16 @@ fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
             break;
         }
         cumulative = cumulative.compose(&iter_remap);
-        if next.len() < best.len() {
-            best = next.clone();
-            best_remap = cumulative.clone();
+        if next.len() < best_len {
+            best_len = next.len();
+            best = Some((next.clone(), cumulative.clone()));
         }
         current = next;
     }
-    (best, best_remap)
+    match best {
+        Some((bytes, remap)) => (bytes, remap),
+        None => (current, cumulative),
+    }
 }
 
 fn optimise_inner(input: &[u8]) -> Vec<u8> {
@@ -418,19 +433,24 @@ fn optimise_inner(input: &[u8]) -> Vec<u8> {
     if let Some(hints) = linker_hints::DerivedHints::from_bytes(input) {
         return optimise_with_hints(input, &hints);
     }
+    // `best` starts as `None`; input length is the implicit baseline
+    // (no upfront clone). See `optimise_collecting_remap` for the
+    // shape rationale. Saves one module-size clone per call.
     let mut current = input.to_vec();
-    let mut best = current.clone();
+    let mut best: Option<Vec<u8>> = None;
+    let mut best_len = current.len();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let next = optimise_once(&current);
         if next == current {
             break;
         }
-        if next.len() < best.len() {
-            best = next.clone();
+        if next.len() < best_len {
+            best_len = next.len();
+            best = Some(next.clone());
         }
         current = next;
     }
-    best
+    best.unwrap_or(current)
 }
 
 fn identity_remap_for(bytes: &[u8]) -> remap::FuncRemap {
