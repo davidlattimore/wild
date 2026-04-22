@@ -1,6 +1,5 @@
 /// Output emitter — copies unchanged sections from the original,
 /// splices in modifications where needed.
-
 use crate::module::WasmModule;
 
 /// Emit a WASM module unchanged (roundtrip).

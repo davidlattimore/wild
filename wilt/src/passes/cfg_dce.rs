@@ -19,7 +19,8 @@
 //! pass with a proper if/else-aware CFG can do better.
 
 use crate::mut_module::MutModule;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     use rayon::prelude::*;
@@ -27,7 +28,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
@@ -49,21 +52,29 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
         // `br_on_cast_fail` are conditional branches, and dropping
         // anything in their orbit can leave a real producer eliminated.
         // Bail wholesale on any body containing them.
-        if op == 0xFB { has_gc = true; }
+        if op == 0xFB {
+            has_gc = true;
+        }
         let is_terminator = matches!(op, 0x0C | 0x0E | 0x0F | 0x00);
         let is_structural = matches!(op, 0x02 | 0x03 | 0x04 | 0x05 | 0x0B);
 
         if let Some(s) = dead_start {
             if is_structural {
-                if s < p { deletes.push((s, p)); }
+                if s < p {
+                    deletes.push((s, p));
+                }
                 dead_start = None;
             }
         } else if is_terminator {
             dead_start = Some(p + len);
         }
     }
-    if iter.failed() || has_gc { return None; }
-    if deletes.is_empty() { return None; }
+    if iter.failed() || has_gc {
+        return None;
+    }
+    if deletes.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut edits = crate::provenance::BodyEdits::identity();
@@ -88,19 +99,12 @@ mod tests {
     #[test]
     fn deletes_dead_tail_after_br() {
         let body = [
-            0,
-            0x02, 0x40,
-            0x41, 1,
-            0x0C, 0,
-            0x41, 2,            // dead
-            0x1A,               // dead
-            0x0B,
-            0x0B,
+            0, 0x02, 0x40, 0x41, 1, 0x0C, 0, 0x41, 2,    // dead
+            0x1A, // dead
+            0x0B, 0x0B,
         ];
         let out = rewrite_body(&body).expect("dead tail should be removed");
-        assert_eq!(out, vec![
-            0, 0x02, 0x40, 0x41, 1, 0x0C, 0, 0x0B, 0x0B,
-        ]);
+        assert_eq!(out, vec![0, 0x02, 0x40, 0x41, 1, 0x0C, 0, 0x0B, 0x0B,]);
     }
 
     #[test]
@@ -127,14 +131,9 @@ mod tests {
     fn br_if_does_not_make_subsequent_code_dead() {
         // br_if is conditional; tail is not unconditionally unreachable.
         let body = [
-            0,
-            0x02, 0x40,
-            0x41, 1,
-            0x0D, 0,            // br_if 0
-            0x41, 2,            // STILL REACHABLE (when br_if didn't take)
-            0x1A,
-            0x0B,
-            0x0B,
+            0, 0x02, 0x40, 0x41, 1, 0x0D, 0, // br_if 0
+            0x41, 2, // STILL REACHABLE (when br_if didn't take)
+            0x1A, 0x0B, 0x0B,
         ];
         assert!(rewrite_body(&body).is_none());
     }
@@ -145,23 +144,19 @@ mod tests {
         // structural opcode without touching nested structure. Anything
         // strictly before the block-open gets deleted; nested block stays.
         let body = [
-            0,
-            0x02, 0x40,         // outer block
-            0x0C, 0,            // br 0 — terminator
-            0x41, 9,            // dead
-            0x02, 0x40,         // block-open — structural; reachable per local rule
-            0x0B,               // end-block (inner)
-            0x0B,               // end-block (outer)
-            0x0B,               // end-func
+            0, 0x02, 0x40, // outer block
+            0x0C, 0, // br 0 — terminator
+            0x41, 9, // dead
+            0x02, 0x40, // block-open — structural; reachable per local rule
+            0x0B, // end-block (inner)
+            0x0B, // end-block (outer)
+            0x0B, // end-func
         ];
         let out = rewrite_body(&body).expect("dead tail before nested block should be removed");
         // i32.const 9 deleted; nested block left alone.
-        assert_eq!(out, vec![
-            0,
-            0x02, 0x40,
-            0x0C, 0,
-            0x02, 0x40,
-            0x0B, 0x0B, 0x0B,
-        ]);
+        assert_eq!(
+            out,
+            vec![0, 0x02, 0x40, 0x0C, 0, 0x02, 0x40, 0x0B, 0x0B, 0x0B,]
+        );
     }
 }

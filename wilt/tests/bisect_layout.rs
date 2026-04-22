@@ -2,7 +2,10 @@ use wasmparser::Validator;
 use wilt::module::WasmModule;
 
 fn validates(b: &[u8]) -> Result<(), String> {
-    Validator::new().validate_all(b).map_err(|e| e.to_string()).map(|_| ())
+    Validator::new()
+        .validate_all(b)
+        .map_err(|e| e.to_string())
+        .map(|_| ())
 }
 
 #[test]
@@ -15,14 +18,21 @@ fn debug_string_lifting() {
 
     // Run optimise and check.
     let after_full = wilt::optimise(&bytes);
-    println!("after_full {} bytes — {:?}", after_full.len(), validates(&after_full));
+    println!(
+        "after_full {} bytes — {:?}",
+        after_full.len(),
+        validates(&after_full)
+    );
     std::fs::write("/tmp/wilt_layout_out.wasm", &after_full).ok();
 
     // Layout in isolation.
     let mut wm = WasmModule::parse(&bytes).unwrap();
     let after_layout = wilt::passes::layout_for_compression::apply(&mut wm);
-    println!("after_layout (bare input) {} bytes — {:?}",
-        after_layout.len(), validates(&after_layout));
+    println!(
+        "after_layout (bare input) {} bytes — {:?}",
+        after_layout.len(),
+        validates(&after_layout)
+    );
     std::fs::write("/tmp/wilt_layout_alone.wasm", &after_layout).ok();
 
     // Diff the input vs layout output bytes.
@@ -30,7 +40,9 @@ fn debug_string_lifting() {
     for i in 0..bytes.len().min(after_layout.len()) {
         if bytes[i] != after_layout[i] {
             diffs.push((i, bytes[i], after_layout[i]));
-            if diffs.len() > 30 { break; }
+            if diffs.len() > 30 {
+                break;
+            }
         }
     }
     println!("first {} byte diffs: {:?}", diffs.len(), diffs);

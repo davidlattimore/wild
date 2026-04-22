@@ -81,6 +81,8 @@ pub struct WasmArgs {
     /// byte-compatible with wasm-ld. `>= 1` enables the wilt post-link
     /// optimisation pipeline (DCE, type-GC, const-fold, layout).
     pub(crate) opt_level: u8,
+    /// Cross-input LTO configuration. See `wild-lto-plan.md` P4.
+    pub(crate) lto: crate::lto::LtoConfig,
 }
 
 impl Default for WasmArgs {
@@ -119,14 +121,29 @@ impl Default for WasmArgs {
             memory64: false,
             is_pic: false,
             opt_level: 0,
+            lto: crate::lto::LtoConfig::default(),
         }
     }
 }
 
 impl WasmArgs {
     pub(crate) fn new() -> Result<Self> {
+        let mut common = CommonArgs::from_env()?;
+        // Disable wild's fork-into-subprocess optimisation for the
+        // wasm platform. The subprocess protocol assumes the
+        // platform-specific writer pipes data through stdin in a
+        // particular shape; the wasm writer doesn't — it produces
+        // output directly. Leaving `should_fork = true` (the
+        // crate-wide default) makes wasm links hang on
+        // `fread(__read_nocancel)` because the child never gets
+        // the data it's waiting for.
+        //
+        // ELF sets `should_fork = false` under equivalent
+        // conditions in `args/elf.rs`. The wasm path should have
+        // done the same since wasm was added; this is the catch-up.
+        common.should_fork = false;
         Ok(Self {
-            common: CommonArgs::from_env()?,
+            common,
             ..Default::default()
         })
     }
@@ -197,10 +214,7 @@ impl platform::Args for WasmArgs {
         self.opt_level
     }
 
-    fn should_allow_object_undefined(
-        &self,
-        _output_kind: crate::OutputKind,
-    ) -> bool {
+    fn should_allow_object_undefined(&self, _output_kind: crate::OutputKind) -> bool {
         self.allow_undefined
     }
 
@@ -236,6 +250,16 @@ impl platform::Args for WasmArgs {
     fn should_output_partial_object(&self) -> bool {
         self.is_relocatable
     }
+
+    /// Wasm runs the P3 bitcode-lowering pipeline by default when
+    /// `llc` is discoverable. Users who want to opt out can set
+    /// `WILD_DISABLE_WASM_LTO=1`. See `wild-lto-plan.md` P3.
+    fn wasm_bitcode_lowering_enabled(&self) -> bool {
+        if std::env::var_os("WILD_DISABLE_WASM_LTO").is_some() {
+            return false;
+        }
+        crate::llvm_tools::find(crate::llvm_tools::Tool::Llc).is_some()
+    }
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -247,6 +271,18 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
     while let Some(arg) = iter.next() {
         let arg = arg.as_ref();
         match arg {
+            // --- Driver flavor (rust-lld multi-call convention: `-flavor wasm`) ---
+            "-flavor" | "--flavor" => {
+                if let Some(flavor) = iter.next() {
+                    let f = flavor.as_ref();
+                    if f != "wasm" {
+                        return Err(crate::error!(
+                            "Unsupported linker flavor: {f} (expected 'wasm')"
+                        ));
+                    }
+                }
+            }
+
             // --- Output ---
             "-o" => {
                 if let Some(path) = iter.next() {
@@ -356,8 +392,7 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
                 }
             }
             _ if arg.starts_with("-L") => {
-                args.lib_search_paths
-                    .push(Box::from(Path::new(&arg[2..])));
+                args.lib_search_paths.push(Box::from(Path::new(&arg[2..])));
             }
             "-l" => {
                 if let Some(name) = iter.next() {
@@ -429,16 +464,28 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             _ if arg.starts_with("-y") => {} // trace symbol
             _ if arg.starts_with("--trace-symbol=") => {}
             _ if arg.starts_with("--wrap=") => {}
-            "-wrap" | "--wrap" => { iter.next(); }
-            _ if arg.starts_with("-rpath") => { if arg == "-rpath" { iter.next(); } }
+            "-wrap" | "--wrap" => {
+                iter.next();
+            }
+            _ if arg.starts_with("-rpath") => {
+                if arg == "-rpath" {
+                    iter.next();
+                }
+            }
             _ if arg.starts_with("--rpath=") => {}
-            _ if arg.starts_with("--rpath") => { if arg == "--rpath" { iter.next(); } }
+            _ if arg.starts_with("--rpath") => {
+                if arg == "--rpath" {
+                    iter.next();
+                }
+            }
             "--print-gc-sections" => {}
             "--no-print-gc-sections" => {}
             "--compress-relocations" => args.compress_relocations = true,
             _ if arg.starts_with("--compress-relocations") => args.compress_relocations = true,
             _ if arg.starts_with("-M") | arg.starts_with("--Map") => {
-                if arg == "-M" || arg == "--Map" { iter.next(); }
+                if arg == "-M" || arg == "--Map" {
+                    iter.next();
+                }
             }
             "--emit-relocs" => {}
             "--no-merge-data-segments" => {}
@@ -447,22 +494,37 @@ fn parse<S: AsRef<str>, I: Iterator<Item = S>>(args: &mut WasmArgs, input: I) ->
             _ if arg.starts_with("--build-id") => {}
             "-v" | "--verbose" => {}
             "--version" | "-V" => {}
-            "--reproduce" => { iter.next(); }
+            "--reproduce" => {
+                iter.next();
+            }
             _ if arg.starts_with("--reproduce=") => {}
             "--color-diagnostics" | "--no-color-diagnostics" => {}
             _ if arg.starts_with("-O") => {
                 // `-O<N>` — optimisation level. `-O` alone is treated as `-O1`.
                 let rest = &arg[2..];
-                args.opt_level = if rest.is_empty() { 1 } else {
+                args.opt_level = if rest.is_empty() {
+                    1
+                } else {
                     rest.parse::<u8>().unwrap_or(1)
                 };
             }
             _ if arg.starts_with("--threads=") => {}
-            _ if arg.starts_with("--lto") => {}
-            _ if arg.starts_with("--thinlto") => {}
-            _ if arg.starts_with("--no-lto") => {}
+            // LTO-family flags are routed into `args.lto` so the P4
+            // batch lowerer (and future P5 UnifiedLTO) can read them.
+            // Unknown variants (`--thinlto-*`, `--lto-O<N>`, etc.)
+            // are accepted and silently parsed as best-effort.
+            _ if arg.starts_with("-flto")
+                || arg == "-fno-lto"
+                || arg.starts_with("--lto")
+                || arg.starts_with("--no-lto")
+                || arg.starts_with("--thinlto") =>
+            {
+                let _ = args.lto.parse_flag(arg);
+            }
             _ if arg.starts_with("--library-path") => {
-                if arg == "--library-path" { iter.next(); }
+                if arg == "--library-path" {
+                    iter.next();
+                }
             }
             _ if arg.starts_with("--library=") => {
                 inputs.push(Input {

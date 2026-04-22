@@ -24,17 +24,24 @@ pub(crate) mod gc_stats;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;
+pub(crate) mod incremental_cache;
 pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
-#[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
+pub(crate) mod sdk_cache;
+// The ELF Gold-plugin LTO code lives physically under `lto/` as part
+// of the LtoDriver family (see `wild-lto-plan.md`). The `mod
+// linker_plugins` alias is kept so existing callers continue to use
+// `crate::linker_plugins::…`; a follow-up commit mass-renames them.
+#[cfg_attr(feature = "plugins", path = "lto/elf_gold.rs")]
+#[cfg_attr(not(feature = "plugins"), path = "lto/elf_gold_disabled.rs")]
 mod linker_plugins;
 pub(crate) mod linker_script;
+pub mod llvm_tools;
+pub(crate) mod lto;
 pub(crate) mod macho;
 pub(crate) mod macho_aarch64;
-pub(crate) mod wasm;
-pub(crate) mod wasm_arch;
-pub(crate) mod wasm_writer;
+pub(crate) mod macho_codesign;
 #[cfg(feature = "macho-lto")]
 pub(crate) mod macho_lto;
 pub(crate) mod macho_writer;
@@ -80,6 +87,9 @@ pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
+pub(crate) mod wasm;
+pub(crate) mod wasm_arch;
+pub(crate) mod wasm_writer;
 
 use crate::elf::Elf;
 use crate::error::Context;
@@ -118,6 +128,152 @@ pub fn run(mut args: Args) -> error::Result {
     drop(linker);
     timing::finalise_perfetto_trace()?;
     Ok(())
+}
+
+/// Super-early skip check — called from `main()` BEFORE
+/// `Args::parse` and BEFORE the fork dispatch. Only reads `argv`
+/// and the cache side-car; does no library-path resolution.
+///
+/// On a rust-analyzer link the full arg parser takes ~274 ms
+/// (walks `-L`, resolves every `-l`, probes the SDK). This
+/// function deliberately bypasses all of that — on a cache hit
+/// the skip cost is dominated by the 229-path fingerprint verify,
+/// not by arg parsing.
+///
+/// Gated on `WILD_INCREMENTAL_DEBUG=1`; with the env var unset,
+/// returns `false` without reading any files.
+pub fn try_early_skip_from_argv() -> Option<std::path::PathBuf> {
+    if std::env::var_os("WILD_INCREMENTAL_DEBUG").is_none() {
+        return None;
+    }
+    if std::env::var_os("WILD_INCREMENTAL_NO_EARLY_SKIP").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        return None;
+    }
+    let argv: Vec<String> = std::env::args().collect();
+    let output = incremental_cache::extract_output_path(&argv);
+    let args_hash = incremental_cache::compute_args_hash(&argv);
+    let hashes_path = incremental_cache::hashes_path_for_output(&output);
+    let Some(cached) = incremental_cache::read_link_cache(&hashes_path) else {
+        return None;
+    };
+    if cached.wild_version != incremental_cache::WILD_VERSION || cached.args_hash != args_hash {
+        return None;
+    }
+    if incremental_cache::verify_cached_inputs_unchanged(&cached.inputs).is_none() {
+        return None;
+    }
+    match std::fs::metadata(&output) {
+        Ok(m) if m.len() == cached.output_size => {
+            eprintln!(
+                "wild incremental: EARLY SKIP (pre-argparse) — output at {} \
+                 reused",
+                output.display()
+            );
+            Some(output)
+        }
+        _ => None,
+    }
+}
+
+/// Keep the old signature-check for callers that already have a
+/// parsed [`Args`] — used by the post-load defence-in-depth path.
+pub fn try_early_skip(args: &Args) -> bool {
+    if std::env::var_os("WILD_INCREMENTAL_DEBUG").is_none() {
+        return false;
+    }
+    if std::env::var_os("WILD_INCREMENTAL_NO_EARLY_SKIP").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        return false;
+    }
+    early_skip_impl(args)
+}
+
+/// Update the output's mtime so build systems (cargo, make) that
+/// look at timestamps see the file as freshly produced by this
+/// invocation. Equivalent to `touch -c -a -m <output>`.
+///
+/// Non-fatal — failure is silently swallowed. If the mtime doesn't
+/// update, the next build may see the output as stale and trigger
+/// a real relink, which falls through to the cold path. That's a
+/// correctness-preserving downgrade (we'd re-link unnecessarily),
+/// not a correctness bug.
+pub fn bump_output_mtime(args: &Args) {
+    bump_output_path_mtime(args.output_path());
+}
+
+/// Path-taking variant of [`bump_output_mtime`] — used from the
+/// pre-argparse skip where we only have an output path, no parsed
+/// `Args`.
+pub fn bump_output_path_mtime(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return;
+        };
+        // SAFETY: `cpath` is a valid nul-terminated C string;
+        // `utimensat(…, NULL, 0)` is a POSIX-defined way to set
+        // atime+mtime to "now" with no side effects on failure.
+        unsafe {
+            libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), std::ptr::null(), 0);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+fn early_skip_impl(args: &Args) -> bool {
+    let argv: Vec<String> = std::env::args().collect();
+    let args_hash = incremental_cache::compute_args_hash(&argv);
+    let hashes_path = incremental_cache::hashes_path_for_output(args.output_path());
+    let Some(cached) = incremental_cache::read_link_cache(&hashes_path) else {
+        eprintln!(
+            "wild incremental: early skip: no cache at {}",
+            hashes_path.display()
+        );
+        return false;
+    };
+    if cached.wild_version != incremental_cache::WILD_VERSION {
+        eprintln!(
+            "wild incremental: early skip: wild version mismatch (cached {} vs {})",
+            cached.wild_version,
+            incremental_cache::WILD_VERSION
+        );
+        return false;
+    }
+    if cached.args_hash != args_hash {
+        eprintln!("wild incremental: early skip: args_hash mismatch");
+        return false;
+    }
+    if incremental_cache::verify_cached_inputs_unchanged(&cached.inputs).is_none() {
+        eprintln!("wild incremental: early skip: input fingerprint mismatch");
+        return false;
+    }
+    match std::fs::metadata(args.output_path()) {
+        Ok(m) if m.len() == cached.output_size => {
+            eprintln!(
+                "wild incremental: EARLY SKIP — output at {} reused, \
+                 thread pool / linker arenas bypassed",
+                args.output_path().display()
+            );
+            true
+        }
+        Ok(m) => {
+            eprintln!(
+                "wild incremental: early skip: output size mismatch ({} vs cached {})",
+                m.len(),
+                cached.output_size
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("wild incremental: early skip: output stat failed: {e}");
+            false
+        }
+    }
 }
 
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
@@ -231,6 +387,14 @@ impl Linker {
 
         file_loader.verify_inputs_unchanged()?;
 
+        // Incremental link — persist the signature + input hashes
+        // for the next link. Skipped entirely when the env var is
+        // unset; on skip-paths the prior cache is already current,
+        // so we only persist on a full-link path.
+        if result.is_ok() && std::env::var_os("WILD_INCREMENTAL_DEBUG").is_some() {
+            persist_link_cache::<P>(&file_loader, args);
+        }
+
         // Write the dependency file and inputs trace after successful linking.
         if result.is_ok() {
             if let Some(dep_file_path) = &args.dependency_file() {
@@ -258,6 +422,26 @@ impl Linker {
         file_loader: &mut FileLoader<'data>,
         args: &'data P::Args,
     ) -> error::Result<LinkerOutput<'data>> {
+        // Incremental *pre-load* skip — fires before `load_inputs`
+        // even opens a file. If the cache's args_hash + wild_version
+        // + per-input fingerprints + output_size all match what's
+        // on disk right now, we can short-circuit with zero mmap,
+        // zero archive extraction, zero symbol parsing.
+        //
+        // Differs from `try_whole_link_skip` (which runs after
+        // load_inputs) in WHERE it fires; both produce the same
+        // verdict under a valid cache. Keeping the post-load version
+        // as defence-in-depth for paths where the pre-load check
+        // can't run (first link, cache v-mismatch, explicit
+        // WILD_INCREMENTAL_PRE_LOAD_SKIP=0 opt-out).
+        if std::env::var_os("WILD_INCREMENTAL_DEBUG").is_some()
+            && std::env::var_os("WILD_INCREMENTAL_PRE_LOAD_SKIP").as_deref()
+                != Some(std::ffi::OsStr::new("0"))
+            && try_pre_load_skip::<P>(args)
+        {
+            return Ok(LinkerOutput { layout: None });
+        }
+
         let mut plugin = P::maybe_init_linker_plugin(args, &self.linker_plugin_arena, &self.herd)?;
 
         let loaded = file_loader.load_inputs::<P>(&args.common().inputs, args, &mut plugin);
@@ -265,6 +449,16 @@ impl Linker {
         args.common().save_dir.finish(file_loader, args)?;
 
         let loaded = loaded?;
+
+        // Post-load fallback: same signature check, but after inputs
+        // are fully resolved. Catches cases where argv-level pre-load
+        // couldn't see the real input set (e.g. `-l` dylib lookup
+        // that resolved to a different dylib since last link).
+        if std::env::var_os("WILD_INCREMENTAL_DEBUG").is_some() {
+            if try_whole_link_skip::<P>(file_loader, args) {
+                return Ok(LinkerOutput { layout: None });
+            }
+        }
 
         let output_kind = OutputKind::new(args, file_loader);
 
@@ -341,7 +535,7 @@ impl Linker {
             &mut output,
         )?;
 
-        P::write_output_file::<A>(&output, &layout)?;
+        P::write_output_file::<A>(&mut output, &layout)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
@@ -357,6 +551,172 @@ impl Linker {
 impl Default for Linker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Pre-load variant of [`try_whole_link_skip`] — runs before
+/// `load_inputs` has opened a single file. Verifies the cache's
+/// paths + fingerprints + output size directly against the
+/// filesystem, bypassing wild's input-resolution pipeline.
+///
+/// Trade-offs vs the post-load version:
+///   * Wins ~130 ms (skip mmap + archive-member extract + symbol parse) when the cache is clean.
+///   * May false-miss if the cache is slightly stale — e.g. user changed a `-L` search path such
+///     that argv still hashes the same but the resolved input set would differ. In practice
+///     argv-hash equality is a strong signal because cargo's invocation is deterministic; if the
+///     argv changed, args_hash catches it.
+///
+/// Returns `true` on a safe skip. Never returns `true` without
+/// output-file size + existence + every cached input present.
+fn try_pre_load_skip<P: Platform>(args: &P::Args) -> bool {
+    let argv: Vec<String> = std::env::args().collect();
+    let args_hash = incremental_cache::compute_args_hash(&argv);
+    let hashes_path = incremental_cache::hashes_path_for_output(args.output());
+    let Some(cached) = incremental_cache::read_link_cache(&hashes_path) else {
+        return false;
+    };
+    if cached.wild_version != incremental_cache::WILD_VERSION {
+        return false;
+    }
+    if cached.args_hash != args_hash {
+        return false;
+    }
+    // Every cached input path must still be present with a matching
+    // fingerprint. This catches content changes AND missing / moved
+    // inputs without going through wild's own resolver.
+    if incremental_cache::verify_cached_inputs_unchanged(&cached.inputs).is_none() {
+        return false;
+    }
+    // Output still on disk at expected size — defence against
+    // manual edits / deletes since last link.
+    let output_path = args.output();
+    match std::fs::metadata(output_path) {
+        Ok(m) if m.len() == cached.output_size => {
+            eprintln!(
+                "wild incremental: PRE-LOAD SKIP — output at {} reused, \
+                 load_inputs bypassed",
+                output_path.display()
+            );
+            true
+        }
+        Ok(_) | Err(_) => false,
+    }
+}
+
+/// Returns `true` when the current link's signature (inputs + args +
+/// wild version) matches the cached one and the previous output file
+/// is still on disk at the expected size — i.e. when the caller is
+/// safe to return `Ok(LinkerOutput { layout: None })` without running
+/// resolve / layout / write. Returns `false` on any mismatch, missing
+/// cache, missing output, or size disagreement.
+///
+/// Emits a terse stderr line explaining the decision so users running
+/// with `WILD_INCREMENTAL_DEBUG=1` can see why a skip did or didn't
+/// fire.
+fn try_whole_link_skip<P: Platform>(file_loader: &FileLoader<'_>, args: &P::Args) -> bool {
+    let inputs: Vec<(&std::path::Path, &[u8])> = file_loader
+        .loaded_files
+        .iter()
+        .map(|f| (f.filename.as_path(), f.data()))
+        .collect();
+    let current_inputs = incremental_cache::hash_loaded_inputs(inputs);
+    let argv: Vec<String> = std::env::args().collect();
+    let current_args_hash = incremental_cache::compute_args_hash(&argv);
+
+    let hashes_path = incremental_cache::hashes_path_for_output(args.output());
+    let Some(cached) = incremental_cache::read_link_cache(&hashes_path) else {
+        eprintln!(
+            "wild incremental: no cache at {} — cold link (baseline will be \
+             captured afterwards)",
+            hashes_path.display()
+        );
+        return false;
+    };
+
+    let verdict =
+        incremental_cache::classify_signature(&current_args_hash, &current_inputs, &cached);
+    match verdict {
+        incremental_cache::SignatureVerdict::FullMatch => {
+            // Defence-in-depth: the cache believes the output is
+            // intact, but verify against the filesystem before
+            // trusting it. User could have deleted / truncated the
+            // binary; size mismatch forces a cold link.
+            let output_path = args.output();
+            let size_ok = match std::fs::metadata(output_path) {
+                Ok(m) if m.len() == cached.output_size => true,
+                Ok(m) => {
+                    eprintln!(
+                        "wild incremental: signature matched but output size \
+                         differs ({} on disk vs {} cached) — cold link",
+                        m.len(),
+                        cached.output_size
+                    );
+                    false
+                }
+                Err(e) => {
+                    eprintln!(
+                        "wild incremental: signature matched but output missing \
+                         ({}: {}) — cold link",
+                        output_path.display(),
+                        e
+                    );
+                    false
+                }
+            };
+            if size_ok {
+                eprintln!(
+                    "wild incremental: FULL LINK SKIP — output at {} reused",
+                    output_path.display()
+                );
+                return true;
+            }
+            false
+        }
+        incremental_cache::SignatureVerdict::Mismatch(why) => {
+            eprintln!("wild incremental: link signature mismatch: {:?}", why);
+            false
+        }
+    }
+}
+
+/// Persist this link's signature next to the output binary so the
+/// next link can check for whole-link-skip eligibility. Called only
+/// from the successful-link path; errors are non-fatal (a missing
+/// cache just forces the next link to cold-baseline).
+///
+/// If `file_loader.loaded_files` is empty the current link took the
+/// pre-load-skip path — there are no inputs to hash and the previous
+/// cache is already correct. Return without rewriting, otherwise we'd
+/// overwrite a valid cache with an empty input set and the next skip
+/// decision would falsely succeed with zero inputs to check.
+fn persist_link_cache<'data, P: Platform>(file_loader: &FileLoader<'data>, args: &P::Args) {
+    if file_loader.loaded_files.is_empty() {
+        return;
+    }
+    let inputs: Vec<(&std::path::Path, &[u8])> = file_loader
+        .loaded_files
+        .iter()
+        .map(|f| (f.filename.as_path(), f.data()))
+        .collect();
+    let current_inputs = incremental_cache::hash_loaded_inputs(inputs);
+    let argv: Vec<String> = std::env::args().collect();
+    let args_hash = incremental_cache::compute_args_hash(&argv);
+    let output_size = std::fs::metadata(args.output())
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let cache = incremental_cache::LinkCache {
+        args_hash,
+        output_size,
+        wild_version: incremental_cache::WILD_VERSION.to_owned(),
+        inputs: current_inputs,
+    };
+    let hashes_path = incremental_cache::hashes_path_for_output(args.output());
+    if let Err(e) = incremental_cache::write_link_cache(&hashes_path, &cache) {
+        eprintln!(
+            "wild incremental: failed to persist cache to {}: {}",
+            hashes_path.display(),
+            e
+        );
     }
 }
 

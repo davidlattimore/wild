@@ -8,10 +8,10 @@
 //! function after a removed dup shifts down by one, and every defined
 //! function shifts down by the total number of removed imports.
 
-use std::collections::HashMap;
-
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
+use std::collections::HashMap;
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
     apply_with_remap(module).0
@@ -22,10 +22,16 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
     let num_defined = module.num_function_bodies() as u32;
     let data = module.data();
     let Some((entries, num_func_imports)) = super::dce::parse_imports(module) else {
-        return (data.to_vec(), crate::remap::FuncRemap::identity(num_defined));
+        return (
+            data.to_vec(),
+            crate::remap::FuncRemap::identity(num_defined),
+        );
     };
     if num_func_imports < 2 {
-        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
+        return (
+            data.to_vec(),
+            crate::remap::FuncRemap::identity(num_func_imports + num_defined),
+        );
     }
 
     // Group function imports by (module, field, type_idx). Canonical = first.
@@ -34,7 +40,9 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
     let mut func_cursor = 0u32;
     let mut found_dup = false;
     for e in &entries {
-        if e.kind != 0x00 { continue; }
+        if e.kind != 0x00 {
+            continue;
+        }
         let key = (e.module_name, e.field_name, e.type_idx);
         match seen.get(&key) {
             Some(&canonical) => {
@@ -48,11 +56,17 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
         func_cursor += 1;
     }
     if !found_dup {
-        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
+        return (
+            data.to_vec(),
+            crate::remap::FuncRemap::identity(num_func_imports + num_defined),
+        );
     }
 
     if !super::dce::all_bodies_walkable(module) {
-        return (data.to_vec(), crate::remap::FuncRemap::identity(num_func_imports + num_defined));
+        return (
+            data.to_vec(),
+            crate::remap::FuncRemap::identity(num_func_imports + num_defined),
+        );
     }
 
     // Compute new-position for every function-import index (skipping dups).
@@ -93,7 +107,14 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
         }
     }
 
-    let bytes = emit(module, data, &index_map, &entries, &canonical_of, num_func_imports);
+    let bytes = emit(
+        module,
+        data,
+        &index_map,
+        &entries,
+        &canonical_of,
+        num_func_imports,
+    );
     (bytes, crate::remap::FuncRemap::from_entries(index_map))
 }
 
@@ -110,11 +131,26 @@ fn emit(
 
     for section in module.sections() {
         match section.id {
-            module::SECTION_IMPORT => emit_imports(&mut out, section, data, entries, canonical_of, num_func_imports),
-            module::SECTION_EXPORT => super::dce::emit_remapped_export_section(&mut out, section, data, index_map),
-            module::SECTION_GLOBAL => super::dce::emit_remapped_global_section(&mut out, section, data, index_map),
-            module::SECTION_ELEMENT => super::dce::emit_remapped_element_section(&mut out, section, data, index_map),
-            module::SECTION_START => super::dce::emit_remapped_start_section(&mut out, section, data, index_map),
+            module::SECTION_IMPORT => emit_imports(
+                &mut out,
+                section,
+                data,
+                entries,
+                canonical_of,
+                num_func_imports,
+            ),
+            module::SECTION_EXPORT => {
+                super::dce::emit_remapped_export_section(&mut out, section, data, index_map)
+            }
+            module::SECTION_GLOBAL => {
+                super::dce::emit_remapped_global_section(&mut out, section, data, index_map)
+            }
+            module::SECTION_ELEMENT => {
+                super::dce::emit_remapped_element_section(&mut out, section, data, index_map)
+            }
+            module::SECTION_START => {
+                super::dce::emit_remapped_start_section(&mut out, section, data, index_map)
+            }
             module::SECTION_CODE => emit_code(&mut out, module, data, index_map),
             _ => out.extend_from_slice(section.full.slice(data)),
         }
@@ -138,7 +174,9 @@ fn emit_imports(
     for e in entries {
         if e.kind == 0x00 {
             let canonical = canonical_of[fi as usize];
-            if canonical == fi { keep.push(e); }
+            if canonical == fi {
+                keep.push(e);
+            }
             fi += 1;
         } else {
             keep.push(e);

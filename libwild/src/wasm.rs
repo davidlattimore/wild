@@ -433,10 +433,24 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         for sym in wasm_file.symbols() {
             let name = sym.name_bytes().unwrap_or(b"");
+            // The object crate fabricates a File-kind pseudo-symbol per wasm
+            // object (named after the import module, typically "env") and
+            // separate data-kind undefined symbols for the module's memory /
+            // indirect-function-table imports. These aren't real linking-section
+            // symbols — the wasm writer handles memory and table imports through
+            // its own path — so admit them to the symbol_db causes spurious
+            // duplicate-symbol errors across objects that share import modules.
+            if sym.kind() == object::SymbolKind::File {
+                continue;
+            }
+            if sym.is_undefined()
+                && (name == b"__linear_memory" || name == b"__indirect_function_table")
+            {
+                continue;
+            }
             let raw_section = sym.section_index().unwrap_or(object::SectionIndex(0));
-            let mut section_index = object::SectionIndex(
-                section_index_map.get(&raw_section.0).copied().unwrap_or(0),
-            );
+            let mut section_index =
+                object::SectionIndex(section_index_map.get(&raw_section.0).copied().unwrap_or(0));
 
             // For COMDAT members, create a synthetic section with is_comdat=true.
             // This allows the generic pipeline's duplicate symbol check to work.
@@ -502,10 +516,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         unsafe { std::slice::from_raw_parts(ptr, len) }.iter()
     }
 
-    fn symbol(
-        &self,
-        index: object::SymbolIndex,
-    ) -> crate::error::Result<&'data WasmSymbol> {
+    fn symbol(&self, index: object::SymbolIndex) -> crate::error::Result<&'data WasmSymbol> {
         let sym = self
             .symbols
             .get(index.0)
@@ -606,10 +617,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(())
     }
 
-    fn raw_section_data(
-        &self,
-        header: &SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
+    fn raw_section_data(&self, header: &SectionHeader) -> crate::error::Result<&'data [u8]> {
         self.section_data
             .get(header.index)
             .copied()
@@ -625,11 +633,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.raw_section_data(section)
     }
 
-    fn copy_section_data(
-        &self,
-        _section: &SectionHeader,
-        _out: &mut [u8],
-    ) -> crate::error::Result {
+    fn copy_section_data(&self, _section: &SectionHeader, _out: &mut [u8]) -> crate::error::Result {
         Ok(())
     }
 
@@ -640,10 +644,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(std::borrow::Cow::Borrowed(self.raw_section_data(section)?))
     }
 
-    fn section_alignment(
-        &self,
-        _section: &SectionHeader,
-    ) -> crate::error::Result<u64> {
+    fn section_alignment(&self, _section: &SectionHeader) -> crate::error::Result<u64> {
         Ok(1)
     }
 
@@ -757,6 +758,7 @@ impl platform::Platform for Wasm {
     type ArchIdentifier = ();
     type Args = WasmArgs;
     type ResolutionExt = ();
+    type SymtabPrecount = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
     type SectionIterator<'data> = WasmSectionIter<'data>;
@@ -781,12 +783,22 @@ impl platform::Platform for Wasm {
     }
 
     fn write_output_file<'data, A: platform::Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+        output: &mut crate::file_writer::Output,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
         output.write(layout, |_sized_output, lay| {
             crate::wasm_writer::write_direct::<A>(lay)
         })
+    }
+
+    fn output_file_size_at_layout(
+        section_layouts: &crate::output_section_map::OutputSectionMap<
+            crate::layout::OutputRecordLayout,
+        >,
+    ) -> Option<u64> {
+        // Wasm writer also bypasses `sized_output` today; keep the
+        // pre-refactor behaviour (size set from section_layouts).
+        Some(crate::layout::compute_total_file_size(section_layouts))
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
@@ -852,7 +864,9 @@ impl platform::Platform for Wasm {
     fn finalise_object_sizes<'data>(
         _object: &mut crate::layout::ObjectLayoutState<'data, Self>,
         _common: &mut crate::layout::CommonGroupState<'data, Self>,
-    ) {
+        _output_sections: &crate::output_section_id::OutputSections<'data, Self>,
+    ) -> crate::error::Result {
+        Ok(())
     }
 
     fn finalise_object_layout<'data>(
@@ -937,10 +951,10 @@ impl platform::Platform for Wasm {
 
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>> {
-        use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
-        use crate::output_section_id::SectionOutputInfo;
         use crate::layout_rules::SectionKind;
+        use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
         use crate::output_section_id::SectionName;
+        use crate::output_section_id::SectionOutputInfo;
 
         let mut infos: Vec<SectionOutputInfo<'data, Self>> =
             Vec::with_capacity(NUM_BUILT_IN_SECTIONS);
@@ -1043,6 +1057,7 @@ impl platform::Platform for Wasm {
         _extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
         _args: &Self::Args,
+        _symbol_db: &crate::symbol_db::SymbolDb<'_, Self>,
     ) -> crate::error::Result {
         Ok(())
     }
@@ -1076,6 +1091,8 @@ impl platform::Platform for Wasm {
         sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         _header_info: &crate::layout::HeaderInfo,
         _output_sections: &crate::output_section_id::OutputSections<Self>,
+        _args: &Self::Args,
+        _total_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) {
         // WASM header is 8 bytes (magic + version).
         sizes.increment(crate::part_id::FILE_HEADER, 8);
@@ -1163,6 +1180,7 @@ impl platform::Platform for Wasm {
         secondary: &crate::output_section_map::OutputSectionMap<
             Vec<crate::output_section_id::OutputSectionId>,
         >,
+        _args: &Self::Args,
     ) -> (
         crate::output_section_id::OutputOrder,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
@@ -1199,9 +1217,13 @@ fn parse_comdat_symbol_names(data: &[u8]) -> std::collections::HashSet<&[u8]> {
     while pos < data.len() {
         let section_id = data[pos];
         pos += 1;
-        let Some((size, consumed)) = read_leb(data, pos) else { break; };
+        let Some((size, consumed)) = read_leb(data, pos) else {
+            break;
+        };
         pos += consumed;
-        if pos + size > data.len() { break; }
+        if pos + size > data.len() {
+            break;
+        }
 
         if section_id == 0 {
             // Custom section — check if it's "linking".
@@ -1225,43 +1247,65 @@ fn parse_comdat_symbol_names(data: &[u8]) -> std::collections::HashSet<&[u8]> {
 /// Parse the linking section to extract COMDAT member names.
 /// COMDAT entries reference function/data indices (not symbol table indices).
 /// We match these to symbol names via the symbol table.
-fn parse_linking_for_comdat<'a>(
-    data: &'a [u8],
-    comdat_names: &mut Vec<&'a [u8]>,
-) {
+fn parse_linking_for_comdat<'a>(data: &'a [u8], comdat_names: &mut Vec<&'a [u8]>) {
     // Skip version.
-    let Some((_, mut off)) = read_leb(data, 0) else { return; };
+    let Some((_, mut off)) = read_leb(data, 0) else {
+        return;
+    };
 
     // (kind, index) pairs from COMDAT entries: kind 0=data, 1=function.
     let mut comdat_entries: Vec<(u8, u32)> = Vec::new();
     // Symbol table: (kind, func_or_data_index, name) for mapping.
-    struct SymEntry<'a> { kind: u8, index: u32, name: &'a [u8] }
+    struct SymEntry<'a> {
+        kind: u8,
+        index: u32,
+        name: &'a [u8],
+    }
     let mut sym_entries: Vec<SymEntry<'a>> = Vec::new();
 
     while off < data.len() {
-        let Some((subsection_type, c)) = read_leb(data, off) else { break; };
+        let Some((subsection_type, c)) = read_leb(data, off) else {
+            break;
+        };
         off += c;
-        let Some((subsection_len, c)) = read_leb(data, off) else { break; };
+        let Some((subsection_len, c)) = read_leb(data, off) else {
+            break;
+        };
         off += c;
         let subsection_end = off + subsection_len;
-        if subsection_end > data.len() { break; }
+        if subsection_end > data.len() {
+            break;
+        }
 
         match subsection_type {
             7 => {
                 // WASM_COMDAT_INFO (§7)
-                let Some((count, c)) = read_leb(data, off) else { off = subsection_end; continue; };
+                let Some((count, c)) = read_leb(data, off) else {
+                    off = subsection_end;
+                    continue;
+                };
                 let mut coff = off + c;
                 for _ in 0..count {
-                    let Some((name_len, c)) = read_leb(data, coff) else { break; };
+                    let Some((name_len, c)) = read_leb(data, coff) else {
+                        break;
+                    };
                     coff += c + name_len;
-                    let Some((_, c)) = read_leb(data, coff) else { break; }; // flags
+                    let Some((_, c)) = read_leb(data, coff) else {
+                        break;
+                    }; // flags
                     coff += c;
-                    let Some((sym_count, c)) = read_leb(data, coff) else { break; };
+                    let Some((sym_count, c)) = read_leb(data, coff) else {
+                        break;
+                    };
                     coff += c;
                     for _ in 0..sym_count {
-                        let Some((kind, c)) = read_leb(data, coff) else { break; };
+                        let Some((kind, c)) = read_leb(data, coff) else {
+                            break;
+                        };
                         coff += c;
-                        let Some((index, c)) = read_leb(data, coff) else { break; };
+                        let Some((index, c)) = read_leb(data, coff) else {
+                            break;
+                        };
                         coff += c;
                         comdat_entries.push((kind as u8, index as u32));
                     }
@@ -1269,13 +1313,20 @@ fn parse_linking_for_comdat<'a>(
             }
             8 => {
                 // WASM_SYMBOL_TABLE (§4)
-                let Some((count, c)) = read_leb(data, off) else { off = subsection_end; continue; };
+                let Some((count, c)) = read_leb(data, off) else {
+                    off = subsection_end;
+                    continue;
+                };
                 let mut soff = off + c;
                 for _ in 0..count {
-                    if soff >= subsection_end { break; }
+                    if soff >= subsection_end {
+                        break;
+                    }
                     let kind = data[soff];
                     soff += 1;
-                    let Some((flags, c)) = read_leb(data, soff) else { break; };
+                    let Some((flags, c)) = read_leb(data, soff) else {
+                        break;
+                    };
                     soff += c;
                     let is_undefined = (flags & 0x10) != 0;
                     let has_explicit_name = (flags & 0x40) != 0;
@@ -1283,43 +1334,69 @@ fn parse_linking_for_comdat<'a>(
                     match kind {
                         0 => {
                             // SYMTAB_FUNCTION
-                            let Some((func_idx, c)) = read_leb(data, soff) else { break; };
+                            let Some((func_idx, c)) = read_leb(data, soff) else {
+                                break;
+                            };
                             soff += c;
                             let name = if !is_undefined || has_explicit_name {
-                                let Some((len, c)) = read_leb(data, soff) else { break; };
+                                let Some((len, c)) = read_leb(data, soff) else {
+                                    break;
+                                };
                                 soff += c;
                                 let end = (soff + len).min(data.len());
                                 let n = &data[soff..end];
                                 soff = end;
                                 n
-                            } else { b"" };
-                            sym_entries.push(SymEntry { kind: 1, index: func_idx as u32, name });
+                            } else {
+                                b""
+                            };
+                            sym_entries.push(SymEntry {
+                                kind: 1,
+                                index: func_idx as u32,
+                                name,
+                            });
                         }
                         1 => {
                             // SYMTAB_DATA
-                            let Some((len, c)) = read_leb(data, soff) else { break; };
+                            let Some((len, c)) = read_leb(data, soff) else {
+                                break;
+                            };
                             soff += c;
                             let end = (soff + len).min(data.len());
                             let name = &data[soff..end];
                             soff = end;
                             if !is_undefined {
                                 for _ in 0..3 {
-                                    let Some((_, c)) = read_leb(data, soff) else { break; };
+                                    let Some((_, c)) = read_leb(data, soff) else {
+                                        break;
+                                    };
                                     soff += c;
                                 }
                             }
-                            sym_entries.push(SymEntry { kind: 0, index: 0, name }); // data index filled below
+                            sym_entries.push(SymEntry {
+                                kind: 0,
+                                index: 0,
+                                name,
+                            }); // data index filled below
                         }
                         _ => {
                             // Global, section, event, table
-                            let Some((_, c)) = read_leb(data, soff) else { break; };
+                            let Some((_, c)) = read_leb(data, soff) else {
+                                break;
+                            };
                             soff += c;
                             if !is_undefined || has_explicit_name {
-                                let Some((len, c)) = read_leb(data, soff) else { break; };
+                                let Some((len, c)) = read_leb(data, soff) else {
+                                    break;
+                                };
                                 soff += c;
                                 soff += len;
                             }
-                            sym_entries.push(SymEntry { kind: 255, index: 0, name: b"" });
+                            sym_entries.push(SymEntry {
+                                kind: 255,
+                                index: 0,
+                                name: b"",
+                            });
                         }
                     }
                 }
@@ -1348,7 +1425,9 @@ fn read_leb(data: &[u8], offset: usize) -> Option<(usize, usize)> {
     let mut shift = 0;
     let mut pos = offset;
     loop {
-        if pos >= data.len() { return None; }
+        if pos >= data.len() {
+            return None;
+        }
         let byte = data[pos];
         pos += 1;
         result |= ((byte & 0x7F) as usize) << shift;
@@ -1356,6 +1435,8 @@ fn read_leb(data: &[u8], offset: usize) -> Option<(usize, usize)> {
             return Some((result, pos - offset));
         }
         shift += 7;
-        if shift >= 35 { return None; }
+        if shift >= 35 {
+            return None;
+        }
     }
 }

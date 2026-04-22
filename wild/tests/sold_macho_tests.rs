@@ -21,8 +21,10 @@ fn collect_tests(tests: &mut Vec<libtest_mimic::Trial>) {
     let wild_bin = wild_binary_path();
     let test_dir = sold_tests_dir();
 
-    // Create a working directory with ld64 symlink
-    let work_dir = std::env::temp_dir().join("wild-sold-tests");
+    // Create a per-process working directory with ld64 symlink. Nextest runs each
+    // test in its own process, all of which re-enter `collect_tests`; sharing one
+    // path races on the symlink (`AlreadyExists`).
+    let work_dir = std::env::temp_dir().join(format!("wild-sold-tests-{}", std::process::id()));
     std::fs::create_dir_all(&work_dir).unwrap();
     let ld64_link = work_dir.join("ld64");
     let _ = std::fs::remove_file(&ld64_link);
@@ -80,27 +82,19 @@ fn should_ignore(name: &str) -> bool {
         // search-paths-first now passes (default search order is paths-first)
         // search-dylibs-first now passes (pre-scan for global flags)
         // sectcreate now passes (-sectcreate data written to TEXT segment gap)
-        "order-file", // -order_file
-        // stack-size now passes
-        // map now passes (link map file writer)
-        // dependency-info now passes
-        // print-dependencies now passes (--print-dependencies output)
-        // macos-version-min now passes
-        // platform-version now passes
-        // S now passes (stab debug symbol pass-through + -S strip)
-        // strip now passes (LINKEDIT packing + linker-signed codesign)
-        // no-function-starts now passes
-        // data-in-code-info now passes
-        "subsections-via-symbols", /* needs cached subsection map (O(n²) without)
-                                    * add-ast-path now passes (N_AST stab entries from
-                                    * -add_ast_path)
-                                    * add-empty-section now passes
-                                    * pagezero-size2 now passes (error when used with -dylib)
-                                    * oso-prefix now passes (-oso_prefix with canonicalized OSO
-                                    * paths)
-                                    * start-stop-symbol now passes (section$/segment$ synthetic
-                                    * symbols) framework now
-                                    * passes (-F/-framework support) */
+        "order-file", /* -order_file
+                       * stack-size now passes
+                       * map now passes (link map file writer)
+                       * dependency-info now passes
+                       * print-dependencies now passes (--print-dependencies output)
+                       * macos-version-min now passes
+                       * platform-version now passes
+                       * S now passes (stab debug symbol pass-through + -S strip)
+                       * strip now passes (LINKEDIT packing + linker-signed codesign)
+                       * no-function-starts now passes
+                       * data-in-code-info now passes
+                       * subsections-via-symbols now passes (signed SectionDeltas carries
+                       *   alignment padding as insertion-direction entries) */
     ];
 
     // Tests requiring LTO

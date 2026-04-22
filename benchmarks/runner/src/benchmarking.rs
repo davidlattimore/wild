@@ -8,6 +8,7 @@ use crate::LinkerKind;
 use crate::Result;
 use crate::Run;
 use crate::config::Config;
+use crate::config::Platform;
 use anyhow::Context as _;
 use anyhow::bail;
 use std::collections::BTreeSet;
@@ -31,6 +32,9 @@ pub(crate) fn run_bench(args: &BenchArgs, config: &Config) -> Result {
         .collect::<Result<Vec<Bin>>>()?;
 
     let benchmarks = find_benchmarks(args, config)?;
+
+    let host_platform = Platform::host();
+    let benchmarks = filter_benchmarks_by_host_platform(benchmarks, host_platform);
 
     let benchmarks = filter_benchmarks_by_wild_version(benchmarks, &bins);
 
@@ -179,6 +183,13 @@ fn run_once(
     if !bench.supports_bin(bin) {
         return Ok(None);
     }
+    // Skip linker/bench pairs that can't produce the requested
+    // output format (e.g. asking mold to emit Mach-O). Without this,
+    // the saved run-with would dispatch to the wrong toolchain and
+    // fail with a misleading link error.
+    if !bin.identifier.kind.supports_platform(bench.config.platform) {
+        return Ok(None);
+    }
 
     let mut command = Command::new(&bench.path);
     command.env("OUT", args.tmp.as_os_str()).arg(&bin.path);
@@ -225,6 +236,17 @@ fn run_once(
         bail!("Command produced warnings: {command:?}\n{text_out}");
     }
 
+    // Record the on-disk size of the output file. Different linkers
+    // GC/keep different amounts of metadata (wild is more aggressive
+    // than ld64 on Mach-O; mold and ld.lld differ on ELF) so this is a
+    // real dimension of output quality, not just a timing curiosity.
+    // 0 when the file doesn't exist — we don't bail since the link was
+    // reported successful by the shell.
+    let output_size = std::fs::metadata(&args.tmp)
+        .ok()
+        .map(|m| m.len())
+        .unwrap_or(0);
+
     // However long we took to run, sleep for half of that. If the linker forked on startup, then
     // this gives the subprocess a chance to shutdown in the background before we run the next
     // command.
@@ -237,6 +259,7 @@ fn run_once(
         max_rss: res_use.rusage.maxrss,
         stime: res_use.rusage.stime,
         utime: res_use.rusage.utime,
+        output_size,
     }))
 }
 
@@ -251,14 +274,32 @@ fn find_benchmarks(args: &BenchArgs, config: &Config) -> Result<Vec<Benchmark>> 
         .filter_map(|e| e.file_name().to_str().map(|s| s.to_owned()))
         .collect();
 
+    // If `--benches` narrows the set, only construct (and thus
+    // filesystem-check) the ones the caller actually wants. This makes
+    // the matrix iterable — you can start with two save-dirs and add
+    // more incrementally without the runner bailing on unstaged
+    // entries.
+    let filter: Option<HashSet<&str>> =
+        (!args.benches.is_empty()).then(|| args.benches.iter().map(|n| n.as_str()).collect());
+
     for (name, config) in &config.benches {
         available.remove(name);
-        if !config.skip {
-            benchmarks.push(Benchmark::new(dir.join(name), config.clone())?);
+        if config.skip {
+            continue;
         }
+        if filter
+            .as_ref()
+            .is_some_and(|keep| !keep.contains(name.as_str()))
+        {
+            continue;
+        }
+        benchmarks.push(Benchmark::new(dir.join(name), config.clone())?);
     }
 
-    if !available.is_empty() {
+    // Only complain about missing TOML coverage when the caller is
+    // running the full matrix. With an explicit `--benches` subset,
+    // other unlisted save-dirs on disk are assumed intentional.
+    if filter.is_none() && !available.is_empty() {
         let mut config_snippet = String::new();
         for a in available {
             config_snippet += &format!("[bench.{a}]\n\n");
@@ -266,12 +307,31 @@ fn find_benchmarks(args: &BenchArgs, config: &Config) -> Result<Vec<Benchmark>> 
         bail!("Config doesn't list some benchmarks. Please add:\n{config_snippet}");
     }
 
-    if !args.benches.is_empty() {
-        let keep: HashSet<&str> = args.benches.iter().map(|n| n.as_str()).collect();
-        benchmarks.retain(|b| keep.contains(b.name.as_str()));
-    }
-
     Ok(benchmarks)
+}
+
+/// Filter benchmarks by host output format. Mach-O benches need a
+/// macOS host (ld64) and ELF benches need a Linux host (ld.lld/mold).
+/// Benches without a matching host-format linker are silently skipped
+/// so a single TOML can declare a mixed-platform matrix.
+fn filter_benchmarks_by_host_platform(
+    benchmarks: Vec<Benchmark>,
+    host: Platform,
+) -> Vec<Benchmark> {
+    benchmarks
+        .into_iter()
+        .filter(|bench| {
+            if bench.config.platform == host {
+                true
+            } else {
+                println!(
+                    "Skipping benchmark {bench}: declared {:?}, host is {:?}",
+                    bench.config.platform, host
+                );
+                false
+            }
+        })
+        .collect()
 }
 
 /// Filter benchmarks to just those that have at least one supported Wild version.

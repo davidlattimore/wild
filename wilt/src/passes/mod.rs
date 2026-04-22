@@ -3,7 +3,6 @@
 /// Each pass takes a `WasmModule` and returns modifications to apply.
 /// Passes don't modify the module directly — they produce patches
 /// that the emitter applies.
-
 pub mod branch_threading;
 pub mod cfg_dce;
 pub mod compress;
@@ -14,11 +13,11 @@ pub mod copy_prop;
 pub mod dae;
 pub mod dce;
 pub mod dead_globals;
-pub mod dwarf_full;
-pub mod dwarf_line;
-pub mod devirt;
 pub mod dedup;
 pub mod dedup_imports;
+pub mod devirt;
+pub mod dwarf_full;
+pub mod dwarf_line;
 pub mod fn_merge;
 pub mod if_fold;
 pub mod inline_trivial;
@@ -30,8 +29,8 @@ pub mod pure_call_elim;
 pub mod remove_unused_brs;
 pub mod reorder;
 pub mod reorder_locals;
-pub mod source_map;
 pub mod simplify_locals;
+pub mod source_map;
 pub mod strip;
 pub mod type_gc;
 pub mod unused_data;

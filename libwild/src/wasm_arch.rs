@@ -45,9 +45,7 @@ impl crate::platform::Arch for WasmArch {
 
     fn arch_identifier() -> <Self::Platform as crate::platform::Platform>::ArchIdentifier {}
 
-    fn get_dynamic_relocation_type(
-        _relocation: linker_utils::elf::DynamicRelocationKind,
-    ) -> u32 {
+    fn get_dynamic_relocation_type(_relocation: linker_utils::elf::DynamicRelocationKind) -> u32 {
         0
     }
 

@@ -53,6 +53,19 @@ pub struct MachOArgs {
     /// Symbols exported by linked dylibs (from .tbd parsing). Used to distinguish
     /// undefined symbols that are dylib imports from truly missing symbols.
     pub(crate) dylib_symbols: std::collections::HashSet<Vec<u8>>,
+    /// Path of the `system/` TBD re-exports directory we've already
+    /// walked during `-lSystem` / `-lc` / `-lm` / `-lpthread`
+    /// handling. rustc typically passes all four in sequence and each
+    /// used to re-scan the directory + re-parse every `.tbd` (~20-30
+    /// ms wasted per duplicate pass). `None` until the first scan;
+    /// any subsequent `-l<lib>` that resolves to the same directory
+    /// short-circuits via path comparison.
+    pub(crate) system_tbd_dir_walked: Option<Box<Path>>,
+    /// `true` when the SDK symbol set for this link was hydrated from
+    /// the global SDK cache (`$XDG_CACHE_HOME/wild/sdk-<hex>.bin`)
+    /// rather than parsed from disk. Diagnostic-only — logged when
+    /// `WILD_PARSE_DEBUG=1`.
+    pub(crate) sdk_cache_used: bool,
     /// Whether to skip ad-hoc code signing (-no_adhoc_codesign).
     pub(crate) no_adhoc_codesign: bool,
     /// LC_RPATH entries from -rpath flags.
@@ -188,6 +201,8 @@ impl Default for MachOArgs {
             extra_dylibs: Vec::new(),
             force_undefined: Vec::new(),
             dylib_symbols: Default::default(),
+            system_tbd_dir_walked: None,
+            sdk_cache_used: false,
             no_adhoc_codesign: false,
             rpaths: Vec::new(),
             no_function_starts: false,
@@ -353,24 +368,84 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     args: &mut MachOArgs,
     input: I,
 ) -> Result {
+    let debug = std::env::var_os("WILD_PARSE_DEBUG").is_some();
+    let t0 = std::time::Instant::now();
+    let stage = |label: &str, t: std::time::Instant| -> std::time::Instant {
+        if debug {
+            eprintln!(
+                "wild args.parse: {:>5.1} ms {}",
+                t.elapsed().as_secs_f64() * 1000.0,
+                label
+            );
+        }
+        std::time::Instant::now()
+    };
     // Collect args so we can pre-scan for global flags that affect input processing.
     let all_args: Vec<String> = input.map(|a| a.as_ref().to_string()).collect();
+    let t = stage("collect argv", t0);
 
     // Pre-scan for flags that must be effective before any input is processed.
+    let mut has_syslibroot = false;
+    let mut has_no_default_search = false;
     for a in &all_args {
         match a.as_str() {
             "-search_dylibs_first" => args.search_dylibs_first = true,
             "-init_offsets" => args.use_init_offsets = true,
             "-fixup_chains" => args.use_init_offsets = true,
             "-no_fixup_chains" => {} /* keep use_init_offsets as-is unless -init_offsets was */
-            // explicit
+            "-syslibroot" => has_syslibroot = true,
+            "-Z" => has_no_default_search = true,
             _ => {}
         }
     }
 
-    let mut arg_iter = all_args.iter().map(|s| s.as_str());
+    // If no -syslibroot was passed, discover the SDK via `xcrun` so the
+    // in-place `-l<lib>` handling below finds `lib*.tbd` stubs in
+    // `<SDK>/usr/lib`. Without this, `-lc++` (passed by rustc for build
+    // scripts that link C++ via `wasm-opt`, `cxx`, `link-cplusplus`)
+    // resolves to nothing, wild silently defaults the C++ imports to
+    // libSystem, and dyld SIGABRT's at load with
+    // `__ZTVN10__cxxabiv117__class_type_infoE not found`.
+    //
+    // `cc -fuse-ld=<wild>` doesn't hit this because `cc` already
+    // cooks in a `-syslibroot` argument; the gap is the rustc path
+    // which passes `-lc++` with no syslibroot.
+    let t = stage("pre-scan args", t);
+    if !has_syslibroot && !has_no_default_search {
+        if let Some(sdk) = discover_sdk_path() {
+            args.syslibroot = Some(sdk);
+        }
+    }
+    let t = stage("discover_sdk_path", t);
+
+    // Expand `-Wl,foo,bar,baz` into `foo`, `bar`, `baz` before the
+    // main parse loop. When rustc invokes wild via
+    // `clang -fuse-ld=<wild>`, clang passes `-Wl,-dead_strip`
+    // through to the linker verbatim — the `-Wl,` prefix is only
+    // stripped when clang drives its own bundled `ld`. Wild sees
+    // the literal `-Wl,-dead_strip` and (without this expansion)
+    // silently ignores it, which leaves `gc_sections=false` and
+    // forces every section into MustLoad via the `no_gc` branch.
+    // That was the source of wild's 3× live-code bloat on
+    // rust-linked binaries before this expansion landed.
+    let mut expanded: Vec<String> = Vec::with_capacity(all_args.len());
+    for a in all_args.iter() {
+        if let Some(rest) = a.strip_prefix("-Wl,") {
+            for piece in rest.split(',') {
+                if !piece.is_empty() {
+                    expanded.push(piece.to_string());
+                }
+            }
+        } else {
+            expanded.push(a.clone());
+        }
+    }
+
+    let mut arg_iter = expanded.iter().map(|s| s.as_str());
     let mut modifier_stack = vec![Modifiers::default()];
 
+    // Per-arg timing summary: (prefix, cumulative-ms, count)
+    let mut bucket: std::collections::BTreeMap<&'static str, (f64, u32)> = Default::default();
     while let Some(arg) = arg_iter.next() {
         // Handle @response files
         if let Some(path) = arg.strip_prefix('@') {
@@ -383,14 +458,52 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             continue;
         }
 
+        // Instant::now() has real cost (clock_gettime syscall on some
+        // platforms) so skip it entirely on the default path — the
+        // per-arg loop runs hundreds of times.
+        let a_t = debug.then(std::time::Instant::now);
         parse_one_arg(args, arg, &mut arg_iter, &mut modifier_stack)?;
+        if let Some(a_t) = a_t {
+            let elapsed = a_t.elapsed().as_secs_f64() * 1000.0;
+            let bucket_key: &'static str = if arg.starts_with("-l") {
+                "-l<lib>"
+            } else if arg.starts_with("-L") {
+                "-L<path>"
+            } else if arg.starts_with("-F") {
+                "-F<path>"
+            } else if arg.starts_with("-framework") {
+                "-framework"
+            } else if arg.ends_with(".rlib") {
+                "*.rlib"
+            } else if arg.ends_with(".o") {
+                "*.o"
+            } else if arg.ends_with(".tbd") {
+                "*.tbd"
+            } else if arg.ends_with(".dylib") {
+                "*.dylib"
+            } else if arg.starts_with("-") {
+                "<flag>"
+            } else {
+                "<other>"
+            };
+            let e = bucket.entry(bucket_key).or_insert((0.0, 0));
+            e.0 += elapsed;
+            e.1 += 1;
+        }
     }
+    if debug {
+        for (k, (ms, n)) in &bucket {
+            eprintln!("wild args.parse:   {:>5.1} ms  {:>4} × {}", ms, n, k);
+        }
+    }
+    let t = stage("main parse loop", t);
 
     // Resolve deferred .tbd inputs now that -platform_version is known.
     let pending_tbds = std::mem::take(&mut args.pending_tbd_inputs);
     for path in &pending_tbds {
         handle_tbd_input(args, path)?;
     }
+    let t = stage("pending tbd inputs", t);
 
     // Add default framework search paths unless -Z suppresses them.
     // ld64 searches /Library/Frameworks and /System/Library/Frameworks
@@ -399,15 +512,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
     // only the SDK .tbd stubs work. We try syslibroot first, then
     // discover the SDK via `xcrun --show-sdk-path`, then fall back to
     // the bare system paths.
-    // Discover SDK path when frameworks are pending and no -syslibroot was given.
-    let discovered_sdk = if !args.no_default_search_paths
-        && args.syslibroot.is_none()
-        && !args.pending_frameworks.is_empty()
-    {
-        discover_sdk_path()
-    } else {
-        None
-    };
+    // SDK was pre-discovered at the top of this function (before
+    // any `-l<lib>` was processed). Re-use that value for framework
+    // path fallbacks below; no second `xcrun` invocation needed.
+    let discovered_sdk: Option<Box<Path>> = args.syslibroot.clone();
 
     if !args.no_default_search_paths && !args.pending_frameworks.is_empty() {
         let sdk_root = args.syslibroot.clone().or(discovered_sdk.clone());
@@ -452,6 +560,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         }
     }
 
+    let t = stage("framework tbd collection", t);
+
     // Resolve deferred framework links now that all -F paths are collected.
     let pending = std::mem::take(&mut args.pending_frameworks);
     for (name, needed) in &pending {
@@ -463,6 +573,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
                 .insert(args.extra_dylibs.len() - 1);
         }
     }
+
+    let t = stage("pending frameworks", t);
+    let _ = t; // final marker
 
     // Warn about non-extension-safe dylibs.
     if args.application_extension && !args.suppress_warnings {
@@ -546,6 +659,10 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-exported_symbols_list" => {
             if let Some(val) = input.next() {
+                // Copy the list into the save-dir so WILD_SAVE_BASE
+                // replays don't bail on a stale rustc temp-file path
+                // like `/var/folders/.../rustcXXXX/list`.
+                args.common.save_dir.handle_file(val.as_ref());
                 args.exported_symbols_list = Some(PathBuf::from(val.as_ref()));
             }
             return Ok(());
@@ -564,6 +681,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-unexported_symbols_list" => {
             if let Some(val) = input.next() {
+                args.common.save_dir.handle_file(val.as_ref());
                 args.unexported_symbols_list = Some(PathBuf::from(val.as_ref()));
             }
             return Ok(());
@@ -676,6 +794,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
         }
         "-order_file" => {
             if let Some(val) = input.next() {
+                args.common.save_dir.handle_file(val.as_ref());
                 let path = PathBuf::from(val.as_ref());
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     for (i, line) in content.lines().enumerate() {
@@ -818,6 +937,13 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
             args.no_default_search_paths = true;
             return Ok(());
         }
+        // Historically a toggle for bit-for-bit compat with ld64. Now
+        // accepted as a no-op — wild's Mach-O output is always in the
+        // ld64-matching shape. Left accepted so existing scripts and
+        // build systems don't break on the flag.
+        "-ld64_compat" | "--ld64-compat" => {
+            return Ok(());
+        }
         "-v" => {
             args.common.version_mode = crate::args::VersionMode::Verbose;
             return Ok(());
@@ -921,6 +1047,7 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 } else {
                     (val, None)
                 };
+                args.common.save_dir.handle_file(file_path);
                 let content = std::fs::read_to_string(file_path)
                     .with_context(|| format!("Failed to read filelist `{file_path}`"))?;
                 for line in content.lines() {
@@ -1020,20 +1147,75 @@ fn parse_one_arg<'a, S: AsRef<str>, I: Iterator<Item = S>>(
                 if let Some(ref root) = args.syslibroot {
                     search_paths.push(Box::from(root.join("usr/lib")));
                 }
+                // Global SDK cache fast-path. On the first
+                // `-lSystem`/`-lc`/`-lm`/`-lpthread` call, if we have
+                // a syslibroot and its cached symbol set is still
+                // valid (libSystem.tbd's size+mtime unchanged),
+                // hydrate `args.dylib_symbols` from disk without
+                // walking + parsing ~100 `.tbd` files. Saves ~60 ms
+                // on the cold link path for every wild invocation
+                // after the first against a given SDK.
+                //
+                // The cache is process-wide, stored under
+                // `$XDG_CACHE_HOME/wild/sdk-<hex>.bin`, so every
+                // output binary linked against the same SDK
+                // benefits from the same cache entry.
+                if args.system_tbd_dir_walked.is_none() {
+                    if let Some(ref root) = args.syslibroot {
+                        if let Some(cached) = crate::sdk_cache::load_sdk_symbols(root) {
+                            args.dylib_symbols.extend(cached);
+                            // Record both walk-done and
+                            // sdk-cache-hit so the subsequent
+                            // -l<lib> calls (c/m/pthread) also
+                            // short-circuit cleanly.
+                            args.system_tbd_dir_walked =
+                                Some(Box::from(root.join("usr/lib/system").as_path()));
+                            args.sdk_cache_used = true;
+                            return Ok(());
+                        }
+                    }
+                }
                 for dir in &search_paths {
                     let tbd_path = dir.join(format!("lib{lib}.tbd"));
                     if tbd_path.exists() {
                         collect_tbd_symbols(&tbd_path, &mut args.dylib_symbols);
-                        // Also collect from re-exported libraries (e.g. libSystem
-                        // re-exports libdyld, libsystem_c, etc. from system/ subdir)
+                        // Also collect from re-exported libraries (libSystem
+                        // re-exports libdyld, libsystem_c, etc. from the
+                        // `system/` subdir). Walk + parse the ~100 stub
+                        // files **exactly once per syslibroot**: rustc
+                        // typically passes `-lSystem`, `-lc`, `-lm`,
+                        // `-lpthread` in a row, each of which used to
+                        // re-scan the same directory and re-parse every
+                        // .tbd — ~20-30 ms per duplicate pass, the
+                        // dominant chunk of `args.parse` time on
+                        // rust-analyzer. Tracked via a tri-state
+                        // `system_dir_walked` flag: `Some(dir)` records
+                        // which directory we walked, so a different
+                        // syslibroot on a second parse invocation
+                        // (unusual but possible) still re-walks cleanly.
                         let system_dir = dir.join("system");
                         if system_dir.is_dir() {
-                            if let Ok(entries) = std::fs::read_dir(&system_dir) {
-                                for entry in entries.flatten() {
-                                    let p = entry.path();
-                                    if p.extension().map_or(false, |e| e == "tbd") {
-                                        collect_tbd_symbols(&p, &mut args.dylib_symbols);
+                            let already_walked = args
+                                .system_tbd_dir_walked
+                                .as_deref()
+                                .map(|p| p == system_dir.as_path())
+                                .unwrap_or(false);
+                            if !already_walked {
+                                if let Ok(entries) = std::fs::read_dir(&system_dir) {
+                                    for entry in entries.flatten() {
+                                        let p = entry.path();
+                                        if p.extension().map_or(false, |e| e == "tbd") {
+                                            collect_tbd_symbols(&p, &mut args.dylib_symbols);
+                                        }
                                     }
+                                }
+                                args.system_tbd_dir_walked = Some(Box::from(system_dir.as_path()));
+                                // Now that we've done the expensive
+                                // walk, persist the collected
+                                // symbols globally so the next link
+                                // against this SDK can skip it.
+                                if let Some(ref root) = args.syslibroot {
+                                    crate::sdk_cache::save_sdk_symbols(root, &args.dylib_symbols);
                                 }
                             }
                         }
@@ -1404,10 +1586,28 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
         // Try .tbd first, then bare name (dylib without extension)
         let tbd_path = fw_dir.join(format!("{name}.tbd"));
         if tbd_path.exists() {
-            if let Some(dylib_path) = parse_tbd_install_name(&tbd_path) {
-                args.add_dylib(dylib_path, DylibLoadKind::Normal);
+            // Global TBD cache fast-path: on profile, CoreFoundation
+            // + CoreServices framework parsing via yaml_rust
+            // dominates cold-link time (85% of wild-leaf samples).
+            // Cache `(install_name, symbols)` keyed on
+            // (path, size, mtime).
+            if let Some((install_name, symbols)) = crate::sdk_cache::load_tbd_symbols(&tbd_path) {
+                if let Some(dylib_path) = install_name {
+                    args.add_dylib(dylib_path, DylibLoadKind::Normal);
+                }
+                args.dylib_symbols.extend(symbols);
+                return Ok(());
             }
-            collect_tbd_symbols(&tbd_path, &mut args.dylib_symbols);
+            // Miss: parse the .tbd, then persist the result for
+            // the next link.
+            let install_name = parse_tbd_install_name(&tbd_path);
+            let mut fresh_symbols: std::collections::HashSet<Vec<u8>> = Default::default();
+            collect_tbd_symbols(&tbd_path, &mut fresh_symbols);
+            if let Some(ref dylib_path) = install_name {
+                args.add_dylib(dylib_path.clone(), DylibLoadKind::Normal);
+            }
+            args.dylib_symbols.extend(fresh_symbols.iter().cloned());
+            crate::sdk_cache::save_tbd_symbols(&tbd_path, install_name.as_deref(), &fresh_symbols);
             return Ok(());
         }
         let dylib_path = fw_dir.join(name);
@@ -1422,17 +1622,34 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
 
 /// Check if a file is a Mach-O dylib/bundle by reading its header.
 fn is_macho_dylib(path: &Path) -> bool {
-    let Ok(data) = std::fs::read(path) else {
+    // Short-circuit on known non-Mach-O extensions: `.rlib` and `.a`
+    // are ar archives; `.o` is a relocatable object; `.tbd` is
+    // handled upstream. Without this, rustc-driven links of crates
+    // like rust-analyzer (~211 rlibs totalling ~350 MiB) used to
+    // read every single input into RAM just to inspect four magic
+    // bytes — the 123 ms bulk of `args.parse`. Extension check is
+    // a pure-string op; on a match we never touch the filesystem.
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("rlib" | "a" | "o" | "tbd") => return false,
+        _ => {}
+    }
+    // For paths without a conventional extension (or with ".dylib"
+    // / ".bundle" / none-at-all), open + read exactly 16 bytes —
+    // enough to inspect magic + filetype. Avoids slurping GB-scale
+    // files into memory for the magic-check.
+    use std::io::Read as _;
+    let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
-    if data.len() < 16 {
+    let mut head = [0u8; 16];
+    if f.read_exact(&mut head).is_err() {
         return false;
     }
-    let magic = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let magic = u32::from_le_bytes(head[0..4].try_into().unwrap());
     if magic != 0xfeed_facf {
         return false;
     }
-    let filetype = u32::from_le_bytes(data[12..16].try_into().unwrap());
+    let filetype = u32::from_le_bytes(head[12..16].try_into().unwrap());
     matches!(filetype, 6 | 8) // MH_DYLIB | MH_BUNDLE
 }
 

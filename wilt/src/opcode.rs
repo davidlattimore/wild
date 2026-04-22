@@ -51,15 +51,12 @@ pub fn instr_len(body: &[u8], pos: usize) -> Option<usize> {
     let rest = body.get(pos + 1..)?;
     let imm = match op {
         // zero-immediate
-        0x00 | 0x01 | 0x05 | 0x0B | 0x0F | 0x1A | 0x1B
-        | 0x45..=0xC4 | 0xD1
-        | 0xD3 | 0xD4 => 0,  // ref.eq, ref.as_non_null
+        0x00 | 0x01 | 0x05 | 0x0B | 0x0F | 0x1A | 0x1B | 0x45..=0xC4 | 0xD1 | 0xD3 | 0xD4 => 0, /* ref.eq, ref.as_non_null */
         // blocktype (signed LEB s33; we over-read as u32 — only the length matters)
         0x02 | 0x03 | 0x04 => leb128::read_u32(rest)?.1,
         // single u32 LEB
-        0x0C | 0x0D | 0x10 | 0x20 | 0x21 | 0x22 | 0x23 | 0x24
-        | 0x25 | 0x26 | 0xD2
-        | 0xD5 | 0xD6 => leb128::read_u32(rest)?.1, // br_on_null / non_null
+        0x0C | 0x0D | 0x10 | 0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 | 0x26 | 0xD2 | 0xD5
+        | 0xD6 => leb128::read_u32(rest)?.1, // br_on_null / non_null
         // br_table: vec<labelidx> + default
         0x0E => {
             let (n, mut c) = leb128::read_u32(rest)?;
@@ -101,8 +98,8 @@ pub fn instr_len(body: &[u8], pos: usize) -> Option<usize> {
         // const opcodes — i32/i64 are sleb128; use skip_len so
         // multi-byte encodings that don't fit in u32 still parse.
         0x41 | 0x42 => leb128::skip_len(rest)?,
-        0x43 => 4,                                 // f32
-        0x44 => 8,                                 // f64
+        0x43 => 4, // f32
+        0x44 => 8, // f64
         // ref.null: heaptype LEB
         0xD0 => leb128::read_u32(rest)?.1,
         // Prefix 0xFC — saturating truncation (0x00..=0x07, no imm),
@@ -113,24 +110,28 @@ pub fn instr_len(body: &[u8], pos: usize) -> Option<usize> {
             let after_sub = rest.get(c..)?;
             let extra = match sub {
                 0x00..=0x07 => 0,
-                0x08 => { // memory.init: dataidx + memidx
+                0x08 => {
+                    // memory.init: dataidx + memidx
                     let (_, c1) = leb128::read_u32(after_sub)?;
                     c1 + 1
                 }
                 0x09 => leb128::read_u32(after_sub)?.1, // data.drop
-                0x0A => { // memory.copy: 2 memidx LEBs
+                0x0A => {
+                    // memory.copy: 2 memidx LEBs
                     let (_, c1) = leb128::read_u32(after_sub)?;
                     let (_, c2) = leb128::read_u32(after_sub.get(c1..)?)?;
                     c1 + c2
                 }
                 0x0B => leb128::read_u32(after_sub)?.1, // memory.fill: memidx LEB
-                0x0C => { // table.init: elemidx + tableidx
+                0x0C => {
+                    // table.init: elemidx + tableidx
                     let (_, c1) = leb128::read_u32(after_sub)?;
                     let (_, c2) = leb128::read_u32(after_sub.get(c1..)?)?;
                     c1 + c2
                 }
                 0x0D => leb128::read_u32(after_sub)?.1, // elem.drop
-                0x0E => { // table.copy: 2 tableidx
+                0x0E => {
+                    // table.copy: 2 tableidx
                     let (_, c1) = leb128::read_u32(after_sub)?;
                     let (_, c2) = leb128::read_u32(after_sub.get(c1..)?)?;
                     c1 + c2
@@ -148,12 +149,11 @@ pub fn instr_len(body: &[u8], pos: usize) -> Option<usize> {
             let after_sub = rest.get(c..)?;
             let extra = match sub {
                 // single typeidx
-                0x00 | 0x01 | 0x06 | 0x07
-                | 0x0B | 0x0C | 0x0D | 0x0E | 0x10 => leb128::read_u32(after_sub)?.1,
+                0x00 | 0x01 | 0x06 | 0x07 | 0x0B | 0x0C | 0x0D | 0x0E | 0x10 => {
+                    leb128::read_u32(after_sub)?.1
+                }
                 // typeidx + second LEB (fieldidx / dataidx / elemidx / typeidx / N)
-                0x02 | 0x03 | 0x04 | 0x05
-                | 0x08 | 0x09 | 0x0A
-                | 0x11 | 0x12 | 0x13 => {
+                0x02 | 0x03 | 0x04 | 0x05 | 0x08 | 0x09 | 0x0A | 0x11 | 0x12 | 0x13 => {
                     let (_, c1) = leb128::read_u32(after_sub)?;
                     let (_, c2) = leb128::read_u32(after_sub.get(c1..)?)?;
                     c1 + c2
@@ -184,8 +184,7 @@ pub fn instr_len(body: &[u8], pos: usize) -> Option<usize> {
             c + extra
         }
         // SIMD / atomics / EH — still too broad to handle safely.
-        0xFD | 0xFE
-        | 0x06 | 0x07 | 0x08 | 0x09 | 0x18 | 0x1F => return None,
+        0xFD | 0xFE | 0x06 | 0x07 | 0x08 | 0x09 | 0x18 | 0x1F => return None,
         _ => return None,
     };
     Some(1 + imm)
@@ -214,12 +213,18 @@ pub struct InstrIter<'a> {
 impl<'a> InstrIter<'a> {
     #[inline]
     pub fn new(body: &'a [u8], start: usize) -> Self {
-        Self { body, pos: start, failed: false }
+        Self {
+            body,
+            pos: start,
+            failed: false,
+        }
     }
 
     /// After iteration ends, `true` if the walker bailed on an unknown opcode.
     #[inline]
-    pub fn failed(&self) -> bool { self.failed }
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
 }
 
 impl<'a> Iterator for InstrIter<'a> {

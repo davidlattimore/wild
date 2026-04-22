@@ -14,7 +14,8 @@
 // carry function references — they're handled by bailing when present.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::opcode;
 use crate::scan;
 
@@ -26,7 +27,9 @@ pub fn all_bodies_walkable(module: &WasmModule<'_>) -> bool {
     let data = module.data();
     for body in module.function_bodies() {
         let bytes = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(bytes) else { return false };
+        let Some(start) = opcode::skip_locals(bytes) else {
+            return false;
+        };
         if opcode::walk(bytes, start).is_none() {
             return false;
         }
@@ -66,7 +69,9 @@ pub fn scan_const_expr(bytes: &[u8], start: usize) -> Option<(usize, Vec<u32>)> 
     let mut targets = Vec::new();
     while off < bytes.len() {
         let op = bytes[off];
-        if op == 0x0B { return Some((off + 1, targets)); }
+        if op == 0x0B {
+            return Some((off + 1, targets));
+        }
         let len = opcode::instr_len(bytes, off)?;
         if op == opcode::OP_REF_FUNC {
             if let Some((t, _)) = leb128::read_u32(&bytes[off + 1..]) {
@@ -85,7 +90,9 @@ fn scan_globals_for_ref_func(payload: &[u8]) -> Option<Vec<u32>> {
     let mut out = Vec::new();
     for _ in 0..count {
         // valtype (1 byte) + mut (1 byte) + init expr
-        if off + 2 > payload.len() { return None; }
+        if off + 2 > payload.len() {
+            return None;
+        }
         off += 2;
         let (end, targets) = scan_const_expr(payload, off)?;
         out.extend(targets);
@@ -202,7 +209,9 @@ pub fn parse_imports<'a>(module: &'a WasmModule<'_>) -> Option<(Vec<ImportEntry<
                     off += c;
                 }
             }
-            0x03 => { off += 2; }
+            0x03 => {
+                off += 2;
+            }
             0x04 => {
                 off += 1;
                 let (_, c) = leb128::read_u32(p.get(off..)?)?;
@@ -211,7 +220,10 @@ pub fn parse_imports<'a>(module: &'a WasmModule<'_>) -> Option<(Vec<ImportEntry<
             _ => return None,
         }
         entries.push(ImportEntry {
-            module_name, field_name, kind, type_idx,
+            module_name,
+            field_name,
+            kind,
+            type_idx,
             span: (start, off - start),
         });
     }
@@ -219,46 +231,85 @@ pub fn parse_imports<'a>(module: &'a WasmModule<'_>) -> Option<(Vec<ImportEntry<
 }
 
 pub fn count_func_imports_pub(module: &WasmModule<'_>) -> u32 {
-    let Some(sec) = module.section(module::SECTION_IMPORT) else { return 0 };
+    let Some(sec) = module.section(module::SECTION_IMPORT) else {
+        return 0;
+    };
     let data = module.data();
     let p = sec.payload.slice(data);
-    let Some((count, mut off)) = leb128::read_u32(p) else { return 0 };
+    let Some((count, mut off)) = leb128::read_u32(p) else {
+        return 0;
+    };
     let mut n = 0;
     for _ in 0..count {
         // module name
-        let Some((l, c)) = leb128::read_u32(&p[off..]) else { return n };
+        let Some((l, c)) = leb128::read_u32(&p[off..]) else {
+            return n;
+        };
         off += c + l as usize;
-        if off > p.len() { return n }
+        if off > p.len() {
+            return n;
+        }
         // field name
-        let Some((l, c)) = leb128::read_u32(&p[off..]) else { return n };
+        let Some((l, c)) = leb128::read_u32(&p[off..]) else {
+            return n;
+        };
         off += c + l as usize;
-        if off >= p.len() { return n }
+        if off >= p.len() {
+            return n;
+        }
         let kind = p[off];
         off += 1;
         match kind {
             0x00 => {
-                if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; n += 1; } else { return n }
+                if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                    off += c;
+                    n += 1;
+                } else {
+                    return n;
+                }
             }
             0x01 => {
                 // table: reftype + limits
-                if off >= p.len() { return n }
+                if off >= p.len() {
+                    return n;
+                }
                 off += 1; // reftype
-                if off >= p.len() { return n }
+                if off >= p.len() {
+                    return n;
+                }
                 let flags = p[off];
                 off += 1;
-                if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { return n }
+                if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                    off += c;
+                } else {
+                    return n;
+                }
                 if flags & 1 != 0 {
-                    if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { return n }
+                    if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                        off += c;
+                    } else {
+                        return n;
+                    }
                 }
             }
             0x02 => {
                 // memory: limits
-                if off >= p.len() { return n }
+                if off >= p.len() {
+                    return n;
+                }
                 let flags = p[off];
                 off += 1;
-                if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { return n }
+                if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                    off += c;
+                } else {
+                    return n;
+                }
                 if flags & 1 != 0 {
-                    if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { return n }
+                    if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                        off += c;
+                    } else {
+                        return n;
+                    }
                 }
             }
             0x03 => {
@@ -268,7 +319,11 @@ pub fn count_func_imports_pub(module: &WasmModule<'_>) -> u32 {
             0x04 => {
                 // tag: 1-byte attribute + typeidx LEB
                 off += 1;
-                if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { return n }
+                if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                    off += c;
+                } else {
+                    return n;
+                }
             }
             _ => return n,
         }
@@ -327,11 +382,15 @@ pub fn analyse(module: &mut WasmModule<'_>) -> DceResult {
             let op = body_bytes[p];
             if op == opcode::OP_CALL {
                 if let Some((target, _)) = leb128::read_u32(&body_bytes[p + 1..]) {
-                    if target < total { graph[abs_idx as usize].push(target); }
+                    if target < total {
+                        graph[abs_idx as usize].push(target);
+                    }
                 }
             } else if op == opcode::OP_REF_FUNC {
                 if let Some((target, _)) = leb128::read_u32(&body_bytes[p + 1..]) {
-                    if target < total { extra_roots.push(target); }
+                    if target < total {
+                        extra_roots.push(target);
+                    }
                 }
             }
         }
@@ -344,7 +403,9 @@ pub fn analyse(module: &mut WasmModule<'_>) -> DceResult {
     // exist as "roots"), assume the module is a test fixture or library and
     // keep all defined bodies. Applying DCE with zero real roots would
     // delete every defined function — almost never what's wanted.
-    if exports.is_empty() && start.is_none() && extra_roots.is_empty()
+    if exports.is_empty()
+        && start.is_none()
+        && extra_roots.is_empty()
         && global_ref_func_targets.is_empty()
         && element_ref_func_targets.is_empty()
     {
@@ -352,12 +413,16 @@ pub fn analyse(module: &mut WasmModule<'_>) -> DceResult {
     }
 
     let mut roots: Vec<u32> = exports;
-    if let Some(s) = start { roots.push(s); }
+    if let Some(s) = start {
+        roots.push(s);
+    }
     roots.extend(extra_roots);
     roots.extend(global_ref_func_targets.iter().copied());
     roots.extend(element_ref_func_targets.iter().copied());
     // Imports are always "reachable" — declared externally.
-    for i in 0..num_imports { roots.push(i); }
+    for i in 0..num_imports {
+        roots.push(i);
+    }
 
     let reachable = scan::reachable_from(&graph, &roots);
 
@@ -380,7 +445,11 @@ pub fn analyse(module: &mut WasmModule<'_>) -> DceResult {
         }
     }
 
-    DceResult { index_map, num_imports, defined_kept }
+    DceResult {
+        index_map,
+        num_imports,
+        defined_kept,
+    }
 }
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
@@ -435,7 +504,9 @@ fn emit_function_section(out: &mut Vec<u8>, section: &module::Section, data: &[u
     let mut new_payload = Vec::new();
     leb128::write_u32(&mut new_payload, r.defined_kept);
     for i in 0..count {
-        let Some((type_idx, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((type_idx, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         off += c;
         let abs = r.num_imports + i;
         if r.index_map.get(abs as usize).copied().flatten().is_some() {
@@ -522,7 +593,11 @@ pub fn emit_remapped_start_section(
         out.extend_from_slice(section.full.slice(data));
         return;
     };
-    let new_idx = index_map.get(idx as usize).copied().flatten().unwrap_or(idx);
+    let new_idx = index_map
+        .get(idx as usize)
+        .copied()
+        .flatten()
+        .unwrap_or(idx);
     let mut new_payload = Vec::new();
     leb128::write_u32(&mut new_payload, new_idx);
     out.push(section.id);
@@ -549,7 +624,9 @@ pub fn emit_remapped_global_section(
     let mut new_payload = Vec::new();
     leb128::write_u32(&mut new_payload, count);
     for _ in 0..count {
-        if off + 2 > payload.len() { break; }
+        if off + 2 > payload.len() {
+            break;
+        }
         new_payload.extend_from_slice(&payload[off..off + 2]);
         off += 2;
         let Some((end, _)) = scan_const_expr(payload, off) else {
@@ -635,29 +712,47 @@ pub fn emit_remapped_element_section(
 
 fn all_segments_funcidx_form(payload: &[u8], count: u32, mut off: usize) -> bool {
     for _ in 0..count {
-        let Some((flags, c)) = leb128::read_u32(&payload[off..]) else { return false };
+        let Some((flags, c)) = leb128::read_u32(&payload[off..]) else {
+            return false;
+        };
         off += c;
         match flags {
             0 => {
-                let Some((end, _)) = scan_const_expr(payload, off) else { return false };
+                let Some((end, _)) = scan_const_expr(payload, off) else {
+                    return false;
+                };
                 off = end;
-                let Some(no) = skip_funcidx_vec(payload, off) else { return false };
+                let Some(no) = skip_funcidx_vec(payload, off) else {
+                    return false;
+                };
                 off = no;
             }
             1 | 3 => {
-                if off >= payload.len() { return false; }
+                if off >= payload.len() {
+                    return false;
+                }
                 off += 1; // elemkind
-                let Some(no) = skip_funcidx_vec(payload, off) else { return false };
+                let Some(no) = skip_funcidx_vec(payload, off) else {
+                    return false;
+                };
                 off = no;
             }
             2 => {
-                let Some((_, c)) = leb128::read_u32(&payload[off..]) else { return false };
+                let Some((_, c)) = leb128::read_u32(&payload[off..]) else {
+                    return false;
+                };
                 off += c;
-                let Some((end, _)) = scan_const_expr(payload, off) else { return false };
+                let Some((end, _)) = scan_const_expr(payload, off) else {
+                    return false;
+                };
                 off = end;
-                if off >= payload.len() { return false; }
+                if off >= payload.len() {
+                    return false;
+                }
                 off += 1;
-                let Some(no) = skip_funcidx_vec(payload, off) else { return false };
+                let Some(no) = skip_funcidx_vec(payload, off) else {
+                    return false;
+                };
                 off = no;
             }
             _ => return false,
@@ -682,13 +777,21 @@ pub fn write_remapped_funcidx_vec(
     mut off: usize,
     index_map: &[Option<u32>],
 ) -> usize {
-    let Some((n, c)) = leb128::read_u32(&payload[off..]) else { return off };
+    let Some((n, c)) = leb128::read_u32(&payload[off..]) else {
+        return off;
+    };
     off += c;
     leb128::write_u32(out, n);
     for _ in 0..n {
-        let Some((idx, c)) = leb128::read_u32(&payload[off..]) else { return off };
+        let Some((idx, c)) = leb128::read_u32(&payload[off..]) else {
+            return off;
+        };
         off += c;
-        let new_idx = index_map.get(idx as usize).copied().flatten().unwrap_or(idx);
+        let new_idx = index_map
+            .get(idx as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(idx);
         leb128::write_u32(out, new_idx);
     }
     off
@@ -743,12 +846,16 @@ pub fn emit_remapped_export_section(
 
     let mut entries = Vec::new();
     for _ in 0..count {
-        let Some((name_len, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((name_len, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         let name_start = off + c;
         off = name_start + name_len as usize;
         let kind = payload[off];
         off += 1;
-        let Some((index, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((index, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         off += c;
 
         let new_index = if kind == 0x00 {
@@ -760,7 +867,11 @@ pub fn emit_remapped_export_section(
             index
         };
 
-        entries.push((&payload[name_start..name_start + name_len as usize], kind, new_index));
+        entries.push((
+            &payload[name_start..name_start + name_len as usize],
+            kind,
+            new_index,
+        ));
     }
 
     let mut new_payload = Vec::new();
@@ -787,7 +898,9 @@ mod tests {
 
         let mut func_payload = Vec::new();
         leb128::write_u32(&mut func_payload, num_funcs as u32);
-        for _ in 0..num_funcs { leb128::write_u32(&mut func_payload, 0); }
+        for _ in 0..num_funcs {
+            leb128::write_u32(&mut func_payload, 0);
+        }
         data.push(3);
         leb128::write_u32(&mut data, func_payload.len() as u32);
         data.extend_from_slice(&func_payload);

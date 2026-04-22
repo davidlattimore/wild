@@ -30,45 +30,61 @@ pub trait LinkerHints: Sync {
     /// Function is unreachable from outside the module — never exported,
     /// never reachable via ref.func or table init. Default: conservatively
     /// assume the function is reachable from outside.
-    fn is_internal(&self, _func_idx: u32) -> bool { false }
+    fn is_internal(&self, _func_idx: u32) -> bool {
+        false
+    }
 
     /// Number of static call sites for this function across the link set.
     /// `Some(1)` enables aggressive single-call-site inlining. Default:
     /// unknown.
-    fn call_count(&self, _func_idx: u32) -> Option<u32> { None }
+    fn call_count(&self, _func_idx: u32) -> Option<u32> {
+        None
+    }
 
     /// Functions reachable through this table. Closes the `call_indirect`
     /// target set. Default: unknown (caller must assume any function is
     /// reachable).
-    fn table_targets(&self, _table_idx: u32) -> Option<&[u32]> { None }
+    fn table_targets(&self, _table_idx: u32) -> Option<&[u32]> {
+        None
+    }
 
     /// Every function index that appears as a `ref.func` anywhere in the
     /// link set (bodies, element segments, global init exprs).
     /// Default: empty — combined with `is_internal == false` this means
     /// "assume nothing".
-    fn ref_func_targets(&self) -> &[u32] { &[] }
+    fn ref_func_targets(&self) -> &[u32] {
+        &[]
+    }
 
     /// Original input-object index, for layout / locality passes that
     /// want to cluster bodies that came from the same TU.
-    fn origin_unit(&self, _func_idx: u32) -> Option<u32> { None }
+    fn origin_unit(&self, _func_idx: u32) -> Option<u32> {
+        None
+    }
 
     /// True if this global is read anywhere in the link set. Default:
     /// conservatively assume it is.
-    fn global_is_read(&self, _global_idx: u32) -> bool { true }
+    fn global_is_read(&self, _global_idx: u32) -> bool {
+        true
+    }
 
     /// If this global is non-mutable and its init expression is a
     /// single constant (i32.const / i64.const / f32.const / f64.const),
     /// the literal value. Anything else — mutable, ref.func init,
     /// imported global that can only be known at link time — returns
     /// `None`. Default: unknown.
-    fn global_const(&self, _global_idx: u32) -> Option<ConstVal> { None }
+    fn global_const(&self, _global_idx: u32) -> Option<ConstVal> {
+        None
+    }
 
     /// True if the function has no observable side effects: no stores,
     /// no global.set, no table writes, no memory.grow / memory.copy /
     /// memory.init / memory.fill, no call_indirect, and every direct
     /// callee is also pure. Imports are conservatively impure.
     /// Default: assume impure.
-    fn func_is_pure(&self, _func_idx: u32) -> bool { false }
+    fn func_is_pure(&self, _func_idx: u32) -> bool {
+        false
+    }
 }
 
 /// No-op hints — equivalent to passing `None`. Useful when an API needs
@@ -84,7 +100,8 @@ pub use derived::DerivedHints;
 /// feature flag.
 pub mod testing {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
+    use std::collections::HashSet;
 
     /// Hardcoded hints for tests. Empty `FixedHints::default()` is
     /// equivalent to `NoHints`.
@@ -101,16 +118,30 @@ pub mod testing {
     }
 
     impl LinkerHints for FixedHints {
-        fn is_internal(&self, f: u32) -> bool { self.internal.contains(&f) }
-        fn call_count(&self, f: u32) -> Option<u32> { self.call_counts.get(&f).copied() }
+        fn is_internal(&self, f: u32) -> bool {
+            self.internal.contains(&f)
+        }
+        fn call_count(&self, f: u32) -> Option<u32> {
+            self.call_counts.get(&f).copied()
+        }
         fn table_targets(&self, t: u32) -> Option<&[u32]> {
             self.tables.get(&t).map(|v| v.as_slice())
         }
-        fn ref_func_targets(&self) -> &[u32] { &self.ref_funcs }
-        fn origin_unit(&self, f: u32) -> Option<u32> { self.origins.get(&f).copied() }
-        fn global_is_read(&self, g: u32) -> bool { !self.unread_globals.contains(&g) }
-        fn global_const(&self, g: u32) -> Option<ConstVal> { self.global_consts.get(&g).copied() }
-        fn func_is_pure(&self, f: u32) -> bool { self.pure_funcs.contains(&f) }
+        fn ref_func_targets(&self) -> &[u32] {
+            &self.ref_funcs
+        }
+        fn origin_unit(&self, f: u32) -> Option<u32> {
+            self.origins.get(&f).copied()
+        }
+        fn global_is_read(&self, g: u32) -> bool {
+            !self.unread_globals.contains(&g)
+        }
+        fn global_const(&self, g: u32) -> Option<ConstVal> {
+            self.global_consts.get(&g).copied()
+        }
+        fn func_is_pure(&self, f: u32) -> bool {
+            self.pure_funcs.contains(&f)
+        }
     }
 }
 
@@ -122,12 +153,12 @@ mod tests {
     #[test]
     fn defaults_are_conservative() {
         let n = NoHints;
-        assert!(!n.is_internal(0));         // assume external
-        assert_eq!(n.call_count(0), None);  // unknown
+        assert!(!n.is_internal(0)); // assume external
+        assert_eq!(n.call_count(0), None); // unknown
         assert!(n.table_targets(0).is_none());
         assert!(n.ref_func_targets().is_empty());
         assert_eq!(n.origin_unit(0), None);
-        assert!(n.global_is_read(0));        // assume read
+        assert!(n.global_is_read(0)); // assume read
         assert_eq!(n.global_const(0), None);
         assert!(!n.func_is_pure(0));
     }

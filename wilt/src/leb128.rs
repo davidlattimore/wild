@@ -50,7 +50,9 @@ pub fn read_i32(data: &[u8]) -> Option<(i32, usize)> {
             }
             return Some((result as i32, i + 1));
         }
-        if shift >= 35 { return None; }
+        if shift >= 35 {
+            return None;
+        }
     }
     None
 }
@@ -69,7 +71,9 @@ pub fn read_i64(data: &[u8]) -> Option<(i64, usize)> {
             }
             return Some((result, i + 1));
         }
-        if shift >= 70 { return None; }
+        if shift >= 70 {
+            return None;
+        }
     }
     None
 }
@@ -112,7 +116,9 @@ pub fn write_i64(out: &mut Vec<u8>, mut value: i64) {
 pub fn skip_len(data: &[u8]) -> Option<usize> {
     for i in 0..10 {
         let b = *data.get(i)?;
-        if b < 0x80 { return Some(i + 1); }
+        if b < 0x80 {
+            return Some(i + 1);
+        }
     }
     None
 }

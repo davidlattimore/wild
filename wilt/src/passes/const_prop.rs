@@ -23,12 +23,13 @@
 //! intersection of header preds), through any structured CF.
 //! Standalone — no hints required.
 
-use std::collections::HashMap;
-
-use crate::ir::{BodyIr, CfgIr};
+use crate::ir::BodyIr;
+use crate::ir::CfgIr;
 use crate::leb128;
 use crate::mut_module::MutModule;
-use crate::opcode::{self as opc, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self as opc};
+use std::collections::HashMap;
 
 const OP_I32_CONST: u8 = 0x41;
 const OP_I64_CONST: u8 = 0x42;
@@ -46,7 +47,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
@@ -57,12 +60,16 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
 fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     // Bail-early: const_prop only fires when there's BOTH a const opcode
     // AND a local.get to potentially rewrite. Cheap byte scan first.
-    if !has_const_and_local_get(body) { return None; }
+    if !has_const_and_local_get(body) {
+        return None;
+    }
 
     let ir = BodyIr::new(body)?;
     let cfg = CfgIr::build(&ir)?;
     let nbb = cfg.blocks.len();
-    if nbb == 0 || ir.instrs().is_empty() { return None; }
+    if nbb == 0 || ir.instrs().is_empty() {
+        return None;
+    }
 
     // Predecessors per BB (CfgIr stores successors only).
     let mut preds: Vec<Vec<u32>> = vec![Vec::new(); nbb];
@@ -84,7 +91,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Recompute bb_in for each BB and record rewrites.
@@ -93,7 +102,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
         let in_state = meet_in(bi as u32, &preds[bi], &bb_out);
         record_rewrites(&ir, bb, in_state, &mut rewrites);
     }
-    if rewrites.is_empty() { return None; }
+    if rewrites.is_empty() {
+        return None;
+    }
     rewrites.sort_by_key(|e| e.0);
 
     let mut out = Vec::with_capacity(body.len());
@@ -115,7 +126,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
 }
 
 fn meet_in(_bi: u32, preds: &[u32], bb_out: &[Bindings]) -> Bindings {
-    if preds.is_empty() { return HashMap::new(); }
+    if preds.is_empty() {
+        return HashMap::new();
+    }
     let mut iter = preds.iter();
     let first = *iter.next().unwrap();
     let mut result = bb_out[first as usize].clone();
@@ -134,9 +147,7 @@ fn transfer(ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings) -> Bind
         let op = ir.instrs()[i].op;
         match op {
             OP_I32_CONST | OP_I64_CONST | OP_F32_CONST | OP_F64_CONST => {
-                if (k + 1) < bb.end_instr
-                    && ir.instrs()[(k + 1) as usize].op == OP_LOCAL_SET
-                {
+                if (k + 1) < bb.end_instr && ir.instrs()[(k + 1) as usize].op == OP_LOCAL_SET {
                     if let Some(x) = local_idx(ir, (k + 1) as usize) {
                         state.insert(x, ir.instr_bytes(i).to_vec());
                         skip_next_set = true;
@@ -144,11 +155,16 @@ fn transfer(ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings) -> Bind
                 }
             }
             OP_LOCAL_SET => {
-                if skip_next_set { skip_next_set = false; }
-                else if let Some(x) = local_idx(ir, i) { state.remove(&x); }
+                if skip_next_set {
+                    skip_next_set = false;
+                } else if let Some(x) = local_idx(ir, i) {
+                    state.remove(&x);
+                }
             }
             OP_LOCAL_TEE => {
-                if let Some(x) = local_idx(ir, i) { state.remove(&x); }
+                if let Some(x) = local_idx(ir, i) {
+                    state.remove(&x);
+                }
             }
             _ => {}
         }
@@ -157,7 +173,9 @@ fn transfer(ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings) -> Bind
 }
 
 fn record_rewrites(
-    ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings,
+    ir: &BodyIr,
+    bb: &crate::ir::BasicBlock,
+    in_state: Bindings,
     out: &mut Vec<(usize, usize, Vec<u8>)>,
 ) {
     let mut state = in_state;
@@ -167,9 +185,7 @@ fn record_rewrites(
         let it = ir.instrs()[i];
         match it.op {
             OP_I32_CONST | OP_I64_CONST | OP_F32_CONST | OP_F64_CONST => {
-                if (k + 1) < bb.end_instr
-                    && ir.instrs()[(k + 1) as usize].op == OP_LOCAL_SET
-                {
+                if (k + 1) < bb.end_instr && ir.instrs()[(k + 1) as usize].op == OP_LOCAL_SET {
                     if let Some(x) = local_idx(ir, (k + 1) as usize) {
                         state.insert(x, ir.instr_bytes(i).to_vec());
                         skip_next_set = true;
@@ -186,11 +202,16 @@ fn record_rewrites(
                 }
             }
             OP_LOCAL_SET => {
-                if skip_next_set { skip_next_set = false; }
-                else if let Some(x) = local_idx(ir, i) { state.remove(&x); }
+                if skip_next_set {
+                    skip_next_set = false;
+                } else if let Some(x) = local_idx(ir, i) {
+                    state.remove(&x);
+                }
             }
             OP_LOCAL_TEE => {
-                if let Some(x) = local_idx(ir, i) { state.remove(&x); }
+                if let Some(x) = local_idx(ir, i) {
+                    state.remove(&x);
+                }
             }
             _ => {}
         }
@@ -202,7 +223,9 @@ fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
 }
 
 fn has_const_and_local_get(body: &[u8]) -> bool {
-    let Some(start) = opc::skip_locals(body) else { return false };
+    let Some(start) = opc::skip_locals(body) else {
+        return false;
+    };
     let mut iter = InstrIter::new(body, start);
     let mut has_const = false;
     let mut has_get = false;
@@ -212,7 +235,9 @@ fn has_const_and_local_get(body: &[u8]) -> bool {
             OP_LOCAL_GET => has_get = true,
             _ => {}
         }
-        if has_const && has_get { return true; }
+        if has_const && has_get {
+            return true;
+        }
     }
     false
 }
@@ -224,33 +249,16 @@ mod tests {
     #[test]
     fn propagates_within_basic_block() {
         // Same as the old test — must still pass.
-        let body = [
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x01,
-            0x20, 0,
-            0x1A,
-            0x0B,
-        ];
+        let body = [1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x01, 0x20, 0, 0x1A, 0x0B];
         let out = rewrite_body(&body).expect("should propagate");
-        let expected = vec![
-            1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x01, 0x41, 5, 0x1A, 0x0B,
-        ];
+        let expected = vec![1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x01, 0x41, 5, 0x1A, 0x0B];
         assert_eq!(out, expected);
     }
 
     #[test]
     fn no_propagation_after_overwrite() {
         let body = [
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x41, 7,
-            0x21, 0,
-            0x20, 0,
-            0x1A,
-            0x0B,
+            1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x41, 7, 0x21, 0, 0x20, 0, 0x1A, 0x0B,
         ];
         let out = rewrite_body(&body).expect("should propagate from second const");
         let expected = vec![
@@ -262,21 +270,11 @@ mod tests {
     #[test]
     fn discriminates_locals() {
         let body = [
-            1, 2, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x41, 9,
-            0x21, 1,
-            0x20, 0,
-            0x1A,
-            0x20, 1,
-            0x1A,
-            0x0B,
+            1, 2, 0x7F, 0x41, 5, 0x21, 0, 0x41, 9, 0x21, 1, 0x20, 0, 0x1A, 0x20, 1, 0x1A, 0x0B,
         ];
         let out = rewrite_body(&body).expect("should propagate both");
         let expected = vec![
-            1, 2, 0x7F, 0x41, 5, 0x21, 0, 0x41, 9, 0x21, 1,
-            0x41, 5, 0x1A, 0x41, 9, 0x1A, 0x0B,
+            1, 2, 0x7F, 0x41, 5, 0x21, 0, 0x41, 9, 0x21, 1, 0x41, 5, 0x1A, 0x41, 9, 0x1A, 0x0B,
         ];
         assert_eq!(out, expected);
     }
@@ -287,15 +285,12 @@ mod tests {
         // local 0; i32.const 0; if; i32.const 5; local.set 0; end;
         // local.get 0; drop; end-func.
         let body = [
-            1, 1, 0x7F,
-            0x41, 0,           // cond
-            0x04, 0x40,        // if
-            0x41, 5,
-            0x21, 0,           // local.set 0 only in then
-            0x0B,              // end if
-            0x20, 0,           // local.get 0 — has only one path with binding
-            0x1A,
-            0x0B,
+            1, 1, 0x7F, 0x41, 0, // cond
+            0x04, 0x40, // if
+            0x41, 5, 0x21, 0,    // local.set 0 only in then
+            0x0B, // end if
+            0x20, 0, // local.get 0 — has only one path with binding
+            0x1A, 0x0B,
         ];
         // Conservatively: meet of (then-branch with binding, no-else with no binding)
         // → empty. So no rewrite.
@@ -308,27 +303,26 @@ mod tests {
         // i32.const 1 cond; if; i32.const 5 set 0; else; i32.const 5 set 0; end;
         // local.get 0; drop; end-func.
         let body = [
-            1, 1, 0x7F,
-            0x41, 1,           // cond
-            0x04, 0x40,        // if
-            0x41, 5,
-            0x21, 0,
-            0x05,              // else
-            0x41, 5,
-            0x21, 0,
-            0x0B,              // end if
-            0x20, 0,           // local.get 0 — both branches bound to 5
-            0x1A,
-            0x0B,
+            1, 1, 0x7F, 0x41, 1, // cond
+            0x04, 0x40, // if
+            0x41, 5, 0x21, 0, 0x05, // else
+            0x41, 5, 0x21, 0, 0x0B, // end if
+            0x20, 0, // local.get 0 — both branches bound to 5
+            0x1A, 0x0B,
         ];
         let out = rewrite_body(&body).expect("both branches agree → propagate");
         // local.get 0 should become i32.const 5.
         let last_ops: Vec<u8> = out.iter().rev().take(4).copied().collect();
         // Last 4 bytes: end-func, drop, the const value (5), const opcode (0x41) → reversed
         // Just check that 0x20 (local.get) is gone in favor of 0x41 (i32.const).
-        assert!(out.windows(2).any(|w| w == [0x41, 5]),
-            "expected an i32.const 5 in the output, got {:?}", out);
-        assert!(!out.contains(&0x20),
-            "local.get should have been rewritten away");
+        assert!(
+            out.windows(2).any(|w| w == [0x41, 5]),
+            "expected an i32.const 5 in the output, got {:?}",
+            out
+        );
+        assert!(
+            !out.contains(&0x20),
+            "local.get should have been rewritten away"
+        );
     }
 }

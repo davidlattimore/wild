@@ -181,6 +181,11 @@ struct Run {
     pub(crate) max_rss: u64,
     pub(crate) stime: Duration,
     pub(crate) utime: Duration,
+    /// Size in bytes of the output file produced by this link. 0 if
+    /// the output file wasn't found (e.g. link failed silently, or an
+    /// older run from before this field was tracked).
+    #[serde(default)]
+    pub(crate) output_size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +214,15 @@ enum LinkerKind {
     Lld,
     Mold,
     Bfd,
+    /// Apple's Mach-O linker (also published as `ld` on macOS
+    /// toolchains — `/usr/bin/ld` is ld64 there). Not cross-compatible
+    /// with ELF benches.
+    Ld64,
+    /// Wild invoked with `-ld64_compat` via the
+    /// `benchmarks/runner/bin/wild-ld64-compat` wrapper. Exists so the
+    /// report distinguishes plain wild's default output from the
+    /// bit-for-bit-vs-ld64 mode.
+    WildCompat,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -225,47 +239,75 @@ impl LinkerKind {
             LinkerKind::Lld => "LLD",
             LinkerKind::Mold => "Mold",
             LinkerKind::Bfd => "GNU ld",
+            LinkerKind::Ld64 => "ld64",
+            LinkerKind::WildCompat => "Wild-compat",
         }
     }
 
     fn supports_arg(&self, arg: &str) -> bool {
         match arg {
-            "--no-fork" => matches!(self, LinkerKind::Wild | LinkerKind::Mold),
+            "--no-fork" => matches!(
+                self,
+                LinkerKind::Wild | LinkerKind::WildCompat | LinkerKind::Mold
+            ),
             _ => true,
+        }
+    }
+
+    /// Which output formats this linker can produce. Wild handles both;
+    /// everything else is single-format. WildCompat is Mach-O-only
+    /// because `-ld64_compat` has no meaning for ELF outputs.
+    fn supports_platform(&self, platform: crate::config::Platform) -> bool {
+        use crate::config::Platform as P;
+        match self {
+            LinkerKind::Wild => true,
+            LinkerKind::Lld | LinkerKind::Mold | LinkerKind::Bfd => platform == P::Elf,
+            LinkerKind::Ld64 | LinkerKind::WildCompat => platform == P::Macho,
         }
     }
 }
 
 impl Bin {
     fn new(bin_path: &Path, index: u32) -> Result<Self> {
-        let output = Command::new(bin_path)
-            .arg("--version")
-            .output()
-            .with_context(|| format!("Failed to run `{}`", bin_path.display()))?;
-
-        if !output.status.success() {
-            bail!(
-                "{} --version failed: {}",
-                bin_path.display(),
+        // Try `--version` (ELF linkers + Wild), then `-v` (ld64 doesn't
+        // support `--version` and prints to stderr). Each attempt yields
+        // a candidate first-line to hand to the parser; the first one
+        // `LinkerIdentifier::parse` recognises wins.
+        let mut tried: Vec<String> = Vec::new();
+        for flag in ["--version", "-v"] {
+            let output = Command::new(bin_path)
+                .arg(flag)
+                .output()
+                .with_context(|| format!("Failed to run `{}`", bin_path.display()))?;
+            // ld64 prints version info to stderr; other linkers use
+            // stdout. Combine both and take the first non-empty line.
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            let Some(candidate) = combined
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Some(identifier) = LinkerIdentifier::parse(&candidate, bin_path) {
+                return Ok(Self {
+                    index,
+                    path: bin_path.to_owned(),
+                    identifier,
+                });
+            }
+            tried.push(candidate);
         }
-
-        let version_line = String::from_utf8_lossy(&output.stdout)
-            .to_string()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-
-        let identifier = LinkerIdentifier::parse(&version_line, bin_path)
-            .with_context(|| format!("Failed to parse linker version `{version_line}`"))?;
-
-        Ok(Self {
-            index,
-            path: bin_path.to_owned(),
-            identifier,
-        })
+        bail!(
+            "Failed to identify linker at `{}`. Tried version lines: {:?}",
+            bin_path.display(),
+            tried
+        );
     }
 }
 
@@ -321,7 +363,20 @@ impl LinkerIdentifier {
         let mut hash = None;
         let mut variant = None;
 
-        if let Some(mut rest) = version_line.strip_prefix("Wild version ") {
+        if let Some(mut rest) = version_line.strip_prefix("Wild-ld64compat ") {
+            // Thin wrapper at benchmarks/runner/bin/wild-ld64-compat
+            // rewrites wild's `-v` output so we can tell the two modes
+            // apart in reports. Format is otherwise identical to plain
+            // Wild: "Wild-ld64compat <ver> <hash> ...".
+            version = take_word(&mut rest)?.to_owned();
+            if !bin_path.to_string_lossy().contains(&version) {
+                hash = Some(take_word(&mut rest)?.replace(['(', ')'], ""));
+            }
+            kind = LinkerKind::WildCompat;
+        } else if let Some(mut rest) = version_line
+            .strip_prefix("Wild version ")
+            .or_else(|| version_line.strip_prefix("Wild "))
+        {
             version = take_word(&mut rest)?.to_owned();
             if !bin_path.to_string_lossy().contains(&version) {
                 // For wild, we only consider the version to be true if the path to the linker
@@ -350,6 +405,18 @@ impl LinkerIdentifier {
             kind = LinkerKind::Bfd;
             version = take_word(&mut rest)?.to_owned();
             variant = Some("Ubuntu".to_owned());
+        } else if let Some(rest) = version_line.strip_prefix("@(#)PROGRAM:ld ")
+            && let Some(rest) = rest.split_whitespace().find_map(|w| {
+                w.strip_prefix("PROJECT:ld-")
+                    .or_else(|| w.strip_prefix("PROJECT:ld64-"))
+            })
+        {
+            // ld64 / ld-prime: `@(#)PROGRAM:ld PROJECT:ld-1230.1`.
+            // Apple ships recent toolchains as `ld` with the legacy
+            // `ld64` still rolling the version. Accept both project
+            // prefixes so the parser works on older Xcodes too.
+            kind = LinkerKind::Ld64;
+            version = rest.trim().to_owned();
         } else {
             return None;
         }
@@ -479,5 +546,86 @@ mod tests {
         assert!(!version_less_than("0.5.0", "0.5.0"));
         assert!(!version_less_than("0.6.0", "0.5.0"));
         assert!(version_less_than("0.5.0", "0.10.0"));
+    }
+
+    #[test]
+    fn test_parse_ld64_identifier() {
+        // Apple `ld -v` first line on modern toolchains.
+        let id =
+            LinkerIdentifier::parse("@(#)PROGRAM:ld PROJECT:ld-1230.1", Path::new("/usr/bin/ld"))
+                .expect("ld64 version parse");
+        assert_eq!(id.kind, LinkerKind::Ld64);
+        assert_eq!(id.version, "1230.1");
+        assert_eq!(id.effective_version, vec![1230, 1]);
+    }
+
+    #[test]
+    fn test_parse_legacy_ld64_identifier() {
+        // Pre-unified toolchains had `PROJECT:ld64-NNN`.
+        let id = LinkerIdentifier::parse(
+            "@(#)PROGRAM:ld PROJECT:ld64-951.9",
+            Path::new("/usr/bin/ld"),
+        )
+        .expect("legacy ld64 parse");
+        assert_eq!(id.kind, LinkerKind::Ld64);
+        assert_eq!(id.version, "951.9");
+    }
+
+    #[test]
+    fn test_host_platform_matches_cfg() {
+        use crate::config::Platform;
+        let host = Platform::host();
+        if cfg!(target_os = "macos") {
+            assert_eq!(host, Platform::Macho);
+        } else {
+            assert_eq!(host, Platform::Elf);
+        }
+    }
+
+    #[test]
+    fn test_parse_wild_ld64compat_banner() {
+        let id = LinkerIdentifier::parse(
+            "Wild-ld64compat 0.8.0 abcdef1234567890 (compatible with GNU linkers)",
+            Path::new("/opt/wild/bin/wild-ld64-compat"),
+        )
+        .expect("wild-compat banner parse");
+        assert_eq!(id.kind, LinkerKind::WildCompat);
+        assert_eq!(id.version, "0.8.0");
+        // Path doesn't contain the version, so hash gets set.
+        assert_eq!(id.hash.as_deref(), Some("abcdef1234567890"));
+    }
+
+    #[test]
+    fn test_parse_wild_current_banner() {
+        // Current wild releases: "Wild 0.8.0 (compatible with GNU linkers)".
+        // Historical: "Wild version 0.8.0 …". Both accepted.
+        let id = LinkerIdentifier::parse(
+            "Wild 0.8.0 (compatible with GNU linkers)",
+            Path::new("/opt/wild-0.8.0/wild"),
+        )
+        .expect("wild current banner parse");
+        assert_eq!(id.kind, LinkerKind::Wild);
+        assert_eq!(id.version, "0.8.0");
+
+        let id = LinkerIdentifier::parse(
+            "Wild version 0.7.0 (compatible with GNU linkers)",
+            Path::new("/opt/wild-0.7.0/wild"),
+        )
+        .expect("wild legacy banner parse");
+        assert_eq!(id.kind, LinkerKind::Wild);
+        assert_eq!(id.version, "0.7.0");
+    }
+
+    #[test]
+    fn test_ld64_supports_only_macho() {
+        use crate::config::Platform;
+        assert!(LinkerKind::Ld64.supports_platform(Platform::Macho));
+        assert!(!LinkerKind::Ld64.supports_platform(Platform::Elf));
+        assert!(LinkerKind::Wild.supports_platform(Platform::Macho));
+        assert!(LinkerKind::Wild.supports_platform(Platform::Elf));
+        assert!(LinkerKind::Mold.supports_platform(Platform::Elf));
+        assert!(!LinkerKind::Mold.supports_platform(Platform::Macho));
+        assert!(LinkerKind::WildCompat.supports_platform(Platform::Macho));
+        assert!(!LinkerKind::WildCompat.supports_platform(Platform::Elf));
     }
 }

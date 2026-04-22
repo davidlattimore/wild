@@ -4,7 +4,8 @@
 
 use arbitrary::Unstructured;
 use proptest::prelude::*;
-use wasm_smith::{Config, Module};
+use wasm_smith::Config;
+use wasm_smith::Module;
 use wasmparser::Validator;
 
 fn validates(bytes: &[u8]) -> bool {
@@ -38,7 +39,9 @@ fn smith_config() -> Config {
 
 fn smith_module(seed: &[u8]) -> Option<Vec<u8>> {
     let mut u = Unstructured::new(seed);
-    Module::new(smith_config(), &mut u).ok().map(|m| m.to_bytes())
+    Module::new(smith_config(), &mut u)
+        .ok()
+        .map(|m| m.to_bytes())
 }
 
 proptest! {

@@ -8,6 +8,10 @@
 //! Object:{filename}        Extra object file to compile and link.
 //! CompArgs:...             Extra compiler flags.
 //! LinkArgs:...             Extra linker flags.
+//! RustFlags:...            Extra rustc codegen flags (Rust tests only).
+//!                          E.g. `-Cstrip=debuginfo` to trigger cargo's
+//!                          release-profile strip behaviour, which
+//!                          exposes wild indirect-symbol-table bugs.
 //! ExpectError:{regex}      Link must fail; stderr must match regex.
 //! RunEnabled:{bool}        Whether to execute the output (default: true).
 //! Contains:{string}        Output binary must contain this string.
@@ -97,6 +101,10 @@ struct TestConfig {
     relocatables: Vec<Vec<String>>,
     comp_args: Vec<String>,
     link_args: Vec<String>,
+    /// Extra rustc flags passed outside the `-Clink-arg=` wrapper —
+    /// used for codegen flags like `-Cstrip=debuginfo` that must be
+    /// interpreted by rustc itself, not forwarded to the linker.
+    rust_flags: Vec<String>,
     expect_error: Option<String>,
     run_enabled: bool,
     use_clang_driver: bool,
@@ -151,6 +159,7 @@ fn parse_config(test_dir: &Path, primary: &Path) -> Result<TestConfig, Box<dyn s
             }
             "CompArgs" => cfg.comp_args.extend(shell_words(value)),
             "LinkArgs" => cfg.link_args.extend(shell_words(value)),
+            "RustFlags" => cfg.rust_flags.extend(shell_words(value)),
             "ExpectError" => cfg.expect_error = Some(value.to_string()),
             "RunEnabled" => cfg.run_enabled = value.trim() != "false",
             "LinkerDriver" if value.trim().starts_with("clang") => cfg.use_clang_driver = true,
@@ -224,6 +233,9 @@ fn run_test(
                 .arg(format!("-Clink-arg=-fuse-ld={}", wild_bin.display()));
         }
         cmd.env("WILD_VALIDATE_OUTPUT", "1");
+        for arg in &config.rust_flags {
+            cmd.arg(arg);
+        }
         for arg in &config.link_args {
             cmd.arg(format!("-Clink-arg={arg}"));
         }

@@ -17,7 +17,8 @@
 //   All memory load/store ops (0x28-0x3E) — align + offset
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 
 /// Compress a single function body by replacing padded LEB128 with compact.
 /// Returns None if no compression was needed.
@@ -40,7 +41,9 @@ fn compress_body(body: &[u8]) -> Option<Vec<u8>> {
             if let Some((count, c)) = leb128::read_u32(&body[pos..]) {
                 let old_s = c;
                 let new_s = leb128::u32_size(count);
-                if old_s != new_s { compressed = true; }
+                if old_s != new_s {
+                    compressed = true;
+                }
                 leb128::write_u32(&mut out, count);
                 pos += c;
             }
@@ -92,7 +95,9 @@ fn compress_body(body: &[u8]) -> Option<Vec<u8>> {
                 if let Some((count, c)) = leb128::read_u32(&body[pos..]) {
                     let old_s = c;
                     let new_s = leb128::u32_size(count);
-                    if old_s != new_s { compressed = true; }
+                    if old_s != new_s {
+                        compressed = true;
+                    }
                     leb128::write_u32(&mut out, count);
                     pos += c;
                     for _ in 0..=count {
@@ -234,7 +239,9 @@ fn read_sleb128_i32(data: &[u8]) -> Option<(i32, usize)> {
             }
             return Some((result, i + 1));
         }
-        if shift >= 35 { return None; }
+        if shift >= 35 {
+            return None;
+        }
     }
     None
 }
@@ -244,9 +251,13 @@ fn write_sleb128_i32(out: &mut Vec<u8>, mut value: i32) {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
         let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
-        if !done { byte |= 0x80; }
+        if !done {
+            byte |= 0x80;
+        }
         out.push(byte);
-        if done { break; }
+        if done {
+            break;
+        }
     }
 }
 
@@ -262,7 +273,9 @@ fn read_sleb128_i64(data: &[u8]) -> Option<(i64, usize)> {
             }
             return Some((result, i + 1));
         }
-        if shift >= 70 { return None; }
+        if shift >= 70 {
+            return None;
+        }
     }
     None
 }
@@ -272,16 +285,24 @@ fn write_sleb128_i64(out: &mut Vec<u8>, mut value: i64) {
         let mut byte = (value & 0x7F) as u8;
         value >>= 7;
         let done = (value == 0 && byte & 0x40 == 0) || (value == -1 && byte & 0x40 != 0);
-        if !done { byte |= 0x80; }
+        if !done {
+            byte |= 0x80;
+        }
         out.push(byte);
-        if done { break; }
+        if done {
+            break;
+        }
     }
 }
 
 /// Apply LEB128 compression to all function bodies in the module.
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();
-    let Some(code_sec_idx) = module.sections().iter().position(|s| s.id == module::SECTION_CODE) else {
+    let Some(code_sec_idx) = module
+        .sections()
+        .iter()
+        .position(|s| s.id == module::SECTION_CODE)
+    else {
         return data.to_vec();
     };
 
@@ -295,7 +316,9 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let mut any_compressed = false;
 
     for _ in 0..func_count {
-        let Some((body_size, c)) = leb128::read_u32(&code_payload[off..]) else { break; };
+        let Some((body_size, c)) = leb128::read_u32(&code_payload[off..]) else {
+            break;
+        };
         off += c;
         let body = &code_payload[off..off + body_size as usize];
 
@@ -319,7 +342,9 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
 
     let mut off2 = leb128::u32_size(func_count);
     for replacement in &replacements {
-        let Some((body_size, c)) = leb128::read_u32(&code_payload[off2..]) else { break; };
+        let Some((body_size, c)) = leb128::read_u32(&code_payload[off2..]) else {
+            break;
+        };
         off2 += c;
         let original_body = &code_payload[off2..off2 + body_size as usize];
 
@@ -355,12 +380,15 @@ mod tests {
             0x0B, // end
         ];
         let compressed = compress_body(&body).expect("should compress");
-        assert_eq!(compressed, vec![
-            0x00, // 0 locals
-            0x10, 0x01, // call 1 (compact)
-            0x1A, // drop
-            0x0B, // end
-        ]);
+        assert_eq!(
+            compressed,
+            vec![
+                0x00, // 0 locals
+                0x10, 0x01, // call 1 (compact)
+                0x1A, // drop
+                0x0B, // end
+            ]
+        );
     }
 
     #[test]
@@ -380,15 +408,15 @@ mod tests {
         let body = vec![
             0x00, // 0 locals
             0xFC, 0x8A, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x0A (padded)
-            0x80, 0x80, 0x80, 0x80, 0x00,       // dst memidx = 0 (padded)
-            0x80, 0x80, 0x80, 0x80, 0x00,       // src memidx = 0 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00, // dst memidx = 0 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00, // src memidx = 0 (padded)
             0x0B, // end
         ];
         let compressed = compress_body(&body).expect("should compress");
         assert_eq!(
             compressed,
             vec![
-                0x00,       // 0 locals
+                0x00, // 0 locals
                 0xFC, 0x0A, // memory.copy (compact sub-opcode)
                 0x00, 0x00, // dst=0, src=0 (compact)
                 0x0B,
@@ -402,23 +430,19 @@ mod tests {
         let body = vec![
             0x00, // 0 locals
             0xFC, 0x88, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x08 (padded)
-            0x83, 0x80, 0x80, 0x80, 0x00,       // dataidx=3 (padded)
-            0x80, 0x80, 0x80, 0x80, 0x00,       // memidx=0 (padded)
+            0x83, 0x80, 0x80, 0x80, 0x00, // dataidx=3 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00, // memidx=0 (padded)
             0x0B,
         ];
         let compressed = compress_body(&body).expect("should compress");
-        assert_eq!(
-            compressed,
-            vec![0x00, 0xFC, 0x08, 0x03, 0x00, 0x0B]
-        );
+        assert_eq!(compressed, vec![0x00, 0xFC, 0x08, 0x03, 0x00, 0x0B]);
     }
 
     #[test]
     fn bulk_memory_trunc_sat_has_no_immediates() {
         // i32.trunc_sat_f32_s (0xFC 0x00) — no extra operands.
         let body = vec![
-            0x00,
-            0xFC, 0x80, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x00 (padded)
+            0x00, 0xFC, 0x80, 0x80, 0x80, 0x80, 0x00, // 0xFC sub=0x00 (padded)
             0x0B,
         ];
         let compressed = compress_body(&body).expect("should compress");
@@ -429,11 +453,7 @@ mod tests {
     fn unknown_bulk_sub_opcode_refuses_to_compress() {
         // Made-up 0xFC sub-opcode 0x42 — walker must bail rather than
         // silently mis-compress the remainder of the body.
-        let body = vec![
-            0x00,
-            0xFC, 0x42,
-            0x0B,
-        ];
+        let body = vec![0x00, 0xFC, 0x42, 0x0B];
         assert!(compress_body(&body).is_none());
     }
 
@@ -453,14 +473,17 @@ mod tests {
         let body = vec![
             0x00, // 0 locals
             0x28, 0x82, 0x80, 0x80, 0x80, 0x00, // align=2 (padded)
-                  0x80, 0x80, 0x80, 0x80, 0x00, // offset=0 (padded)
+            0x80, 0x80, 0x80, 0x80, 0x00, // offset=0 (padded)
             0x0B,
         ];
         let compressed = compress_body(&body).expect("should compress");
-        assert_eq!(compressed, vec![
-            0x00, // 0 locals
-            0x28, 0x02, 0x00, // align=2, offset=0 (compact)
-            0x0B,
-        ]);
+        assert_eq!(
+            compressed,
+            vec![
+                0x00, // 0 locals
+                0x28, 0x02, 0x00, // align=2, offset=0 (compact)
+                0x0B,
+            ]
+        );
     }
 }

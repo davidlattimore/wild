@@ -12,20 +12,30 @@
 //! section to avoid corruption.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 
 /// MutModule-style: modify only the data section payload in place.
 pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
-    let Some(sec_idx) = m.find_section(module::SECTION_DATA) else { return };
+    let Some(sec_idx) = m.find_section(module::SECTION_DATA) else {
+        return;
+    };
     let payload = m.section_payload(sec_idx);
-    let Some(new_payload) = pack(payload) else { return };
-    if new_payload.len() == payload.len() { return; }
+    let Some(new_payload) = pack(payload) else {
+        return;
+    };
+    if new_payload.len() == payload.len() {
+        return;
+    }
     m.set_section_payload(sec_idx, new_payload);
 }
 
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();
-    let Some(sec_idx) = module.sections().iter().position(|s| s.id == module::SECTION_DATA)
+    let Some(sec_idx) = module
+        .sections()
+        .iter()
+        .position(|s| s.id == module::SECTION_DATA)
     else {
         return data.to_vec();
     };
@@ -84,7 +94,9 @@ fn pack(payload: &[u8]) -> Option<Vec<u8>> {
 fn skip_const_expr(bytes: &[u8], mut off: usize) -> Option<usize> {
     while off < bytes.len() {
         let op = bytes[off];
-        if op == 0x0B { return Some(off + 1); }
+        if op == 0x0B {
+            return Some(off + 1);
+        }
         let len = crate::opcode::instr_len(bytes, off)?;
         off += len;
     }
@@ -95,10 +107,16 @@ fn pack_bytes_vec(out: &mut Vec<u8>, payload: &[u8], off: usize) -> Option<usize
     let (n, c) = leb128::read_u32(payload.get(off..)?)?;
     let start = off + c;
     let end = start + n as usize;
-    if end > payload.len() { return None; }
+    if end > payload.len() {
+        return None;
+    }
     let original = &payload[start..end];
     // Find the length with trailing zeros stripped.
-    let new_len = original.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+    let new_len = original
+        .iter()
+        .rposition(|&b| b != 0)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     leb128::write_u32(out, new_len as u32);
     out.extend_from_slice(&original[..new_len]);
     Some(end)

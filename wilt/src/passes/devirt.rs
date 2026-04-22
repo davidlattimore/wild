@@ -22,7 +22,8 @@
 use crate::leb128;
 use crate::linker_hints::LinkerHints;
 use crate::mut_module::MutModule;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 const OP_DROP: u8 = 0x1A;
 const OP_CALL: u8 = 0x10;
@@ -40,7 +41,9 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         .into_par_iter()
         .filter_map(|i| rewrite_body(m.body_bytes(i), hints).map(|b| (i, b)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b) in updates {
+        m.set_body(i, b);
+    }
 }
 
 fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
@@ -49,13 +52,19 @@ fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
     let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
 
     while let Some((p, len)) = iter.next() {
-        if body[p] != OP_CALL_INDIRECT { continue; }
+        if body[p] != OP_CALL_INDIRECT {
+            continue;
+        }
         let imm_off = p + 1;
         let (_type_idx, c1) = leb128::read_u32(&body[imm_off..])?;
         let (table_idx, _c2) = leb128::read_u32(&body[imm_off + c1..])?;
 
-        let Some(targets) = hints.table_targets(table_idx) else { continue };
-        if targets.len() != 1 { continue; }
+        let Some(targets) = hints.table_targets(table_idx) else {
+            continue;
+        };
+        if targets.len() != 1 {
+            continue;
+        }
         let f = targets[0];
 
         let mut repl = Vec::with_capacity(2 + 5);
@@ -64,11 +73,17 @@ fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
         leb128::write_u32(&mut repl, f);
 
         // Hint-aware passes never grow. Skip if the substitution would.
-        if repl.len() > len { continue; }
+        if repl.len() > len {
+            continue;
+        }
         edits.push((p, len, repl));
     }
-    if iter.failed() { return None; }
-    if edits.is_empty() { return None; }
+    if iter.failed() {
+        return None;
+    }
+    if edits.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut cursor = 0;
@@ -111,7 +126,7 @@ mod tests {
     #[test]
     fn leaves_alone_when_hint_missing_for_table() {
         let body = [0, 0x41, 0, 0x11, 0, 0, 0x0B];
-        let h = FixedHints::default();      // no tables
+        let h = FixedHints::default(); // no tables
         assert!(rewrite_body(&body, &h).is_none());
     }
 

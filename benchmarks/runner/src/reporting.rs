@@ -40,7 +40,7 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
 
     const UNGROUPED_HEADER: &str = "## UNGROUPED\n";
 
-    for mode in [ReportMode::Time, ReportMode::Memory] {
+    for mode in [ReportMode::Time, ReportMode::Memory, ReportMode::Size] {
         for benchmark in &results.benchmarks {
             let Some(bench_config) = config.benches.get(&benchmark.config.name) else {
                 continue;
@@ -98,6 +98,10 @@ pub(crate) fn run_report(args: &ReportArgs, config: &Config) -> Result {
 enum ReportMode {
     Time,
     Memory,
+    /// On-disk bytes of the linker's output file. A real quality
+    /// dimension alongside time — wild's Mach-O GC strips more than
+    /// ld64's, and the same split exists on ELF between mold/lld.
+    Size,
 }
 
 impl ReportMode {
@@ -117,13 +121,23 @@ impl ReportMode {
     }
 
     fn should_keep_run(&self, run: &crate::Run) -> bool {
-        run.extra_flags.iter().any(|f| f == "--no-fork") == (self == &ReportMode::Memory)
+        match self {
+            // Memory uses the --no-fork runs only (otherwise peak_rss is
+            // the parent only, not the subprocess doing the link).
+            ReportMode::Memory => run.extra_flags.iter().any(|f| f == "--no-fork"),
+            // Time and Size both use forked runs — forking is the
+            // production config; we only flip --no-fork to measure RSS.
+            ReportMode::Time | ReportMode::Size => {
+                !run.extra_flags.iter().any(|f| f == "--no-fork")
+            }
+        }
     }
 
     fn unit_name(self) -> &'static str {
         match self {
             ReportMode::Time => "ms",
             ReportMode::Memory => "MiB",
+            ReportMode::Size => "KiB",
         }
     }
 
@@ -131,6 +145,7 @@ impl ReportMode {
         match self {
             ReportMode::Time => 1000_f64,
             ReportMode::Memory => 1_f64 / (1024 * 1024) as f64,
+            ReportMode::Size => 1_f64 / 1024_f64,
         }
     }
 
@@ -143,6 +158,7 @@ impl ReportMode {
         match self {
             ReportMode::Time => r.elapsed.as_secs_f64(),
             ReportMode::Memory => r.max_rss as f64,
+            ReportMode::Size => r.output_size as f64,
         }
     }
 }
@@ -151,6 +167,7 @@ fn alt_text(mode: ReportMode, benchmark: &BenchmarkResult) -> String {
     match mode {
         ReportMode::Time => format!("Time to link {}", benchmark.config.name),
         ReportMode::Memory => format!("Memory consumption while linking {}", benchmark.config.name),
+        ReportMode::Size => format!("Output size of {}", benchmark.config.name),
     }
 }
 
@@ -245,7 +262,7 @@ fn produce_chart(
 <rect x="0" y="0" width="{chart_width}" height="{chart_height}" fill="{bg}"/>
 <text x="500" y="10" dy="0.8em" text-anchor="middle" font-family="sans-serif" font-size="40" fill="{fg}">
 {title}</text>
-<text x="5" y="{unit_label_y}" dy="0.76em" text-anchor="middle" font-family="sans-serif" 
+<text x="5" y="{unit_label_y}" dy="0.76em" text-anchor="middle" font-family="sans-serif"
 font-size="16" fill="{fg}" transform="rotate(270, 5, 288)">{unit}</text>"#
     )?;
 
@@ -377,6 +394,10 @@ fn colour_for(linker: LinkerKind) -> &'static str {
         LinkerKind::Lld => "#0000FF",
         LinkerKind::Mold => "#FF00FF",
         LinkerKind::Bfd => "#009999",
+        LinkerKind::Ld64 => "#FF7F00",
+        // A muted variant of Wild's green so the two Wild bars read
+        // as "same family, different mode" in charts.
+        LinkerKind::WildCompat => "#66AA66",
     }
 }
 
@@ -404,6 +425,7 @@ impl Display for ReportMode {
         match self {
             ReportMode::Time => write!(f, "time"),
             ReportMode::Memory => write!(f, "memory"),
+            ReportMode::Size => write!(f, "size"),
         }
     }
 }

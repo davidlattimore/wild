@@ -117,26 +117,44 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let string_merge_inputs =
         crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
 
-    let (merged_strings, gc_outputs) = rayon::join(
-        || {
-            crate::string_merging::merge_strings(
-                &string_merge_inputs,
-                &output_sections,
-                symbol_db.args,
-            )
-        },
-        || {
-            find_required_sections::<A>(
-                groups,
-                &symbol_db,
-                &atomic_per_symbol_flags,
-                &output_sections,
-                layout_resources_ext,
-            )
-        },
-    );
-    let merged_strings = merged_strings?;
-    let gc_outputs = gc_outputs?;
+    // Load every string in merge-string sections — don't filter by
+    // live-atom reachability. The filter (`MergeStringRefs::enabled`)
+    // is a size optimization, but wild's current reloc scanner
+    // doesn't guarantee `mark_merge_ref` runs for every reloc path
+    // that can target a merge section. Known gaps:
+    //   * extern PAGE21+PAGEOFF12 pair with non-zero addend: scanner marks `sym.n_value - tgt_addr`
+    //     without adding the addend, so strings past the named symbol are dropped;
+    //   * relocs inside atoms that never activate during GC but whose defined symbol still gets
+    //     finalised for the symtab.
+    //
+    // When a filtered string's defining symbol is referenced by
+    // ANY reloc elsewhere, the output gets a 0 address there and
+    // dyld's chained-fixup emits a NULL — dereferenced at runtime
+    // in formatter vtables (observed in
+    // `pallet-cnight-observation/tests` — SIGSEGV at
+    // `core::fmt::write` through a NULL vtable slot referencing
+    // `_anon.*` in `convert_case`'s `__cstring`).
+    //
+    // Disabling the filter keeps every merge-string in the output
+    // (slight size cost). `SectionSlot::MergeStrings`'s own comment
+    // in `handle_section_load_request` already asserts "we don't
+    // GC unreferenced data" for merge strings — this restores that
+    // invariant.
+    let merge_string_refs = crate::string_merging::MergeStringRefs::disabled();
+    let gc_outputs = find_required_sections::<A>(
+        groups,
+        &symbol_db,
+        &atomic_per_symbol_flags,
+        &output_sections,
+        layout_resources_ext,
+        &merge_string_refs,
+    )?;
+    let merged_strings = crate::string_merging::merge_strings(
+        &string_merge_inputs,
+        &output_sections,
+        symbol_db.args,
+        &merge_string_refs,
+    )?;
 
     let mut group_states = gc_outputs.group_states;
 
@@ -187,7 +205,14 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let (output_order, program_segments) = output_sections.output_order(symbol_db.output_kind);
+    // Let the platform bump per-section alignments based on args before
+    // we freeze the output order. Mach-O uses this under `-ld64_compat`
+    // to page-align `__data` so the writer can emit __DATA_CONST + __DATA
+    // as two separate segments (ld64's default layout for mixed data).
+    P::adjust_output_section_alignments(&mut output_sections, symbol_db.args);
+
+    let (output_order, program_segments) =
+        output_sections.output_order(symbol_db.output_kind, symbol_db.args);
 
     tracing::trace!(
         "Output order:\n{}",
@@ -203,6 +228,15 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
     )?;
+
+    // Now that per-part contributions are known, let the platform promote
+    // alignments that depend on them. Mach-O bumps TDATA/TBSS to a common
+    // max so TLV offsets are `var.addr - tdata.addr` with no ad-hoc padding.
+    A::Platform::adjust_alignments_after_sizing(
+        &mut output_sections,
+        &section_part_sizes,
+        symbol_db.args,
+    );
 
     let mut section_part_layouts = layout_section_parts::<A::Platform>(
         &section_part_sizes,
@@ -229,7 +263,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut merged_section_layouts = section_layouts.clone();
     merge_secondary_parts(&output_sections, &mut merged_section_layouts);
 
-    output.set_size(compute_total_file_size(&section_layouts));
+    if let Some(size) = A::Platform::output_file_size_at_layout(&section_layouts) {
+        output.set_size(size);
+    }
+    // Platforms that return `None` (e.g. Mach-O) compute their size
+    // inside `write_output_file` where the full Layout is visible.
 
     let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
@@ -438,7 +476,7 @@ fn update_dynamic_symbol_resolutions<'data, P: Platform>(
 
 fn finalise_all_sizes<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
-    output_sections: &OutputSections<P>,
+    output_sections: &OutputSections<'data, P>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     resources: &FinaliseSizesResources<'data, '_, P>,
 ) -> Result {
@@ -518,7 +556,9 @@ fn objects_iter<'groups, 'data, P: Platform>(
     })
 }
 
-fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
+pub(crate) fn compute_total_file_size(
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+) -> u64 {
     let mut file_size = 0;
     section_layouts.for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
     file_size as u64
@@ -576,6 +616,14 @@ pub(crate) struct SymbolResolutions<P: Platform> {
 impl<P: Platform> SymbolResolutions<P> {
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Option<Resolution<P>>> {
         self.resolutions.iter()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.resolutions.len()
+    }
+
+    pub(crate) fn as_slice(&self) -> &[Option<Resolution<P>>] {
+        &self.resolutions
     }
 }
 
@@ -700,6 +748,12 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
     /// Sparse map from section index to relaxation delta details.
     pub(crate) section_relax_deltas: RelaxDeltaMap,
+    /// Per-section atom bookkeeping for Mach-O
+    /// `MH_SUBSECTIONS_VIA_SYMBOLS` objects; carried over from
+    /// [`ObjectLayoutState::subsection_tracking`]. The writer uses
+    /// this to zero-fill inactive atoms so their un-relocated bytes
+    /// don't ship.
+    pub(crate) subsection_tracking: std::collections::HashMap<usize, SubsectionTracking>,
 }
 
 #[derive(Debug)]
@@ -845,12 +899,22 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for ObjectLayoutState<'d
             .object
             .symbol_section(local_symbol, object_symbol_index)?
         {
-            queue
-                .local_work
-                .push(WorkItem::LoadSection(SectionLoadRequest::new(
+            // Record the triggering symbol's offset so Mach-O's per-
+            // atom GC can target the right subsection. For ELF/wasm
+            // this field is read only when the section happens to be
+            // an `MH_SUBSECTIONS_VIA_SYMBOLS` section — which they
+            // never have — so the extra data is harmless.
+            let triggering_offset = self
+                .object
+                .symbol_value_in_section(local_symbol, section_id)
+                .unwrap_or(0);
+            queue.local_work.push(WorkItem::LoadSection(
+                SectionLoadRequest::with_triggering_offset(
                     self.file_id,
                     section_id,
-                )));
+                    triggering_offset,
+                ),
+            ));
         } else if let Some(common_symbol) = local_symbol.as_common() {
             common.allocate(common_symbol.part_id, common_symbol.size);
         }
@@ -1048,6 +1112,13 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         self.mem_sizes.increment(part_id, size);
     }
 
+    /// Give back previously-allocated bytes. Used after GC when a
+    /// platform discovers it can shrink an object's contribution
+    /// (e.g. Mach-O `__eh_frame` compaction to only live FDEs).
+    pub(crate) fn release(&mut self, part_id: PartId, size: u64) {
+        self.mem_sizes.decrement(part_id, size);
+    }
+
     /// Allocate resources and update attributes based on a section having been loaded.
     fn section_loaded(
         &mut self,
@@ -1089,7 +1160,79 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
 
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
-    section_relax_deltas: RelaxDeltaMap,
+    pub(crate) section_relax_deltas: RelaxDeltaMap,
+
+    /// Per-section atom bookkeeping for Mach-O
+    /// `MH_SUBSECTIONS_VIA_SYMBOLS` objects. Only populated when a
+    /// section's object has the flag and the section is pure-text
+    /// (the only flavour ld64 atomises). Absent sections load /
+    /// scan the old way.
+    pub(crate) subsection_tracking: std::collections::HashMap<usize, SubsectionTracking>,
+}
+
+/// Tracks the live-atom state for one input section under
+/// `MH_SUBSECTIONS_VIA_SYMBOLS`. Each non-local symbol in the section
+/// anchors one atom; atoms are scanned on first symbol-request that
+/// targets them, rather than eagerly at section-load time. Atoms
+/// that are never scanned become unreachable and their bytes are
+/// zero-filled by the writer so unresolved relocations don't ship.
+#[derive(Debug, Default)]
+pub(crate) struct SubsectionTracking {
+    pub(crate) atoms: Vec<Atom>,
+    pub(crate) scanned: Vec<bool>,
+    /// Reloc indices partitioned by atom. Lazily populated on the
+    /// first per-atom reloc scan of this section by
+    /// [`crate::macho::scan_reloc_range_for_atom_impl`]. Without this
+    /// index each atom activation has to linearly scan *all* relocs
+    /// of the section to filter by its byte range, giving
+    /// O(atoms × relocs) per section; bucketing by atom drops that
+    /// to O(relocs) amortised across all atom activations, with O(1)
+    /// bucket lookup per atom.
+    pub(crate) reloc_buckets: std::sync::OnceLock<Vec<Vec<u32>>>,
+}
+
+/// Per-atom record: a byte range within an input section plus the
+/// external symbol that anchors it. Duplicated from
+/// [`crate::macho::Atom`] at the platform boundary so layout.rs
+/// stays platform-agnostic; Mach-O populates via
+/// [`crate::macho::compute_atoms`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Atom {
+    pub(crate) input_start: u64,
+    pub(crate) input_end: u64,
+    pub(crate) anchor: object::SymbolIndex,
+}
+
+impl SubsectionTracking {
+    /// Finds the atom index whose input range contains `offset`, if
+    /// any. Linear scan — atom counts per section are tiny even for
+    /// libstd (1350 symbols ≈ one section with ~1350 atoms, and this
+    /// method is only called during symbol-request processing, O(1)
+    /// per request on average since we bucket).
+    pub(crate) fn atom_index_for_offset(&self, offset: u64) -> Option<usize> {
+        // Atoms are sorted by input_start; binary-search the range
+        // containing `offset`.
+        let idx = self.atoms.partition_point(|a| a.input_start <= offset);
+        if idx == 0 {
+            return None;
+        }
+        let candidate = &self.atoms[idx - 1];
+        if offset < candidate.input_end {
+            Some(idx - 1)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'data, P: Platform> ObjectLayoutState<'data, P> {
+    /// Whether the given section has an atom map registered (i.e.
+    /// the object carries `MH_SUBSECTIONS_VIA_SYMBOLS` and the
+    /// section is eligible for per-atom GC). Callers use this to
+    /// gate the relocation-scan short-circuit in platform code.
+    pub(crate) fn subsection_tracking_has(&self, section_index: &usize) -> bool {
+        self.subsection_tracking.contains_key(section_index)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1181,6 +1324,13 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     pub(crate) per_symbol_flags: &'scope AtomicPerSymbolFlags<'scope>,
 
+    /// Concurrent collector: every linear-input-offset that a live
+    /// atom's reloc references in a merge-string / literal section.
+    /// Populated by platform reloc scanners; consumed by
+    /// `merge_strings` (run sequentially after GC) to drop
+    /// unreferenced strings.
+    pub(crate) merge_string_refs: &'scope crate::string_merging::MergeStringRefs,
+
     /// Sections that we'll keep, even if their total size is zero.
     must_keep_sections: OutputSectionMap<AtomicBool>,
 
@@ -1242,6 +1392,34 @@ struct SectionLoadRequest {
     /// The offset of the section within the file's sections. i.e. the same as
     /// object::SectionIndex, but stored as a u32 for compactness.
     section_index: u32,
+
+    /// Byte offset of the symbol whose request triggered this load,
+    /// when known. Non-`u64::MAX` values are used by Mach-O's
+    /// `MH_SUBSECTIONS_VIA_SYMBOLS` atom GC to decide which atom to
+    /// activate; other platforms ignore it. `u64::MAX` means
+    /// "triggered by force-keep / start-stop / similar, no single
+    /// symbol to anchor on".
+    triggering_offset: u64,
+}
+
+impl LocalWorkQueue {
+    /// Queue a per-atom section activation — used by Mach-O's
+    /// non-extern relocation reachability propagation. The target
+    /// section's atom containing `offset` will be activated (its
+    /// relocs scanned + applied) when this work item is processed.
+    /// `WorkItem` itself stays private to layout; callers outside
+    /// this module go through this method rather than constructing
+    /// the variant directly.
+    pub(crate) fn push_section_activation(
+        &mut self,
+        file_id: FileId,
+        section_index: SectionIndex,
+        offset: u64,
+    ) {
+        self.local_work.push(WorkItem::LoadSection(
+            SectionLoadRequest::with_triggering_offset(file_id, section_index, offset),
+        ));
+    }
 }
 
 impl WorkItem {
@@ -1908,6 +2086,7 @@ fn find_required_sections<'data, A: Arch>(
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data, A::Platform>,
     layout_resources_ext: <A::Platform as Platform>::LayoutResourcesExt<'data>,
+    merge_string_refs: &crate::string_merging::MergeStringRefs,
 ) -> Result<GcOutputs<'data, A::Platform>> {
     timing_phase!("Find required sections");
 
@@ -1927,6 +2106,7 @@ fn find_required_sections<'data, A: Arch>(
         worker_slots,
         errors: Mutex::new(Vec::new()),
         per_symbol_flags,
+        merge_string_refs,
         must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
@@ -2046,7 +2226,7 @@ impl<'data, P: Platform> GroupState<'data, P> {
 
     fn finalise_sizes(
         &mut self,
-        output_sections: &OutputSections<P>,
+        output_sections: &OutputSections<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
@@ -2244,7 +2424,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
+        output_sections: &OutputSections<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
@@ -2316,6 +2496,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                         resources,
                         queue,
                         request.section_index(),
+                        request.triggering_offset(),
                         scope,
                     ),
                 _ => bail!("Request to load section from non-object: {self}"),
@@ -3138,7 +3319,14 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
         };
 
         // Allocate space for headers based on segment and section counts.
-        P::allocate_header_sizes(self, extra_sizes, &header_info, output_sections);
+        P::allocate_header_sizes(
+            self,
+            extra_sizes,
+            &header_info,
+            output_sections,
+            resources.symbol_db.args,
+            total_sizes,
+        );
 
         self.header_info = Some(header_info);
     }
@@ -3510,6 +3698,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             &mut extra_sizes,
             resources.dynamic_symbol_definitions,
             resources.symbol_db.args,
+            resources.symbol_db,
         )?;
 
         // See comments in Prelude::apply_late_size_adjustments.
@@ -3589,6 +3778,7 @@ fn new_object_layout_state<P: Platform>(
         relocations: input_state.relocations,
         format_specific: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
+        subsection_tracking: std::collections::HashMap::new(),
     })
 }
 
@@ -3647,6 +3837,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                             .push(SectionLoadRequest {
                                 file_id: self.file_id,
                                 section_index: i as u32,
+                                triggering_offset: u64::MAX,
                             });
                     }
                 }
@@ -3719,11 +3910,20 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         resources: &'scope GraphResources<'data, 'scope, P>,
         queue: &mut LocalWorkQueue,
         section_index: SectionIndex,
+        triggering_offset: Option<u64>,
         scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
+                self.load_section::<A>(
+                    common,
+                    queue,
+                    *unloaded,
+                    section_index,
+                    triggering_offset,
+                    resources,
+                    scope,
+                )?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
@@ -3735,6 +3935,18 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     "{self}: Don't know what segment to put `{}` in, but it's referenced",
                     self.object.section_display_name(section_index),
                 );
+            }
+            SectionSlot::Loaded(section)
+                if self.subsection_tracking.contains_key(&section_index.0) =>
+            {
+                // SUBSECTIONS_VIA_SYMBOLS section that was already
+                // initial-loaded; a later symbol request is asking
+                // us to activate a new atom. Scan just that atom's
+                // relocations if we haven't already.
+                if let Some(offset) = triggering_offset {
+                    let section = *section;
+                    self.activate_atom::<A>(common, queue, resources, section, offset, scope)?;
+                }
             }
             SectionSlot::Loaded(_)
             | SectionSlot::FrameData(..)
@@ -3753,22 +3965,109 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         Ok(())
     }
 
+    /// Scans the relocations of the atom that contains `offset` if it
+    /// hasn't been scanned yet. No-op when the atom's already active
+    /// or when `offset` lands in a gap (e.g. leading bytes with no
+    /// symbol coverage).
+    fn activate_atom<'scope, A: Arch<Platform = P>>(
+        &mut self,
+        common: &mut CommonGroupState<'data, P>,
+        queue: &mut LocalWorkQueue,
+        resources: &'scope GraphResources<'data, 'scope, P>,
+        section: Section,
+        offset: u64,
+        scope: &Scope<'scope>,
+    ) -> Result {
+        let section_key = section.index.0;
+        let (atom_range, already_scanned) = {
+            let Some(tracking) = self.subsection_tracking.get_mut(&section_key) else {
+                return Ok(());
+            };
+            let Some(idx) = tracking.atom_index_for_offset(offset) else {
+                return Ok(());
+            };
+            let atom = tracking.atoms[idx];
+            let already = tracking.scanned[idx];
+            if !already {
+                tracking.scanned[idx] = true;
+            }
+            (atom.input_start..atom.input_end, already)
+        };
+        if already_scanned {
+            return Ok(());
+        }
+        <A::Platform as Platform>::scan_atom_relocations::<A>(
+            self, common, queue, resources, section, atom_range, scope,
+        )
+    }
+
     fn load_section<'scope, A: Arch<Platform = P>>(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
         queue: &mut LocalWorkQueue,
         unloaded: UnloadedSection,
         section_index: SectionIndex,
+        triggering_offset: Option<u64>,
         resources: &'scope GraphResources<'data, 'scope, P>,
         scope: &Scope<'scope>,
     ) -> Result {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id)?;
+        let mut section = Section::create(header, self, section_index, part_id)?;
+
+        // Mach-O `.subsections_via_symbols`: widen the section to hold
+        // per-symbol alignment padding before the relocation scan
+        // reports its size. The padding deltas get stored alongside
+        // any future relaxation deltas — they share the
+        // `section_relax_deltas` sparse map, and the sign of each
+        // delta (negative = insertion) disambiguates the semantics at
+        // query time.
+        let subsection_padding = <A::Platform as Platform>::compute_subsection_padding_deltas(
+            &self.object,
+            section_index,
+        );
+        if !subsection_padding.is_empty() {
+            let ss = linker_utils::relaxation::SectionDeltas::new(subsection_padding);
+            // `total_delta` is negative for insertions, so flipping
+            // the sign gives the byte growth.
+            let growth = (-ss.total_delta()) as u64;
+            section.size = section.size.saturating_add(growth);
+            self.section_relax_deltas.insert_sorted(section_index.0, ss);
+        }
+
+        // Atom map for Mach-O subsections-via-symbols sections. Built
+        // once at load time; atom scans are driven by subsequent
+        // symbol-request-triggered activations below.
+        let atoms = <A::Platform as Platform>::compute_atoms(&self.object, section_index);
+        if !atoms.is_empty() {
+            let scanned = vec![false; atoms.len()];
+            self.subsection_tracking.insert(
+                section_index.0,
+                SubsectionTracking {
+                    atoms,
+                    scanned,
+                    reloc_buckets: std::sync::OnceLock::new(),
+                },
+            );
+        }
 
         <A::Platform as Platform>::load_object_section_relocations::<A>(
             self, common, queue, resources, section, scope,
         )?;
+
+        // If this section has atom tracking, activate the atom that
+        // contains the triggering offset (if any) — its relocations
+        // get scanned now. Other atoms stay dormant until their own
+        // symbol requests arrive, or stay dormant forever if nothing
+        // ever reaches them (that's the GC win). When the section was
+        // force-loaded with no particular triggering symbol
+        // (`triggering_offset` is None), no atom is activated at load
+        // time; subsequent per-symbol requests drive activation.
+        if self.subsection_tracking.contains_key(&section_index.0)
+            && let Some(offset) = triggering_offset
+        {
+            self.activate_atom::<A>(common, queue, resources, section, offset, scope)?;
+        }
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
@@ -3815,7 +4114,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
     fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data, P>,
-        output_sections: &OutputSections<P>,
+        output_sections: &OutputSections<'data, P>,
         per_symbol_flags: &AtomicPerSymbolFlags,
         resources: &FinaliseSizesResources<'data, '_, P>,
     ) -> Result {
@@ -3835,7 +4134,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
         }
 
-        P::finalise_object_sizes(self, common);
+        P::finalise_object_sizes(self, common, output_sections)?;
         Ok(())
     }
 
@@ -3927,6 +4226,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             symbol_id_range,
             sframe_ranges,
             section_relax_deltas: self.section_relax_deltas,
+            subsection_tracking: self.subsection_tracking,
         })
     }
 
@@ -3982,6 +4282,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 );
                 output_offset + section_address
             } else {
+                // With `MergeStringRefs::disabled()` (above) every
+                // input merge-string survives, so `find_string`
+                // should always succeed for any symbol defined in
+                // a merge section. If this bails, something broke
+                // the invariant — surface it loudly with full
+                // context rather than returning `Ok(None)` and
+                // producing a silent NULL at runtime.
                 match get_merged_string_output_address::<P>(
                     local_symbol_index,
                     0,
@@ -4542,8 +4849,11 @@ fn relaxation_scan_pass<'data, A: Arch>(
                             continue;
                         }
 
+                        // Signed delta is always positive (deletion) on the
+                        // ELF relaxation path — narrow back to u64 for the
+                        // size-reduction arithmetic below.
                         let new_total_deleted: u64 =
-                            raw_deltas.iter().map(|(_, b)| u64::from(*b)).sum();
+                            raw_deltas.iter().map(|(_, b)| *b as u64).sum();
 
                         if let SectionSlot::Loaded(sec) = &mut obj.sections[sec_idx] {
                             let old_capacity = sec.capacity(output_sections);
@@ -5056,11 +5366,28 @@ impl SectionLoadRequest {
         Self {
             file_id,
             section_index: section_index.0 as u32,
+            triggering_offset: u64::MAX,
+        }
+    }
+
+    fn with_triggering_offset(file_id: FileId, section_index: SectionIndex, offset: u64) -> Self {
+        Self {
+            file_id,
+            section_index: section_index.0 as u32,
+            triggering_offset: offset,
         }
     }
 
     fn section_index(self) -> SectionIndex {
         SectionIndex(self.section_index as usize)
+    }
+
+    /// The triggering symbol's offset, if this request was fired on a
+    /// per-symbol basis. `None` when the section was force-loaded for
+    /// reasons other than a specific symbol (e.g. start/stop,
+    /// whole-archive, must-keep output section).
+    fn triggering_offset(self) -> Option<u64> {
+        (self.triggering_offset != u64::MAX).then_some(self.triggering_offset)
     }
 }
 
@@ -5085,11 +5412,13 @@ fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections = OutputSections::<Elf>::with_base_address(0x1000);
-    let (output_order, program_segments) =
-        output_sections.output_order(crate::output_kind::OutputKind::StaticExecutable(
-            crate::args::RelocationModel::NonRelocatable,
-        ));
     let mut args = crate::args::elf::ElfArgs::default();
+    let (output_order, program_segments) = output_sections.output_order(
+        crate::output_kind::OutputKind::StaticExecutable(
+            crate::args::RelocationModel::NonRelocatable,
+        ),
+        &args,
+    );
     if args.arch == crate::arch::Architecture::Unsupported {
         args.arch = crate::arch::Architecture::X86_64;
     }
@@ -5206,7 +5535,7 @@ fn verify_consistent_allocation_handling<P: Platform>(
     args: &P::Args,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
-    let (output_order, _program_segments) = output_sections.output_order(output_kind);
+    let (output_order, _program_segments) = output_sections.output_order(output_kind, args);
     let mut mem_sizes = output_sections.new_part_map();
     P::allocate_resolution(flags, &mut mem_sizes, output_kind, args);
     let mut memory_offsets = output_sections.new_part_map();

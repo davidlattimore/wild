@@ -23,6 +23,37 @@ pub(crate) struct BenchConfig {
     pub(crate) min_wild_version: Option<String>,
     #[serde(default)]
     pub(crate) skip_linkers: Vec<LinkerKind>,
+    /// Output format this benchmark produces. Drives host-platform
+    /// filtering (Mach-O benches skip on Linux and vice versa) and
+    /// linker-compatibility (ld64 only matches Mach-O benches).
+    /// Defaults to ELF so existing TOMLs round-trip unchanged.
+    #[serde(default)]
+    pub(crate) platform: Platform,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Platform {
+    Elf,
+    Macho,
+}
+
+impl Default for Platform {
+    fn default() -> Self {
+        Platform::Elf
+    }
+}
+
+impl Platform {
+    /// The platform that the *current host* produces natively. Used to
+    /// skip benches that need a cross-platform linker we don't ship.
+    pub(crate) fn host() -> Self {
+        if cfg!(target_os = "macos") {
+            Platform::Macho
+        } else {
+            Platform::Elf
+        }
+    }
 }
 
 impl Config {

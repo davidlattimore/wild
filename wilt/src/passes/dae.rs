@@ -12,22 +12,22 @@
 //!
 //! Guard rails — the pass only touches a function when ALL of:
 //!   * it's a defined function (not an import),
-//!   * its type is used by no other function and by no
-//!     `call_indirect`,
+//!   * its type is used by no other function and by no `call_indirect`,
 //!   * it isn't in the export section,
 //!   * it has no declared locals (only params),
 //!   * it has at least one param,
-//!   * the last param is never referenced (any of get/set/tee) in
-//!     the body.
+//!   * the last param is never referenced (any of get/set/tee) in the body.
 //!
 //! One param per invocation; the outer fixpoint picks up successive
 //! trailing-dead params.
 
 use crate::leb128;
 use crate::linker_hints::LinkerHints;
-use crate::module::{self as wmod, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self as wmod};
 use crate::mut_module::MutModule;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 /// Backwards-compatible entry: today's pipeline calls this with no hints.
 pub fn apply_mut(m: &mut MutModule<'_>) {
@@ -41,12 +41,18 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 /// break unrelated functions regardless of how internal they are.
 pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHints>) {
     let input = m.input();
-    let Ok(mut wm) = WasmModule::parse(input) else { return };
+    let Ok(mut wm) = WasmModule::parse(input) else {
+        return;
+    };
     wm.ensure_function_bodies_parsed();
     let data = wm.data();
 
-    let Some(type_ends) = read_type_ends(&wm) else { return };
-    let Some(func_types) = read_defined_func_types(&wm) else { return };
+    let Some(type_ends) = read_type_ends(&wm) else {
+        return;
+    };
+    let Some(func_types) = read_defined_func_types(&wm) else {
+        return;
+    };
     let num_imports = m.facts.num_func_imports;
 
     // Count type references: defined functions, imported functions,
@@ -58,15 +64,21 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         let p = sec.payload.slice(data);
         if let Some(indices) = read_import_func_types(p) {
             for t in indices {
-                if (t as usize) < num_types { type_refs[t as usize] += 1; }
+                if (t as usize) < num_types {
+                    type_refs[t as usize] += 1;
+                }
             }
         }
     }
     for &t in &func_types {
-        if (t as usize) < num_types { type_refs[t as usize] += 1; }
+        if (t as usize) < num_types {
+            type_refs[t as usize] += 1;
+        }
     }
     // call_indirect refs.
-    if !mark_call_indirect_types(&wm, &mut type_refs) { return; }
+    if !mark_call_indirect_types(&wm, &mut type_refs) {
+        return;
+    }
 
     // Internal-function check: prefer hints when given (closed-world);
     // else fall back to the conservative quartet.
@@ -92,19 +104,37 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
     let mut candidate: Option<Candidate> = None;
     for i in 0..m.num_bodies() {
         let abs_idx = num_imports + i as u32;
-        if !is_internal(abs_idx) { continue; }
+        if !is_internal(abs_idx) {
+            continue;
+        }
         let tidx = func_types[i];
-        if type_refs[tidx as usize] != 1 { continue; }
+        if type_refs[tidx as usize] != 1 {
+            continue;
+        }
         let type_entry = type_entry_bytes(&wm, tidx, &type_ends);
-        let Some(type_info) = parse_func_type(type_entry) else { continue };
-        if type_info.param_count == 0 { continue; }
+        let Some(type_info) = parse_func_type(type_entry) else {
+            continue;
+        };
+        if type_info.param_count == 0 {
+            continue;
+        }
         let body = m.body_bytes(i);
-        let (groups, _) = match leb128::read_u32(body) { Some(x) => x, None => continue };
-        if groups != 0 { continue; }
-        if !param_unreferenced(body, type_info.param_count - 1) { continue; }
+        let (groups, _) = match leb128::read_u32(body) {
+            Some(x) => x,
+            None => continue,
+        };
+        if groups != 0 {
+            continue;
+        }
+        if !param_unreferenced(body, type_info.param_count - 1) {
+            continue;
+        }
 
         let _ = type_info;
-        candidate = Some(Candidate { abs_idx, type_idx: tidx });
+        candidate = Some(Candidate {
+            abs_idx,
+            type_idx: tidx,
+        });
         break;
     }
     let Some(cand) = candidate else { return };
@@ -120,7 +150,9 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         .into_par_iter()
         .filter_map(|i| insert_drops_before_call(m.body_bytes(i), target).map(|b| (i, b)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b) in updates {
+        m.set_body(i, b);
+    }
 }
 
 struct Candidate {
@@ -142,20 +174,26 @@ fn read_type_ends(module: &WasmModule<'_>) -> Option<Vec<usize>> {
     let (count, mut off) = leb128::read_u32(p)?;
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        if *p.get(off)? != 0x60 { return None; }
+        if *p.get(off)? != 0x60 {
+            return None;
+        }
         off += 1;
         let (params, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         for _ in 0..params {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         let (results, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         for _ in 0..results {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         out.push(off);
@@ -167,7 +205,11 @@ fn type_entry_bytes<'a>(module: &'a WasmModule<'_>, tidx: u32, ends: &[usize]) -
     let sec = module.section(wmod::SECTION_TYPE).unwrap();
     let p = sec.payload.slice(module.data());
     let hdr = leb128::read_u32(p).unwrap().1;
-    let start = if tidx == 0 { hdr } else { ends[(tidx - 1) as usize] };
+    let start = if tidx == 0 {
+        hdr
+    } else {
+        ends[(tidx - 1) as usize]
+    };
     let end = ends[tidx as usize];
     &p[start..end]
 }
@@ -175,7 +217,9 @@ fn type_entry_bytes<'a>(module: &'a WasmModule<'_>, tidx: u32, ends: &[usize]) -
 /// Parse one func type entry (starting at 0x60). Returns info about
 /// the last param's position within the entry so we can trim it.
 fn parse_func_type(entry: &[u8]) -> Option<ParsedFuncType> {
-    if *entry.get(0)? != 0x60 { return None; }
+    if *entry.get(0)? != 0x60 {
+        return None;
+    }
     let (params, c) = leb128::read_u32(entry.get(1..)?)?;
     let param_count_leb_len = c;
     let mut off = 1 + c;
@@ -183,7 +227,11 @@ fn parse_func_type(entry: &[u8]) -> Option<ParsedFuncType> {
     for _ in 0..params {
         off += 1;
     }
-    let last_param_byte_offset = if params > 0 { off - 1 } else { first_param_byte };
+    let last_param_byte_offset = if params > 0 {
+        off - 1
+    } else {
+        first_param_byte
+    };
     Some(ParsedFuncType {
         param_count: params,
         param_count_leb_len,
@@ -192,7 +240,9 @@ fn parse_func_type(entry: &[u8]) -> Option<ParsedFuncType> {
 }
 
 fn read_defined_func_types(module: &WasmModule<'_>) -> Option<Vec<u32>> {
-    let Some(sec) = module.section(wmod::SECTION_FUNCTION) else { return Some(Vec::new()) };
+    let Some(sec) = module.section(wmod::SECTION_FUNCTION) else {
+        return Some(Vec::new());
+    };
     let p = sec.payload.slice(module.data());
     let (count, mut off) = leb128::read_u32(p)?;
     let mut out = Vec::with_capacity(count as usize);
@@ -263,7 +313,9 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> std::collections::HashSe
     // Body code: scan every ref.func (0xD2).
     for body in module.function_bodies() {
         let b = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(b) else { continue };
+        let Some(start) = opcode::skip_locals(b) else {
+            continue;
+        };
         let mut iter = InstrIter::new(b, start);
         while let Some((p, _)) = iter.next() {
             if b[p] == 0xD2 {
@@ -285,9 +337,13 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> std::collections::HashSe
         let p = sec.payload.slice(data);
         if let Some((count, mut off)) = leb128::read_u32(p) {
             for _ in 0..count {
-                if off + 2 > p.len() { break; }
+                if off + 2 > p.len() {
+                    break;
+                }
                 off += 2;
-                let Some((end, targets)) = super::dce::scan_const_expr(p, off) else { break };
+                let Some((end, targets)) = super::dce::scan_const_expr(p, off) else {
+                    break;
+                };
                 out.extend(targets);
                 off = end;
             }
@@ -301,38 +357,55 @@ fn mark_call_indirect_types(module: &WasmModule<'_>, refs: &mut [u32]) -> bool {
     let data = module.data();
     for body in module.function_bodies() {
         let b = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(b) else { return false };
+        let Some(start) = opcode::skip_locals(b) else {
+            return false;
+        };
         let mut iter = InstrIter::new(b, start);
         while let Some((p, _)) = iter.next() {
             let op = b[p];
             match op {
                 0x11 => {
-                    let Some((t, _)) = leb128::read_u32(&b[p + 1..]) else { return false };
-                    if (t as usize) < refs.len() { refs[t as usize] += 1; }
+                    let Some((t, _)) = leb128::read_u32(&b[p + 1..]) else {
+                        return false;
+                    };
+                    if (t as usize) < refs.len() {
+                        refs[t as usize] += 1;
+                    }
                 }
                 0x02 | 0x03 | 0x04 => {
-                    let Some((val, _)) = leb128::read_u32(&b[p + 1..]) else { return false };
+                    let Some((val, _)) = leb128::read_u32(&b[p + 1..]) else {
+                        return false;
+                    };
                     if val != 0x40 && !matches!(val as u8, 0x6F..=0x7F) {
-                        if (val as usize) < refs.len() { refs[val as usize] += 1; }
+                        if (val as usize) < refs.len() {
+                            refs[val as usize] += 1;
+                        }
                     }
                 }
                 _ => {}
             }
         }
-        if iter.failed() { return false; }
+        if iter.failed() {
+            return false;
+        }
     }
     true
 }
 
 fn param_unreferenced(body: &[u8], param_idx: u32) -> bool {
-    let Some(start) = opcode::skip_locals(body) else { return false };
+    let Some(start) = opcode::skip_locals(body) else {
+        return false;
+    };
     let mut iter = InstrIter::new(body, start);
     let mut referenced = false;
     while let Some((p, _)) = iter.next() {
         match body[p] {
             0x20 | 0x21 | 0x22 => {
                 if let Some((n, _)) = leb128::read_u32(&body[p + 1..]) {
-                    if n == param_idx { referenced = true; break; }
+                    if n == param_idx {
+                        referenced = true;
+                        break;
+                    }
                 }
             }
             _ => {}
@@ -348,25 +421,34 @@ fn rewrite_type_section(
     ends: &[usize],
     cand: &Candidate,
 ) -> bool {
-    let Some(sec_idx) = m.find_section(wmod::SECTION_TYPE) else { return false };
+    let Some(sec_idx) = m.find_section(wmod::SECTION_TYPE) else {
+        return false;
+    };
     let sec = module.section(wmod::SECTION_TYPE).unwrap();
     let p = sec.payload.slice(module.data());
 
-    let (_, hdr_len) = match leb128::read_u32(p) { Some(x) => x, None => return false };
-    let start = if type_idx == 0 { hdr_len } else { ends[(type_idx - 1) as usize] };
+    let (_, hdr_len) = match leb128::read_u32(p) {
+        Some(x) => x,
+        None => return false,
+    };
+    let start = if type_idx == 0 {
+        hdr_len
+    } else {
+        ends[(type_idx - 1) as usize]
+    };
     let end = ends[type_idx as usize];
     let entry = &p[start..end];
 
     // Build new entry: 0x60 | new_param_count_leb | params[..-1] | rest.
-    let Some(parsed) = parse_func_type(entry) else { return false };
+    let Some(parsed) = parse_func_type(entry) else {
+        return false;
+    };
     let mut new_entry = Vec::with_capacity(entry.len());
     new_entry.push(0x60);
     leb128::write_u32(&mut new_entry, parsed.param_count - 1);
     let params_region_end = 1 + parsed.param_count_leb_len + parsed.param_count as usize;
     // Copy params except the last:
-    new_entry.extend_from_slice(
-        &entry[1 + parsed.param_count_leb_len..params_region_end - 1],
-    );
+    new_entry.extend_from_slice(&entry[1 + parsed.param_count_leb_len..params_region_end - 1]);
     // Copy results region verbatim.
     new_entry.extend_from_slice(&entry[params_region_end..]);
 
@@ -394,19 +476,27 @@ fn insert_drops_before_call(body: &[u8], target: u32) -> Option<Vec<u8>> {
     let mut iter = InstrIter::new(body, start);
     let mut hits: Vec<usize> = Vec::new();
     while let Some((p, _)) = iter.next() {
-        if body[p] != 0x10 { continue; }
+        if body[p] != 0x10 {
+            continue;
+        }
         if let Some((f, _)) = leb128::read_u32(&body[p + 1..]) {
-            if f == target { hits.push(p); }
+            if f == target {
+                hits.push(p);
+            }
         }
     }
-    if iter.failed() { return None; }
-    if hits.is_empty() { return None; }
+    if iter.failed() {
+        return None;
+    }
+    if hits.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len() + hits.len());
     let mut cursor = 0;
     for p in &hits {
         out.extend_from_slice(&body[cursor..*p]);
-        out.push(0x1A);     // drop
+        out.push(0x1A); // drop
         cursor = *p;
     }
     out.extend_from_slice(&body[cursor..]);
@@ -433,7 +523,7 @@ mod tests {
         let p = parse_func_type(&entry).unwrap();
         assert_eq!(p.param_count, 2);
         assert_eq!(p.param_count_leb_len, 1);
-        assert_eq!(p.last_param_byte_offset_in_entry, 3);  // 0x7E
+        assert_eq!(p.last_param_byte_offset_in_entry, 3); // 0x7E
     }
 
     #[test]

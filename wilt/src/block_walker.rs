@@ -22,8 +22,10 @@
 //! heap-type) cause walker failure — we don't decode them.
 
 use crate::leb128;
-use crate::module::{self as wmod, WasmModule};
-use crate::opcode::{self, InstrIter};
+use crate::module::WasmModule;
+use crate::module::{self as wmod};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum BlockKind {
@@ -110,20 +112,30 @@ impl<'a, 'f, 'r> BlockWalker<'a, 'f, 'r> {
     }
 
     #[inline]
-    pub fn frames(&self) -> &[BlockFrame] { self.frames }
+    pub fn frames(&self) -> &[BlockFrame] {
+        self.frames
+    }
     #[inline]
-    pub fn stack_depth(&self) -> i32 { self.stack_depth }
+    pub fn stack_depth(&self) -> i32 {
+        self.stack_depth
+    }
     #[inline]
-    pub fn reachable(&self) -> bool { self.reachable }
+    pub fn reachable(&self) -> bool {
+        self.reachable
+    }
     #[inline]
-    pub fn failed(&self) -> bool { self.failed || self.iter.failed() }
+    pub fn failed(&self) -> bool {
+        self.failed || self.iter.failed()
+    }
 
     fn mark_unreachable(&mut self) {
         self.reachable = false;
     }
 
     fn apply_effect(&mut self, pops: u32, pushes: u32) {
-        if !self.reachable { return; }
+        if !self.reachable {
+            return;
+        }
         self.stack_depth -= pops as i32;
         self.stack_depth += pushes as i32;
     }
@@ -147,12 +159,14 @@ impl<'a, 'f, 'r> Iterator for BlockWalker<'a, 'f, 'r> {
                     0x03 => BlockKind::Loop,
                     _ => BlockKind::If,
                 };
-                let (in_arity, out_arity) = match read_blocktype_arity(
-                    self.body, pos + 1, self.resolver,
-                ) {
-                    Some(x) => x,
-                    None => { self.failed = true; return Some(stub_step(pos, len, op)); }
-                };
+                let (in_arity, out_arity) =
+                    match read_blocktype_arity(self.body, pos + 1, self.resolver) {
+                        Some(x) => x,
+                        None => {
+                            self.failed = true;
+                            return Some(stub_step(pos, len, op));
+                        }
+                    };
                 // `if` pops its condition before the scoping semantics
                 // apply. The in_arity values are already on the stack
                 // (block doesn't pop them — they stay visible inside).
@@ -208,27 +222,35 @@ impl<'a, 'f, 'r> Iterator for BlockWalker<'a, 'f, 'r> {
             0x0F => self.mark_unreachable(),
             // call f — needs resolver.
             0x10 => {
-                let Some((idx, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[])) else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                let Some((idx, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[]))
+                else {
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 let Some(r) = self.resolver else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 let Some((p, q)) = r.func_sig(idx) else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 self.apply_effect(p, q);
             }
             // call_indirect (typeidx, tableidx) — pops index + type params.
             0x11 => {
-                let Some((tidx, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[])) else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                let Some((tidx, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[]))
+                else {
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 let Some(r) = self.resolver else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 let Some((p, q)) = r.type_sig(tidx) else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 self.apply_effect(p + 1, q);
             }
@@ -258,9 +280,14 @@ impl<'a, 'f, 'r> Iterator for BlockWalker<'a, 'f, 'r> {
             0x41..=0x44 => self.apply_effect(0, 1),
             // i32.eqz, i64.eqz, i32/i64 unary (clz/ctz/popcnt), f unary,
             // conversions — all one-in-one-out.
-            0x45 | 0x50
-            | 0x67 | 0x68 | 0x69
-            | 0x79 | 0x7A | 0x7B
+            0x45
+            | 0x50
+            | 0x67
+            | 0x68
+            | 0x69
+            | 0x79
+            | 0x7A
+            | 0x7B
             | 0x8B..=0x91
             | 0x99..=0x9F
             | 0xA7..=0xC4 => self.apply_effect(1, 1),
@@ -284,25 +311,35 @@ impl<'a, 'f, 'r> Iterator for BlockWalker<'a, 'f, 'r> {
             0xD4 => self.apply_effect(1, 1),
             // Prefix 0xFC: bulk memory + table ops.
             0xFC => {
-                let Some((sub, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[])) else {
-                    self.failed = true; return Some(stub_step(pos, len, op));
+                let Some((sub, _)) = leb128::read_u32(self.body.get(pos + 1..).unwrap_or(&[]))
+                else {
+                    self.failed = true;
+                    return Some(stub_step(pos, len, op));
                 };
                 match sub {
-                    0x00..=0x07 => self.apply_effect(1, 1),   // saturating trunc
+                    0x00..=0x07 => self.apply_effect(1, 1), // saturating trunc
                     0x08 | 0x0A | 0x0B | 0x0C | 0x0E | 0x11 => self.apply_effect(3, 0),
-                        // memory.init/copy/fill, table.init/copy/fill
-                    0x09 | 0x0D => {}                         // data.drop / elem.drop
-                    0x0F => self.apply_effect(2, 1),          // table.grow
-                    0x10 => self.apply_effect(0, 1),          // table.size
-                    _ => { self.failed = true; return Some(stub_step(pos, len, op)); }
+                    // memory.init/copy/fill, table.init/copy/fill
+                    0x09 | 0x0D => {}                // data.drop / elem.drop
+                    0x0F => self.apply_effect(2, 1), // table.grow
+                    0x10 => self.apply_effect(0, 1), // table.size
+                    _ => {
+                        self.failed = true;
+                        return Some(stub_step(pos, len, op));
+                    }
                 }
             }
             // Anything we don't model — fail the walker.
-            _ => { self.failed = true; return Some(stub_step(pos, len, op)); }
+            _ => {
+                self.failed = true;
+                return Some(stub_step(pos, len, op));
+            }
         }
 
         Some(Step {
-            pos, len, op,
+            pos,
+            len,
+            op,
             stack_depth_before,
             reachable_before,
             closed_frame,
@@ -366,7 +403,7 @@ impl ModuleSigs {
                             off += c;
                         }
                     }
-                    0x03 => off = off.checked_add(2)?,    // global: valtype + mut
+                    0x03 => off = off.checked_add(2)?, // global: valtype + mut
                     _ => return None,
                 }
             }
@@ -403,20 +440,26 @@ fn read_type_arities(module: &WasmModule<'_>, data: &[u8]) -> Option<Vec<(u32, u
     let (count, mut off) = leb128::read_u32(p)?;
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        if *p.get(off)? != 0x60 { return None; }
+        if *p.get(off)? != 0x60 {
+            return None;
+        }
         off += 1;
         let (params, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         for _ in 0..params {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         let (results, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         for _ in 0..results {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         out.push((params, results));
@@ -426,7 +469,9 @@ fn read_type_arities(module: &WasmModule<'_>, data: &[u8]) -> Option<Vec<(u32, u
 
 fn stub_step(pos: usize, len: usize, op: u8) -> Step {
     Step {
-        pos, len, op,
+        pos,
+        len,
+        op,
         stack_depth_before: 0,
         reachable_before: false,
         closed_frame: None,
@@ -475,27 +520,20 @@ mod tests {
     #[test]
     fn tracks_depth_through_const_and_arith() {
         // (func  i32.const 1  i32.const 2  i32.add  drop  end)
-        let body = [
-            0,
-            0x41, 1,
-            0x41, 2,
-            0x6A,
-            0x1A,
-            0x0B,
-        ];
+        let body = [0, 0x41, 1, 0x41, 2, 0x6A, 0x1A, 0x0B];
         let start = opcode::skip_locals(&body).unwrap();
         let mut frames = Vec::new();
         let mut w = BlockWalker::new(&body, start, &mut frames);
 
-        let s = w.next().unwrap();  // i32.const 1
+        let s = w.next().unwrap(); // i32.const 1
         assert_eq!(s.stack_depth_before, 0);
-        let s = w.next().unwrap();  // i32.const 2
+        let s = w.next().unwrap(); // i32.const 2
         assert_eq!(s.stack_depth_before, 1);
-        let s = w.next().unwrap();  // i32.add
+        let s = w.next().unwrap(); // i32.add
         assert_eq!(s.stack_depth_before, 2);
-        let s = w.next().unwrap();  // drop
+        let s = w.next().unwrap(); // drop
         assert_eq!(s.stack_depth_before, 1);
-        let s = w.next().unwrap();  // end
+        let s = w.next().unwrap(); // end
         assert_eq!(s.stack_depth_before, 0);
         assert!(!w.failed());
         assert_eq!(w.stack_depth(), 0);
@@ -511,21 +549,12 @@ mod tests {
         //   drop
         //   drop
         // )
-        let body = [
-            0,
-            0x41, 7,
-            0x02, 0x7F,
-            0x41, 9,
-            0x0B,
-            0x1A,
-            0x1A,
-            0x0B,
-        ];
+        let body = [0, 0x41, 7, 0x02, 0x7F, 0x41, 9, 0x0B, 0x1A, 0x1A, 0x0B];
         let start = opcode::skip_locals(&body).unwrap();
         let mut frames = Vec::new();
         let mut w = BlockWalker::new(&body, start, &mut frames);
 
-        let _ = w.next();  // i32.const 7
+        let _ = w.next(); // i32.const 7
         let s = w.next().unwrap(); // block
         assert_eq!(s.stack_depth_before, 1);
         assert_eq!(w.frames().last().unwrap().entry_depth, 1);
@@ -553,14 +582,7 @@ mod tests {
         //     i32.const 9  ;; unreachable — not tracked
         //   end            ;; back to reachable
         // )
-        let body = [
-            0,
-            0x02, 0x40,
-            0x0C, 0,
-            0x41, 9,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x02, 0x40, 0x0C, 0, 0x41, 9, 0x0B, 0x0B];
         let start = opcode::skip_locals(&body).unwrap();
         let mut frames = Vec::new();
         let mut w = BlockWalker::new(&body, start, &mut frames);
@@ -581,13 +603,11 @@ mod tests {
     #[test]
     fn call_uses_resolver() {
         // (func  (call 0)  end)  where func 0 : () -> i32
-        let body = [
-            0,
-            0x10, 0,
-            0x1A,
-            0x0B,
-        ];
-        let sigs = FixedSigs { funcs: &[(0, 1)], types: &[] };
+        let body = [0, 0x10, 0, 0x1A, 0x0B];
+        let sigs = FixedSigs {
+            funcs: &[(0, 1)],
+            types: &[],
+        };
         let start = opcode::skip_locals(&body).unwrap();
         let mut frames = Vec::new();
         let mut w = BlockWalker::with_resolver(&body, start, &mut frames, Some(&sigs));

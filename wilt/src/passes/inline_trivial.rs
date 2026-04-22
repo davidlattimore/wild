@@ -6,25 +6,25 @@
 //! fixpoint iteration removes the now-orphaned callee).
 //!
 //! Patterns recognised:
-//!   * Empty — callee has signature `() -> ()`, no locals, body is
-//!     just `end`. `call f` becomes nothing.
-//!   * Identity — signature `(T) -> T`, no locals, body is
-//!     `local.get 0 ; end`. `call f` leaves the arg on the stack;
-//!     delete the call.
-//!   * Const — signature `() -> T`, no locals, body is a single
-//!     `T.const N ; end`. `call f` becomes `T.const N` (only when
-//!     that's no larger than the `call f` bytes — avoids growth).
+//!   * Empty — callee has signature `() -> ()`, no locals, body is just `end`. `call f` becomes
+//!     nothing.
+//!   * Identity — signature `(T) -> T`, no locals, body is `local.get 0 ; end`. `call f` leaves the
+//!     arg on the stack; delete the call.
+//!   * Const — signature `() -> T`, no locals, body is a single `T.const N ; end`. `call f` becomes
+//!     `T.const N` (only when that's no larger than the `call f` bytes — avoids growth).
 //!
 //! Not touched: imported functions, `ref.func` references, callees
 //! with locals or control flow. The pass runs on a MutModule so
 //! unchanged bodies never allocate.
 
-use crate::block_walker::{ModuleSigs, SigResolver};
+use crate::block_walker::ModuleSigs;
+use crate::block_walker::SigResolver;
 use crate::leb128;
 use crate::linker_hints::LinkerHints;
 use crate::module::WasmModule;
 use crate::mut_module::MutModule;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     apply_mut_with_hints(m, None)
@@ -32,9 +32,13 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
 
 pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHints>) {
     let input = m.input();
-    let Ok(mut wm) = WasmModule::parse(input) else { return };
+    let Ok(mut wm) = WasmModule::parse(input) else {
+        return;
+    };
     wm.ensure_function_bodies_parsed();
-    let Some(sigs) = ModuleSigs::from_module(&wm) else { return };
+    let Some(sigs) = ModuleSigs::from_module(&wm) else {
+        return;
+    };
 
     let num_imports = m.facts.num_func_imports;
     let num_bodies = m.num_bodies();
@@ -59,8 +63,11 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         let mut entry = classify(body, sig, n_callers, internal);
         // Patch ReplaceWithBodyParams's param_types + result_blocktype.
         if let Some(Trivial::ReplaceWithBodyParams {
-            param_types, result_blocktype, ..
-        }) = entry.as_mut() {
+            param_types,
+            result_blocktype,
+            ..
+        }) = entry.as_mut()
+        {
             if let Some(&tidx) = func_types.get(i) {
                 if let Some((real_params, real_results)) = read_func_sig_types(&wm, tidx) {
                     *param_types = real_params;
@@ -82,11 +89,17 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         trivial.push(entry);
     }
 
-    if trivial.iter().all(Option::is_none) { return; }
+    if trivial.iter().all(Option::is_none) {
+        return;
+    }
 
     // Per-caller param counts for splice bookkeeping.
     let caller_param_counts: Vec<u32> = (0..num_bodies)
-        .map(|i| sigs.func_sig(num_imports + i as u32).map(|(p, _)| p).unwrap_or(0))
+        .map(|i| {
+            sigs.func_sig(num_imports + i as u32)
+                .map(|(p, _)| p)
+                .unwrap_or(0)
+        })
         .collect();
 
     use rayon::prelude::*;
@@ -97,7 +110,9 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
             rewrite_body(m.body_bytes(i), &trivial, num_imports, cp).map(|b| (i, b))
         })
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b) in updates {
+        m.set_body(i, b);
+    }
 }
 
 fn read_defined_func_type_indices(module: &WasmModule<'_>) -> Option<Vec<u32>> {
@@ -153,27 +168,28 @@ const MAX_INLINE_BODY_BYTES: usize = 64;
 /// After inlining: callee removed, each call replaced by inlined_size
 /// bytes. Wins iff `N * (inlined_size - 2) < body_total + 5`.
 fn multi_caller_profitable(
-    body_total: usize, n_params: u32, has_wrap: bool, n_callers: u32,
+    body_total: usize,
+    n_params: u32,
+    has_wrap: bool,
+    n_callers: u32,
 ) -> bool {
-    if n_callers == 0 { return false; }
-    if n_callers == 1 { return true; }
+    if n_callers == 0 {
+        return false;
+    }
+    if n_callers == 1 {
+        return true;
+    }
     let body_instr_bytes = body_total.saturating_sub(1);
-    let inlined_size =
-        body_instr_bytes
+    let inlined_size = body_instr_bytes
         + 2 * n_params as usize           // local.set chain
-        + if has_wrap { 2 } else { 0 };   // block + end
+        + if has_wrap { 2 } else { 0 }; // block + end
     let added_per_site = inlined_size as i64 - 2;
     let total_added = n_callers as i64 * added_per_site;
     let callee_savings = body_total as i64 + 5;
     callee_savings > total_added
 }
 
-fn classify(
-    body: &[u8],
-    sig: (u32, u32),
-    n_callers: u32,
-    internal: bool,
-) -> Option<Trivial> {
+fn classify(body: &[u8], sig: (u32, u32), n_callers: u32, internal: bool) -> Option<Trivial> {
     let is_unique_caller = n_callers == 1;
     // Parse locals header. Phase 5 supports callees with declared locals.
     let (locals_end, declared_types) = parse_locals_header(body)?;
@@ -206,9 +222,7 @@ fn classify(
                 }
                 0x41 | 0x42 | 0x43 | 0x44 => {
                     if sig.0 == 0 && sig.1 == 1 {
-                        return Some(Trivial::ReplaceWithConst(
-                            body[op_start..op_end].to_vec(),
-                        ));
+                        return Some(Trivial::ReplaceWithConst(body[op_start..op_end].to_vec()));
                     }
                 }
                 _ => {}
@@ -218,7 +232,9 @@ fn classify(
 
     // The inline-paste variants (ReplaceWithBody*) need closed-world
     // visibility (`internal`) so DCE can reap the orphaned callee.
-    if !internal { return None; }
+    if !internal {
+        return None;
+    }
     let _ = is_unique_caller;
 
     // M6 phase 1 — `() -> ()` no-locals body inlining (verbatim paste).
@@ -239,14 +255,16 @@ fn classify(
     // model says it's a win.
     if sig.1 <= 1 {
         let body_instrs = &body[locals_end..body.len() - 1];
-        if body_instrs.len() <= MAX_INLINE_BODY_BYTES
-            && body_instrs.last().is_some()
-        {
+        if body_instrs.len() <= MAX_INLINE_BODY_BYTES && body_instrs.last().is_some() {
             let total_locals = sig.0 + declared_types.len() as u32;
             let (safe, has_return) =
                 safe_to_inline_with_param_locals_v3(body, locals_end, total_locals);
             if safe && multi_caller_profitable(body.len(), sig.0, has_return, n_callers) {
-                let result_blocktype = if sig.1 == 0 { 0x40 } else { 0u8 /* patched */ };
+                let result_blocktype = if sig.1 == 0 {
+                    0x40
+                } else {
+                    0u8 /* patched */
+                };
                 return Some(Trivial::ReplaceWithBodyParams {
                     param_types: vec![0u8; sig.0 as usize],
                     declared_types,
@@ -270,7 +288,9 @@ fn parse_locals_header(body: &[u8]) -> Option<(usize, Vec<u8>)> {
         let (n, c) = leb128::read_u32(body.get(off..)?)?;
         off += c;
         let vt = *body.get(off)?;
-        if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+        if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+            return None;
+        }
         off += 1;
         for _ in 0..n {
             types.push(vt);
@@ -300,26 +320,33 @@ fn safe_to_inline_no_locals(body: &[u8], instrs_start: usize) -> bool {
 /// references: indices >= `n_locals` would point at non-existent
 /// callee locals (we don't paste them). Everything else is allowed:
 /// - `return` and br variants force a wrap (phase 3/6).
-/// - `call F` and `call_indirect` are fine — their immediates are
-///   module-global indices (function/type/table), unchanged by the
-///   splice (phase 7).
-fn safe_to_inline_with_param_locals_v3(body: &[u8], instrs_start: usize, n_locals: u32)
-    -> (bool, bool)
-{
+/// - `call F` and `call_indirect` are fine — their immediates are module-global indices
+///   (function/type/table), unchanged by the splice (phase 7).
+fn safe_to_inline_with_param_locals_v3(
+    body: &[u8],
+    instrs_start: usize,
+    n_locals: u32,
+) -> (bool, bool) {
     let mut iter = InstrIter::new(body, instrs_start);
     let mut needs_wrap = false;
     while let Some((p, _)) = iter.next() {
         let op = body[p];
         match op {
             0x20 | 0x21 | 0x22 => {
-                let Some((k, _)) = leb128::read_u32(&body[p + 1..]) else { return (false, false) };
-                if k >= n_locals { return (false, false); }
+                let Some((k, _)) = leb128::read_u32(&body[p + 1..]) else {
+                    return (false, false);
+                };
+                if k >= n_locals {
+                    return (false, false);
+                }
             }
             0x0F | 0x0C | 0x0D | 0x0E => needs_wrap = true,
             _ => {}
         }
     }
-    if iter.failed() { return (false, false); }
+    if iter.failed() {
+        return (false, false);
+    }
     (true, needs_wrap)
 }
 
@@ -339,14 +366,16 @@ fn rewrite_returns_to_br(body: &[u8]) -> Option<Vec<u8>> {
             0x0B => depth = depth.saturating_sub(1),
             0x0F => {
                 out.extend_from_slice(&body[cursor..p]);
-                out.push(0x0C);                            // br
+                out.push(0x0C); // br
                 leb128::write_u32(&mut out, depth);
                 cursor = p + len;
             }
             _ => {}
         }
     }
-    if iter.failed() { return None; }
+    if iter.failed() {
+        return None;
+    }
     out.extend_from_slice(&body[cursor..]);
     Some(out)
 }
@@ -367,7 +396,9 @@ fn rebase_locals(body: &[u8], delta: u32) -> Option<Vec<u8>> {
             cursor = p + 1 + c;
         }
     }
-    if iter.failed() { return None; }
+    if iter.failed() {
+        return None;
+    }
     out.extend_from_slice(&body[cursor..]);
     Some(out)
 }
@@ -375,22 +406,26 @@ fn rebase_locals(body: &[u8], delta: u32) -> Option<Vec<u8>> {
 /// Read both the param and result valtype byte vectors for a function
 /// type. Returns None on unsupported (non-0x60) form or unrecognised
 /// valtype byte.
-fn read_func_sig_types(module: &WasmModule<'_>, type_idx: u32)
-    -> Option<(Vec<u8>, Vec<u8>)>
-{
+fn read_func_sig_types(module: &WasmModule<'_>, type_idx: u32) -> Option<(Vec<u8>, Vec<u8>)> {
     let sec = module.section(crate::module::SECTION_TYPE)?;
     let p = sec.payload.slice(module.data());
     let (count, mut off) = leb128::read_u32(p)?;
-    if type_idx >= count { return None; }
+    if type_idx >= count {
+        return None;
+    }
     for ti in 0..count {
-        if *p.get(off)? != 0x60 { return None; }
+        if *p.get(off)? != 0x60 {
+            return None;
+        }
         off += 1;
         let (params, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         let params_start = off;
         for _ in 0..params {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         let params_end = off;
@@ -399,7 +434,9 @@ fn read_func_sig_types(module: &WasmModule<'_>, type_idx: u32)
         let results_start = off;
         for _ in 0..results {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         let results_end = off;
@@ -418,16 +455,22 @@ fn read_param_types(module: &WasmModule<'_>, type_idx: u32) -> Option<Vec<u8>> {
     let sec = module.section(crate::module::SECTION_TYPE)?;
     let p = sec.payload.slice(module.data());
     let (count, mut off) = leb128::read_u32(p)?;
-    if type_idx >= count { return None; }
+    if type_idx >= count {
+        return None;
+    }
     for ti in 0..count {
-        if *p.get(off)? != 0x60 { return None; }
+        if *p.get(off)? != 0x60 {
+            return None;
+        }
         off += 1;
         let (params, c) = leb128::read_u32(p.get(off..)?)?;
         off += c;
         let params_start = off;
         for _ in 0..params {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         let params_end = off;
@@ -436,7 +479,9 @@ fn read_param_types(module: &WasmModule<'_>, type_idx: u32) -> Option<Vec<u8>> {
         off += c;
         for _ in 0..results {
             let vt = *p.get(off)?;
-            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
             off += 1;
         }
         if ti == type_idx {
@@ -447,22 +492,24 @@ fn read_param_types(module: &WasmModule<'_>, type_idx: u32) -> Option<Vec<u8>> {
 }
 
 /// Count `call N` occurrences targeting each defined function index.
-fn count_call_sites(
-    m: &MutModule<'_>,
-    num_imports: u32,
-    num_bodies: usize,
-) -> Vec<u32> {
+fn count_call_sites(m: &MutModule<'_>, num_imports: u32, num_bodies: usize) -> Vec<u32> {
     let mut counts = vec![0u32; num_bodies];
     for i in 0..num_bodies {
         let body = m.body_bytes(i);
-        let Some(start) = opcode::skip_locals(body) else { continue };
+        let Some(start) = opcode::skip_locals(body) else {
+            continue;
+        };
         let mut iter = InstrIter::new(body, start);
         while let Some((p, _)) = iter.next() {
-            if body[p] != 0x10 { continue; }
+            if body[p] != 0x10 {
+                continue;
+            }
             if let Some((f, _)) = leb128::read_u32(&body[p + 1..]) {
                 if f >= num_imports {
                     let local_idx = (f - num_imports) as usize;
-                    if local_idx < counts.len() { counts[local_idx] += 1; }
+                    if local_idx < counts.len() {
+                        counts[local_idx] += 1;
+                    }
                 }
             }
         }
@@ -493,11 +540,19 @@ fn rewrite_body(
 
     let mut iter = InstrIter::new(body, instrs_start);
     while let Some((p, len)) = iter.next() {
-        if body[p] != 0x10 { continue; }
-        let Some((f, _)) = leb128::read_u32(&body[p + 1..]) else { continue };
-        if f < num_imports { continue; }
+        if body[p] != 0x10 {
+            continue;
+        }
+        let Some((f, _)) = leb128::read_u32(&body[p + 1..]) else {
+            continue;
+        };
+        if f < num_imports {
+            continue;
+        }
         let local_idx = (f - num_imports) as usize;
-        let Some(Some(t)) = trivial.get(local_idx) else { continue };
+        let Some(Some(t)) = trivial.get(local_idx) else {
+            continue;
+        };
         match t {
             Trivial::DeleteCall => edits.push((p, len, Vec::new())),
             Trivial::ReplaceWithConst(bytes) => {
@@ -509,7 +564,11 @@ fn rewrite_body(
                 edits.push((p, len, bytes.clone()));
             }
             Trivial::ReplaceWithBodyParams {
-                param_types, declared_types, body: callee, wrap_for_return, result_blocktype,
+                param_types,
+                declared_types,
+                body: callee,
+                wrap_for_return,
+                result_blocktype,
             } => {
                 // Guard: local index is a u32 LEB. If adding the callee's
                 // locals would overflow — OR would push a single function's
@@ -526,10 +585,16 @@ fn rewrite_body(
                 let n = param_types.len() as u32;
                 let extra = n.checked_add(declared_types.len() as u32);
                 let Some(extra) = extra else { continue };
-                let Some(total) = next_new_local.checked_add(extra) else { continue };
-                if total > MAX_LOCALS_PER_FUNCTION { continue; }
+                let Some(total) = next_new_local.checked_add(extra) else {
+                    continue;
+                };
+                if total > MAX_LOCALS_PER_FUNCTION {
+                    continue;
+                }
                 let first_new = next_new_local;
-                let Some(remapped) = rebase_locals(callee, first_new) else { continue };
+                let Some(remapped) = rebase_locals(callee, first_new) else {
+                    continue;
+                };
                 // Body might still reference declared locals at indices
                 // n..n+d (already rebased above).
                 let body_part = if *wrap_for_return {
@@ -562,8 +627,12 @@ fn rewrite_body(
             }
         }
     }
-    if iter.failed() { return None; }
-    if edits.is_empty() && new_local_types.is_empty() { return None; }
+    if iter.failed() {
+        return None;
+    }
+    if edits.is_empty() && new_local_types.is_empty() {
+        return None;
+    }
 
     // Re-emit body. Locals header may have grown.
     let mut out = Vec::with_capacity(body.len());
@@ -663,7 +732,10 @@ mod tests {
         let entry = classify(&body, (0, 0), 1, true);
         // Should classify as ReplaceWithBodyParams with wrap_for_return.
         match entry {
-            Some(Trivial::ReplaceWithBodyParams { wrap_for_return: true, .. }) => {}
+            Some(Trivial::ReplaceWithBodyParams {
+                wrap_for_return: true,
+                ..
+            }) => {}
             _ => panic!("phase 6 should classify body-with-br as ReplaceWithBodyParams + wrap"),
         }
     }
@@ -698,7 +770,7 @@ mod tests {
         let body = [0, 0x41, 5, 0x10, 0, 0x0B];
         let callee_body = vec![0x20, 0, 0x1A]; // local.get 0; drop
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
-            param_types: vec![0x7F],          // i32
+            param_types: vec![0x7F], // i32
             declared_types: vec![],
             body: callee_body,
             wrap_for_return: false,
@@ -708,12 +780,11 @@ mod tests {
         // Locals header: was 0 groups; now 1 group of (1, i32).
         // Body: i32.const 5, local.set 0, local.get 0, drop, end.
         let expected = vec![
-            1, 1, 0x7F,        // 1 group: 1 i32
-            0x41, 5,
-            0x21, 0,           // local.set 0 (the new local for the arg)
-            0x20, 0,           // local.get 0 (remapped from callee's local 0)
-            0x1A,              // drop
-            0x0B,              // end
+            1, 1, 0x7F, // 1 group: 1 i32
+            0x41, 5, 0x21, 0, // local.set 0 (the new local for the arg)
+            0x20, 0,    // local.get 0 (remapped from callee's local 0)
+            0x1A, // drop
+            0x0B, // end
         ];
         assert_eq!(out, expected);
     }
@@ -743,15 +814,7 @@ mod tests {
         //   end                  ;; wrap end
         //   end                  ;; func end
         let expected = vec![
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x02, 0x40,
-            0x20, 0,
-            0x1A,
-            0x0C, 0,
-            0x0B,
-            0x0B,
+            1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x02, 0x40, 0x20, 0, 0x1A, 0x0C, 0, 0x0B, 0x0B,
         ];
         assert_eq!(out, expected);
     }
@@ -769,7 +832,7 @@ mod tests {
             declared_types: vec![],
             body: callee_body,
             wrap_for_return: true,
-            result_blocktype: 0x7F,    // i32
+            result_blocktype: 0x7F, // i32
         })];
         let out = rewrite_body(&body, &trivial, 0, 0).expect("should inline");
         // 1 group of (1, i32). Body:
@@ -782,15 +845,12 @@ mod tests {
         //   drop
         //   end
         let expected = vec![
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x02, 0x7F,        // block (result i32)
-            0x20, 0,           // local.get 0 (the new local)
-            0x0C, 0,           // br 0 (return rewritten)
-            0x0B,              // end of wrap
-            0x1A,              // drop
-            0x0B,              // end func
+            1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x02, 0x7F, // block (result i32)
+            0x20, 0, // local.get 0 (the new local)
+            0x0C, 0,    // br 0 (return rewritten)
+            0x0B, // end of wrap
+            0x1A, // drop
+            0x0B, // end func
         ];
         assert_eq!(out, expected);
     }
@@ -809,13 +869,13 @@ mod tests {
         // semantically we'd want the i64 set with an i64 source. We
         // construct a body that just touches local 1 (declared).
         let callee_body = vec![
-            0x42, 0,    // i64.const 0
-            0x21, 1,    // local.set 1 (the declared local)
+            0x42, 0, // i64.const 0
+            0x21, 1, // local.set 1 (the declared local)
             0x20, 0,    // local.get 0
-            0x1A,       // drop
+            0x1A, // drop
         ];
         let trivial = vec![Some(Trivial::ReplaceWithBodyParams {
-            param_types: vec![0x7F],   // i32 param
+            param_types: vec![0x7F],    // i32 param
             declared_types: vec![0x7E], // i64 declared local
             body: callee_body,
             wrap_for_return: false,
@@ -827,16 +887,14 @@ mod tests {
         //       local.get 0, drop, end.
         // Locals 0..1 in the splice = (param_i32, declared_i64) of the callee.
         let expected = vec![
-            2,                  // 2 groups
-            1, 0x7F,            // (1, i32) — for the param
-            1, 0x7E,            // (1, i64) — for the declared local
-            0x41, 5,
-            0x21, 0,            // local.set 0 (arg materialised)
-            0x42, 0,            // i64.const 0 (callee's instr)
-            0x21, 1,            // local.set 1 (callee's declared, rebased to caller idx 1)
-            0x20, 0,            // local.get 0 (callee's param 0, rebased)
-            0x1A,
-            0x0B,
+            2, // 2 groups
+            1, 0x7F, // (1, i32) — for the param
+            1, 0x7E, // (1, i64) — for the declared local
+            0x41, 5, 0x21, 0, // local.set 0 (arg materialised)
+            0x42, 0, // i64.const 0 (callee's instr)
+            0x21, 1, // local.set 1 (callee's declared, rebased to caller idx 1)
+            0x20, 0, // local.get 0 (callee's param 0, rebased)
+            0x1A, 0x0B,
         ];
         assert_eq!(out, expected);
     }
@@ -846,12 +904,7 @@ mod tests {
     #[test]
     fn phase7_accepts_callee_with_call_indirect() {
         // Callee body: i32.const 0; call_indirect (type 0) (table 0); end.
-        let body = [
-            0,
-            0x41, 0,
-            0x11, 0, 0,
-            0x0B,
-        ];
+        let body = [0, 0x41, 0, 0x11, 0, 0, 0x0B];
         // sig (1) -> () with one i32 param.
         let entry = classify(&body, (1, 0), 1, true);
         match entry {
@@ -882,7 +935,9 @@ mod tests {
         // inlined_size = 33 + 4 + 2 = 39. added_per_site = 37.
         // total_added = 5 * 37 = 185. callee_savings = 39. NOT profitable.
         let mut body = vec![0]; // 0 locals
-        for _ in 0..32 { body.push(0x01); } // 32 nops
+        for _ in 0..32 {
+            body.push(0x01);
+        } // 32 nops
         body.push(0x0B); // end
         match classify(&body, (2, 0), 5, true) {
             None => {}

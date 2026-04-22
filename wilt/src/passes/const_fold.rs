@@ -14,7 +14,8 @@
 //   i32.const X; i32.const Y; i32.shl  →  i32.const (X << Y)
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 
 // i32 opcodes.
 const I32_CONST: u8 = 0x41;
@@ -82,7 +83,10 @@ fn fold_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::Body
     // Find foldable spans. Each replacement is (from, to, Repl).
     // Two-const triples: collapse to a single i32.const.
     // Single-const+identity-binop pairs: collapse to nothing (delete both).
-    enum Repl { Const(i32), Empty }
+    enum Repl {
+        Const(i32),
+        Empty,
+    }
     let mut replacements: Vec<(usize, usize, Repl)> = Vec::new();
     let mut i = 0;
     while i < spans.len() {
@@ -119,7 +123,9 @@ fn fold_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::Body
         i += 1;
     }
 
-    if replacements.is_empty() { return None; }
+    if replacements.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut edits = crate::provenance::BodyEdits::identity();
@@ -156,12 +162,17 @@ fn fold_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::Body
 /// the right-hand identity for the binop. Commutative op + left-hand
 /// identity is not matched here (would need backward value tracking).
 fn is_rhs_identity(op: u8, v: i32) -> bool {
-    matches!((op, v),
-        (I32_ADD, 0) | (I32_SUB, 0)
-        | (I32_OR, 0) | (I32_XOR, 0)
-        | (I32_SHL, 0) | (I32_SHR_U, 0) | (0x75 /*shr_s*/, 0)
-        | (I32_MUL, 1)
-        | (I32_AND, -1)
+    matches!(
+        (op, v),
+        (I32_ADD, 0)
+            | (I32_SUB, 0)
+            | (I32_OR, 0)
+            | (I32_XOR, 0)
+            | (I32_SHL, 0)
+            | (I32_SHR_U, 0)
+            | (0x75 /* shr_s */, 0)
+            | (I32_MUL, 1)
+            | (I32_AND, -1)
     )
 }
 
@@ -189,12 +200,18 @@ pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| fold_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();
-    let Some(code_sec_idx) = module.sections().iter().position(|s| s.id == module::SECTION_CODE) else {
+    let Some(code_sec_idx) = module
+        .sections()
+        .iter()
+        .position(|s| s.id == module::SECTION_CODE)
+    else {
         return data.to_vec();
     };
 
@@ -344,10 +361,12 @@ mod tests {
         // Apply the edits to the input, using the output bytes to
         // supply substituted spans. If they match, edits correctly
         // describe the rewrite.
-        let reconstructed = edits.apply(&body, |i, _src, _len| {
-            let e = edits.edits().get(i)?;
-            Some(out[e.out_start as usize .. e.out_end() as usize].to_vec())
-        }).unwrap();
+        let reconstructed = edits
+            .apply(&body, |i, _src, _len| {
+                let e = edits.edits().get(i)?;
+                Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+            })
+            .unwrap();
         assert_eq!(reconstructed, out);
     }
 
@@ -356,10 +375,12 @@ mod tests {
         // local.get 0 ; i32.const 0 ; i32.add → local.get 0
         let body = vec![0, 0x20, 0, I32_CONST, 0, I32_ADD, 0x0B];
         let (out, edits) = fold_body_with_edits(&body).unwrap();
-        let reconstructed = edits.apply(&body, |i, _src, _len| {
-            let e = edits.edits().get(i)?;
-            Some(out[e.out_start as usize .. e.out_end() as usize].to_vec())
-        }).unwrap();
+        let reconstructed = edits
+            .apply(&body, |i, _src, _len| {
+                let e = edits.edits().get(i)?;
+                Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+            })
+            .unwrap();
         assert_eq!(reconstructed, out);
     }
 
@@ -385,7 +406,10 @@ mod tests {
         let module = WasmModule::parse(&data).unwrap();
         let output = apply(&module);
 
-        assert!(output.len() < data.len(), "folding should shrink the module");
+        assert!(
+            output.len() < data.len(),
+            "folding should shrink the module"
+        );
 
         // Verify output is valid.
         WasmModule::parse(&output).unwrap();

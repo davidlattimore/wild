@@ -21,6 +21,19 @@ fn run() -> libwild::error::Result {
 
     libwild::init_timing()?;
 
+    // Incremental whole-link skip — runs BEFORE `Args::parse` so
+    // we skip the ~274 ms spent walking `-L`, resolving `-l`, and
+    // probing the SDK. If the cache side-car alongside the output
+    // agrees on (argv hash, wild version, per-input fingerprints,
+    // output size), the existing output binary is already the
+    // correct link result.
+    //
+    // Gated on `WILD_INCREMENTAL_DEBUG=1`; no-op when unset.
+    if let Some(output) = libwild::try_early_skip_from_argv() {
+        libwild::bump_output_path_mtime(&output);
+        return Ok(());
+    }
+
     let mut args = libwild::Args::new(std::env::args)?;
     args.set_version(VERSION);
     args.parse(std::env::args)?;

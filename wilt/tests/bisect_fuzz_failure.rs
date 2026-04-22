@@ -6,7 +6,10 @@ use wilt::module::WasmModule;
 use wilt::passes;
 
 fn validates(bytes: &[u8]) -> Result<(), String> {
-    Validator::new().validate_all(bytes).map_err(|e| e.to_string()).map(|_| ())
+    Validator::new()
+        .validate_all(bytes)
+        .map_err(|e| e.to_string())
+        .map(|_| ())
 }
 
 fn report(stage: &str, bytes: &[u8]) {
@@ -20,7 +23,10 @@ fn report(stage: &str, bytes: &[u8]) {
 fn bisect() {
     let input = match std::fs::read("/tmp/wilt_fuzz_in.wasm") {
         Ok(b) => b,
-        Err(_) => { eprintln!("no /tmp/wilt_fuzz_in.wasm; skipping"); return; }
+        Err(_) => {
+            eprintln!("no /tmp/wilt_fuzz_in.wasm; skipping");
+            return;
+        }
     };
     report("input", &input);
 
@@ -39,8 +45,10 @@ fn bisect() {
 
     let m = WasmModule::parse(&after).unwrap();
     let analysis = passes::type_gc::analyse(&m);
-    println!("  type_gc analysis: kept={} bail={} map={:?}",
-        analysis.kept, analysis.bail, analysis.index_map);
+    println!(
+        "  type_gc analysis: kept={} bail={} map={:?}",
+        analysis.kept, analysis.bail, analysis.index_map
+    );
     let after = passes::type_gc::apply(&m);
     report("after type_gc", &after);
     std::fs::write("/tmp/wilt_after_type_gc.wasm", &after).ok();
@@ -49,14 +57,14 @@ fn bisect() {
     type PassFn = fn(&mut wilt::mut_module::MutModule<'_>);
     let mut stage_in = after.clone();
     let stages: [(&str, PassFn); 8] = [
-        ("const_fold",        passes::const_fold::apply_mut),
-        ("vacuum",            passes::vacuum::apply_mut),
+        ("const_fold", passes::const_fold::apply_mut),
+        ("vacuum", passes::vacuum::apply_mut),
         ("remove_unused_brs", passes::remove_unused_brs::apply_mut),
-        ("merge_blocks",      passes::merge_blocks::apply_mut),
-        ("simplify_locals",   passes::simplify_locals::apply_mut),
-        ("inline_trivial",    passes::inline_trivial::apply_mut),
-        ("dae",               passes::dae::apply_mut),
-        ("reorder_locals",    passes::reorder_locals::apply_mut),
+        ("merge_blocks", passes::merge_blocks::apply_mut),
+        ("simplify_locals", passes::simplify_locals::apply_mut),
+        ("inline_trivial", passes::inline_trivial::apply_mut),
+        ("dae", passes::dae::apply_mut),
+        ("reorder_locals", passes::reorder_locals::apply_mut),
     ];
     for (name, f) in stages {
         let mut m = wilt::mut_module::MutModule::new(&stage_in).unwrap();

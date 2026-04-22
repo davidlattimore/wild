@@ -16,9 +16,8 @@
 //!
 //! - `in_len > 0 && out_len > 0`: substitution — input span rewritten.
 //! - `in_len > 0 && out_len == 0`: deletion — input bytes dropped.
-//! - `in_len == 0 && out_len > 0`: synthesis — new bytes introduced
-//!   that didn't exist in input (e.g. inline splice pasting callee
-//!   bytes; `pure_call_elim` writing drops).
+//! - `in_len == 0 && out_len > 0`: synthesis — new bytes introduced that didn't exist in input
+//!   (e.g. inline splice pasting callee bytes; `pure_call_elim` writing drops).
 //!
 //! For synthesised spans that came from *another function body*
 //! (only `inline_trivial` does this), `src_funcs[i]` names the input
@@ -46,19 +45,38 @@ pub struct Edit {
 impl Edit {
     /// Pure deletion: input bytes gone, nothing in their place.
     pub fn delete(in_start: u32, in_len: u32, out_start: u32) -> Self {
-        Self { in_start, in_len, out_start, out_len: 0 }
+        Self {
+            in_start,
+            in_len,
+            out_start,
+            out_len: 0,
+        }
     }
     /// Pure synthesis: new bytes in output that didn't exist in input.
     pub fn synth(in_start: u32, out_start: u32, out_len: u32) -> Self {
-        Self { in_start, in_len: 0, out_start, out_len }
+        Self {
+            in_start,
+            in_len: 0,
+            out_start,
+            out_len,
+        }
     }
     /// Substitution: input bytes replaced by a different-size run.
     pub fn subst(in_start: u32, in_len: u32, out_start: u32, out_len: u32) -> Self {
-        Self { in_start, in_len, out_start, out_len }
+        Self {
+            in_start,
+            in_len,
+            out_start,
+            out_len,
+        }
     }
 
-    pub fn in_end(&self) -> u32 { self.in_start + self.in_len }
-    pub fn out_end(&self) -> u32 { self.out_start + self.out_len }
+    pub fn in_end(&self) -> u32 {
+        self.in_start + self.in_len
+    }
+    pub fn out_end(&self) -> u32 {
+        self.out_start + self.out_len
+    }
 }
 
 /// Per-body edit list. `src_funcs[i]` names the input function that
@@ -73,12 +91,18 @@ pub struct BodyEdits {
 
 impl BodyEdits {
     pub fn identity() -> Self {
-        Self { edits: Vec::new(), src_funcs: Vec::new() }
+        Self {
+            edits: Vec::new(),
+            src_funcs: Vec::new(),
+        }
     }
 
     pub fn from_edits(edits: Vec<Edit>) -> Self {
         let n = edits.len();
-        Self { edits, src_funcs: vec![None; n] }
+        Self {
+            edits,
+            src_funcs: vec![None; n],
+        }
     }
 
     pub fn from_edits_with_sources(edits: Vec<Edit>, src_funcs: Vec<Option<u32>>) -> Self {
@@ -86,17 +110,24 @@ impl BodyEdits {
         Self { edits, src_funcs }
     }
 
-    pub fn is_identity(&self) -> bool { self.edits.is_empty() }
+    pub fn is_identity(&self) -> bool {
+        self.edits.is_empty()
+    }
 
-    pub fn edits(&self) -> &[Edit] { &self.edits }
-    pub fn src_funcs(&self) -> &[Option<u32>] { &self.src_funcs }
+    pub fn edits(&self) -> &[Edit] {
+        &self.edits
+    }
+    pub fn src_funcs(&self) -> &[Option<u32>] {
+        &self.src_funcs
+    }
 
     pub fn push(&mut self, e: Edit, src: Option<u32>) {
         if let Some(last) = self.edits.last() {
             debug_assert!(
                 e.out_start >= last.out_end(),
                 "edits must be sorted + non-overlapping in out space; got {} after {}",
-                e.out_start, last.out_end()
+                e.out_start,
+                last.out_end()
             );
         }
         self.edits.push(e);
@@ -110,38 +141,47 @@ impl BodyEdits {
     /// Returns `None` if the edit list doesn't fit `input.len()` —
     /// a malformed/stale edit list.
     pub fn apply<F>(&self, input: &[u8], mut synth: F) -> Option<Vec<u8>>
-    where F: FnMut(usize, Option<u32>, u32) -> Option<Vec<u8>>,
+    where
+        F: FnMut(usize, Option<u32>, u32) -> Option<Vec<u8>>,
     {
         // Determine total output size.
         let mut out_len = input.len() as u32;
         for e in &self.edits {
-            if e.in_end() as usize > input.len() { return None; }
-            out_len = out_len
-                .checked_sub(e.in_len)?
-                .checked_add(e.out_len)?;
+            if e.in_end() as usize > input.len() {
+                return None;
+            }
+            out_len = out_len.checked_sub(e.in_len)?.checked_add(e.out_len)?;
         }
         let mut out = Vec::with_capacity(out_len as usize);
         let mut in_cursor = 0u32;
         for (i, e) in self.edits.iter().enumerate() {
             // Copy identity bytes up to this edit's input start.
-            if e.in_start < in_cursor { return None; }
+            if e.in_start < in_cursor {
+                return None;
+            }
             out.extend_from_slice(&input[in_cursor as usize..e.in_start as usize]);
             // Write the replacement span.
             if e.in_len > 0 && e.out_len > 0 {
                 // Substitution — callback supplies new bytes.
                 let bytes = synth(i, self.src_funcs[i], e.out_len)?;
-                if bytes.len() as u32 != e.out_len { return None; }
+                if bytes.len() as u32 != e.out_len {
+                    return None;
+                }
                 out.extend_from_slice(&bytes);
             } else if e.out_len > 0 {
                 // Pure synthesis.
                 let bytes = synth(i, self.src_funcs[i], e.out_len)?;
-                if bytes.len() as u32 != e.out_len { return None; }
+                if bytes.len() as u32 != e.out_len {
+                    return None;
+                }
                 out.extend_from_slice(&bytes);
             }
             // in_len > 0 && out_len == 0 → deletion, nothing to write.
             in_cursor = e.in_end();
         }
-        if (in_cursor as usize) > input.len() { return None; }
+        if (in_cursor as usize) > input.len() {
+            return None;
+        }
         out.extend_from_slice(&input[in_cursor as usize..]);
         Some(out)
     }
@@ -157,8 +197,12 @@ impl BodyEdits {
     /// `next` edit is an output-side transformation. The result
     /// folds corresponding chunks pairwise.
     pub fn compose(a: &Self, b: &Self) -> Self {
-        if a.is_identity() { return b.clone(); }
-        if b.is_identity() { return a.clone(); }
+        if a.is_identity() {
+            return b.clone();
+        }
+        if b.is_identity() {
+            return a.clone();
+        }
 
         // Strategy: build output edits by walking through `b` (the
         // mid→out map) in out_start order. For each `b` edit, figure
@@ -172,7 +216,7 @@ impl BodyEdits {
         // This is still O(|a|+|b|) since we linear-scan both.
 
         let mut out_edits = Vec::with_capacity(a.edits.len() + b.edits.len());
-        let mut out_srcs  = Vec::with_capacity(a.edits.len() + b.edits.len());
+        let mut out_srcs = Vec::with_capacity(a.edits.len() + b.edits.len());
 
         // Event cursors — the high-water mark we've emitted in mid-
         // space and out-space.
@@ -188,7 +232,8 @@ impl BodyEdits {
                 // This `a`-edit's mid-space run projects identity in b
                 // up to be.out_start. Emit it as an input→output edit
                 // translating the mid_cursor offset via b's identity.
-                let delta_in_out = out_cursor_for_mid(be, ae.out_start, &b, &mut mid_cursor, &mut out_cursor);
+                let delta_in_out =
+                    out_cursor_for_mid(be, ae.out_start, &b, &mut mid_cursor, &mut out_cursor);
                 out_edits.push(Edit {
                     in_start: ae.in_start,
                     in_len: ae.in_len,
@@ -212,7 +257,8 @@ impl BodyEdits {
             let identity_mid_gap = be.in_start.saturating_sub(mid_cursor);
             out_cursor = out_cursor.saturating_add(identity_mid_gap);
             out_edits.push(Edit {
-                in_start, in_len,
+                in_start,
+                in_len,
                 out_start: out_cursor,
                 out_len: be.out_len,
             });
@@ -228,7 +274,10 @@ impl BodyEdits {
             // out space for these = mid space offset by (out_cursor -
             // mid_cursor). Since b is identity from mid_cursor onward,
             // the delta is preserved.
-            let out_start = ae.out_start.saturating_sub(mid_cursor).saturating_add(out_cursor);
+            let out_start = ae
+                .out_start
+                .saturating_sub(mid_cursor)
+                .saturating_add(out_cursor);
             out_edits.push(Edit {
                 in_start: ae.in_start,
                 in_len: ae.in_len,
@@ -239,7 +288,10 @@ impl BodyEdits {
             a_idx += 1;
         }
 
-        Self { edits: out_edits, src_funcs: out_srcs }
+        Self {
+            edits: out_edits,
+            src_funcs: out_srcs,
+        }
     }
 }
 
@@ -258,7 +310,7 @@ fn mid_to_in(mid_start: u32, mid_len: u32, a: &BodyEdits) -> (u32, u32) {
     }
     let mid_end = mid_start + mid_len;
 
-    let mut accum_before: i64 = 0;  // in - out for all a-edits strictly before mid_start
+    let mut accum_before: i64 = 0; // in - out for all a-edits strictly before mid_start
     let mut in_lo = u32::MAX;
     let mut in_hi = 0u32;
     let mut had_overlap = false;
@@ -291,11 +343,15 @@ fn mid_to_in(mid_start: u32, mid_len: u32, a: &BodyEdits) -> (u32, u32) {
     // Identity region before first overlap: mid_start .. first_overlap.out_start
     // Identity region after last overlap: last_overlap.out_end .. mid_end
     // For identity regions, in == mid + accum.
-    let first_overlap_out_start = a.edits.iter()
+    let first_overlap_out_start = a
+        .edits
+        .iter()
         .find(|e| e.out_end() > mid_start && e.out_start < mid_end)
         .map(|e| e.out_start)
         .unwrap_or(mid_start);
-    let last_overlap_out_end = a.edits.iter()
+    let last_overlap_out_end = a
+        .edits
+        .iter()
         .rev()
         .find(|e| e.out_end() > mid_start && e.out_start < mid_end)
         .map(|e| e.out_end())
@@ -318,9 +374,15 @@ fn mid_to_in(mid_start: u32, mid_len: u32, a: &BodyEdits) -> (u32, u32) {
 fn find_src_in_a(mid_start: u32, mid_len: u32, a: &BodyEdits) -> Option<u32> {
     let mid_end = mid_start + mid_len;
     for (i, ae) in a.edits.iter().enumerate() {
-        if ae.out_end() <= mid_start { continue; }
-        if ae.out_start >= mid_end { break; }
-        if let Some(src) = a.src_funcs[i] { return Some(src); }
+        if ae.out_end() <= mid_start {
+            continue;
+        }
+        if ae.out_start >= mid_end {
+            break;
+        }
+        if let Some(src) = a.src_funcs[i] {
+            return Some(src);
+        }
     }
     None
 }
@@ -330,8 +392,11 @@ fn find_src_in_a(mid_start: u32, mid_len: u32, a: &BodyEdits) -> Option<u32> {
 /// `b`'s identity-section projection.
 #[allow(dead_code)]
 fn out_cursor_for_mid(
-    _be: &Edit, mid_target: u32, _b: &BodyEdits,
-    mid_cursor: &mut u32, out_cursor: &mut u32,
+    _be: &Edit,
+    mid_target: u32,
+    _b: &BodyEdits,
+    mid_cursor: &mut u32,
+    out_cursor: &mut u32,
 ) -> u32 {
     // Identity projection from mid_cursor up to mid_target.
     let delta = mid_target.saturating_sub(*mid_cursor);
@@ -345,7 +410,9 @@ fn out_cursor_for_mid(
 mod tests {
     use super::*;
 
-    fn synth_fail(_i: usize, _f: Option<u32>, _len: u32) -> Option<Vec<u8>> { None }
+    fn synth_fail(_i: usize, _f: Option<u32>, _len: u32) -> Option<Vec<u8>> {
+        None
+    }
 
     #[test]
     fn identity_apply_returns_input() {
@@ -369,10 +436,12 @@ mod tests {
         // Replace bytes 1..3 ("bc") with two bytes "XY" — out: "aXYdef"
         let mut e = BodyEdits::identity();
         e.push(Edit::subst(1, 2, 1, 2), None);
-        let out = e.apply(b"abcdef", |_, _, n| {
-            assert_eq!(n, 2);
-            Some(b"XY".to_vec())
-        }).unwrap();
+        let out = e
+            .apply(b"abcdef", |_, _, n| {
+                assert_eq!(n, 2);
+                Some(b"XY".to_vec())
+            })
+            .unwrap();
         assert_eq!(out, b"aXYdef");
     }
 
@@ -381,10 +450,12 @@ mod tests {
         // Insert "XYZ" at position 3 — out: "abcXYZdef"
         let mut e = BodyEdits::identity();
         e.push(Edit::synth(3, 3, 3), None);
-        let out = e.apply(b"abcdef", |_, _, n| {
-            assert_eq!(n, 3);
-            Some(b"XYZ".to_vec())
-        }).unwrap();
+        let out = e
+            .apply(b"abcdef", |_, _, n| {
+                assert_eq!(n, 3);
+                Some(b"XYZ".to_vec())
+            })
+            .unwrap();
         assert_eq!(out, b"abcXYZdef");
     }
 
@@ -394,10 +465,12 @@ mod tests {
         let mut e = BodyEdits::identity();
         e.push(Edit::delete(0, 1, 0), None);
         e.push(Edit::subst(3, 1, 2, 2), None);
-        let out = e.apply(b"abcdef", |_, _, n| {
-            assert_eq!(n, 2);
-            Some(b"DD".to_vec())
-        }).unwrap();
+        let out = e
+            .apply(b"abcdef", |_, _, n| {
+                assert_eq!(n, 2);
+                Some(b"DD".to_vec())
+            })
+            .unwrap();
         assert_eq!(out, b"bcDDef");
     }
 

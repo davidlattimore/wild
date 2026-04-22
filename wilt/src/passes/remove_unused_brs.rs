@@ -14,7 +14,9 @@
 //! Bodies that can't be tracked (unknown opcodes, missing sig resolver
 //! for a call) are left untouched.
 
-use crate::block_walker::{BlockKind, BlockWalker, ModuleSigs};
+use crate::block_walker::BlockKind;
+use crate::block_walker::BlockWalker;
+use crate::block_walker::ModuleSigs;
 use crate::leb128;
 use crate::module::WasmModule;
 use crate::mut_module::MutModule;
@@ -22,25 +24,33 @@ use crate::opcode;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     let input = m.input();
-    let Ok(wm) = WasmModule::parse(input) else { return };
-    let Some(sigs) = ModuleSigs::from_module(&wm) else { return };
+    let Ok(wm) = WasmModule::parse(input) else {
+        return;
+    };
+    let Some(sigs) = ModuleSigs::from_module(&wm) else {
+        return;
+    };
 
     use rayon::prelude::*;
     let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
         .map_init(
             || Vec::with_capacity(16),
-            |frames, i| rewrite_body_with_edits(m.body_bytes(i), &sigs, frames)
-                .map(|(b, e)| (i, b, e)),
+            |frames, i| {
+                rewrite_body_with_edits(m.body_bytes(i), &sigs, frames).map(|(b, e)| (i, b, e))
+            },
         )
         .filter_map(|x| x)
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
 fn rewrite_body(
-    body: &[u8], sigs: &ModuleSigs,
+    body: &[u8],
+    sigs: &ModuleSigs,
     frames: &mut Vec<crate::block_walker::BlockFrame>,
 ) -> Option<Vec<u8>> {
     rewrite_body_with_edits(body, sigs, frames).map(|(b, _)| b)
@@ -61,9 +71,7 @@ fn rewrite_body_with_edits(
     while let Some(step) = w.next() {
         if step.op == 0x0B {
             // end — check if prev was a removable `br 0`.
-            if let (Some((0x0C, pp, plen, psd, preach)), Some(frame)) =
-                (prev, step.closed_frame)
-            {
+            if let (Some((0x0C, pp, plen, psd, preach)), Some(frame)) = (prev, step.closed_frame) {
                 if preach
                     && !matches!(frame.kind, BlockKind::Loop)
                     && psd == frame.entry_depth + frame.fallthrough_arity as i32
@@ -77,12 +85,19 @@ fn rewrite_body_with_edits(
             }
         }
         prev = Some((
-            step.op, step.pos, step.len,
-            step.stack_depth_before, step.reachable_before,
+            step.op,
+            step.pos,
+            step.len,
+            step.stack_depth_before,
+            step.reachable_before,
         ));
     }
-    if w.failed() { return None; }
-    if to_remove.is_empty() { return None; }
+    if w.failed() {
+        return None;
+    }
+    if to_remove.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut edits = crate::provenance::BodyEdits::identity();
@@ -108,9 +123,10 @@ mod tests {
         // Empty-sig context: no calls in our test bodies.
         let mut types: Vec<(u32, u32)> = Vec::new();
         let _ = &mut types;
-        let sigs = ModuleSigs::from_module(&WasmModule::parse(&[
-            0,0x61,0x73,0x6D,1,0,0,0
-        ]).unwrap()).unwrap();
+        let sigs = ModuleSigs::from_module(
+            &WasmModule::parse(&[0, 0x61, 0x73, 0x6D, 1, 0, 0, 0]).unwrap(),
+        )
+        .unwrap();
         let mut frames = Vec::new();
         rewrite_body(body, &sigs, &mut frames)
     }
@@ -122,26 +138,14 @@ mod tests {
         //     br 0
         //   end
         // )
-        let body = [
-            0,
-            0x02, 0x40,
-            0x0C, 0x00,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
         let out = run(&body).expect("should rewrite");
         assert_eq!(out, vec![0, 0x02, 0x40, 0x0B, 0x0B]);
     }
 
     #[test]
     fn keeps_br0_in_loop() {
-        let body = [
-            0,
-            0x03, 0x40,
-            0x0C, 0x00,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x03, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
         assert!(run(&body).is_none());
     }
 
@@ -159,14 +163,7 @@ mod tests {
         //   drop
         // )
         let body = [
-            0,
-            0x41, 1,
-            0x02, 0x40,
-            0x41, 2,
-            0x0C, 0x00,
-            0x0B,
-            0x1A,
-            0x0B,
+            0, 0x41, 1, 0x02, 0x40, 0x41, 2, 0x0C, 0x00, 0x0B, 0x1A, 0x0B,
         ];
         assert!(run(&body).is_none());
     }
@@ -176,12 +173,9 @@ mod tests {
         // If there's a br 0 in dead code right before end, we conservatively
         // leave it alone (reachable_before is false).
         let body = [
-            0,
-            0x02, 0x40,
-            0x00,              // unreachable → region becomes unreachable
-            0x0C, 0x00,        // dead br 0
-            0x0B,
-            0x0B,
+            0, 0x02, 0x40, 0x00, // unreachable → region becomes unreachable
+            0x0C, 0x00, // dead br 0
+            0x0B, 0x0B,
         ];
         assert!(run(&body).is_none());
     }

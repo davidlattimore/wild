@@ -4,7 +4,8 @@
 // Remaps type indices in function section, imports, and code section.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::opcode;
 
 /// Result of type GC: which types to keep and how to remap.
@@ -63,11 +64,19 @@ pub fn analyse(module: &WasmModule<'_>) -> TypeGcResult {
     let data = module.data();
 
     let Some(type_sec) = module.section(module::SECTION_TYPE) else {
-        return TypeGcResult { index_map: Vec::new(), kept: 0, bail: false };
+        return TypeGcResult {
+            index_map: Vec::new(),
+            kept: 0,
+            bail: false,
+        };
     };
     let type_payload = type_sec.payload.slice(data);
     let Some(ends) = type_entry_ends(type_payload) else {
-        return TypeGcResult { index_map: Vec::new(), kept: 0, bail: true };
+        return TypeGcResult {
+            index_map: Vec::new(),
+            kept: 0,
+            bail: true,
+        };
     };
     let num_types = ends.len();
 
@@ -172,18 +181,26 @@ pub fn analyse(module: &WasmModule<'_>) -> TypeGcResult {
                         off += 1; // elemtype
                         let flags = payload.get(off).copied().unwrap_or(0);
                         off += 1;
-                        if let Some((_, c)) = leb128::read_u32(&payload[off..]) { off += c; }
+                        if let Some((_, c)) = leb128::read_u32(&payload[off..]) {
+                            off += c;
+                        }
                         if flags & 1 != 0 {
-                            if let Some((_, c)) = leb128::read_u32(&payload[off..]) { off += c; }
+                            if let Some((_, c)) = leb128::read_u32(&payload[off..]) {
+                                off += c;
+                            }
                         }
                     }
                     0x02 => {
                         // Memory: limits
                         let flags = payload.get(off).copied().unwrap_or(0);
                         off += 1;
-                        if let Some((_, c)) = leb128::read_u32(&payload[off..]) { off += c; }
+                        if let Some((_, c)) = leb128::read_u32(&payload[off..]) {
+                            off += c;
+                        }
                         if flags & 1 != 0 {
-                            if let Some((_, c)) = leb128::read_u32(&payload[off..]) { off += c; }
+                            if let Some((_, c)) = leb128::read_u32(&payload[off..]) {
+                                off += c;
+                            }
                         }
                     }
                     0x03 => {
@@ -210,7 +227,11 @@ pub fn analyse(module: &WasmModule<'_>) -> TypeGcResult {
         }
     }
 
-    TypeGcResult { index_map, kept, bail: false }
+    TypeGcResult {
+        index_map,
+        kept,
+        bail: false,
+    }
 }
 
 /// Apply type GC to a module, producing new bytes.
@@ -234,9 +255,11 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     // were removed), bodies don't need rewriting. Otherwise we must walk
     // the code section and remap blocktype / call_indirect type immediates,
     // or this pass silently corrupts the module.
-    let needs_body_rewrite = result.index_map.iter().enumerate().any(|(i, m)| {
-        matches!(m, Some(new_i) if *new_i as usize != i)
-    });
+    let needs_body_rewrite = result
+        .index_map
+        .iter()
+        .enumerate()
+        .any(|(i, m)| matches!(m, Some(new_i) if *new_i as usize != i));
 
     let mut out = Vec::with_capacity(data.len());
     out.extend_from_slice(&data[..8]);
@@ -333,19 +356,28 @@ fn emit_remapped_import_section(
     for _ in 0..count {
         let entry_start = off;
         // module name
-        let Some((mlen, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+        let Some((mlen, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+            return false;
+        };
         off += c + mlen as usize;
-        if off > payload.len() { return false; }
+        if off > payload.len() {
+            return false;
+        }
         // field name
-        let Some((flen, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+        let Some((flen, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+            return false;
+        };
         off += c + flen as usize;
-        if off >= payload.len() { return false; }
+        if off >= payload.len() {
+            return false;
+        }
         let kind = payload[off];
         off += 1;
         match kind {
             0x00 => {
                 // Function: type index — remap.
-                let Some((type_idx, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+                let Some((type_idx, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[]))
+                else {
                     return false;
                 };
                 let new_idx = match result.index_map.get(type_idx as usize).copied().flatten() {
@@ -362,10 +394,14 @@ fn emit_remapped_import_section(
                 off += 1;
                 let flags = *payload.get(off).unwrap_or(&0);
                 off += 1;
-                let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+                let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+                    return false;
+                };
                 off += c;
                 if flags & 1 != 0 {
-                    let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+                    let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+                        return false;
+                    };
                     off += c;
                 }
                 new_payload.extend_from_slice(&payload[entry_start..table_start]);
@@ -376,10 +412,14 @@ fn emit_remapped_import_section(
                 let mem_start = off;
                 let flags = *payload.get(off).unwrap_or(&0);
                 off += 1;
-                let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+                let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+                    return false;
+                };
                 off += c;
                 if flags & 1 != 0 {
-                    let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else { return false };
+                    let Some((_, c)) = leb128::read_u32(payload.get(off..).unwrap_or(&[])) else {
+                        return false;
+                    };
                     off += c;
                 }
                 new_payload.extend_from_slice(&payload[entry_start..mem_start]);
@@ -389,7 +429,9 @@ fn emit_remapped_import_section(
                 // Global: valtype (1 byte) + mutability (1 byte)
                 let glob_start = off;
                 off += 2;
-                if off > payload.len() { return false; }
+                if off > payload.len() {
+                    return false;
+                }
                 new_payload.extend_from_slice(&payload[entry_start..glob_start]);
                 new_payload.extend_from_slice(&payload[glob_start..off]);
             }
@@ -441,7 +483,9 @@ fn rewrite_body_type_refs(body: &[u8], map: &[Option<u32>]) -> Option<Vec<u8>> {
             }
         }
     }
-    if iter.failed() { return None; }
+    if iter.failed() {
+        return None;
+    }
     out.extend_from_slice(&body[cursor..]);
     Some(out)
 }
@@ -495,7 +539,8 @@ fn emit_remapped_function_section(
             break;
         };
         off += c;
-        let new_type = result.index_map
+        let new_type = result
+            .index_map
             .get(type_idx as usize)
             .copied()
             .flatten()
@@ -517,8 +562,8 @@ mod tests {
         // Type section: 2 types
         // type 0: () -> ()
         // type 1: (i32) -> (i32)
-        data.extend_from_slice(&[1, 9, 2,
-            0x60, 0, 0,           // type 0
+        data.extend_from_slice(&[
+            1, 9, 2, 0x60, 0, 0, // type 0
             0x60, 1, 0x7F, 1, 0x7F, // type 1
         ]);
         // Function section: 1 function using type 0 (type 1 unused)

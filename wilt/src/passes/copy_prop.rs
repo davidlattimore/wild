@@ -19,18 +19,19 @@
 //!
 //! Runs after const_prop in the pipeline. Standalone — no hints.
 
-use std::collections::HashMap;
-
-use crate::ir::{BodyIr, CfgIr};
+use crate::ir::BodyIr;
+use crate::ir::CfgIr;
 use crate::leb128;
 use crate::mut_module::MutModule;
-use crate::opcode::{self as opc, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self as opc};
+use std::collections::HashMap;
 
 const OP_LOCAL_GET: u8 = 0x20;
 const OP_LOCAL_SET: u8 = 0x21;
 const OP_LOCAL_TEE: u8 = 0x22;
 
-type Bindings = HashMap<u32, u32>;     // dest_local → source_local
+type Bindings = HashMap<u32, u32>; // dest_local → source_local
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     use rayon::prelude::*;
@@ -38,7 +39,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
@@ -47,12 +50,16 @@ fn rewrite_body(body: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
-    if !has_get_then_set(body) { return None; }
+    if !has_get_then_set(body) {
+        return None;
+    }
 
     let ir = BodyIr::new(body)?;
     let cfg = CfgIr::build(&ir)?;
     let nbb = cfg.blocks.len();
-    if nbb == 0 || ir.instrs().is_empty() { return None; }
+    if nbb == 0 || ir.instrs().is_empty() {
+        return None;
+    }
 
     let mut preds: Vec<Vec<u32>> = vec![Vec::new(); nbb];
     for (bi, bb) in cfg.blocks.iter().enumerate() {
@@ -72,7 +79,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     let mut rewrites: Vec<(usize, usize, Vec<u8>)> = Vec::new();
@@ -80,7 +89,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
         let in_state = meet_in(&preds[bi], &bb_out);
         record_rewrites(&ir, bb, in_state, &mut rewrites);
     }
-    if rewrites.is_empty() { return None; }
+    if rewrites.is_empty() {
+        return None;
+    }
     rewrites.sort_by_key(|e| e.0);
 
     let mut out = Vec::with_capacity(body.len());
@@ -102,7 +113,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
 }
 
 fn meet_in(preds: &[u32], bb_out: &[Bindings]) -> Bindings {
-    if preds.is_empty() { return HashMap::new(); }
+    if preds.is_empty() {
+        return HashMap::new();
+    }
     let mut iter = preds.iter();
     let first = *iter.next().unwrap();
     let mut result = bb_out[first as usize].clone();
@@ -142,14 +155,18 @@ fn transfer(ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings) -> Bind
                 }
                 last_get_local = None;
             }
-            _ => { last_get_local = None; }
+            _ => {
+                last_get_local = None;
+            }
         }
     }
     state
 }
 
 fn record_rewrites(
-    ir: &BodyIr, bb: &crate::ir::BasicBlock, in_state: Bindings,
+    ir: &BodyIr,
+    bb: &crate::ir::BasicBlock,
+    in_state: Bindings,
     out: &mut Vec<(usize, usize, Vec<u8>)>,
 ) {
     let mut state = in_state;
@@ -193,7 +210,9 @@ fn record_rewrites(
                 }
                 last_get_local = None;
             }
-            _ => { last_get_local = None; }
+            _ => {
+                last_get_local = None;
+            }
         }
     }
 }
@@ -207,7 +226,9 @@ fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
 /// the rewrite to be useful. The simpler "any get and any set" is a
 /// good enough negative filter.
 fn has_get_then_set(body: &[u8]) -> bool {
-    let Some(start) = opc::skip_locals(body) else { return false };
+    let Some(start) = opc::skip_locals(body) else {
+        return false;
+    };
     let mut iter = InstrIter::new(body, start);
     let mut has_get = false;
     let mut has_set = false;
@@ -217,7 +238,9 @@ fn has_get_then_set(body: &[u8]) -> bool {
             OP_LOCAL_SET => has_set = true,
             _ => {}
         }
-        if has_get && has_set { return true; }
+        if has_get && has_set {
+            return true;
+        }
     }
     false
 }
@@ -230,24 +253,20 @@ mod tests {
     fn rewrites_within_basic_block() {
         // local.get $b; local.set $a; nop; local.get $a → local.get $b.
         let body = [
-            1, 2, 0x7F,
-            0x20, 1,           // local.get 1 ($b)
-            0x21, 0,           // local.set 0 ($a := $b)
-            0x01,              // nop
-            0x20, 0,           // local.get 0 ($a) — rewrite to local.get 1
-            0x1A,
-            0x0B,
+            1, 2, 0x7F, 0x20, 1, // local.get 1 ($b)
+            0x21, 0,    // local.set 0 ($a := $b)
+            0x01, // nop
+            0x20, 0, // local.get 0 ($a) — rewrite to local.get 1
+            0x1A, 0x0B,
         ];
         let out = rewrite_body(&body).expect("should propagate");
-        assert_eq!(out, vec![
-            1, 2, 0x7F,
-            0x20, 1,
-            0x21, 0,
-            0x01,
-            0x20, 1,           // rewritten
-            0x1A,
-            0x0B,
-        ]);
+        assert_eq!(
+            out,
+            vec![
+                1, 2, 0x7F, 0x20, 1, 0x21, 0, 0x01, 0x20, 1, // rewritten
+                0x1A, 0x0B,
+            ]
+        );
     }
 
     #[test]
@@ -255,14 +274,10 @@ mod tests {
         // local.get 1; local.set 0; local.set 1 (overwrite source);
         // local.get 0 — must NOT rewrite to local.get 1 (source stale).
         let body = [
-            1, 2, 0x7F,
-            0x20, 1,
-            0x21, 0,           // 0 := 1
-            0x41, 99,
-            0x21, 1,           // 1 overwritten
-            0x20, 0,           // local.get 0 — should NOT become get 1
-            0x1A,
-            0x0B,
+            1, 2, 0x7F, 0x20, 1, 0x21, 0, // 0 := 1
+            0x41, 99, 0x21, 1, // 1 overwritten
+            0x20, 0, // local.get 0 — should NOT become get 1
+            0x1A, 0x0B,
         ];
         assert!(rewrite_body(&body).is_none());
     }
@@ -270,14 +285,7 @@ mod tests {
     #[test]
     fn no_rewrite_for_self_alias() {
         // local.get 0; local.set 0 — no actual aliasing, just identity.
-        let body = [
-            1, 1, 0x7F,
-            0x20, 0,
-            0x21, 0,
-            0x20, 0,
-            0x1A,
-            0x0B,
-        ];
+        let body = [1, 1, 0x7F, 0x20, 0, 0x21, 0, 0x20, 0, 0x1A, 0x0B];
         assert!(rewrite_body(&body).is_none());
     }
 }

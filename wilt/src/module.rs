@@ -2,7 +2,6 @@
 ///
 /// `WasmModule` borrows from the input buffer and only records
 /// section boundaries — no per-instruction allocation.
-
 use crate::leb128;
 
 /// WASM section IDs (spec ordering).
@@ -251,7 +250,9 @@ impl<'a> WasmModule<'a> {
             return 0;
         };
         let payload = func.payload.slice(self.data);
-        leb128::read_u32(payload).map(|(count, _)| count).unwrap_or(0)
+        leb128::read_u32(payload)
+            .map(|(count, _)| count)
+            .unwrap_or(0)
     }
 
     /// Total size of the module in bytes.

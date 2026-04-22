@@ -1903,8 +1903,10 @@ fn write_section_raw<'out, 'data>(
                             .copy_from_slice(&input_data[input_pos..skip_start]);
                         output_pos += copy_len;
                     }
-                    // Skip over the deleted bytes in the input.
-                    input_pos = skip_start + delta.bytes_deleted as usize;
+                    // Skip over the deleted bytes in the input. On the ELF
+                    // relaxation path `bytes_delta` is always positive; the
+                    // signed refactor widens the type but not the values.
+                    input_pos = skip_start + delta.bytes_delta as usize;
                 }
 
                 // Copy the remainder after the last deletion.
@@ -2647,8 +2649,7 @@ fn apply_relocation<
         RelocationKind::None => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
-            let removed_bytes =
-                relax_deltas.map_or(0u64, |d| u64::from(d.delta_bytes_at(rel.offset())));
+            let removed_bytes = relax_deltas.map_or(0u64, |d| d.delta_at(rel.offset()) as u64);
             let padding_bytes = addend.saturating_sub(removed_bytes) as usize;
             A::fill_nop_padding(out, offset_in_section as usize, padding_bytes);
 

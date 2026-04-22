@@ -13,34 +13,39 @@
 //! we can prove are direct-call-only:
 //!   * not exported,
 //!   * not the start function,
-//!   * not appearing as a `ref.func` target in any body or element
-//!     segment.
+//!   * not appearing as a `ref.func` target in any body or element segment.
 //! Anything in those sets keeps its identity (its index is part of
 //! the module's external contract).
 
-use std::collections::{HashMap, HashSet};
-
 use crate::leb128;
-use crate::module::{self as wmod, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self as wmod};
 use crate::mut_module::MutModule;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     let input = m.input();
-    let Ok(mut wm) = WasmModule::parse(input) else { return };
+    let Ok(mut wm) = WasmModule::parse(input) else {
+        return;
+    };
     wm.ensure_function_bodies_parsed();
     let data = wm.data();
 
     let num_imports = m.facts.num_func_imports;
     let num_bodies = m.num_bodies();
-    if num_bodies < 2 { return; }
+    if num_bodies < 2 {
+        return;
+    }
 
     let func_types = match read_defined_func_type_indices(&wm) {
-        Some(v) => v, None => return,
+        Some(v) => v,
+        None => return,
     };
 
-    let exported: HashSet<u32> =
-        m.facts.exported_func_indices.iter().copied().collect();
+    let exported: HashSet<u32> = m.facts.exported_func_indices.iter().copied().collect();
     let start = m.facts.start_func;
     let ref_funcs = collect_ref_func_targets(&wm);
 
@@ -48,15 +53,18 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
     // is O(body) but only 8 bytes per key — vs cloning the whole body
     // into the HashMap key. Verify byte-equality on collision before
     // committing to the merge.
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hash;
+    use std::hash::Hasher;
     let mut groups: HashMap<(u32, u64), Vec<u32>> = HashMap::new();
     for i in 0..num_bodies {
         let abs_idx = num_imports + i as u32;
-        if exported.contains(&abs_idx)
-            || ref_funcs.contains(&abs_idx)
-            || start == Some(abs_idx)
-        { continue; }
-        let tidx = match func_types.get(i) { Some(&t) => t, None => continue };
+        if exported.contains(&abs_idx) || ref_funcs.contains(&abs_idx) || start == Some(abs_idx) {
+            continue;
+        }
+        let tidx = match func_types.get(i) {
+            Some(&t) => t,
+            None => continue,
+        };
         let body = m.body_bytes(i);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         body.hash(&mut hasher);
@@ -69,7 +77,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
     // would otherwise corrupt the module).
     let mut remap: HashMap<u32, u32> = HashMap::new();
     for members in groups.values() {
-        if members.len() < 2 { continue; }
+        if members.len() < 2 {
+            continue;
+        }
         // Cluster members by exact body equality (O(N²) within a
         // group, but groups are tiny in practice).
         let mut clusters: Vec<Vec<u32>> = Vec::new();
@@ -86,14 +96,20 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
             clusters.push(vec![abs]);
         }
         for cluster in &clusters {
-            if cluster.len() < 2 { continue; }
+            if cluster.len() < 2 {
+                continue;
+            }
             let canonical = *cluster.iter().min().unwrap();
             for &abs in cluster {
-                if abs != canonical { remap.insert(abs, canonical); }
+                if abs != canonical {
+                    remap.insert(abs, canonical);
+                }
             }
         }
     }
-    if remap.is_empty() { return; }
+    if remap.is_empty() {
+        return;
+    }
 
     let _ = data;
 
@@ -103,7 +119,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| rewrite_calls(m.body_bytes(i), &remap).map(|b| (i, b)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b) in updates {
+        m.set_body(i, b);
+    }
 }
 
 fn rewrite_calls(body: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
@@ -111,8 +129,12 @@ fn rewrite_calls(body: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
     let mut iter = InstrIter::new(body, start);
     let mut edits: Vec<(usize, usize, Vec<u8>)> = Vec::new();
     while let Some((p, len)) = iter.next() {
-        if body[p] != 0x10 { continue; }            // call
-        let Some((f, _)) = leb128::read_u32(&body[p + 1..]) else { continue };
+        if body[p] != 0x10 {
+            continue;
+        } // call
+        let Some((f, _)) = leb128::read_u32(&body[p + 1..]) else {
+            continue;
+        };
         if let Some(&new_f) = remap.get(&f) {
             if new_f != f {
                 let mut repl = Vec::with_capacity(1 + 5);
@@ -122,8 +144,12 @@ fn rewrite_calls(body: &[u8], remap: &HashMap<u32, u32>) -> Option<Vec<u8>> {
             }
         }
     }
-    if iter.failed() { return None; }
-    if edits.is_empty() { return None; }
+    if iter.failed() {
+        return None;
+    }
+    if edits.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut cursor = 0;
@@ -157,11 +183,15 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> HashSet<u32> {
     let mut out = HashSet::new();
     for body in module.function_bodies() {
         let b = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(b) else { continue };
+        let Some(start) = opcode::skip_locals(b) else {
+            continue;
+        };
         let mut iter = InstrIter::new(b, start);
         while let Some((p, _)) = iter.next() {
             if b[p] == 0xD2 {
-                if let Some((f, _)) = leb128::read_u32(&b[p + 1..]) { out.insert(f); }
+                if let Some((f, _)) = leb128::read_u32(&b[p + 1..]) {
+                    out.insert(f);
+                }
             }
         }
     }
@@ -177,7 +207,9 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> HashSet<u32> {
 mod tests {
     use super::*;
 
-    fn assemble(wat: &str) -> Vec<u8> { wat::parse_str(wat).unwrap() }
+    fn assemble(wat: &str) -> Vec<u8> {
+        wat::parse_str(wat).unwrap()
+    }
 
     #[test]
     fn merges_two_identical_internal_helpers() {
@@ -211,7 +243,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(calls, vec![0, 0], "both calls should target the canonical $h1 (index 0)");
+        assert_eq!(
+            calls,
+            vec![0, 0],
+            "both calls should target the canonical $h1 (index 0)"
+        );
     }
 
     #[test]

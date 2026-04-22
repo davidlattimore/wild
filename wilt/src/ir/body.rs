@@ -15,7 +15,8 @@
 //! says it's worth the API complexity.
 
 use crate::leb128;
-use crate::opcode::{self, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self};
 
 /// One decoded-into-an-array instruction. Compact (12 bytes); densely
 /// packed into a `Vec`.
@@ -31,7 +32,9 @@ pub struct Instr {
 impl Instr {
     /// Byte range `[start, start+len)`.
     #[inline]
-    pub fn end(&self) -> u32 { self.start + self.len }
+    pub fn end(&self) -> u32 {
+        self.start + self.len
+    }
 }
 
 /// Per-function-body instruction index. Borrows the body slice.
@@ -56,23 +59,35 @@ impl<'a> BodyIr<'a> {
                 len: l as u32,
             });
         }
-        if iter.failed() { return None; }
-        Some(Self { body, instrs, instrs_start })
+        if iter.failed() {
+            return None;
+        }
+        Some(Self {
+            body,
+            instrs,
+            instrs_start,
+        })
     }
 
     /// The full body bytes (locals header + instructions).
     #[inline]
-    pub fn body(&self) -> &'a [u8] { self.body }
+    pub fn body(&self) -> &'a [u8] {
+        self.body
+    }
 
     /// All instructions in order.
     #[inline]
-    pub fn instrs(&self) -> &[Instr] { &self.instrs }
+    pub fn instrs(&self) -> &[Instr] {
+        &self.instrs
+    }
 
     /// Byte offset of the first instruction (i.e. just past the locals
     /// header). Useful for callers re-emitting bodies that want to copy
     /// the locals header verbatim.
     #[inline]
-    pub fn instrs_start(&self) -> usize { self.instrs_start }
+    pub fn instrs_start(&self) -> usize {
+        self.instrs_start
+    }
 
     /// Bytes of instruction `i`, including opcode + immediates.
     #[inline]
@@ -92,16 +107,18 @@ impl<'a> BodyIr<'a> {
     /// opcodes it returns the LEB value if fits, else `None`.
     pub fn imm_u32(&self, i: usize) -> Option<u32> {
         let it = &self.instrs[i];
-        if it.len <= 1 { return None; }
+        if it.len <= 1 {
+            return None;
+        }
         leb128::read_u32(&self.body[(it.start + 1) as usize..]).map(|(v, _)| v)
     }
 
     /// Locate the instruction (if any) whose byte range contains `byte_off`.
     /// Linear scan; callers doing many lookups should build a side index.
     pub fn instr_at_byte(&self, byte_off: usize) -> Option<usize> {
-        self.instrs.iter().position(|it| {
-            (it.start as usize) <= byte_off && byte_off < (it.end() as usize)
-        })
+        self.instrs
+            .iter()
+            .position(|it| (it.start as usize) <= byte_off && byte_off < (it.end() as usize))
     }
 }
 
@@ -128,16 +145,18 @@ mod tests {
         let body = [0u8, 0x20, 42, 0x0B];
         let ir = BodyIr::new(&body).unwrap();
         assert_eq!(ir.imm_u32(0), Some(42));
-        assert_eq!(ir.imm_u32(1), None);          // end has no immediate
+        assert_eq!(ir.imm_u32(1), None); // end has no immediate
     }
 
     #[test]
     fn handles_large_i64_const_via_skip_len() {
         // The LEB-decoder regression case: 9-byte i64.const sleb.
-        let body = [0u8, 0x42, 0x88, 0xef, 0x99, 0xab, 0xc5, 0xe8, 0x8c, 0x91, 0x11, 0x0B];
+        let body = [
+            0u8, 0x42, 0x88, 0xef, 0x99, 0xab, 0xc5, 0xe8, 0x8c, 0x91, 0x11, 0x0B,
+        ];
         let ir = BodyIr::new(&body).unwrap();
         assert_eq!(ir.instrs().len(), 2);
-        assert_eq!(ir.instrs()[0].len, 10);  // opcode + 9 LEB bytes
+        assert_eq!(ir.instrs()[0].len, 10); // opcode + 9 LEB bytes
         // imm_u32 returns None — value doesn't fit in u32.
         assert_eq!(ir.imm_u32(0), None);
     }
@@ -153,16 +172,16 @@ mod tests {
     fn instr_at_byte_finds_owner() {
         let body = [0u8, 0x41, 5, 0x41, 7, 0x6A, 0x0B];
         let ir = BodyIr::new(&body).unwrap();
-        assert_eq!(ir.instr_at_byte(1), Some(0));   // first const opcode
-        assert_eq!(ir.instr_at_byte(2), Some(0));   // its LEB
-        assert_eq!(ir.instr_at_byte(3), Some(1));   // second const
-        assert_eq!(ir.instr_at_byte(5), Some(2));   // i32.add
-        assert_eq!(ir.instr_at_byte(99), None);     // out of bounds
+        assert_eq!(ir.instr_at_byte(1), Some(0)); // first const opcode
+        assert_eq!(ir.instr_at_byte(2), Some(0)); // its LEB
+        assert_eq!(ir.instr_at_byte(3), Some(1)); // second const
+        assert_eq!(ir.instr_at_byte(5), Some(2)); // i32.add
+        assert_eq!(ir.instr_at_byte(99), None); // out of bounds
     }
 
     #[test]
     fn instr_bytes_round_trip() {
-        let body = [0u8, 0x41, 0x88, 0x01, 0x0B];   // i32.const 136 (2-byte LEB), end
+        let body = [0u8, 0x41, 0x88, 0x01, 0x0B]; // i32.const 136 (2-byte LEB), end
         let ir = BodyIr::new(&body).unwrap();
         assert_eq!(ir.instr_bytes(0), &[0x41, 0x88, 0x01]);
         assert_eq!(ir.instr_bytes(1), &[0x0B]);

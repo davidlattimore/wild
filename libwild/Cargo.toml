@@ -52,8 +52,36 @@ uuid = { workspace = true }
 winnow = { workspace = true }
 zerocopy = { workspace = true }
 zstd = { workspace = true }
+tempfile = { workspace = true }
 text-stub-library = "0.9.0"
+which = { workspace = true }
 wilt = { path = "../wilt", version = "0.8.0", optional = true }
+
+# P5b: in-process libLLVM binding.
+#
+# Three options were considered: `llvm-sys`, `inkwell`, and
+# `libloading` + raw FFI. The choice is `libloading` + raw FFI, for:
+#
+#   1. LLVM version independence. `llvm-sys` and `inkwell` pin
+#      against a specific LLVM major version at build time, which
+#      locks wild's binary to one LLVM. Runtime dlopen means the
+#      same wild binary works against any LLVM install whose C
+#      ABI matches (which is stable across recent majors).
+#   2. Zero build-time LLVM dependency. `llvm-sys`/`inkwell` need
+#      `llvm-config` to find LLVM at compile time and have
+#      notoriously fiddly build scripts. `libloading` pulls in no
+#      LLVM itself — users install LLVM at their own pace.
+#   3. Precedent in this crate. `macho-lto` already uses
+#      `libloading` to dlopen `libLTO.dylib` the same way. Adding a
+#      second libloading client keeps the FFI discipline uniform.
+#
+# The cost is `unsafe` FFI boilerplate matching LLVM's C ABI — ~200
+# lines of it vs ~20 for `llvm-sys`. That cost is paid once; the
+# ongoing maintenance wins favour our choice.
+#
+# `libloading` already appears in libwild's feature graph (via
+# `plugins` and `macho-lto`); the `llvm` feature below adds it as
+# an explicit requirement for the in-process LTO implementation.
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
 perf-event = { workspace = true }
@@ -63,7 +91,6 @@ cc = "1.1.12"
 
 [dev-dependencies]
 ar = { workspace = true }
-tempfile = { workspace = true }
 
 [features]
 default = ["wilt"]
@@ -76,6 +103,16 @@ plugins = ["libloading"]
 
 # Support for Mach-O LTO via libLTO.dylib.
 macho-lto = ["libloading"]
+
+# P5b: in-process libLLVM for UnifiedLTO. When off (the default),
+# the P5a subprocess pipeline is used. When on, wild dlopens the
+# system libLLVM and drives the parallel per-module pipeline
+# in-process — no `fork`/`exec`, no temp-file round trip. Falls back
+# to P5a automatically if libLLVM can't be located or an individual
+# module can't be compiled in-process. See `wild-lto-plan.md` P5b
+# for the full design and the `[dependencies]` block above for the
+# choice of `libloading` over `llvm-sys`/`inkwell`.
+llvm = ["libloading"]
 
 # WASM post-link optimisation via wilt (DCE, type GC, const fold,
 # compression-friendly layout). On by default; turn off with

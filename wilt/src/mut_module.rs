@@ -7,11 +7,13 @@
 //! payload contents, not section identity. `remove_section` marks an entry
 //! as dead (serialize skips it).
 
-use std::collections::HashMap;
-
 use crate::leb128;
-use crate::module::{self, FunctionBody, Section, WasmModule};
+use crate::module::FunctionBody;
+use crate::module::Section;
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::provenance::BodyEdits;
+use std::collections::HashMap;
 
 /// Reusable scratch buffer. A single instance per pipeline; passes clear
 /// and reuse it instead of allocating fresh Vecs per body.
@@ -90,16 +92,31 @@ impl<'a> MutModule<'a> {
         let body_edit_tracking_lost = vec![false; bodies.len()];
 
         Ok(Self {
-            input, sections, section_overrides, section_removed,
-            bodies, body_overrides, body_edits, body_edit_tracking_lost,
-            facts, scratch: Scratch::default(),
+            input,
+            sections,
+            section_overrides,
+            section_removed,
+            bodies,
+            body_overrides,
+            body_edits,
+            body_edit_tracking_lost,
+            facts,
+            scratch: Scratch::default(),
         })
     }
 
-    pub fn input(&self) -> &'a [u8] { self.input }
-    pub fn sections(&self) -> &[Section] { &self.sections }
-    pub fn num_bodies(&self) -> usize { self.bodies.len() }
-    pub fn body_spans(&self) -> &[FunctionBody] { &self.bodies }
+    pub fn input(&self) -> &'a [u8] {
+        self.input
+    }
+    pub fn sections(&self) -> &[Section] {
+        &self.sections
+    }
+    pub fn num_bodies(&self) -> usize {
+        self.bodies.len()
+    }
+    pub fn body_spans(&self) -> &[FunctionBody] {
+        &self.bodies
+    }
 
     /// Find the index of the first section with the given id.
     pub fn find_section(&self, id: u8) -> Option<usize> {
@@ -143,9 +160,7 @@ impl<'a> MutModule<'a> {
     /// Like `set_body` but also composes the pass's edit list into
     /// this body's running input→current map. Use this from passes
     /// that can express what bytes they changed.
-    pub fn set_body_with_edits(
-        &mut self, local_idx: usize, bytes: Vec<u8>, pass_edits: BodyEdits,
-    ) {
+    pub fn set_body_with_edits(&mut self, local_idx: usize, bytes: Vec<u8>, pass_edits: BodyEdits) {
         self.body_overrides[local_idx] = Some(bytes);
         if self.body_edit_tracking_lost[local_idx] {
             // Can't compose onto an unknown base — tracking stays lost.
@@ -168,14 +183,17 @@ impl<'a> MutModule<'a> {
     /// means either the body is identity (never modified) or
     /// tracking was lost.
     pub fn body_edits(&self, local_idx: usize) -> Option<&BodyEdits> {
-        if !self.has_edit_track(local_idx) { return None; }
+        if !self.has_edit_track(local_idx) {
+            return None;
+        }
         self.body_edits[local_idx].as_ref()
     }
 
     /// A cheap hash of which sections / bodies have been overridden. Used
     /// to detect fixpoint without reserialising.
     pub fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hash;
+        use std::hash::Hasher;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for (i, o) in self.section_overrides.iter().enumerate() {
             if self.section_removed[i] {
@@ -202,13 +220,19 @@ impl<'a> MutModule<'a> {
         // If any function body has been overridden, we must emit a new code
         // section payload from the stitched body vec. Build that here.
         let code_payload: Option<Vec<u8>> = if self.body_overrides.iter().any(|o| o.is_some()) {
-            Some(build_code_section(&self.bodies, &self.body_overrides, self.input))
+            Some(build_code_section(
+                &self.bodies,
+                &self.body_overrides,
+                self.input,
+            ))
         } else {
             None
         };
 
         for (idx, section) in self.sections.iter().enumerate() {
-            if self.section_removed[idx] { continue; }
+            if self.section_removed[idx] {
+                continue;
+            }
 
             if section.id == module::SECTION_CODE {
                 if let Some(buf) = &code_payload {
@@ -230,7 +254,11 @@ impl<'a> MutModule<'a> {
     }
 }
 
-fn build_code_section(bodies: &[FunctionBody], overrides: &[Option<Vec<u8>>], input: &[u8]) -> Vec<u8> {
+fn build_code_section(
+    bodies: &[FunctionBody],
+    overrides: &[Option<Vec<u8>>],
+    input: &[u8],
+) -> Vec<u8> {
     let mut payload = Vec::new();
     leb128::write_u32(&mut payload, bodies.len() as u32);
     for (i, body) in bodies.iter().enumerate() {
@@ -251,37 +279,83 @@ fn compute_facts(input: &[u8], sections: &[Section], _bodies: &[FunctionBody]) -
         let p = sec.payload.slice(input);
         if let Some((count, mut off)) = leb128::read_u32(p) {
             for _ in 0..count {
-                let Some((l, c)) = leb128::read_u32(&p[off..]) else { break };
-                off += c + l as usize; if off > p.len() { break; }
-                let Some((l, c)) = leb128::read_u32(&p[off..]) else { break };
-                off += c + l as usize; if off >= p.len() { break; }
-                let kind = p[off]; off += 1;
+                let Some((l, c)) = leb128::read_u32(&p[off..]) else {
+                    break;
+                };
+                off += c + l as usize;
+                if off > p.len() {
+                    break;
+                }
+                let Some((l, c)) = leb128::read_u32(&p[off..]) else {
+                    break;
+                };
+                off += c + l as usize;
+                if off >= p.len() {
+                    break;
+                }
+                let kind = p[off];
+                off += 1;
                 match kind {
                     0x00 => {
-                        if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; f.num_func_imports += 1; } else { break; }
+                        if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                            off += c;
+                            f.num_func_imports += 1;
+                        } else {
+                            break;
+                        }
                     }
                     0x01 => {
-                        if off >= p.len() { break; }
+                        if off >= p.len() {
+                            break;
+                        }
                         off += 1;
-                        if off >= p.len() { break; }
-                        let flags = p[off]; off += 1;
-                        if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { break; }
+                        if off >= p.len() {
+                            break;
+                        }
+                        let flags = p[off];
+                        off += 1;
+                        if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                            off += c;
+                        } else {
+                            break;
+                        }
                         if flags & 1 != 0 {
-                            if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { break; }
+                            if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                                off += c;
+                            } else {
+                                break;
+                            }
                         }
                     }
                     0x02 => {
-                        if off >= p.len() { break; }
-                        let flags = p[off]; off += 1;
-                        if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { break; }
+                        if off >= p.len() {
+                            break;
+                        }
+                        let flags = p[off];
+                        off += 1;
+                        if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                            off += c;
+                        } else {
+                            break;
+                        }
                         if flags & 1 != 0 {
-                            if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { break; }
+                            if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                                off += c;
+                            } else {
+                                break;
+                            }
                         }
                     }
-                    0x03 => { off += 2; }
+                    0x03 => {
+                        off += 2;
+                    }
                     0x04 => {
                         off += 1;
-                        if let Some((_, c)) = leb128::read_u32(&p[off..]) { off += c; } else { break; }
+                        if let Some((_, c)) = leb128::read_u32(&p[off..]) {
+                            off += c;
+                        } else {
+                            break;
+                        }
                     }
                     _ => break,
                 }
@@ -294,13 +368,22 @@ fn compute_facts(input: &[u8], sections: &[Section], _bodies: &[FunctionBody]) -
         let p = sec.payload.slice(input);
         if let Some((count, mut off)) = leb128::read_u32(p) {
             for _ in 0..count {
-                let Some((nl, c)) = leb128::read_u32(&p[off..]) else { break };
+                let Some((nl, c)) = leb128::read_u32(&p[off..]) else {
+                    break;
+                };
                 off += c + nl as usize;
-                if off >= p.len() { break; }
-                let kind = p[off]; off += 1;
-                let Some((idx, c)) = leb128::read_u32(&p[off..]) else { break };
+                if off >= p.len() {
+                    break;
+                }
+                let kind = p[off];
+                off += 1;
+                let Some((idx, c)) = leb128::read_u32(&p[off..]) else {
+                    break;
+                };
                 off += c;
-                if kind == 0x00 { f.exported_func_indices.push(idx); }
+                if kind == 0x00 {
+                    f.exported_func_indices.push(idx);
+                }
             }
         }
     }
@@ -308,7 +391,9 @@ fn compute_facts(input: &[u8], sections: &[Section], _bodies: &[FunctionBody]) -
     // start function
     if let Some(sec) = sections.iter().find(|s| s.id == module::SECTION_START) {
         let p = sec.payload.slice(input);
-        if let Some((idx, _)) = leb128::read_u32(p) { f.start_func = Some(idx); }
+        if let Some((idx, _)) = leb128::read_u32(p) {
+            f.start_func = Some(idx);
+        }
     }
 
     f
@@ -325,7 +410,7 @@ mod tests {
     fn build_sample_module() -> Vec<u8> {
         let mut data = b"\0asm\x01\x00\x00\x00".to_vec();
         data.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type () -> ()
-        data.extend_from_slice(&[3, 2, 1, 0]);           // func section: 1 func
+        data.extend_from_slice(&[3, 2, 1, 0]); // func section: 1 func
         data.extend_from_slice(&[7, 5, 1, 1, b'f', 0x00, 0]); // export
         data.extend_from_slice(&[10, 4, 1, 2, 0, 0x0B]); // code
         data

@@ -39,7 +39,9 @@ pub fn rewrite(payload: &[u8], remap: &FuncRemap) -> Option<Vec<u8>> {
         let (sub_size, c) = leb128::read_u32(payload.get(off..)?)?;
         off += c;
         let sub_end = off.checked_add(sub_size as usize)?;
-        if sub_end > payload.len() { return None; }
+        if sub_end > payload.len() {
+            return None;
+        }
         let sub_content = &payload[off..sub_end];
 
         match sub_id {
@@ -88,7 +90,9 @@ fn rewrite_function_names(content: &[u8], remap: &FuncRemap) -> Option<Vec<u8>> 
         let (nlen, c) = leb128::read_u32(content.get(off..)?)?;
         off += c;
         let name_end = off.checked_add(nlen as usize)?;
-        if name_end > content.len() { return None; }
+        if name_end > content.len() {
+            return None;
+        }
         let name = &content[off..name_end];
         off = name_end;
 
@@ -102,7 +106,9 @@ fn rewrite_function_names(content: &[u8], remap: &FuncRemap) -> Option<Vec<u8>> 
     pairs.sort_by_key(|&(idx, _)| idx);
     pairs.dedup_by_key(|&mut (idx, _)| idx);
 
-    if pairs.is_empty() { return Some(Vec::new()); }
+    if pairs.is_empty() {
+        return Some(Vec::new());
+    }
 
     let mut out = Vec::new();
     leb128::write_u32(&mut out, pairs.len() as u32);
@@ -134,7 +140,9 @@ fn rewrite_local_names(content: &[u8], remap: &FuncRemap) -> Option<Vec<u8>> {
             let (nlen, c) = leb128::read_u32(content.get(off..)?)?;
             off += c;
             off = off.checked_add(nlen as usize)?;
-            if off > content.len() { return None; }
+            if off > content.len() {
+                return None;
+            }
         }
         let inner_bytes = &content[inner_start..off];
         if let Some(new_idx) = remap.lookup(idx) {
@@ -145,7 +153,9 @@ fn rewrite_local_names(content: &[u8], remap: &FuncRemap) -> Option<Vec<u8>> {
     entries.sort_by_key(|&(idx, _)| idx);
     entries.dedup_by_key(|&mut (idx, _)| idx);
 
-    if entries.is_empty() { return Some(Vec::new()); }
+    if entries.is_empty() {
+        return Some(Vec::new());
+    }
 
     let mut out = Vec::new();
     leb128::write_u32(&mut out, entries.len() as u32);
@@ -283,14 +293,14 @@ mod tests {
     fn local_names_funcidx_remap() {
         // One entry for func 0 with local 0 named "x".
         let mut inner = Vec::new();
-        leb128::write_u32(&mut inner, 1);        // local count
-        leb128::write_u32(&mut inner, 0);        // local idx
-        leb128::write_u32(&mut inner, 1);        // name length
+        leb128::write_u32(&mut inner, 1); // local count
+        leb128::write_u32(&mut inner, 0); // local idx
+        leb128::write_u32(&mut inner, 1); // name length
         inner.push(b'x');
 
         let mut content = Vec::new();
-        leb128::write_u32(&mut content, 1);      // func count
-        leb128::write_u32(&mut content, 0);      // funcidx = 0
+        leb128::write_u32(&mut content, 1); // func count
+        leb128::write_u32(&mut content, 0); // funcidx = 0
         content.extend_from_slice(&inner);
 
         let payload = wrap_subsection(2, &content);

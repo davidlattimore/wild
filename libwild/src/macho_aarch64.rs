@@ -13,6 +13,9 @@ use object::macho;
 pub(crate) struct MachOAArch64;
 
 /// Mach-O ARM64 relocation types mapped to our internal representation.
+///
+/// **Complexity:** Θ(1) CPU, Θ(1) memory — single integer match over
+/// a closed set of 11 ARM64 relocation type codes; no allocation.
 fn macho_aarch64_relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     let (kind, size, range, alignment) = match r_type as u8 {
         macho::ARM64_RELOC_UNSIGNED => (
@@ -93,6 +96,11 @@ fn macho_aarch64_relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> 
     })
 }
 
+/// Convert a raw Mach-O ARM64 relocation type code to a human-readable name.
+///
+/// **Complexity:** Θ(1) CPU, Θ(1) memory — integer match; known
+/// variants return `&'static str`; unknown values format a short heap
+/// string (`𝒪(id)` where id ≤ 10 decimal digits).
 fn macho_aarch64_rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
     match r_type as u8 {
         macho::ARM64_RELOC_UNSIGNED => "ARM64_RELOC_UNSIGNED".into(),

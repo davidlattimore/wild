@@ -1286,6 +1286,7 @@ fn resolve_section<'data, P: Platform>(
                 index: input_section_index,
                 section_data,
                 is_strings: input_section.is_strings(),
+                stride: input_section.merge_stride(),
             });
 
             SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))

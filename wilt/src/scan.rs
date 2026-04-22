@@ -1,7 +1,6 @@
 /// Call graph scanning — zero-allocation instruction scanning.
 ///
 /// Scans function bodies for call opcodes without parsing every instruction.
-
 use crate::leb128;
 use crate::module::WasmModule;
 
@@ -43,9 +42,7 @@ pub fn call_graph(module: &mut WasmModule<'_>) -> Vec<Vec<u32>> {
             if opcode == OP_CALL {
                 if let Some((target, consumed)) = leb128::read_u32(&bytes[pos..]) {
                     pos += consumed;
-                    if (target as usize) < num_funcs
-                        && !graph[func_idx].contains(&target)
-                    {
+                    if (target as usize) < num_funcs && !graph[func_idx].contains(&target) {
                         graph[func_idx].push(target);
                     }
                 }

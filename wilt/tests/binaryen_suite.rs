@@ -10,21 +10,29 @@
 //! pass-through rate means the scoreboard is flattering us.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 fn validate(bytes: &[u8]) -> Result<(), String> {
     let mut validator = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all());
-    validator.validate_all(bytes).map(|_| ()).map_err(|e| e.to_string())
+    validator
+        .validate_all(bytes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn corpus_root() -> Option<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent()?.join("external_test_suites/binaryen/test");
+    let root = manifest
+        .parent()?
+        .join("external_test_suites/binaryen/test");
     root.is_dir().then_some(root)
 }
 
 fn walk(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -54,7 +62,8 @@ struct Shape {
 
 /// Derive a Shape from parsed wasm via wasmparser (authoritative decoder).
 fn shape(bytes: &[u8]) -> Option<Shape> {
-    use wasmparser::{Parser, Payload::*};
+    use wasmparser::Parser;
+    use wasmparser::Payload::*;
     let mut s = Shape {
         start: None,
         exports: BTreeMap::new(),
@@ -89,7 +98,8 @@ fn shape(bytes: &[u8]) -> Option<Shape> {
                         wasmparser::TypeRef::Global(_) => 3,
                         wasmparser::TypeRef::Tag(_) => 4,
                     };
-                    s.imports.push((i.module.to_string(), i.name.to_string(), kind));
+                    s.imports
+                        .push((i.module.to_string(), i.name.to_string(), kind));
                 }
             }
             MemorySection(r) => s.memory_count = r.count(),
@@ -126,7 +136,10 @@ fn run_case(stats: &mut Stats, rel: &Path, bytes: &[u8]) {
 
     let out = match std::panic::catch_unwind(|| wilt::optimise(bytes)) {
         Ok(o) => o,
-        Err(_) => { stats.panicked.push(rel.to_path_buf()); return; }
+        Err(_) => {
+            stats.panicked.push(rel.to_path_buf());
+            return;
+        }
     };
 
     if let Err(e) = validate(&out) {
@@ -150,9 +163,11 @@ fn run_case(stats: &mut Stats, rel: &Path, bytes: &[u8]) {
         if a.exports.keys().collect::<Vec<_>>() != b.exports.keys().collect::<Vec<_>>() {
             stats.shape_changed.push((
                 rel.to_path_buf(),
-                format!("exports differ: {:?} → {:?}",
-                        a.exports.keys().collect::<Vec<_>>(),
-                        b.exports.keys().collect::<Vec<_>>()),
+                format!(
+                    "exports differ: {:?} → {:?}",
+                    a.exports.keys().collect::<Vec<_>>(),
+                    b.exports.keys().collect::<Vec<_>>()
+                ),
             ));
             return;
         }
@@ -162,13 +177,17 @@ fn run_case(stats: &mut Stats, rel: &Path, bytes: &[u8]) {
         let mut ai = a.imports.iter();
         for bi in &b.imports {
             if !ai.any(|x| x == bi) {
-                stats.shape_changed.push((rel.to_path_buf(),
-                    format!("imports not a subsequence: output contains {bi:?}")));
+                stats.shape_changed.push((
+                    rel.to_path_buf(),
+                    format!("imports not a subsequence: output contains {bi:?}"),
+                ));
                 return;
             }
         }
         if a.start.is_some() != b.start.is_some() {
-            stats.shape_changed.push((rel.to_path_buf(), "start presence changed".into()));
+            stats
+                .shape_changed
+                .push((rel.to_path_buf(), "start presence changed".into()));
             return;
         }
         for (field, before_count, after_count) in [
@@ -197,22 +216,26 @@ fn report(label: &str, stats: &Stats) {
     let byte_delta = stats.total_in_bytes as i64 - stats.total_out_bytes as i64;
     let modify_rate = if eligible > 0 {
         100.0 * stats.modified as f64 / eligible as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     eprintln!(
         "\n{label}: {ok}/{eligible} passed \
          ({} invalid inputs, {} unassemblable, \
          {} panicked, {} validation broken, \
          {} shape regressions, {} grew)",
-        stats.skipped_invalid, stats.skipped_unassemblable,
-        stats.panicked.len(), stats.broken_validation.len(),
-        stats.shape_changed.len(), stats.grew.len()
+        stats.skipped_invalid,
+        stats.skipped_unassemblable,
+        stats.panicked.len(),
+        stats.broken_validation.len(),
+        stats.shape_changed.len(),
+        stats.grew.len()
     );
     eprintln!(
         "  pass activity: {} modified ({modify_rate:.1}%), {} unchanged. \
          bytes: {} → {} (saved {byte_delta})",
-        stats.modified, stats.unchanged,
-        stats.total_in_bytes, stats.total_out_bytes,
+        stats.modified, stats.unchanged, stats.total_in_bytes, stats.total_out_bytes,
     );
     for (p, e) in stats.broken_validation.iter().take(10) {
         eprintln!("  VALIDATION: {} — {}", p.display(), e);
@@ -312,7 +335,11 @@ fn text_corpus() {
         let rel = p.strip_prefix(&root).unwrap();
         let bytes = match std::panic::catch_unwind(|| wat::parse_file(p)) {
             Ok(Ok(b)) => b,
-            _ => { stats.total += 1; stats.skipped_unassemblable += 1; continue; }
+            _ => {
+                stats.total += 1;
+                stats.skipped_unassemblable += 1;
+                continue;
+            }
         };
         run_case(&mut stats, rel, &bytes);
     }

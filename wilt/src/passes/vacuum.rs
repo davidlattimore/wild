@@ -9,7 +9,8 @@
 //! splices out nop instructions, rewrites the body-size LEB.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::opcode;
 
 const OP_NOP: u8 = 0x01;
@@ -55,9 +56,14 @@ const OP_I64_EQZ: u8 = 0x50;
 fn is_pure_producer(op: u8) -> bool {
     matches!(
         op,
-        OP_LOCAL_GET | OP_GLOBAL_GET
-            | OP_I32_CONST | OP_I64_CONST | OP_F32_CONST | OP_F64_CONST
-            | OP_REF_NULL | OP_REF_FUNC
+        OP_LOCAL_GET
+            | OP_GLOBAL_GET
+            | OP_I32_CONST
+            | OP_I64_CONST
+            | OP_F32_CONST
+            | OP_F64_CONST
+            | OP_REF_NULL
+            | OP_REF_FUNC
     )
 }
 
@@ -101,7 +107,8 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
     let mut idx = 0;
     while idx < instrs.len() {
         let (p, len) = instrs[idx];
-        let p = &p; let len = &len;
+        let p = &p;
+        let len = &len;
         idx += 1;
 
         if skip_remaining > 0 {
@@ -117,14 +124,15 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
         //   if    0x40 end      → drop
         //   if    0x40 else end → drop
         // Length of a void block/loop/if instruction is 2: opcode + 0x40.
-        if !dead && is_block_starter(op) && *len == 2 && body[*p + 1] == 0x40
-            && idx < instrs.len()
+        if !dead && is_block_starter(op) && *len == 2 && body[*p + 1] == 0x40 && idx < instrs.len()
         {
             let (next_p, _) = instrs[idx];
             let next_op = body[next_p];
             if next_op == OP_END {
                 // block/loop/if with empty body.
-                if op == OP_IF { out.push(OP_DROP); }
+                if op == OP_IF {
+                    out.push(OP_DROP);
+                }
                 skip_remaining = 1;
                 changed = true;
                 continue;
@@ -158,40 +166,64 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
             let is_one = imm == 0x01;
 
             if op == OP_I32_CONST {
-                if is_zero && matches!(nop,
-                    OP_I32_ADD | OP_I32_OR | OP_I32_XOR | OP_I32_SUB
-                    | OP_I32_SHL | OP_I32_SHR_S | OP_I32_SHR_U
-                ) {
-                    skip_remaining = 1; changed = true; continue;
+                if is_zero
+                    && matches!(
+                        nop,
+                        OP_I32_ADD
+                            | OP_I32_OR
+                            | OP_I32_XOR
+                            | OP_I32_SUB
+                            | OP_I32_SHL
+                            | OP_I32_SHR_S
+                            | OP_I32_SHR_U
+                    )
+                {
+                    skip_remaining = 1;
+                    changed = true;
+                    continue;
                 }
                 if is_one && nop == OP_I32_MUL {
-                    skip_remaining = 1; changed = true; continue;
+                    skip_remaining = 1;
+                    changed = true;
+                    continue;
                 }
                 if is_zero && nop == OP_I32_EQ {
                     out.push(OP_I32_EQZ);
-                    skip_remaining = 1; changed = true; continue;
+                    skip_remaining = 1;
+                    changed = true;
+                    continue;
                 }
             }
             if op == OP_I64_CONST && is_zero && nop == OP_I64_EQ {
                 out.push(OP_I64_EQZ);
-                skip_remaining = 1; changed = true; continue;
+                skip_remaining = 1;
+                changed = true;
+                continue;
             }
             let _ = (OP_I32_NE, OP_I64_NE);
         }
 
-        // Peephole: return ; <function-closing end> → <end>.
-        // An explicit return right before the function's own closing
-        // end is redundant — falling through does the same thing.
-        // Safe iff the next instruction is `end` AND that end is the
-        // very last byte of the body (i.e. the function's closing end,
-        // not an inner block's end).
-        if !dead && op == OP_RETURN && idx < instrs.len() {
-            let (np, nlen) = instrs[idx];
-            if body[np] == OP_END && np + nlen == body.len() {
-                changed = true;
-                continue;
-            }
-        }
+        // Peephole removed: `return ; <function-closing end>` is NOT in
+        // general equivalent to just `<end>`. `return` validates with a
+        // polymorphic stack — extra values below the function's return
+        // values are accepted because the rest of the block becomes
+        // unreachable. The function-closing `end`, by contrast, requires
+        // the value stack to *exactly* match the function's return type.
+        // Eliding the `return` exposes any below-the-return values to
+        // the strict end-of-frame check and validation fails with
+        // "type mismatch at end of function".
+        //
+        // The wasm-smith fuzz seed at `wilt/tests/fuzz_roundtrip.rs`
+        // tripped this: a function `() -> nil` ended with several
+        // value-pushing instructions, `call` to a `() -> nil` callee
+        // (which left those values on the stack), `return`, `end`. The
+        // original validated; eliding the `return` left
+        // `[i64,i64,f32,f64]` on the stack at function end.
+        //
+        // To safely re-enable this peephole we'd need per-body stack
+        // tracking plus access to the function's return type, neither
+        // of which `clean_body` currently has. Worth ~1 byte per site;
+        // not worth the bug.
 
         // Peephole: <pure producer>; drop → (nothing).
         // Must not fire inside dead code (we'd be re-emitting anyway).
@@ -210,7 +242,8 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
             let (np, nlen) = instrs[idx];
             if body[np] == OP_LOCAL_SET {
                 let (a, _) = crate::leb128::read_u32(&body[*p + 1..*p + len]).unwrap_or((0, 0));
-                let (b, _) = crate::leb128::read_u32(&body[np + 1..np + nlen]).unwrap_or((u32::MAX, 0));
+                let (b, _) =
+                    crate::leb128::read_u32(&body[np + 1..np + nlen]).unwrap_or((u32::MAX, 0));
                 if a == b {
                     skip_remaining = 1;
                     changed = true;
@@ -240,7 +273,8 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
             let (np, nlen) = instrs[idx];
             if body[np] == OP_LOCAL_GET {
                 let (a, _) = crate::leb128::read_u32(&body[*p + 1..*p + len]).unwrap_or((0, 0));
-                let (b, _) = crate::leb128::read_u32(&body[np + 1..np + nlen]).unwrap_or((u32::MAX, 0));
+                let (b, _) =
+                    crate::leb128::read_u32(&body[np + 1..np + nlen]).unwrap_or((u32::MAX, 0));
                 if a == b {
                     out.push(OP_LOCAL_TEE);
                     crate::leb128::write_u32(&mut out, a);
@@ -288,7 +322,9 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    if !changed { return None; }
+    if !changed {
+        return None;
+    }
     Some(out)
 }
 
@@ -305,13 +341,16 @@ fn clean_body(body: &[u8]) -> Option<Vec<u8>> {
 /// instruction streams diverge wider than the lookahead window;
 /// callers fall back to `infer_coarse_edits`.
 fn infer_fine_edits(input: &[u8], output: &[u8]) -> Option<crate::provenance::BodyEdits> {
-    use crate::provenance::{BodyEdits, Edit};
+    use crate::provenance::BodyEdits;
+    use crate::provenance::Edit;
 
     let in_start = opcode::skip_locals(input)?;
     let out_start = opcode::skip_locals(output)?;
     // Locals header byte ranges should be identical (vacuum doesn't
     // touch them). If they differ, fall back.
-    if input[..in_start] != output[..out_start] { return None; }
+    if input[..in_start] != output[..out_start] {
+        return None;
+    }
 
     let in_instrs = opcode::walk(input, in_start)?;
     let out_instrs = opcode::walk(output, out_start)?;
@@ -322,13 +361,16 @@ fn infer_fine_edits(input: &[u8], output: &[u8]) -> Option<crate::provenance::Bo
 
     while i < in_instrs.len() || j < out_instrs.len() {
         // Skip the identity run.
-        while i < in_instrs.len() && j < out_instrs.len()
+        while i < in_instrs.len()
+            && j < out_instrs.len()
             && instrs_eq(in_instrs[i], out_instrs[j], input, output)
         {
             i += 1;
             j += 1;
         }
-        if i >= in_instrs.len() && j >= out_instrs.len() { break; }
+        if i >= in_instrs.len() && j >= out_instrs.len() {
+            break;
+        }
 
         // Find resync point with bounded lookahead.
         let (di, dj) = resync(&in_instrs, &out_instrs, i, j, input, output, 6)?;
@@ -358,7 +400,11 @@ fn infer_fine_edits(input: &[u8], output: &[u8]) -> Option<crate::provenance::Bo
         let in_len = in_byte_end.saturating_sub(in_byte_start);
         let out_len = out_byte_end.saturating_sub(out_byte_start);
         let edit = match (in_len, out_len) {
-            (0, 0) => { i += di; j += dj; continue }
+            (0, 0) => {
+                i += di;
+                j += dj;
+                continue;
+            }
             (_, 0) => Edit::delete(in_byte_start, in_len, out_byte_start),
             (0, _) => Edit::synth(in_byte_start, out_byte_start, out_len),
             _ => Edit::subst(in_byte_start, in_len, out_byte_start, out_len),
@@ -383,8 +429,10 @@ fn instrs_eq(a: (usize, usize), b: (usize, usize), in_body: &[u8], out_body: &[u
 fn resync(
     in_instrs: &[(usize, usize)],
     out_instrs: &[(usize, usize)],
-    i_start: usize, j_start: usize,
-    in_body: &[u8], out_body: &[u8],
+    i_start: usize,
+    j_start: usize,
+    in_body: &[u8],
+    out_body: &[u8],
     max_lookahead: usize,
 ) -> Option<(usize, usize)> {
     if i_start >= in_instrs.len() {
@@ -396,15 +444,22 @@ fn resync(
     for dist in 1..=(max_lookahead * 2) {
         for di in 0..=dist {
             let dj = dist - di;
-            if di > max_lookahead || dj > max_lookahead { continue; }
+            if di > max_lookahead || dj > max_lookahead {
+                continue;
+            }
             let i_at_end = i_start + di >= in_instrs.len();
             let j_at_end = j_start + dj >= out_instrs.len();
             if i_at_end && j_at_end {
                 return Some((in_instrs.len() - i_start, out_instrs.len() - j_start));
             }
-            if !i_at_end && !j_at_end
-                && instrs_eq(in_instrs[i_start + di], out_instrs[j_start + dj],
-                             in_body, out_body)
+            if !i_at_end
+                && !j_at_end
+                && instrs_eq(
+                    in_instrs[i_start + di],
+                    out_instrs[j_start + dj],
+                    in_body,
+                    out_body,
+                )
             {
                 return Some((di, dj));
             }
@@ -417,15 +472,22 @@ fn resync(
 /// the middle. Used when `infer_fine_edits` can't resync within its
 /// window.
 fn infer_coarse_edits(input: &[u8], output: &[u8]) -> crate::provenance::BodyEdits {
-    use crate::provenance::{BodyEdits, Edit};
-    let prefix = input.iter().zip(output.iter())
-        .take_while(|(a, b)| a == b).count();
+    use crate::provenance::BodyEdits;
+    use crate::provenance::Edit;
+    let prefix = input
+        .iter()
+        .zip(output.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
     // Suffix counted from the end, not overlapping the prefix on
     // either side.
     let max_suffix = (input.len() - prefix).min(output.len() - prefix);
-    let suffix = input[input.len() - max_suffix..].iter().rev()
+    let suffix = input[input.len() - max_suffix..]
+        .iter()
+        .rev()
         .zip(output[output.len() - max_suffix..].iter().rev())
-        .take_while(|(a, b)| a == b).count();
+        .take_while(|(a, b)| a == b)
+        .count();
 
     if prefix == input.len() && prefix == output.len() {
         return BodyEdits::identity();
@@ -465,12 +527,17 @@ pub fn apply_mut(m: &mut crate::mut_module::MutModule<'_>) {
             Some((i, out, edits))
         })
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     let data = module.data();
-    let Some(code_idx) = module.sections().iter().position(|s| s.id == module::SECTION_CODE)
+    let Some(code_idx) = module
+        .sections()
+        .iter()
+        .position(|s| s.id == module::SECTION_CODE)
     else {
         return data.to_vec();
     };
@@ -492,7 +559,10 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
         let body = &payload[off..off + body_size as usize];
         off += body_size as usize;
         match clean_body(body) {
-            Some(new) => { new_bodies.push(Some(new)); any_changed = true; }
+            Some(new) => {
+                new_bodies.push(Some(new));
+                any_changed = true;
+            }
             None => new_bodies.push(None),
         }
     }
@@ -506,7 +576,9 @@ pub fn apply(module: &WasmModule<'_>) -> Vec<u8> {
     leb128::write_u32(&mut new_payload, func_count);
     off = header_len;
     for new in &new_bodies {
-        let Some((body_size, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((body_size, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         off += c;
         let end = off + body_size as usize;
         match new {
@@ -555,11 +627,52 @@ mod tests {
     }
 
     #[test]
-    fn elide_return_before_final_end() {
-        // i32.const 5 ; return ; end → i32.const 5 ; end
+    fn keep_return_before_final_end() {
+        // Previously this peephole rewrote `return ; end` → `end` on the
+        // assumption that an explicit return right before the function's
+        // closing end is redundant. It isn't: `return` validates with a
+        // polymorphic stack, but the function-closing `end` enforces an
+        // exact match against the function's return type, so any extra
+        // stack values that `return`'s polymorphism allowed will be
+        // exposed at `end` and validation fails. See the long comment in
+        // `clean_body` for the fuzz seed that surfaced this. The body
+        // must be returned unchanged (clean_body returns None for "no
+        // change") for any input that previously triggered the peephole.
         let body = vec![0, 0x41, 5, 0x0F, 0x0B];
-        let out = clean_body(&body).unwrap();
-        assert_eq!(out, vec![0, 0x41, 5, 0x0B]);
+        // Pre-fix this returned Some(vec![0, 0x41, 5, 0x0B]).
+        // Post-fix the body is left alone.
+        assert!(clean_body(&body).is_none());
+    }
+
+    /// Regression: the wasm-smith fuzz seed at
+    /// `wilt/tests/fuzz_roundtrip.rs::optimise_preserves_validity` minimised
+    /// to a function `() -> nil` ending with value-pushing ops, a
+    /// `() -> nil` `call`, then `return ; end`. With the old peephole the
+    /// `return` was elided, leaving `[i64,i64,f32,f64]` on the stack at
+    /// the function's closing `end` and tripping the validator. We can't
+    /// replay the full module here (the body alone doesn't model the
+    /// module's type table), but we *can* assert the byte pattern that
+    /// the peephole used to trigger on stays intact when other ops sit
+    /// between the producer and the `return`.
+    #[test]
+    fn keep_return_when_extra_values_on_stack() {
+        // 0 locals,
+        // i64.const 1, i64.const 2,            // [i64, i64]
+        // f32.const 0, f64.const 0,            // + [f32, f64]
+        // return,                              // polymorphic stack ⇒ valid
+        // end                                  // function-closing end
+        let body = vec![
+            0, 0x42, 1, // i64.const 1
+            0x42, 2, // i64.const 2
+            0x43, 0, 0, 0, 0, // f32.const 0.0
+            0x44, 0, 0, 0, 0, 0, 0, 0, 0,    // f64.const 0.0
+            0x0F, // return
+            0x0B, // end
+        ];
+        // Body itself contains no peephole-eligible pattern aside from
+        // the `return ; end` we just disabled. Result should be None
+        // (nothing to do) — the bytes survive unmodified.
+        assert!(clean_body(&body).is_none());
     }
 
     #[test]
@@ -581,24 +694,28 @@ mod tests {
         // a delete (vs coarse's single span covering both).
         // local.get 0; nop; drop; nop; end
         let body = vec![
-            1, 1, 0x7F,         // 1 local of i32
-            0x20, 0x00,         // local.get 0      (kept)
-            0x01,               // nop              (stripped — edit 1)
-            0x1A,               // drop             (kept — separator)
-            0x01,               // nop              (stripped — edit 2)
-            0x0B,               // end              (kept)
+            1, 1, 0x7F, // 1 local of i32
+            0x20, 0x00, // local.get 0      (kept)
+            0x01, // nop              (stripped — edit 1)
+            0x1A, // drop             (kept — separator)
+            0x01, // nop              (stripped — edit 2)
+            0x0B, // end              (kept)
         ];
         let out = clean_body(&body).unwrap();
         let edits = infer_fine_edits(&body, &out)
             .expect("fine-edit inference should succeed on this input");
-        assert!(edits.edits().len() >= 2,
-                "expected ≥ 2 fine edits across two separated peepholes; got {}",
-                edits.edits().len());
+        assert!(
+            edits.edits().len() >= 2,
+            "expected ≥ 2 fine edits across two separated peepholes; got {}",
+            edits.edits().len()
+        );
         // Reconstruct: apply edits to input; should equal vacuum's output.
-        let reconstructed = edits.apply(&body, |i, _src, _len| {
-            let e = edits.edits().get(i)?;
-            Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
-        }).unwrap();
+        let reconstructed = edits
+            .apply(&body, |i, _src, _len| {
+                let e = edits.edits().get(i)?;
+                Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+            })
+            .unwrap();
         assert_eq!(reconstructed, out);
     }
 
@@ -608,19 +725,19 @@ mod tests {
         // Edits may merge into one span — that's fine; verify the
         // reconstruction still matches.
         let body = vec![
-            1, 1, 0x7F,
-            0x20, 0x00,
-            0x01,            // nop
-            0x41, 0x00,      // i32.const 0
-            0x6A,            // i32.add
+            1, 1, 0x7F, 0x20, 0x00, 0x01, // nop
+            0x41, 0x00, // i32.const 0
+            0x6A, // i32.add
             0x0B,
         ];
         let out = clean_body(&body).unwrap();
         let edits = infer_fine_edits(&body, &out).unwrap();
-        let reconstructed = edits.apply(&body, |i, _src, _len| {
-            let e = edits.edits().get(i)?;
-            Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
-        }).unwrap();
+        let reconstructed = edits
+            .apply(&body, |i, _src, _len| {
+                let e = edits.edits().get(i)?;
+                Some(out[e.out_start as usize..e.out_end() as usize].to_vec())
+            })
+            .unwrap();
         assert_eq!(reconstructed, out);
     }
 
@@ -643,9 +760,9 @@ mod tests {
     #[test]
     fn apply_on_module() {
         let mut data = b"\0asm\x01\x00\x00\x00".to_vec();
-        data.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]);              // type
-        data.extend_from_slice(&[3, 2, 1, 0]);                        // func
-        data.extend_from_slice(&[7, 5, 1, 1, b'f', 0x00, 0]);         // export
+        data.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type
+        data.extend_from_slice(&[3, 2, 1, 0]); // func
+        data.extend_from_slice(&[7, 5, 1, 1, b'f', 0x00, 0]); // export
         // code: 1 body = [0 locals, nop, nop, end] (5 bytes)
         data.extend_from_slice(&[10, 6, 1, 4, 0, 0x01, 0x01, 0x0B]);
         let module = WasmModule::parse(&data).unwrap();

@@ -197,7 +197,7 @@ impl Args {
     }
 }
 
-enum PlatformKind {
+pub(crate) enum PlatformKind {
     Elf,
     MachO,
     Wasm,
@@ -472,6 +472,21 @@ impl std::fmt::Debug for Args {
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
             Args::Wasm(args) => args.fmt(f),
+        }
+    }
+}
+
+impl Args {
+    /// Platform-agnostic access to the parsed output path. Useful
+    /// from top-level driver code (`libwild::run`) that wants to
+    /// look at the output without pattern-matching every platform
+    /// variant.
+    pub fn output_path(&self) -> &std::sync::Arc<std::path::Path> {
+        use crate::platform::Args as _;
+        match self {
+            Args::Elf(args) => args.output(),
+            Args::MachO(args) => args.output(),
+            Args::Wasm(args) => args.output(),
         }
     }
 }

@@ -10,9 +10,11 @@
 //! templated C++ / monomorphised generics / thunk patterns.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::opcode;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Produce an index map: for each absolute function index, the canonical
 /// absolute index it should be remapped to (identity for functions that
@@ -20,7 +22,9 @@ use std::collections::{HashMap, HashSet};
 fn build_remap(module: &mut WasmModule<'_>) -> Option<Vec<Option<u32>>> {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
-    if num_defined < 2 { return None; }
+    if num_defined < 2 {
+        return None;
+    }
 
     let data = module.data();
     let num_imports = super::dce::count_func_imports_pub(module);
@@ -29,7 +33,9 @@ fn build_remap(module: &mut WasmModule<'_>) -> Option<Vec<Option<u32>>> {
     let func_sec = module.section(module::SECTION_FUNCTION)?;
     let payload = func_sec.payload.slice(data);
     let (count, mut off) = leb128::read_u32(payload)?;
-    if count != num_defined { return None; }
+    if count != num_defined {
+        return None;
+    }
     let mut type_idx = Vec::with_capacity(num_defined as usize);
     for _ in 0..count {
         let (t, c) = leb128::read_u32(&payload[off..])?;
@@ -53,7 +59,9 @@ fn build_remap(module: &mut WasmModule<'_>) -> Option<Vec<Option<u32>>> {
 
     for (i, body) in module.function_bodies().iter().enumerate() {
         let abs = num_imports + i as u32;
-        if reffed.contains(&abs) { continue; }
+        if reffed.contains(&abs) {
+            continue;
+        }
         let bytes = body.full.slice(data);
         let key = (type_idx[i], bytes);
         match groups.get(&key) {
@@ -77,8 +85,12 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> HashSet<u32> {
     // Code bodies.
     for body in module.function_bodies() {
         let b = body.body.slice(data);
-        let Some(start) = opcode::skip_locals(b) else { continue };
-        let Some(instrs) = opcode::walk(b, start) else { continue };
+        let Some(start) = opcode::skip_locals(b) else {
+            continue;
+        };
+        let Some(instrs) = opcode::walk(b, start) else {
+            continue;
+        };
         for (p, _) in instrs {
             if b[p] == opcode::OP_REF_FUNC {
                 if let Some((t, _)) = leb128::read_u32(&b[p + 1..]) {
@@ -93,10 +105,16 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> HashSet<u32> {
         let p = sec.payload.slice(data);
         if let Some((count, mut off)) = leb128::read_u32(p) {
             for _ in 0..count {
-                if off + 2 > p.len() { break; }
+                if off + 2 > p.len() {
+                    break;
+                }
                 off += 2;
-                let Some((end, targets)) = super::dce::scan_const_expr(p, off) else { break };
-                for t in targets { set.insert(t); }
+                let Some((end, targets)) = super::dce::scan_const_expr(p, off) else {
+                    break;
+                };
+                for t in targets {
+                    set.insert(t);
+                }
                 off = end;
             }
         }
@@ -108,7 +126,9 @@ fn collect_ref_func_targets(module: &WasmModule<'_>) -> HashSet<u32> {
     if let Some(sec) = module.section(module::SECTION_ELEMENT) {
         let p = sec.payload.slice(data);
         if let Some(targets) = super::dce::scan_elements_funcidx(p) {
-            for t in targets { set.insert(t); }
+            for t in targets {
+                set.insert(t);
+            }
         }
     }
 
@@ -169,12 +189,16 @@ fn emit_export(out: &mut Vec<u8>, section: &module::Section, data: &[u8], remap:
     let mut new_payload = Vec::new();
     leb128::write_u32(&mut new_payload, count);
     for _ in 0..count {
-        let Some((name_len, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((name_len, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         let name_start = off + c;
         off = name_start + name_len as usize;
         let kind = payload[off];
         off += 1;
-        let Some((idx, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((idx, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         off += c;
         let new_idx = if kind == 0x00 {
             remap.get(idx as usize).copied().flatten().unwrap_or(idx)
@@ -200,7 +224,9 @@ fn emit_global(out: &mut Vec<u8>, section: &module::Section, data: &[u8], remap:
     let mut new_payload = Vec::new();
     leb128::write_u32(&mut new_payload, count);
     for _ in 0..count {
-        if off + 2 > payload.len() { break; }
+        if off + 2 > payload.len() {
+            break;
+        }
         new_payload.extend_from_slice(&payload[off..off + 2]);
         off += 2;
         let Some((end, _)) = super::dce::scan_const_expr(payload, off) else {

@@ -88,27 +88,42 @@ fn parse_args() -> Result<Args, String> {
     while i < raw.len() {
         let arg = &raw[i];
         match arg.as_str() {
-            "-h" | "--help" => { print!("{USAGE}"); std::process::exit(0); }
-            "-v" | "--verbose" => { a.verbose = true; i += 1; }
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                std::process::exit(0);
+            }
+            "-v" | "--verbose" => {
+                a.verbose = true;
+                i += 1;
+            }
             // Optimisation levels — all equivalent for wilt.
-            "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => { i += 1; }
+            "-O" | "-O0" | "-O1" | "-O2" | "-O3" | "-O4" | "-Os" | "-Oz" => {
+                i += 1;
+            }
             // Debug-level flag: --debug=none/names/lines/full.
             s if s.starts_with("--debug=") => {
                 let v = &s[8..];
-                a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v)
-                    .ok_or_else(|| format!("--debug: unknown level {v:?} (want none/names/lines/full)"))?);
+                a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v).ok_or_else(|| {
+                    format!("--debug: unknown level {v:?} (want none/names/lines/full)")
+                })?);
                 i += 1;
             }
             "--debug" => {
                 i += 1;
-                let v = raw.get(i).ok_or_else(|| "--debug: expected level".to_string())?;
-                a.debug_level = Some(wilt::debug_level::DebugLevel::parse(v)
-                    .ok_or_else(|| format!("--debug: unknown level {v:?}"))?);
+                let v = raw
+                    .get(i)
+                    .ok_or_else(|| "--debug: expected level".to_string())?;
+                a.debug_level = Some(
+                    wilt::debug_level::DebugLevel::parse(v)
+                        .ok_or_else(|| format!("--debug: unknown level {v:?}"))?,
+                );
                 i += 1;
             }
             "--source-map-in" => {
                 i += 1;
-                let v = raw.get(i).ok_or_else(|| "--source-map-in: expected path".to_string())?;
+                let v = raw
+                    .get(i)
+                    .ok_or_else(|| "--source-map-in: expected path".to_string())?;
                 a.source_map_in = Some(PathBuf::from(v));
                 i += 1;
             }
@@ -118,7 +133,9 @@ fn parse_args() -> Result<Args, String> {
             }
             "--source-map-out" => {
                 i += 1;
-                let v = raw.get(i).ok_or_else(|| "--source-map-out: expected path".to_string())?;
+                let v = raw
+                    .get(i)
+                    .ok_or_else(|| "--source-map-out: expected path".to_string())?;
                 a.source_map_out = Some(PathBuf::from(v));
                 i += 1;
             }
@@ -126,17 +143,46 @@ fn parse_args() -> Result<Args, String> {
                 a.source_map_out = Some(PathBuf::from(&s["--source-map-out=".len()..]));
                 i += 1;
             }
-            "-g0" => { a.debug_level = Some(wilt::debug_level::DebugLevel::None);  i += 1; }
-            "-g1" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Names); i += 1; }
-            "-g2" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Lines); i += 1; }
-            "-g3" => { a.debug_level = Some(wilt::debug_level::DebugLevel::Full);  i += 1; }
+            "-g0" => {
+                a.debug_level = Some(wilt::debug_level::DebugLevel::None);
+                i += 1;
+            }
+            "-g1" => {
+                a.debug_level = Some(wilt::debug_level::DebugLevel::Names);
+                i += 1;
+            }
+            "-g2" => {
+                a.debug_level = Some(wilt::debug_level::DebugLevel::Lines);
+                i += 1;
+            }
+            "-g3" => {
+                a.debug_level = Some(wilt::debug_level::DebugLevel::Full);
+                i += 1;
+            }
             // Debug / strip flags.
-            "-g" | "--debuginfo" => { a.keep_debuginfo = true; i += 1; }
-            "--strip" => { a.strip_all = true; i += 1; }
-            "--strip-debug" | "--strip-dwarf" => { a.strip_debug = true; i += 1; }
-            "--strip-producers" => { a.strip_producers = true; i += 1; }
-            "--strip-target-features" => { i += 1; /* folded into --strip */ }
-            "--print" => { a.print_stdout = true; i += 1; }
+            "-g" | "--debuginfo" => {
+                a.keep_debuginfo = true;
+                i += 1;
+            }
+            "--strip" => {
+                a.strip_all = true;
+                i += 1;
+            }
+            "--strip-debug" | "--strip-dwarf" => {
+                a.strip_debug = true;
+                i += 1;
+            }
+            "--strip-producers" => {
+                a.strip_producers = true;
+                i += 1;
+            }
+            "--strip-target-features" => {
+                i += 1; /* folded into --strip */
+            }
+            "--print" => {
+                a.print_stdout = true;
+                i += 1;
+            }
             // Output.
             "-o" | "--output" => {
                 i += 1;
@@ -145,20 +191,29 @@ fn parse_args() -> Result<Args, String> {
                 i += 1;
             }
             s if s.starts_with("-o=") => {
-                a.output = Some(PathBuf::from(&s[3..])); i += 1;
+                a.output = Some(PathBuf::from(&s[3..]));
+                i += 1;
             }
             s if s.starts_with("--output=") => {
-                a.output = Some(PathBuf::from(&s[9..])); i += 1;
+                a.output = Some(PathBuf::from(&s[9..]));
+                i += 1;
             }
             // wasm-opt feature toggles + pass flags — accept and ignore.
             s if s.starts_with("--enable-")
-              || s.starts_with("--disable-")
-              || s.starts_with("--pass-")
-              || s.starts_with("--no-") => { i += 1; }
+                || s.starts_with("--disable-")
+                || s.starts_with("--pass-")
+                || s.starts_with("--no-") =>
+            {
+                i += 1;
+            }
             // Some wasm-opt flags take an arg; accept and skip it for known ones.
             "--features" | "--mvp-features" | "--all-features" => {
                 // --features takes a value; others stand alone. Peek:
-                if arg == "--features" { i += 2; } else { i += 1; }
+                if arg == "--features" {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
             }
             s if s.starts_with("-") => return Err(format!("unknown flag: {s}")),
             _ => {
@@ -205,9 +260,8 @@ fn main() -> ExitCode {
     // union. --strip (our full shipping strip) wins if set. --debuginfo
     // vetoes --strip-debug (matches wasm-opt's -g behaviour).
     let shipping_strip = args.strip_all;
-    let partial_strip = !shipping_strip
-        && (args.strip_debug || args.strip_producers)
-        && !args.keep_debuginfo;
+    let partial_strip =
+        !shipping_strip && (args.strip_debug || args.strip_producers) && !args.keep_debuginfo;
 
     let mut output_bytes = if let Some(level) = args.debug_level {
         wilt::optimise_with_debug_level(&input_bytes, level)
@@ -218,14 +272,15 @@ fn main() -> ExitCode {
     };
 
     // Handle external source-map reference. If input carries one:
-    // - When --source-map-in/out supplied: rewrite through (step 2 —
-    //   today the rewrite is pipe-through when code is unchanged;
-    //   otherwise we strip with warning).
-    // - When neither supplied: strip the reference from output and
-    //   warn.
+    // - When --source-map-in/out supplied: rewrite through (step 2 — today the rewrite is
+    //   pipe-through when code is unchanged; otherwise we strip with warning).
+    // - When neither supplied: strip the reference from output and warn.
     if let Ok(input_m) = wilt::WasmModule::parse(&input_bytes) {
         if let Some(in_url) = wilt::passes::source_map::detect_url(&input_m) {
-            match (args.source_map_in.as_deref(), args.source_map_out.as_deref()) {
+            match (
+                args.source_map_in.as_deref(),
+                args.source_map_out.as_deref(),
+            ) {
                 (Some(in_path), Some(out_path)) => {
                     let in_json = match std::fs::read_to_string(in_path) {
                         Ok(s) => s,
@@ -246,14 +301,17 @@ fn main() -> ExitCode {
                                 eprintln!("wilt: could not write {}: {e}", out_path.display());
                                 return ExitCode::from(1);
                             }
-                            let out_url = out_path.file_name()
+                            let out_url = out_path
+                                .file_name()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or(&in_url);
-                            output_bytes = wilt::passes::source_map::set_url(&output_bytes, out_url);
+                            output_bytes =
+                                wilt::passes::source_map::set_url(&output_bytes, out_url);
                             if args.verbose {
                                 let _ = writeln!(
                                     std::io::stderr(),
-                                    "wilt: rewrote source map → {}", out_path.display(),
+                                    "wilt: rewrote source map → {}",
+                                    out_path.display(),
                                 );
                             }
                         }
@@ -304,7 +362,8 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     } else {
-        let out_path = args.output
+        let out_path = args
+            .output
             .unwrap_or_else(|| default_output_path(input_path));
         if let Err(e) = std::fs::write(&out_path, &output_bytes) {
             eprintln!("wilt: could not write {}: {e}", out_path.display());
@@ -314,11 +373,16 @@ fn main() -> ExitCode {
             let inp = input_bytes.len();
             let out = output_bytes.len();
             let saved = inp.saturating_sub(out);
-            let pct = if inp > 0 { 100.0 * saved as f64 / inp as f64 } else { 0.0 };
+            let pct = if inp > 0 {
+                100.0 * saved as f64 / inp as f64
+            } else {
+                0.0
+            };
             let _ = writeln!(
                 std::io::stderr(),
                 "wilt: {} → {}  ({inp} → {out} bytes, saved {saved}, {pct:.1}%)",
-                input_path.display(), out_path.display(),
+                input_path.display(),
+                out_path.display(),
             );
         }
     }

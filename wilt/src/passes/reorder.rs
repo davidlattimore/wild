@@ -7,7 +7,8 @@
 //! functions are permuted.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::opcode;
 
 pub fn apply(module: &mut WasmModule<'_>) -> Vec<u8> {
@@ -18,8 +19,12 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
     if num_defined < 2 {
-        return (module.data().to_vec(), crate::remap::FuncRemap::identity(
-            super::dce::count_func_imports_pub(module) + num_defined));
+        return (
+            module.data().to_vec(),
+            crate::remap::FuncRemap::identity(
+                super::dce::count_func_imports_pub(module) + num_defined,
+            ),
+        );
     }
     let num_imports = super::dce::count_func_imports_pub(module);
     let total = num_imports + num_defined;
@@ -49,7 +54,9 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
             let op = b[p];
             if op == opcode::OP_CALL || op == opcode::OP_REF_FUNC {
                 if let Some((t, _)) = leb128::read_u32(&b[p + 1..]) {
-                    if (t as usize) < count.len() { count[t as usize] += 1; }
+                    if (t as usize) < count.len() {
+                        count[t as usize] += 1;
+                    }
                 }
             }
         }
@@ -57,21 +64,27 @@ pub fn apply_with_remap(module: &mut WasmModule<'_>) -> (Vec<u8>, crate::remap::
     // Exports, start, globals, elements also reference functions but their
     // count-per-reference is tiny vs call-site counts; include for precision.
     for idx in module.exported_function_indices() {
-        if (idx as usize) < count.len() { count[idx as usize] += 1; }
+        if (idx as usize) < count.len() {
+            count[idx as usize] += 1;
+        }
     }
     if let Some(s) = module.start_function() {
-        if (s as usize) < count.len() { count[s as usize] += 1; }
+        if (s as usize) < count.len() {
+            count[s as usize] += 1;
+        }
     }
 
     // Build a permutation of defined indices, sorted by descending count.
     // Stable by original index on ties so behaviour is deterministic.
     let mut order: Vec<u32> = (num_imports..total).collect();
-    order.sort_by(|a, b| {
-        count[*b as usize].cmp(&count[*a as usize]).then(a.cmp(b))
-    });
+    order.sort_by(|a, b| count[*b as usize].cmp(&count[*a as usize]).then(a.cmp(b)));
 
     // If already in best order, no-op.
-    if order.iter().enumerate().all(|(i, &orig)| orig == num_imports + i as u32) {
+    if order
+        .iter()
+        .enumerate()
+        .all(|(i, &orig)| orig == num_imports + i as u32)
+    {
         return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
@@ -95,7 +108,8 @@ pub fn apply_with_order(module: &mut WasmModule<'_>, order: Vec<u32>) -> Vec<u8>
 }
 
 pub fn apply_with_order_remap(
-    module: &mut WasmModule<'_>, order: Vec<u32>,
+    module: &mut WasmModule<'_>,
+    order: Vec<u32>,
 ) -> (Vec<u8>, crate::remap::FuncRemap) {
     module.ensure_function_bodies_parsed();
     let num_defined = module.num_function_bodies() as u32;
@@ -114,7 +128,11 @@ pub fn apply_with_order_remap(
         return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
-    if order.iter().enumerate().all(|(i, &orig)| orig == num_imports + i as u32) {
+    if order
+        .iter()
+        .enumerate()
+        .all(|(i, &orig)| orig == num_imports + i as u32)
+    {
         return (data.to_vec(), crate::remap::FuncRemap::identity(total));
     }
 
@@ -167,12 +185,18 @@ fn emit(
 }
 
 fn read_function_types(module: &WasmModule<'_>, data: &[u8]) -> Vec<u32> {
-    let Some(sec) = module.section(module::SECTION_FUNCTION) else { return Vec::new(); };
+    let Some(sec) = module.section(module::SECTION_FUNCTION) else {
+        return Vec::new();
+    };
     let payload = sec.payload.slice(data);
-    let Some((count, mut off)) = leb128::read_u32(payload) else { return Vec::new(); };
+    let Some((count, mut off)) = leb128::read_u32(payload) else {
+        return Vec::new();
+    };
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let Some((t, c)) = leb128::read_u32(&payload[off..]) else { break };
+        let Some((t, c)) = leb128::read_u32(&payload[off..]) else {
+            break;
+        };
         off += c;
         out.push(t);
     }
@@ -239,7 +263,9 @@ mod tests {
         data.push(3);
         let mut fp = Vec::new();
         l::write_u32(&mut fp, 3);
-        for _ in 0..3 { l::write_u32(&mut fp, 0); }
+        for _ in 0..3 {
+            l::write_u32(&mut fp, 0);
+        }
         l::write_u32(&mut data, fp.len() as u32);
         data.extend_from_slice(&fp);
 

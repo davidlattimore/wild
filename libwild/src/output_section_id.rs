@@ -663,6 +663,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
     pub(crate) fn output_order(
         &self,
         output_kind: OutputKind,
+        args: &P::Args,
     ) -> (OutputOrder, ProgramSegments<P::ProgramSegmentDef>) {
         timing_phase!("Compute output order");
 
@@ -700,7 +701,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             }
         });
 
-        P::build_output_order_and_program_segments(&custom, output_kind, self, &secondary)
+        P::build_output_order_and_program_segments(&custom, output_kind, self, &secondary, args)
     }
 
     #[must_use]

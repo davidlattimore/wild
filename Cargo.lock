@@ -972,6 +972,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "which",
  "wilt",
  "winnow",
  "zerocopy",

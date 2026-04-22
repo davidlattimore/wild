@@ -13,9 +13,11 @@
 //! already-materialised constant pool.
 
 use crate::leb128;
-use crate::linker_hints::{ConstVal, LinkerHints};
+use crate::linker_hints::ConstVal;
+use crate::linker_hints::LinkerHints;
 use crate::mut_module::MutModule;
-use crate::opcode::{self as opc, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self as opc};
 
 const OP_GLOBAL_GET: u8 = 0x23;
 const OP_I32_CONST: u8 = 0x41;
@@ -30,7 +32,9 @@ pub fn apply_mut_with_hints(m: &mut MutModule<'_>, hints: Option<&dyn LinkerHint
         .into_par_iter()
         .filter_map(|i| rewrite_body(m.body_bytes(i), hints).map(|b| (i, b)))
         .collect();
-    for (i, b) in updates { m.set_body(i, b); }
+    for (i, b) in updates {
+        m.set_body(i, b);
+    }
 }
 
 fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
@@ -38,14 +42,22 @@ fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
     let mut iter = InstrIter::new(body, start);
     let mut rewrites: Vec<(usize, usize, Vec<u8>)> = Vec::new();
     while let Some((p, len)) = iter.next() {
-        if body[p] != OP_GLOBAL_GET { continue; }
+        if body[p] != OP_GLOBAL_GET {
+            continue;
+        }
         let (g, _) = leb128::read_u32(&body[p + 1..])?;
-        let Some(val) = hints.global_const(g) else { continue };
+        let Some(val) = hints.global_const(g) else {
+            continue;
+        };
         let repl = encode_const(val);
-        if repl.len() > len { continue; }
+        if repl.len() > len {
+            continue;
+        }
         rewrites.push((p, len, repl));
     }
-    if rewrites.is_empty() { return None; }
+    if rewrites.is_empty() {
+        return None;
+    }
 
     let mut out = Vec::with_capacity(body.len());
     let mut cursor = 0;
@@ -61,8 +73,14 @@ fn rewrite_body(body: &[u8], hints: &dyn LinkerHints) -> Option<Vec<u8>> {
 fn encode_const(v: ConstVal) -> Vec<u8> {
     let mut out = Vec::with_capacity(11);
     match v {
-        ConstVal::I32(n) => { out.push(OP_I32_CONST); leb128::write_i32(&mut out, n); }
-        ConstVal::I64(n) => { out.push(OP_I64_CONST); leb128::write_i64(&mut out, n); }
+        ConstVal::I32(n) => {
+            out.push(OP_I32_CONST);
+            leb128::write_i32(&mut out, n);
+        }
+        ConstVal::I64(n) => {
+            out.push(OP_I64_CONST);
+            leb128::write_i64(&mut out, n);
+        }
         ConstVal::F32(bits) => {
             out.push(OP_F32_CONST);
             out.extend_from_slice(&bits.to_le_bytes());

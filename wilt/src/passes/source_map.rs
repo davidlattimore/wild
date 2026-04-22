@@ -9,13 +9,11 @@
 //! Per `wilt-debug-info-plan.md` the contract is: **never silently
 //! reference stale external data**. We detect the section and then:
 //!
-//! - If the CLI supplied `--source-map-in/--source-map-out`: read the
-//!   input map, rewrite it in line with wilt's transformations, write
-//!   it to the out path, and keep the reference (pointing at the new
-//!   filename).
-//! - If neither: strip the `sourceMappingURL` reference from output
-//!   and emit a stderr warning so the user knows the external file
-//!   isn't being maintained.
+//! - If the CLI supplied `--source-map-in/--source-map-out`: read the input map, rewrite it in line
+//!   with wilt's transformations, write it to the out path, and keep the reference (pointing at the
+//!   new filename).
+//! - If neither: strip the `sourceMappingURL` reference from output and emit a stderr warning so
+//!   the user knows the external file isn't being maintained.
 //!
 //! This module implements detection, stripping, and the JSON/VLQ
 //! rewriter. This commit lands step 1 (detection + strip + pipe-
@@ -23,15 +21,20 @@
 //! transformation using the same `FuncRemap` + body-edit substrate
 //! that DWARF uses.
 
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 
 /// Payload of a `sourceMappingURL` custom section — the URL/path.
 pub fn detect_url(module: &WasmModule<'_>) -> Option<String> {
     let data = module.data();
     module.sections().iter().find_map(|s| {
-        if s.id != module::SECTION_CUSTOM { return None; }
+        if s.id != module::SECTION_CUSTOM {
+            return None;
+        }
         let name = s.custom_name?.slice(data);
-        if name != b"sourceMappingURL" { return None; }
+        if name != b"sourceMappingURL" {
+            return None;
+        }
         let p = s.payload.slice(data);
         let (nlen, c) = crate::leb128::read_u32(p)?;
         let after_name = &p[c + nlen as usize..];
@@ -39,15 +42,21 @@ pub fn detect_url(module: &WasmModule<'_>) -> Option<String> {
         let (url_len, c2) = crate::leb128::read_u32(after_name)?;
         let start = c2;
         let end = start + url_len as usize;
-        if end > after_name.len() { return None; }
-        std::str::from_utf8(&after_name[start..end]).ok().map(String::from)
+        if end > after_name.len() {
+            return None;
+        }
+        std::str::from_utf8(&after_name[start..end])
+            .ok()
+            .map(String::from)
     })
 }
 
 /// Return the full file bytes of `wasm` with any `sourceMappingURL`
 /// custom section removed. Returns `wasm` unchanged if none present.
 pub fn strip_url(wasm: &[u8]) -> Vec<u8> {
-    let Ok(m) = WasmModule::parse(wasm) else { return wasm.to_vec() };
+    let Ok(m) = WasmModule::parse(wasm) else {
+        return wasm.to_vec();
+    };
     let cfg = crate::passes::strip::StripConfig {
         source_maps: true,
         ..Default::default()
@@ -79,11 +88,9 @@ pub fn set_url(wasm: &[u8], new_url: &str) -> Vec<u8> {
 ///
 /// Three tiers, tried in order:
 ///
-/// 1. Code byte-identical + identity remap → pipe the JSON through
-///    (fast path; no decoding needed).
-/// 2. Per-function bytes match but some functions moved → decode
-///    the `mappings` VLQ, apply per-function generated-column
-///    shifts, re-encode.
+/// 1. Code byte-identical + identity remap → pipe the JSON through (fast path; no decoding needed).
+/// 2. Per-function bytes match but some functions moved → decode the `mappings` VLQ, apply
+///    per-function generated-column shifts, re-encode.
 /// 3. Any body modified → return None (honest strip).
 ///
 /// `input_fn_offsets` and `output_fn_offsets` supply the per-function
@@ -105,7 +112,10 @@ pub fn rewrite_v3_with_shifts(
     input_fn_offsets: &[(u32, u32)],
     output_fn_offsets: &[(u32, u32)],
 ) -> Option<String> {
-    let identity_remap = remap.entries().iter().enumerate()
+    let identity_remap = remap
+        .entries()
+        .iter()
+        .enumerate()
         .all(|(i, s)| *s == Some(i as u32));
 
     // Fast path: nothing changed in code → map is accurate.
@@ -134,13 +144,17 @@ fn build_shifts(
     out_offsets: &[(u32, u32)],
 ) -> Option<Vec<((u32, u32), i64)>> {
     let num_defined_in = in_offsets.len() as u32;
-    if remap.len() < num_defined_in { return None; }
+    if remap.len() < num_defined_in {
+        return None;
+    }
     let num_imports = remap.len() - num_defined_in;
     let mut shifts = Vec::with_capacity(in_offsets.len());
     for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
         let abs_in = num_imports + def_i as u32;
         let abs_out = remap.lookup(abs_in)?;
-        if abs_out < num_imports { return None; }
+        if abs_out < num_imports {
+            return None;
+        }
         let def_out = (abs_out - num_imports) as usize;
         let &(off_out, _) = out_offsets.get(def_out)?;
         shifts.push(((off_in, off_in + len_in), off_out as i64 - off_in as i64));
@@ -194,19 +208,24 @@ fn replace_mappings(json: &str, new: &str) -> String {
 /// previous segment IN THE SAME LINE (reset to 0 at each `;`).
 /// Other fields — source index, source line, source column, name
 /// index — are kept as-is.
-fn transform_mappings(
-    mappings: &str,
-    shifts: &[((u32, u32), i64)],
-) -> Option<String> {
+fn transform_mappings(mappings: &str, shifts: &[((u32, u32), i64)]) -> Option<String> {
     let mut out = String::with_capacity(mappings.len());
     for (line_i, line) in mappings.split(';').enumerate() {
-        if line_i > 0 { out.push(';'); }
-        if line.is_empty() { continue; }
+        if line_i > 0 {
+            out.push(';');
+        }
+        if line.is_empty() {
+            continue;
+        }
 
         let mut gen_col: i64 = 0;
         for (seg_i, seg) in line.split(',').enumerate() {
-            if seg_i > 0 { out.push(','); }
-            if seg.is_empty() { continue; }
+            if seg_i > 0 {
+                out.push(',');
+            }
+            if seg.is_empty() {
+                continue;
+            }
 
             // Decode VLQ fields in the segment.
             let mut cursor = 0usize;
@@ -218,7 +237,8 @@ fn transform_mappings(
             // Look up shift by treating generated col as a file offset.
             let new_abs = if abs_col >= 0 {
                 let u = abs_col as u32;
-                let shift = shifts.iter()
+                let shift = shifts
+                    .iter()
                     .find(|((s, e), _)| u >= *s && u < *e)
                     .map(|(_, d)| *d)
                     .unwrap_or(0);
@@ -244,8 +264,7 @@ fn transform_mappings(
     Some(out)
 }
 
-const BASE64: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn decode_vlq(bytes: &[u8]) -> Option<(i64, usize)> {
     let mut result: u64 = 0;
@@ -263,21 +282,29 @@ fn decode_vlq(bytes: &[u8]) -> Option<(i64, usize)> {
             let signed = if negative { -v } else { v };
             return Some((signed, consumed));
         }
-        if shift > 60 { return None; }
+        if shift > 60 {
+            return None;
+        }
     }
     None
 }
 
 fn encode_vlq(mut v: i64, out: &mut String) {
     let sign = if v < 0 { 1u64 } else { 0 };
-    if v < 0 { v = -v; }
+    if v < 0 {
+        v = -v;
+    }
     let mut u = ((v as u64) << 1) | sign;
     loop {
         let mut digit = (u & 0b011111) as u8;
         u >>= 5;
-        if u != 0 { digit |= 0b100000; }
+        if u != 0 {
+            digit |= 0b100000;
+        }
         out.push(BASE64[digit as usize] as char);
-        if u == 0 { break; }
+        if u == 0 {
+            break;
+        }
     }
 }
 

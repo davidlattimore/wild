@@ -46,13 +46,19 @@ const MAX_FIXPOINT_ITERATIONS: usize = 40;
 ///
 /// As of M2: `dae` consults hints; other passes ignore them.
 pub fn optimise_with_hints<H: linker_hints::LinkerHints>(input: &[u8], hints: &H) -> Vec<u8> {
-    if WasmModule::parse(input).is_err() { return input.to_vec(); }
+    if WasmModule::parse(input).is_err() {
+        return input.to_vec();
+    }
     let mut current = input.to_vec();
     let mut best = current.clone();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let (next, _remap) = optimise_once_with_hints(&current, Some(hints));
-        if next == current { break; }
-        if next.len() < best.len() { best = next.clone(); }
+        if next == current {
+            break;
+        }
+        if next.len() < best.len() {
+            best = next.clone();
+        }
         current = next;
     }
     best
@@ -72,7 +78,11 @@ pub fn optimise(input: &[u8]) -> Vec<u8> {
     // many call sites, LEB shifts after reorder, etc.) can produce
     // output slightly larger than the input. The contract is "wilt
     // never grows a module"; if we'd grow, return the input verbatim.
-    if result.len() > input.len() { input.to_vec() } else { result }
+    if result.len() > input.len() {
+        input.to_vec()
+    } else {
+        result
+    }
 }
 
 /// Optimise + strip debug / source-map / name custom sections.
@@ -87,33 +97,38 @@ pub fn optimise_stripped(input: &[u8]) -> Vec<u8> {
 /// Optimise at a specified debug-info tier. See `debug_level::DebugLevel`.
 ///
 /// - `None`: strip DWARF / source maps / names / target_features.
-/// - `Names`: rewrite the `name` section to stay consistent with the
-///   output's index space. Drop DWARF + source maps (they'd be stale).
-/// - `Lines` / `Full`: fall back to `Names` in this build; Phase 2/3
-///   of `wilt-debug-info-plan.md` will wire them up. Callers pick the
-///   tier they want; the library silently delivers the highest it
-///   honestly can.
+/// - `Names`: rewrite the `name` section to stay consistent with the output's index space. Drop
+///   DWARF + source maps (they'd be stale).
+/// - `Lines` / `Full`: fall back to `Names` in this build; Phase 2/3 of `wilt-debug-info-plan.md`
+///   will wire them up. Callers pick the tier they want; the library silently delivers the highest
+///   it honestly can.
 pub fn optimise_with_debug_level(input: &[u8], level: debug_level::DebugLevel) -> Vec<u8> {
     use debug_level::DebugLevel;
     // Run the full pipeline, composing func-index remaps across iterations.
     let (optimised, cumulative_remap) = optimise_collecting_remap(input);
 
     // Safety guard: never grow.
-    let core = if optimised.len() > input.len() { input.to_vec() } else { optimised };
+    let core = if optimised.len() > input.len() {
+        input.to_vec()
+    } else {
+        optimised
+    };
 
     let effective = level.implemented_floor();
     match effective {
         DebugLevel::None => {
-            let Ok(m) = WasmModule::parse(&core) else { return core };
+            let Ok(m) = WasmModule::parse(&core) else {
+                return core;
+            };
             let stripped = passes::strip::apply(&m, passes::strip::StripConfig::shipping());
-            if stripped.len() > core.len() { core } else { stripped }
+            if stripped.len() > core.len() {
+                core
+            } else {
+                stripped
+            }
         }
-        DebugLevel::Names => {
-            apply_names_tier(&core, input, &cumulative_remap)
-        }
-        DebugLevel::Lines => {
-            apply_lines_tier(&core, input, &cumulative_remap)
-        }
+        DebugLevel::Names => apply_names_tier(&core, input, &cumulative_remap),
+        DebugLevel::Lines => apply_lines_tier(&core, input, &cumulative_remap),
         DebugLevel::Full => {
             // Lines + preserve the rest of the DWARF sections when
             // provably accurate (step 1); broader handling in future
@@ -173,15 +188,23 @@ fn apply_lines_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) ->
 fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) -> Vec<u8> {
     // Parse both modules so we can pull the input's name section and
     // emit an optimised module with the rewritten one in its place.
-    let Ok(_out_m) = WasmModule::parse(optimised) else { return optimised.to_vec() };
-    let Ok(in_m) = WasmModule::parse(input) else { return optimised.to_vec() };
+    let Ok(_out_m) = WasmModule::parse(optimised) else {
+        return optimised.to_vec();
+    };
+    let Ok(in_m) = WasmModule::parse(input) else {
+        return optimised.to_vec();
+    };
 
     // Find the input's `name` custom section.
     let in_data = in_m.data();
     let name_payload = in_m.sections().iter().find_map(|s| {
-        if s.id != module::SECTION_CUSTOM { return None; }
+        if s.id != module::SECTION_CUSTOM {
+            return None;
+        }
         let name = s.custom_name?.slice(in_data);
-        if name != b"name" { return None; }
+        if name != b"name" {
+            return None;
+        }
         // Payload starts after the name vec (name-length LEB + name bytes).
         let p = s.payload.slice(in_data);
         let (nlen, c) = leb128::read_u32(p)?;
@@ -194,23 +217,30 @@ fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) ->
         // and we drop DWARF + source-maps. Same as strip.apply with a
         // names-preserving config minus names (since there are none).
         let cfg = passes::strip::StripConfig {
-            dwarf: true, source_maps: true, producers: false,
-            names: true, target_features: true,
+            dwarf: true,
+            source_maps: true,
+            producers: false,
+            names: true,
+            target_features: true,
         };
         return passes::strip::apply(&_out_m, cfg);
     };
 
-    let rewritten = passes::name_section::rewrite(in_name, remap)
-        .unwrap_or_default();
+    let rewritten = passes::name_section::rewrite(in_name, remap).unwrap_or_default();
 
     // Strip the optimised module's stale customs, then splice in the
     // rewritten `name` section.
     let strip_cfg = passes::strip::StripConfig {
-        dwarf: true, source_maps: true, producers: false,
-        names: true, target_features: true,
+        dwarf: true,
+        source_maps: true,
+        producers: false,
+        names: true,
+        target_features: true,
     };
     let stripped = passes::strip::apply(&_out_m, strip_cfg);
-    if rewritten.is_empty() { return stripped; }
+    if rewritten.is_empty() {
+        return stripped;
+    }
 
     // Build a new name custom section: id 0, size, name-vec "name", payload.
     let mut sec = Vec::new();
@@ -227,7 +257,11 @@ fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) ->
     let mut out = Vec::with_capacity(stripped.len() + sec.len());
     out.extend_from_slice(&stripped);
     out.extend_from_slice(&sec);
-    if out.len() > input.len() { stripped } else { out }
+    if out.len() > input.len() {
+        stripped
+    } else {
+        out
+    }
 }
 
 /// Optimise + transform an external V3 source map.
@@ -245,12 +279,19 @@ fn apply_names_tier(optimised: &[u8], input: &[u8], remap: &remap::FuncRemap) ->
 /// can express today), returns `None` for the map — callers should
 /// strip the reference rather than embed a lie.
 pub fn optimise_with_source_map(
-    input: &[u8], input_map_json: Option<&str>,
+    input: &[u8],
+    input_map_json: Option<&str>,
 ) -> (Vec<u8>, Option<String>) {
     let (optimised, cumulative_remap) = optimise_collecting_remap(input);
-    let core = if optimised.len() > input.len() { input.to_vec() } else { optimised };
+    let core = if optimised.len() > input.len() {
+        input.to_vec()
+    } else {
+        optimised
+    };
 
-    let Some(map_json) = input_map_json else { return (core, None) };
+    let Some(map_json) = input_map_json else {
+        return (core, None);
+    };
 
     // Compute per-function offsets in input and output.
     let Ok(mut in_m) = WasmModule::parse(input) else {
@@ -267,14 +308,19 @@ pub fn optimise_with_source_map(
     let code_unchanged = code_section_bytes_from(&in_m) == code_section_bytes_from(&out_m);
 
     let rewritten = passes::source_map::rewrite_v3_with_shifts(
-        map_json, &cumulative_remap, code_unchanged, &in_offsets, &out_offsets,
+        map_json,
+        &cumulative_remap,
+        code_unchanged,
+        &in_offsets,
+        &out_offsets,
     );
     (core, rewritten)
 }
 
 fn code_section_bytes_from<'a>(m: &'a WasmModule<'a>) -> &'a [u8] {
     let data = m.data();
-    m.sections().iter()
+    m.sections()
+        .iter()
         .find(|s| s.id == module::SECTION_CODE)
         .map(|s| s.full.slice(data))
         .unwrap_or(&[])
@@ -282,8 +328,11 @@ fn code_section_bytes_from<'a>(m: &'a WasmModule<'a>) -> &'a [u8] {
 
 /// Runs the fixpoint and returns `(optimised_bytes, input→output FuncRemap)`.
 fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
-    use linker_hints::{DerivedHints, LinkerHints};
-    let Ok(_) = WasmModule::parse(input) else { return (input.to_vec(), identity_remap_for(input)) };
+    use linker_hints::DerivedHints;
+    use linker_hints::LinkerHints;
+    let Ok(_) = WasmModule::parse(input) else {
+        return (input.to_vec(), identity_remap_for(input));
+    };
     let hints = DerivedHints::from_bytes(input);
     let hints_ref: Option<&dyn LinkerHints> = hints.as_ref().map(|h| h as &dyn LinkerHints);
 
@@ -294,7 +343,9 @@ fn optimise_collecting_remap(input: &[u8]) -> (Vec<u8>, remap::FuncRemap) {
 
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let (next, iter_remap) = optimise_once_with_hints(&current, hints_ref);
-        if next == current { break; }
+        if next == current {
+            break;
+        }
         cumulative = cumulative.compose(&iter_remap);
         if next.len() < best.len() {
             best = next.clone();
@@ -316,8 +367,12 @@ fn optimise_inner(input: &[u8]) -> Vec<u8> {
     let mut best = current.clone();
     for _ in 0..MAX_FIXPOINT_ITERATIONS {
         let next = optimise_once(&current);
-        if next == current { break; }
-        if next.len() < best.len() { best = next.clone(); }
+        if next == current {
+            break;
+        }
+        if next.len() < best.len() {
+            best = next.clone();
+        }
         current = next;
     }
     best
@@ -325,7 +380,9 @@ fn optimise_inner(input: &[u8]) -> Vec<u8> {
 
 fn identity_remap_for(bytes: &[u8]) -> remap::FuncRemap {
     use remap::FuncRemap;
-    let Ok(mut m) = WasmModule::parse(bytes) else { return FuncRemap::identity(0); };
+    let Ok(mut m) = WasmModule::parse(bytes) else {
+        return FuncRemap::identity(0);
+    };
     m.ensure_function_bodies_parsed();
     let num_imports = passes::dce::count_func_imports_pub(&m);
     let num_defined = m.num_function_bodies() as u32;
@@ -340,7 +397,8 @@ fn optimise_once(input: &[u8]) -> Vec<u8> {
 /// the composition of every index-changing pass's remap within this
 /// iteration. The caller composes across iterations.
 fn optimise_once_with_hints(
-    input: &[u8], hints: Option<&dyn linker_hints::LinkerHints>,
+    input: &[u8],
+    hints: Option<&dyn linker_hints::LinkerHints>,
 ) -> (Vec<u8>, remap::FuncRemap) {
     use remap::FuncRemap;
     let Ok(mut module_in) = WasmModule::parse(input) else {
@@ -406,7 +464,10 @@ fn optimise_once_with_hints(
 
     // Compose this iteration's remap: didup → dce → reorder → layout.
     // dedup/fn_merge/type_gc/body-mod passes are identity for func indices.
-    let iter_remap = r_didup.compose(&r_dce).compose(&r_reorder).compose(&r_layout);
+    let iter_remap = r_didup
+        .compose(&r_dce)
+        .compose(&r_reorder)
+        .compose(&r_layout);
     (after_layout, iter_remap)
 }
 

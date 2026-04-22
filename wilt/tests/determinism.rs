@@ -9,7 +9,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-
 use wilt::module::WasmModule;
 
 /// Build a small but non-trivial module: 3 exported funcs, a couple
@@ -41,12 +40,17 @@ fn build_fixture() -> Vec<u8> {
 
 fn binaryen_sample() -> Option<Vec<u8>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap()
+        .parent()
+        .unwrap()
         .join("external_test_suites/binaryen/test");
     for entry in walkdir(&root).into_iter().take(30) {
-        if entry.extension().and_then(|s| s.to_str()) != Some("wasm") { continue; }
+        if entry.extension().and_then(|s| s.to_str()) != Some("wasm") {
+            continue;
+        }
         if let Ok(b) = std::fs::read(&entry) {
-            if WasmModule::parse(&b).is_ok() && b.len() > 500 { return Some(b); }
+            if WasmModule::parse(&b).is_ok() && b.len() > 500 {
+                return Some(b);
+            }
         }
     }
     None
@@ -54,13 +58,21 @@ fn binaryen_sample() -> Option<Vec<u8>> {
 
 fn walkdir(root: &std::path::Path) -> Vec<PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-        let Ok(es) = std::fs::read_dir(dir) else { return };
+        let Ok(es) = std::fs::read_dir(dir) else {
+            return;
+        };
         for e in es.flatten() {
             let p = e.path();
-            if p.is_dir() { walk(&p, out); } else { out.push(p); }
+            if p.is_dir() {
+                walk(&p, out);
+            } else {
+                out.push(p);
+            }
         }
     }
-    let mut v = Vec::new(); walk(root, &mut v); v
+    let mut v = Vec::new();
+    walk(root, &mut v);
+    v
 }
 
 #[test]
@@ -90,7 +102,8 @@ fn identical_across_thread_counts() {
     let first = &outputs[0];
     for (i, out) in outputs.iter().enumerate().skip(1) {
         assert_eq!(
-            first, out,
+            first,
+            out,
             "thread count {} produced different output than thread count 1",
             [1, 2, 4, 16][i]
         );
@@ -100,7 +113,8 @@ fn identical_across_thread_counts() {
 #[test]
 fn identical_on_binaryen_sample() {
     let Some(input) = binaryen_sample() else {
-        eprintln!("no binaryen sample available — skipping"); return;
+        eprintln!("no binaryen sample available — skipping");
+        return;
     };
     // Three runs at default thread count.
     let a = wilt::optimise(&input);
@@ -112,15 +126,22 @@ fn identical_on_binaryen_sample() {
 /// Catches a pass that accidentally iterates a HashMap into output order.
 #[test]
 fn identical_across_fixtures() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/regressions");
-    let Ok(entries) = std::fs::read_dir(&root) else { return };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/regressions");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
     let mut count = 0;
     for e in entries.flatten() {
         let p = e.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("wat") { continue; }
-        let Ok(src) = std::fs::read_to_string(&p) else { continue };
-        let Ok(bytes) = wat::parse_str(&src) else { continue };
+        if p.extension().and_then(|s| s.to_str()) != Some("wat") {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(bytes) = wat::parse_str(&src) else {
+            continue;
+        };
         let a = wilt::optimise(&bytes);
         let b = wilt::optimise(&bytes);
         assert_eq!(a, b, "repeated-run mismatch on fixture {}", p.display());

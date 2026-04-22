@@ -3,10 +3,9 @@
 //! Replaces every `local.set X` whose stored value is never subsequently
 //! read with `drop` (same stack effect, smaller). Catches:
 //!   * dead stores in straight-line code (the original M4 case);
-//!   * dead stores split by control flow (then-branch sets, else-branch
-//!     sets, sets-before-loop-back-edge, etc.);
-//!   * sets followed by `return` / `unreachable` (function exits before
-//!     any subsequent read).
+//!   * dead stores split by control flow (then-branch sets, else-branch sets,
+//!     sets-before-loop-back-edge, etc.);
+//!   * sets followed by `return` / `unreachable` (function exits before any subsequent read).
 //!
 //! Mechanism: standard backward dataflow on `CfgIr`. Per BB, compute
 //!   use[BB]  = locals read before being killed in BB
@@ -19,12 +18,13 @@
 //!
 //! Falls back to no-op when BodyIr/CfgIr can't be built (unknown opcodes).
 
-use std::collections::HashSet;
-
-use crate::ir::{BodyIr, CfgIr};
+use crate::ir::BodyIr;
+use crate::ir::CfgIr;
 use crate::leb128;
 use crate::mut_module::MutModule;
-use crate::opcode::{self as opc, InstrIter};
+use crate::opcode::InstrIter;
+use crate::opcode::{self as opc};
+use std::collections::HashSet;
 
 const OP_DROP: u8 = 0x1A;
 const OP_LOCAL_GET: u8 = 0x20;
@@ -37,7 +37,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
         .into_par_iter()
         .filter_map(|i| rewrite_body_with_edits(m.body_bytes(i)).map(|(b, e)| (i, b, e)))
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
@@ -49,12 +51,16 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
     // Bail-early: if no local.set in the body, there's nothing for us
     // to mark dead. Avoids the cost of building BodyIr + CfgIr +
     // running dataflow on bodies that pure passthrough / arithmetic.
-    if !has_local_set(body) { return None; }
+    if !has_local_set(body) {
+        return None;
+    }
 
     let ir = BodyIr::new(body)?;
     let cfg = CfgIr::build(&ir)?;
     let nbb = cfg.blocks.len();
-    if nbb == 0 || ir.instrs().is_empty() { return None; }
+    if nbb == 0 || ir.instrs().is_empty() {
+        return None;
+    }
 
     // Per-BB use / kill sets (forward-scan each BB once).
     let mut use_in: Vec<HashSet<u32>> = vec![HashSet::new(); nbb];
@@ -67,7 +73,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
             match it.op {
                 OP_LOCAL_GET => {
                     if let Some(x) = local_idx(&ir, k as usize) {
-                        if !killed.contains(&x) { used.insert(x); }
+                        if !killed.contains(&x) {
+                            used.insert(x);
+                        }
                     }
                 }
                 OP_LOCAL_SET | OP_LOCAL_TEE => {
@@ -96,7 +104,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
             }
             let mut new_in = use_in[bi].clone();
             for &x in &new_out {
-                if !kill_in[bi].contains(&x) { new_in.insert(x); }
+                if !kill_in[bi].contains(&x) {
+                    new_in.insert(x);
+                }
             }
             if new_in != live_in[bi] {
                 live_in[bi] = new_in;
@@ -107,7 +117,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     // Walk each BB backward; mark each `local.set X` dead iff X is not
@@ -142,7 +154,9 @@ fn rewrite_body_with_edits(body: &[u8]) -> Option<(Vec<u8>, crate::provenance::B
             }
         }
     }
-    if dead.is_empty() { return None; }
+    if dead.is_empty() {
+        return None;
+    }
     dead.sort_by_key(|d| d.0);
 
     // Replace each dead local.set with `drop` (same stack effect).
@@ -170,10 +184,14 @@ fn local_idx(ir: &BodyIr, i: usize) -> Option<u32> {
 /// Quick byte-scan: does the body's instruction stream contain at
 /// least one `local.set` opcode? Cheaper than building IR.
 fn has_local_set(body: &[u8]) -> bool {
-    let Some(start) = opc::skip_locals(body) else { return false };
+    let Some(start) = opc::skip_locals(body) else {
+        return false;
+    };
     let mut iter = InstrIter::new(body, start);
     while let Some((p, _)) = iter.next() {
-        if body[p] == OP_LOCAL_SET { return true; }
+        if body[p] == OP_LOCAL_SET {
+            return true;
+        }
     }
     false
 }
@@ -212,14 +230,7 @@ mod tests {
 
     #[test]
     fn skips_past_empty_block() {
-        let body = [
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x02, 0x40,
-            0x0B,
-            0x0B,
-        ];
+        let body = [1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x02, 0x40, 0x0B, 0x0B];
         let out = rewrite_body(&body).expect("dead set with no later read");
         assert_eq!(out[5], 0x1A);
     }
@@ -227,27 +238,14 @@ mod tests {
     #[test]
     fn keeps_set_when_block_reads_local() {
         let body = [
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x02, 0x40,
-            0x20, 0,
-            0x1A,
-            0x0B,
-            0x0B,
+            1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x02, 0x40, 0x20, 0, 0x1A, 0x0B, 0x0B,
         ];
         assert!(rewrite_body(&body).is_none());
     }
 
     #[test]
     fn return_terminates_function() {
-        let body = [
-            1, 1, 0x7F,
-            0x41, 5,
-            0x21, 0,
-            0x0F,
-            0x0B,
-        ];
+        let body = [1, 1, 0x7F, 0x41, 5, 0x21, 0, 0x0F, 0x0B];
         let out = rewrite_body(&body).expect("set before return is dead");
         assert_eq!(out[5], 0x1A);
     }
@@ -264,25 +262,15 @@ mod tests {
         //   end
         // )
         let body = [
-            1, 1, 0x7F,
-            0x41, 1,
-            0x04, 0x40,
-            0x41, 5,
-            0x21, 0,           // dead local.set 0
-            0x0B,
-            0x0B,
+            1, 1, 0x7F, 0x41, 1, 0x04, 0x40, 0x41, 5, 0x21, 0, // dead local.set 0
+            0x0B, 0x0B,
         ];
         let out = rewrite_body(&body).expect("set inside then-branch with no later read");
         // local.set 0 → drop.
-        assert_eq!(out, vec![
-            1, 1, 0x7F,
-            0x41, 1,
-            0x04, 0x40,
-            0x41, 5,
-            0x1A,
-            0x0B,
-            0x0B,
-        ]);
+        assert_eq!(
+            out,
+            vec![1, 1, 0x7F, 0x41, 1, 0x04, 0x40, 0x41, 5, 0x1A, 0x0B, 0x0B,]
+        );
     }
 
     #[test]
@@ -297,15 +285,9 @@ mod tests {
         //   drop
         // )
         let body = [
-            1, 1, 0x7F,
-            0x41, 1,
-            0x04, 0x40,
-            0x41, 5,
-            0x21, 0,
-            0x0B,
-            0x20, 0,           // read AFTER the if
-            0x1A,
-            0x0B,
+            1, 1, 0x7F, 0x41, 1, 0x04, 0x40, 0x41, 5, 0x21, 0, 0x0B, 0x20,
+            0, // read AFTER the if
+            0x1A, 0x0B,
         ];
         assert!(rewrite_body(&body).is_none());
     }
@@ -320,13 +302,8 @@ mod tests {
         //   end
         // )
         let body = [
-            1, 1, 0x7F,
-            0x03, 0x40,
-            0x41, 5,
-            0x21, 0,           // never read
-            0x0C, 0,
-            0x0B,
-            0x0B,
+            1, 1, 0x7F, 0x03, 0x40, 0x41, 5, 0x21, 0, // never read
+            0x0C, 0, 0x0B, 0x0B,
         ];
         let out = rewrite_body(&body).expect("set in loop with no read is dead");
         assert_eq!(out[7], 0x1A);

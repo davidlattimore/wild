@@ -37,6 +37,20 @@ name = "lld_wasm_tests"
 path = "tests/lld_wasm_tests.rs"
 harness = false
 
+[[test]]
+name = "wasm_regression_tests"
+path = "tests/wasm_regression_tests.rs"
+
+[[test]]
+name = "macho_ld64_compat_tests"
+path = "tests/macho_ld64_compat_tests.rs"
+harness = false
+
+[[test]]
+name = "macho_ld64_compat_dylib_tests"
+path = "tests/macho_ld64_compat_dylib_tests.rs"
+harness = false
+
 [dependencies]
 libwild = { path = "../libwild", version = "0.8.0" }
 

@@ -24,7 +24,10 @@ fn assemble(path: &str) -> Vec<u8> {
 }
 
 fn validate(bytes: &[u8]) -> Result<(), String> {
-    Validator::new().validate_all(bytes).map(|_| ()).map_err(|e| e.to_string())
+    Validator::new()
+        .validate_all(bytes)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 // ───── type_gc: blocktype type-index refs must be remapped ─────
@@ -36,7 +39,10 @@ fn regression_type_gc_rewrites_block_type_ref() {
     let module = WasmModule::parse(&input).unwrap();
     let out = passes::type_gc::apply(&module);
     validate(&out).expect("type_gc output must validate");
-    assert!(out.len() < input.len(), "type_gc should have removed a type");
+    assert!(
+        out.len() < input.len(),
+        "type_gc should have removed a type"
+    );
 }
 
 // ───── type_gc: function-import type indices must be remapped ─────
@@ -48,7 +54,10 @@ fn regression_type_gc_rewrites_import_type() {
     let module = WasmModule::parse(&input).unwrap();
     let out = passes::type_gc::apply(&module);
     validate(&out).expect("type_gc output must validate");
-    assert!(out.len() < input.len(), "type_gc should have removed the unused type");
+    assert!(
+        out.len() < input.len(),
+        "type_gc should have removed the unused type"
+    );
 }
 
 // ───── DCE must not leave stale call indices in SIMD bodies ─────
@@ -59,9 +68,8 @@ fn regression_dce_bails_on_simd_body() {
     validate(&input).expect("input valid");
     let mut module = WasmModule::parse(&input).unwrap();
     let out = passes::dce::apply(&mut module);
-    validate(&out).expect(
-        "DCE output must validate — pass must bail rather than leave stale calls",
-    );
+    validate(&out)
+        .expect("DCE output must validate — pass must bail rather than leave stale calls");
 }
 
 // ───── remove_unused_brs: stack-imbalance case must survive ─────
@@ -106,9 +114,7 @@ fn regression_dae_sees_block_type_refs() {
     let mut m = MutModule::new(&input).unwrap();
     passes::dae::apply_mut(&mut m);
     let out = m.serialize();
-    validate(&out).expect(
-        "DAE must spot the loop's blocktype reference to $vt and decline",
-    );
+    validate(&out).expect("DAE must spot the loop's blocktype reference to $vt and decline");
 }
 
 // ───── full pipeline never corrupts any of these ─────

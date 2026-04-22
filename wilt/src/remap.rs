@@ -12,14 +12,11 @@
 //! index or eliminated".
 //!
 //! Invariants:
-//! - `entries[i] == Some(j)` means input function `i` maps to output
-//!   function `j`.
-//! - `entries[i] == None` means input function `i` was eliminated
-//!   (inlined fully, or deduped into another function that's
-//!   represented elsewhere in the map).
+//! - `entries[i] == Some(j)` means input function `i` maps to output function `j`.
+//! - `entries[i] == None` means input function `i` was eliminated (inlined fully, or deduped into
+//!   another function that's represented elsewhere in the map).
 //! - Multiple inputs may map to the same output (merges).
-//! - The identity remap has `entries[i] == Some(i)` for all `i` up
-//!   to the module's function count.
+//! - The identity remap has `entries[i] == Some(i)` for all `i` up to the module's function count.
 
 use std::collections::HashMap;
 
@@ -33,11 +30,15 @@ pub struct FuncRemap {
 impl FuncRemap {
     /// Build an identity remap for `n` functions.
     pub fn identity(n: u32) -> Self {
-        Self { entries: (0..n).map(Some).collect() }
+        Self {
+            entries: (0..n).map(Some).collect(),
+        }
     }
 
     /// Direct construction from a per-input-index slice.
-    pub fn from_entries(entries: Vec<Option<u32>>) -> Self { Self { entries } }
+    pub fn from_entries(entries: Vec<Option<u32>>) -> Self {
+        Self { entries }
+    }
 
     /// Look up an input index. `None` = eliminated; out-of-range also
     /// returns `None`.
@@ -46,11 +47,17 @@ impl FuncRemap {
     }
 
     /// Total input function slot count this map covers.
-    pub fn len(&self) -> u32 { self.entries.len() as u32 }
+    pub fn len(&self) -> u32 {
+        self.entries.len() as u32
+    }
 
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 
-    pub fn entries(&self) -> &[Option<u32>] { &self.entries }
+    pub fn entries(&self) -> &[Option<u32>] {
+        &self.entries
+    }
 
     /// Compose two remaps: `self` = input → mid, `next` = mid → out;
     /// result = input → out. Eliminated inputs (or mid-indices that
@@ -58,7 +65,9 @@ impl FuncRemap {
     ///
     /// Complexity: O(|self|).
     pub fn compose(&self, next: &FuncRemap) -> FuncRemap {
-        let entries = self.entries.iter()
+        let entries = self
+            .entries
+            .iter()
             .map(|slot| match slot {
                 Some(mid) => next.entries.get(*mid as usize).copied().flatten(),
                 None => None,
@@ -95,12 +104,15 @@ pub struct LocalRemap {
 }
 
 impl LocalRemap {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn insert(&mut self, func: u32, map: Vec<u32>) {
         self.per_function.insert(func, map);
     }
     pub fn lookup(&self, func: u32, input_local: u32) -> Option<u32> {
-        self.per_function.get(&func)
+        self.per_function
+            .get(&func)
             .and_then(|v| v.get(input_local as usize).copied())
     }
 }
@@ -155,7 +167,7 @@ mod tests {
         let a = FuncRemap::from_entries(vec![Some(1), Some(2), None, Some(0)]);
         let b = FuncRemap::from_entries(vec![Some(2), Some(0), Some(1)]);
         let c = FuncRemap::from_entries(vec![Some(1), None, Some(0)]);
-        let left  = a.compose(&b).compose(&c);
+        let left = a.compose(&b).compose(&c);
         let right = a.compose(&b.compose(&c));
         assert_eq!(left, right);
     }

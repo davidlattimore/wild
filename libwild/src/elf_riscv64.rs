@@ -252,7 +252,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             object::elf::R_RISCV_LO12_I | object::elf::R_RISCV_LO12_S => {
                 if let Some(deltas) = relax_deltas {
                     let input_offset = deltas.output_to_input_offset(offset_in_section);
-                    if input_offset >= 4 && deltas.delta_bytes_at(input_offset - 4) == 4 {
+                    if input_offset >= 4 && deltas.delta_at(input_offset - 4) == 4 {
                         let off = offset_in_section as usize;
                         if off + 4 <= section_bytes.len() {
                             let word =
@@ -288,7 +288,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         relocations: RelocationList,
         existing_deltas: Option<&SectionRelaxDeltas>,
         mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-    ) -> (Vec<(u64, u32)>, Option<u64>) {
+    ) -> (Vec<(u64, i32)>, Option<u64>) {
         match relocations {
             RelocationList::Rela(rela_list) => collect_relaxation_deltas(
                 section_output_address,
@@ -390,8 +390,8 @@ fn collect_relaxation_deltas<R: Relocation>(
     relocations: impl Iterator<Item = R>,
     existing_deltas: Option<&SectionRelaxDeltas>,
     mut resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-) -> (Vec<(u64, u32)>, Option<u64>) {
-    let mut raw_deltas = Vec::new();
+) -> (Vec<(u64, i32)>, Option<u64>) {
+    let mut raw_deltas: Vec<(u64, i32)> = Vec::new();
     let mut min_unrelaxed_margin: Option<u64> = None;
     let mut prev_call: Option<(u64, object::SymbolIndex)> = None;
     let mut prev_hi20: Option<(u64, object::SymbolIndex, i64)> = None;
@@ -408,15 +408,18 @@ fn collect_relaxation_deltas<R: Relocation>(
                     continue;
                 }
 
-                let existing_cum = existing_deltas.map_or(0, |d| {
-                    // Cumulative bytes deleted strictly before this input offset.
+                let existing_cum = existing_deltas.map_or(0u64, |d| {
+                    // Cumulative bytes adjusted strictly before this input offset.
+                    // For ELF relaxation the delta is always positive (deletion),
+                    // so the signed `cumulative_delta` narrows back to `u64`
+                    // without loss.
                     let idx = d
                         .deltas()
                         .partition_point(|e| e.input_offset < input_offset);
                     if idx == 0 {
                         0
                     } else {
-                        d.deltas()[idx - 1].cumulative_deleted
+                        d.deltas()[idx - 1].cumulative_delta as u64
                     }
                 });
                 let output_offset = input_offset - existing_cum - new_cumulative_delta;
@@ -429,7 +432,9 @@ fn collect_relaxation_deltas<R: Relocation>(
 
                 if actual > desired {
                     let bytes_to_remove = (actual - desired) as u32;
-                    raw_deltas.push((input_offset, bytes_to_remove));
+                    // Positive `bytes_delta` means "bytes deleted" — ELF's
+                    // only mode. Signed type is a no-op for us.
+                    raw_deltas.push((input_offset, bytes_to_remove as i32));
                     new_cumulative_delta += u64::from(bytes_to_remove);
                 }
 

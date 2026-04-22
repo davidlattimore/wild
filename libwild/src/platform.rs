@@ -113,7 +113,7 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _relocations: <Self::Platform as Platform>::RelocationList<'data>,
         _existing_deltas: Option<&SectionRelaxDeltas>,
         _resolve_symbol: impl FnMut(object::SymbolIndex) -> Option<RelaxSymbolInfo>,
-    ) -> (Vec<(u64, u32)>, Option<u64>) {
+    ) -> (Vec<(u64, i32)>, Option<u64>) {
         // This function should not be called unless `supports_size_reduction_relaxations` returns
         // true in which case this function should be implemented.
         unreachable!();
@@ -228,9 +228,49 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     ) -> Result<crate::LinkerOutput<'data>>;
 
     fn write_output_file<'data, A: Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+        output: &mut crate::file_writer::Output,
         layout: &Layout<'data, Self>,
     ) -> Result;
+
+    /// Compute the output file size from the section-layout snapshot,
+    /// or `None` if the size depends on data not yet available at that
+    /// layout phase and the platform will set the size itself inside
+    /// `write_output_file`. Mach-O returns `None` — its final size
+    /// depends on `segment_layouts`, symbol counts, and stab counts
+    /// that aren't built until later; the Mach-O writer computes the
+    /// size and calls `output.set_size` itself.
+    fn output_file_size_at_layout(
+        _section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    ) -> Option<u64> {
+        None
+    }
+
+    /// Platform-specific symtab-precount result: per-input slot
+    /// offsets + any totals the writer needs. ELF keeps the existing
+    /// `GroupLayout::strtab_start_offset` machinery for now (default
+    /// returns `()`); Mach-O returns a real struct with per-object
+    /// nlist / strtab / DYSYMTAB offsets that the writer uses for
+    /// parallel per-object writes (replaces the shared-state
+    /// `entries: Vec` + `seen_names: HashSet` approach).
+    ///
+    /// A migration of ELF's offset-assignment into this hook would
+    /// unify both platforms on one codepath. Zero perf cost — the
+    /// computation is the same prefix-sum ELF already does — but
+    /// best done in a separate commit so the ELF blast radius is
+    /// isolated.
+    type SymtabPrecount: Default + Send + Sync + 'static;
+
+    /// Walk the post-layout state and assign per-input symtab +
+    /// strtab byte offsets. Called from the platform's
+    /// `write_output_file` path before the mmap buffer is sized, so
+    /// exact totals feed into `output.set_size` (killing the
+    /// "pessimistic 512 bytes/symbol" estimate Mach-O has carried).
+    ///
+    /// Default returns the type's `Default::default()` — ELF and
+    /// Wasm use existing machinery.
+    fn precount_symtab<'data>(_layout: &Layout<'data, Self>) -> Self::SymtabPrecount {
+        Self::SymtabPrecount::default()
+    }
 
     /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
     /// that one should be used.
@@ -283,6 +323,47 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     /// should be considered content and thus prevent the output section from being discarded.
     fn is_zero_sized_section_content(section_id: OutputSectionId) -> bool;
 
+    /// Returns alignment-padding insertion deltas for the named input
+    /// section under Mach-O's `.subsections_via_symbols`. Each entry
+    /// `(input_offset, bytes_delta)` records `-N` bytes inserted just
+    /// before the symbol at `input_offset`. Default: no padding —
+    /// non-Mach-O platforms have no subsection concept here. Sum of
+    /// `-bytes_delta` is the total size growth for the section.
+    fn compute_subsection_padding_deltas<'data>(
+        _file: &<Self as Platform>::File<'data>,
+        _section_index: object::SectionIndex,
+    ) -> Vec<(u64, i32)> {
+        Vec::new()
+    }
+
+    /// Builds the atom (subsection) map for an
+    /// `MH_SUBSECTIONS_VIA_SYMBOLS` pure-text section. Default: empty
+    /// — only Mach-O divides sections at symbol boundaries.
+    fn compute_atoms<'data>(
+        _file: &<Self as Platform>::File<'data>,
+        _section_index: object::SectionIndex,
+    ) -> Vec<layout::Atom> {
+        Vec::new()
+    }
+
+    /// Scans the subset of an input section's relocations whose
+    /// `r_address` falls within `atom_input_range`, driving symbol
+    /// requests for each extern reference. Used by Mach-O's per-atom
+    /// GC — one call per atom activation. Default: no-op, because no
+    /// other platform has a per-atom story; calling this without a
+    /// Mach-O override indicates a bug.
+    fn scan_atom_relocations<'data, 'scope, A: Arch<Platform = Self>>(
+        _state: &layout::ObjectLayoutState<'data, Self>,
+        _common: &mut layout::CommonGroupState<'data, Self>,
+        _queue: &mut layout::LocalWorkQueue,
+        _resources: &'scope layout::GraphResources<'data, '_, Self>,
+        _section: layout::Section,
+        _atom_input_range: std::ops::Range<u64>,
+        _scope: &rayon::Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails];
 
     fn finalise_group_layout(memory_offsets: &OutputSectionPartMap<u64>) -> Self::GroupLayoutExt;
@@ -314,7 +395,8 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
-    );
+        output_sections: &OutputSections<'data, Self>,
+    ) -> Result;
 
     fn finalise_object_layout<'data>(
         object: &layout::ObjectLayoutState<'data, Self>,
@@ -469,6 +551,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         args: &Self::Args,
+        symbol_db: &SymbolDb<'_, Self>,
     ) -> Result;
 
     fn finalise_layout_epilogue<'data>(
@@ -502,12 +585,41 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         Ok(())
     }
 
+    /// Tweak per-section minimum alignments once args are known but before
+    /// the main layout pass runs. Used by Mach-O under `-ld64_compat` to
+    /// force `__data` onto a 16 KB page boundary so the writer can split
+    /// the merged DATA region into `__DATA_CONST` + `__DATA` segments.
+    /// Default: no-op.
+    fn adjust_output_section_alignments(
+        _output_sections: &mut OutputSections<Self>,
+        _args: &Self::Args,
+    ) {
+    }
+
+    /// Adjust per-section alignments once input contributions are known (i.e.
+    /// after `compute_total_section_part_sizes`) but before addresses are
+    /// assigned. Mach-O uses this to promote `__thread_data` and
+    /// `__thread_bss` to a shared max alignment — matching ld64's
+    /// <rdar://24221680> rule so the per-thread TLV buffer dyld `memcpy`s
+    /// into respects every variable's alignment. Default: no-op.
+    fn adjust_alignments_after_sizing(
+        _output_sections: &mut OutputSections<Self>,
+        _section_part_sizes: &OutputSectionPartMap<u64>,
+        _args: &Self::Args,
+    ) {
+    }
+
     /// Allocate space for headers based on segment and section counts.
+    /// `total_sizes` holds the byte counts that other passes have already
+    /// accumulated per part, letting us reserve only for sections that
+    /// actually carry content — important for Mach-O's tight-packed layout.
     fn allocate_header_sizes(
         prelude: &mut PreludeLayoutState<Self>,
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        args: &Self::Args,
+        total_sizes: &OutputSectionPartMap<u64>,
     );
 
     /// Gives the platform an opportunity to error out if an input stack section is requesting an
@@ -610,6 +722,7 @@ pub(crate) trait Platform: Copy + Send + Sync + Sized + std::fmt::Debug + 'stati
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        args: &Self::Args,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>);
 
     fn will_emit_section_symbol_for_partial_objects(
@@ -848,6 +961,17 @@ pub(crate) trait SectionHeader: std::fmt::Debug + Send + Sync + 'static {
     fn is_merge_section(&self) -> bool;
 
     fn is_strings(&self) -> bool;
+
+    /// Fixed stride for non-string merge sections (e.g. Mach-O's
+    /// `__literal4`/`__literal8`/`__literal16`). `None` means either
+    /// the section is not merge-fixed-stride (strings use
+    /// `is_strings`) or the platform has no such concept. When
+    /// `Some(n)`, the merger splits the input at every `n` bytes and
+    /// deduplicates each chunk independently — mirroring ld64's
+    /// `FixedSizeSection::useElementAt`.
+    fn merge_stride(&self) -> Option<u32> {
+        None
+    }
 
     fn should_retain(&self) -> bool;
 
@@ -1152,6 +1276,15 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     /// Path to libLTO.dylib for native LTO compilation (Mach-O -lto_library).
     fn lto_library_path(&self) -> Option<&Path> {
         None
+    }
+
+    /// True if this platform wants wild to lower LTO bitcode inputs
+    /// to platform objects on the fly via subprocess `llc`. Today
+    /// only the wasm args override to `true`; Mach-O uses
+    /// `lto_library_path` (in-process libLTO) instead, ELF uses the
+    /// Gold plugin path. See `wild-lto-plan.md` phase P3.
+    fn wasm_bitcode_lowering_enabled(&self) -> bool {
+        false
     }
 
     /// Path to write LTO-compiled intermediate object (Mach-O -object_path_lto).

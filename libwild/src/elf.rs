@@ -333,6 +333,10 @@ impl platform::Platform for Elf {
     type Args = ElfArgs;
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
+    // ELF uses `GroupLayout::strtab_start_offset` etc. for its
+    // symtab slot assignment. Migrating to the shared trait hook
+    // (with zero perf cost) is a follow-up; for now, opt out.
+    type SymtabPrecount = ();
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -361,10 +365,18 @@ impl platform::Platform for Elf {
     }
 
     fn write_output_file<'data, A: Arch<Platform = Self>>(
-        output: &crate::file_writer::Output,
+        output: &mut crate::file_writer::Output,
         layout: &layout::Layout<'data, Self>,
     ) -> Result {
         output.write(layout, elf_writer::write::<A>)
+    }
+
+    fn output_file_size_at_layout(
+        section_layouts: &crate::output_section_map::OutputSectionMap<
+            crate::layout::OutputRecordLayout,
+        >,
+    ) -> Option<u64> {
+        Some(crate::layout::compute_total_file_size(section_layouts))
     }
 
     fn maybe_init_linker_plugin<'data>(
@@ -533,13 +545,15 @@ impl platform::Platform for Elf {
     fn finalise_object_sizes<'data>(
         object: &mut layout::ObjectLayoutState<'data, Elf>,
         common: &mut layout::CommonGroupState<'data, Elf>,
-    ) {
+        _output_sections: &crate::output_section_id::OutputSections<'data, Elf>,
+    ) -> crate::error::Result {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
         for cie in &object.format_specific.cies {
             object.format_specific.eh_frame_size += cie.cie.bytes.len() as u64;
         }
         common.allocate(part_id::EH_FRAME, object.format_specific.eh_frame_size);
+        Ok(())
     }
 
     fn finalise_object_layout<'data>(
@@ -1265,6 +1279,7 @@ impl platform::Platform for Elf {
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
         args: &ElfArgs,
+        _symbol_db: &crate::symbol_db::SymbolDb<'_, Self>,
     ) -> Result {
         if args.hash_style.includes_sysv() {
             allocate_sysv_hash(state, current_sizes, extra_sizes, dynamic_symbol_defs)?;
@@ -1693,6 +1708,8 @@ impl platform::Platform for Elf {
         sizes: &mut OutputSectionPartMap<u64>,
         header_info: &layout::HeaderInfo,
         output_sections: &OutputSections<Self>,
+        _args: &Self::Args,
+        _total_sizes: &OutputSectionPartMap<u64>,
     ) {
         sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
         sizes.increment(part_id::PROGRAM_HEADERS, program_headers_size(header_info));
@@ -1766,6 +1783,7 @@ impl platform::Platform for Elf {
         output_kind: OutputKind,
         output_sections: &OutputSections<'data, Self>,
         secondary: &OutputSectionMap<Vec<OutputSectionId>>,
+        _args: &Self::Args,
     ) -> (OutputOrder, ProgramSegments<Self::ProgramSegmentDef>) {
         let mut builder = OutputOrderBuilder::<Self>::new(output_kind, output_sections, secondary);
 

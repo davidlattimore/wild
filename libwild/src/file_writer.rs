@@ -58,6 +58,22 @@ pub(crate) struct SizedOutput {
     pub(crate) out: OutputBuffer,
     path: Arc<Path>,
     pub(crate) trace: TraceOutput,
+    /// When set, `flush` truncates the file to this many bytes rather
+    /// than using the full allocated size. Used by Mach-O where the
+    /// writer over-allocates to reserve trailing space for the
+    /// codesign blob and then reports the real final size after
+    /// signing. When `None`, the full allocation is committed.
+    final_size_override: Option<u64>,
+}
+
+impl SizedOutput {
+    /// Tell `flush` to truncate the output file to exactly
+    /// `final_size` bytes instead of the full allocated length.
+    /// Idempotent; only the last call matters. Used by the Mach-O
+    /// writer once codesign has settled the real end-of-file.
+    pub(crate) fn set_final_size(&mut self, final_size: u64) {
+        self.final_size_override = Some(final_size);
+    }
 }
 
 pub(crate) enum OutputBuffer {
@@ -83,6 +99,22 @@ impl OutputBuffer {
 
     fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
         file.set_len(file_size).ok()?;
+        // SAFETY: `mmap(2)` can't be modelled safely in Rust —
+        // POSIX doesn't forbid other processes opening the file and
+        // mutating it under us (or truncating, unlinking, etc.),
+        // which would race with our `&mut [u8]` view. The stdlib
+        // deliberately doesn't offer a safe mmap API for this
+        // reason, and every Rust mmap crate (`memmap`, `memmap2`,
+        // `mmap-sys`, …) requires `unsafe` at construction.
+        //
+        // Callers opt in to this risk when they pass
+        // `--mmap-output-file`. Our invariants: (1) we create the
+        // file fresh via `UnlinkAndReplace` — no pre-existing
+        // writers; (2) wild is the only process writing during the
+        // link; (3) the mmap is dropped before rename/truncate,
+        // removing the alias; (4) `msync(MS_INVALIDATE)` flushes
+        // dirty pages before any reader sees the file. Shared with
+        // the ELF writer; no Mach-O-specific risk.
         let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
         Some(Self::Mmap(mmap))
     }
@@ -242,11 +274,25 @@ fn default_file_write_mode(args: &impl platform::Args, output_kind: OutputKind) 
         return FileWriteMode::UnlinkAndReplace;
     }
 
-    if std::fs::metadata(args.output()).is_err() {
+    // On macOS, always unlink-and-replace for executables. AMFI's
+    // `UI_WASMAPPEDWRITE` is a sticky vnode flag: once a file has
+    // been `PROT_WRITE`-mapped in its lifetime, every future
+    // `execve` on that inode is tainted regardless of the current
+    // signature. `UpdateInPlaceWithFallback` reuses the inode,
+    // which re-triggers the taint on a second-build. A fresh inode
+    // via unlink+create is the only reliable reset.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = args;
         return FileWriteMode::UnlinkAndReplace;
-    };
-
-    FileWriteMode::UpdateInPlaceWithFallback
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if std::fs::metadata(args.output()).is_err() {
+            return FileWriteMode::UnlinkAndReplace;
+        }
+        FileWriteMode::UpdateInPlaceWithFallback
+    }
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
@@ -303,16 +349,86 @@ impl SizedOutput {
             out,
             path,
             trace,
+            final_size_override: None,
         })
     }
 
     fn flush(&mut self) -> Result {
-        match &self.out {
-            OutputBuffer::Mmap(_) => {}
-            OutputBuffer::InMemory(bytes) => self
-                .file
-                .write_all(bytes)
-                .with_context(|| format!("Failed to write to {}", self.path.display()))?,
+        let final_size = self.final_size_override;
+        match &mut self.out {
+            OutputBuffer::Mmap(mmap) => {
+                // On macOS specifically, `msync(MS_SYNC | MS_INVALIDATE)`
+                // clears the per-page `wpmapped` taint bit that AMFI
+                // checks at `execve`. Without it, a freshly-mapped
+                // output file passes `codesign -v` but the kernel
+                // SIGKILLs on exec. See LLVM D96164 and radar
+                // FB8914231 for the lld-macho precedent. Scope the
+                // msync to the real final size when known so the
+                // invalidation covers exactly the codesigned range.
+                #[cfg(target_os = "macos")]
+                {
+                    let bytes = final_size
+                        .map(|s| (s as usize).min(mmap.len()))
+                        .unwrap_or(mmap.len());
+                    if bytes > 0 {
+                        // SAFETY: FFI call to `msync(2)`. All FFI
+                        // crosses the language boundary and is
+                        // unsafe by Rust convention; there is no
+                        // safe stdlib wrapper. `memmap2::MmapMut::
+                        // flush()` internally calls
+                        // `msync(MS_SYNC)` but doesn't expose
+                        // `MS_INVALIDATE`, which is what the AMFI
+                        // workaround requires on macOS.
+                        //
+                        // Invariants we uphold: `mmap.as_mut_ptr()`
+                        // is a valid page-aligned pointer (memmap2
+                        // guarantees); `bytes` never exceeds
+                        // `mmap.len()` (clamped above); the flags
+                        // are a constant `MS_SYNC | MS_INVALIDATE`.
+                        let ret = unsafe {
+                            libc::msync(
+                                mmap.as_mut_ptr() as *mut libc::c_void,
+                                bytes,
+                                libc::MS_SYNC | libc::MS_INVALIDATE,
+                            )
+                        };
+                        if ret != 0 {
+                            return Err(crate::error!(
+                                "msync(MS_SYNC|MS_INVALIDATE): {}",
+                                std::io::Error::last_os_error()
+                            ));
+                        }
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    mmap.flush()
+                        .with_context(|| format!("msync {}", self.path.display()))?;
+                }
+            }
+            OutputBuffer::InMemory(bytes) => {
+                let slice = match final_size {
+                    Some(n) => &bytes[..(n as usize).min(bytes.len())],
+                    None => &bytes[..],
+                };
+                self.file
+                    .write_all(slice)
+                    .with_context(|| format!("Failed to write to {}", self.path.display()))?;
+            }
+        }
+
+        // Truncate to the real final size if the caller over-
+        // allocated (Mach-O reserves trailing space for the codesign
+        // blob). Dropping the mmap before `ftruncate` avoids kernel
+        // refusals on actively-mapped files.
+        if let Some(n) = final_size {
+            drop(std::mem::replace(
+                &mut self.out,
+                OutputBuffer::InMemory(Vec::new()),
+            ));
+            self.file
+                .set_len(n)
+                .with_context(|| format!("truncate {}", self.path.display()))?;
         }
 
         // Making the file executable is best-effort only. For example if we're writing to a pipe or

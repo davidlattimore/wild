@@ -60,24 +60,26 @@ struct Frame {
 impl CfgIr {
     pub fn build(ir: &BodyIr) -> Option<Self> {
         let n = ir.instrs().len();
-        if n == 0 { return None; }
+        if n == 0 {
+            return None;
+        }
 
         // Step 1: find BB start instruction indices.
         // Boundaries:
         //   - function entry (instr 0)
         //   - after every block/loop/if/else opcode (body starts a new BB)
-        //   - BEFORE every else/end (so structural closers always sit
-        //     in their own BB — lets dead-code elimination remove the
-        //     non-structural tail of an unreachable region without
+        //   - BEFORE every else/end (so structural closers always sit in their own BB — lets
+        //     dead-code elimination remove the non-structural tail of an unreachable region without
         //     touching the closer)
         //   - after every `end` (post-end code is a new BB)
         //   - after every br/br_if/br_table/return/unreachable
         let mut starts: Vec<u32> = vec![0];
         for i in 0..n {
             let op = ir.instrs()[i].op;
-            let needs_split_after = matches!(op,
-                0x02 | 0x03 | 0x04 | 0x05 | 0x0B
-                | 0x0C | 0x0D | 0x0E | 0x0F | 0x00);
+            let needs_split_after = matches!(
+                op,
+                0x02 | 0x03 | 0x04 | 0x05 | 0x0B | 0x0C | 0x0D | 0x0E | 0x0F | 0x00
+            );
             let needs_split_before = matches!(op, 0x05 | 0x0B);
             if needs_split_before && i > 0 {
                 starts.push(i as u32);
@@ -136,7 +138,9 @@ impl CfgIr {
                     } else {
                         (blocks.len() - 1) as u32
                     };
-                    frames.push(Frame { branch_target_bb: post_end });
+                    frames.push(Frame {
+                        branch_target_bb: post_end,
+                    });
 
                     // For `if`, add a Branch edge for the cond=false path.
                     if op == 0x04 {
@@ -144,7 +148,11 @@ impl CfgIr {
                         let else_target = if let Some(&e) = matching_else_of.get(&i) {
                             // cond=false jumps to the else body, which
                             // is the BB *after* the else opcode.
-                            if e + 1 < n { bb_of((e + 1) as u32) } else { post_end }
+                            if e + 1 < n {
+                                bb_of((e + 1) as u32)
+                            } else {
+                                post_end
+                            }
                         } else {
                             // No else: cond=false jumps to post-end.
                             post_end
@@ -152,7 +160,9 @@ impl CfgIr {
                         // Skip degenerate (else_target == fallthrough).
                         let then_bb = if i + 1 < n {
                             bb_of((i + 1) as u32)
-                        } else { post_end };
+                        } else {
+                            post_end
+                        };
                         if else_target != then_bb {
                             blocks[if_bb as usize].successors.push(BlockEdge {
                                 target: else_target,
@@ -167,7 +177,9 @@ impl CfgIr {
                     } else {
                         (blocks.len() - 1) as u32
                     };
-                    frames.push(Frame { branch_target_bb: body_target });
+                    frames.push(Frame {
+                        branch_target_bb: body_target,
+                    });
                 }
                 0x05 => {
                     // `else`: the BB just before the else-BB is the
@@ -187,7 +199,10 @@ impl CfgIr {
                 }
                 0x0C => {
                     // br L: unconditional branch.
-                    let label = match decode_label(ir, i) { Some(l) => l, None => return None };
+                    let label = match decode_label(ir, i) {
+                        Some(l) => l,
+                        None => return None,
+                    };
                     let target = label_target_bb(&frames, label)?;
                     let bb = bb_of(i as u32);
                     blocks[bb as usize].successors.push(BlockEdge {
@@ -197,7 +212,10 @@ impl CfgIr {
                 }
                 0x0D => {
                     // br_if L: conditional. Two successors: branch target + fallthrough.
-                    let label = match decode_label(ir, i) { Some(l) => l, None => return None };
+                    let label = match decode_label(ir, i) {
+                        Some(l) => l,
+                        None => return None,
+                    };
                     let target = label_target_bb(&frames, label)?;
                     let bb = bb_of(i as u32);
                     blocks[bb as usize].successors.push(BlockEdge {
@@ -212,7 +230,8 @@ impl CfgIr {
                     let (count, mut off) = leb128::read_u32(&bytes[1..])?;
                     off += 1; // skip the opcode byte
                     let bb = bb_of(i as u32);
-                    for _ in 0..=count {     // count + default
+                    for _ in 0..=count {
+                        // count + default
                         let (lbl, c) = leb128::read_u32(&bytes[off..])?;
                         off += c;
                         let tgt = label_target_bb(&frames, lbl)?;
@@ -233,10 +252,12 @@ impl CfgIr {
         //   - BB ending in br: NO fallthrough.
         //   - BB ending in return/unreachable: NO fallthrough (terminator).
         //   - BB ending in br_table: NO fallthrough.
-        //   - BB ending in any other op (incl. block/loop/if/else/end mid-body
-        //     or last instr being non-terminator): fallthrough.
+        //   - BB ending in any other op (incl. block/loop/if/else/end mid-body or last instr being
+        //     non-terminator): fallthrough.
         for bi in 0..blocks.len() {
-            if bi + 1 >= blocks.len() { continue; }
+            if bi + 1 >= blocks.len() {
+                continue;
+            }
             let last_instr_idx = blocks[bi].end_instr.saturating_sub(1);
             let last_op = ir.instrs()[last_instr_idx as usize].op;
             let no_fallthrough = matches!(last_op, 0x0C | 0x0E | 0x0F | 0x00)
@@ -276,7 +297,9 @@ fn label_target_bb(frames: &[Frame], label: u32) -> Option<u32> {
 
 /// Pre-pass: for every `block`/`loop`/`if`, locate its matching
 /// `end`; for every `if`, also locate its matching `else` (if any).
-fn match_structural(ir: &BodyIr) -> (
+fn match_structural(
+    ir: &BodyIr,
+) -> (
     std::collections::HashMap<usize, usize>,
     std::collections::HashMap<usize, usize>,
 ) {
@@ -294,7 +317,9 @@ fn match_structural(ir: &BodyIr) -> (
                 }
             }
             0x0B => {
-                if let Some(open) = stack.pop() { ends.insert(open, i); }
+                if let Some(open) = stack.pop() {
+                    ends.insert(open, i);
+                }
             }
             _ => {}
         }
@@ -366,11 +391,15 @@ mod tests {
         let body = [0u8, 0x02, 0x40, 0x41, 1, 0x0D, 0x00, 0x0B, 0x0B];
         let cfg = build(&body);
         // Find the BB containing br_if.
-        let bb = cfg.blocks.iter().find(|b| {
-            (b.start_instr..b.end_instr).any(|i| {
-                i < 99 // any sentinel; just pick the BB with br_if as last instr
+        let bb = cfg
+            .blocks
+            .iter()
+            .find(|b| {
+                (b.start_instr..b.end_instr).any(|i| {
+                    i < 99 // any sentinel; just pick the BB with br_if as last instr
+                })
             })
-        }).unwrap();
+            .unwrap();
         let _ = bb;
         // Locate the br_if BB by its successor signature: exactly two
         // successors, one branch + one fallthrough.
@@ -379,7 +408,10 @@ mod tests {
                 && b.successors.iter().any(|e| e.kind == EdgeKind::Branch)
                 && b.successors.iter().any(|e| e.kind == EdgeKind::Fallthrough)
         });
-        assert!(br_if_bb_idx.is_some(), "no BB with br_if's two-successor signature");
+        assert!(
+            br_if_bb_idx.is_some(),
+            "no BB with br_if's two-successor signature"
+        );
     }
 
     #[test]
@@ -394,7 +426,10 @@ mod tests {
         // BB 3: [end func]
         let br_bb = &cfg.blocks[1];
         assert_eq!(br_bb.successors.len(), 1);
-        assert_eq!(br_bb.successors[0].target, 1, "br 0 in loop must self-target");
+        assert_eq!(
+            br_bb.successors[0].target, 1,
+            "br 0 in loop must self-target"
+        );
     }
 
     #[test]
@@ -405,14 +440,20 @@ mod tests {
         // BB 0: [return]
         // BB 1: [end]
         // return-BB has NO successors.
-        assert!(cfg.blocks[0].successors.is_empty(), "return-BB must have no successors");
+        assert!(
+            cfg.blocks[0].successors.is_empty(),
+            "return-BB must have no successors"
+        );
     }
 
     #[test]
     fn unreachable_terminates() {
         let body = [0u8, 0x00, 0x0B];
         let cfg = build(&body);
-        assert!(cfg.blocks[0].successors.is_empty(), "unreachable-BB must have no successors");
+        assert!(
+            cfg.blocks[0].successors.is_empty(),
+            "unreachable-BB must have no successors"
+        );
     }
 
     #[test]
@@ -431,8 +472,10 @@ mod tests {
                 && b.successors.iter().any(|e| e.kind == EdgeKind::Fallthrough)
                 && last < 99 // sentinel
         });
-        assert!(if_bb.is_some(),
-            "the if's BB should have both Fallthrough and Branch successors");
+        assert!(
+            if_bb.is_some(),
+            "the if's BB should have both Fallthrough and Branch successors"
+        );
     }
 
     #[test]
@@ -441,14 +484,13 @@ mod tests {
         // Then-tail BB (containing the first nop) should NOT fall
         // through into the else-BB; it should Branch to post-end.
         let body = [
-            0u8,
-            0x41, 1,        // i32.const 1
-            0x04, 0x40,     // if
-            0x01,           // then: nop
-            0x05,           // else
-            0x01,           // else body: nop
-            0x0B,           // end if
-            0x0B,           // end func
+            0u8, 0x41, 1, // i32.const 1
+            0x04, 0x40, // if
+            0x01, // then: nop
+            0x05, // else
+            0x01, // else body: nop
+            0x0B, // end if
+            0x0B, // end func
         ];
         let cfg = build(&body);
         // Find the then-tail BB: the one whose only successor is a
@@ -462,7 +504,9 @@ mod tests {
                 // be the then-tail in our partition.
                 && b.start_instr < 6
         });
-        assert!(then_tail.is_some(),
-            "then-tail BB should branch past else body, not fall through");
+        assert!(
+            then_tail.is_some(),
+            "then-tail BB should branch past else body, not fall through"
+        );
     }
 }

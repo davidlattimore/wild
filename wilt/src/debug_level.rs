@@ -35,7 +35,9 @@ impl DebugLevel {
 
     /// The highest tier that is fully implemented today. Callers who
     /// asked for a higher tier silently fall back to this.
-    pub fn highest_implemented() -> Self { Self::Full }
+    pub fn highest_implemented() -> Self {
+        Self::Full
+    }
 
     pub fn implemented_floor(self) -> Self {
         match self {
@@ -61,7 +63,9 @@ impl Default for DebugLevel {
     /// The default policy: highest implemented tier. Today: `Names`.
     /// When Phase 2 lands this silently upgrades to `Lines` without
     /// callers changing anything.
-    fn default() -> Self { Self::highest_implemented() }
+    fn default() -> Self {
+        Self::highest_implemented()
+    }
 }
 
 #[cfg(test)]

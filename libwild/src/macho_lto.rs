@@ -56,6 +56,9 @@ pub(crate) struct LibLto {
 
 impl LibLto {
     /// Load libLTO.dylib from the given path.
+    ///
+    /// **Complexity:** Θ(1) CPU and memory from wild's perspective —
+    /// one `dlopen` + a fixed number of `dlsym` lookups (≈15 symbols).
     pub(crate) fn load(path: &Path) -> Result<Self> {
         // SAFETY: we're loading a well-known Apple/LLVM library.
         let lib = unsafe { Library::new(path) }
@@ -116,6 +119,13 @@ impl LibLto {
     /// `mllvm_options` are extra LLVM options from -mllvm flags.
     ///
     /// Returns the native object bytes.
+    ///
+    /// **Complexity:** 𝒪(external) — the dominant cost is libLTO's
+    /// internal LLVM compilation of bc bytes (IR parsing, IPO passes,
+    /// code-gen); wild's own wrapper overhead is 𝒪(n) for iterating
+    /// inputs + preserve-symbols and 𝒪(bc) memory for staging the
+    /// result buffer where bc = total bitcode input bytes.
+    /// Wall-clock is 𝒪(bc/T) inside libLTO which uses its own thread pool.
     pub(crate) fn compile(
         &self,
         inputs: &[(&str, &[u8])],
@@ -209,7 +219,10 @@ impl LibLto {
     }
 
     /// Extract defined symbol names from a bitcode module (for preserve list).
-    fn get_defined_symbol_names(&self, data: &[u8]) -> Result<Vec<Vec<u8>>> {
+    ///
+    /// **Complexity:** 𝒪(n) CPU and memory — delegates to `get_symbols`
+    /// then filters to defined-only; n = total symbols in the module.
+    pub(crate) fn get_defined_symbol_names(&self, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         let symbols = self.get_symbols(data)?;
         Ok(symbols
             .into_iter()
@@ -223,6 +236,10 @@ impl LibLto {
 
     /// Extract symbol information from a bitcode module without compiling it.
     /// Returns (name, attributes) pairs.
+    ///
+    /// **Complexity:** 𝒪(bc + n) CPU, 𝒪(n) memory — libLTO parses
+    /// bc bitcode bytes to build the symbol table, then wild copies n
+    /// symbol name strings out of libLTO's internal storage.
     pub(crate) fn get_symbols(&self, data: &[u8]) -> Result<Vec<(Vec<u8>, u32)>> {
         unsafe {
             let module = (self.module_create_from_memory)(data.as_ptr(), data.len());
@@ -254,6 +271,11 @@ static LTO_TEMP_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// Compile a single bitcode input to a native Mach-O object file.
 /// Returns the path to the native object (temp file or -object_path_lto).
+///
+/// **Complexity:** 𝒪(external) — wrapper around `LibLto::compile`.
+/// Own overhead: 𝒪(n) to scan defined symbols when `--export-dynamic`
+/// is set (n = symbols in module), plus 𝒪(bc) I/O to write the
+/// resulting object where bc = bitcode input byte count.
 pub(crate) fn compile_bitcode_to_file<A: Args>(
     bitcode: &[u8],
     lto_lib_path: &Path,

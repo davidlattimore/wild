@@ -14,7 +14,8 @@ use wilt::linker_hints::testing::FixedHints;
 fn assemble(name: &str) -> Vec<u8> {
     let path = format!(
         "{}/tests/fixtures/regressions/{}",
-        env!("CARGO_MANIFEST_DIR"), name,
+        env!("CARGO_MANIFEST_DIR"),
+        name,
     );
     wat::parse_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
@@ -42,7 +43,8 @@ fn hints_never_regress_size() {
     assert!(
         with.len() <= plain.len(),
         "hint-aware DAE regressed size: standalone {} vs hints {}",
-        plain.len(), with.len(),
+        plain.len(),
+        with.len(),
     );
 }
 
@@ -68,7 +70,8 @@ fn m6_inliner_v2_single_callsite() {
     assert!(
         with.len() <= plain.len(),
         "hint-aware inliner regressed size: standalone {} vs hints {}",
-        plain.len(), with.len(),
+        plain.len(),
+        with.len(),
     );
 }
 
@@ -94,7 +97,8 @@ fn m7_devirt_singleton_table() {
     assert!(
         with.len() <= plain.len(),
         "devirt regressed size: standalone {} vs hints {}",
-        plain.len(), with.len(),
+        plain.len(),
+        with.len(),
     );
 }
 
@@ -108,10 +112,16 @@ fn full_corpus_hints_output_validates() {
     let hints = FixedHints::default();
     for entry in std::fs::read_dir(&dir).unwrap().flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("wat") { continue; }
+        if path.extension().and_then(|s| s.to_str()) != Some("wat") {
+            continue;
+        }
         let src = std::fs::read_to_string(&path).unwrap();
-        let Ok(input) = wat::parse_str(&src) else { continue };
-        if !validates(&input) { continue; }
+        let Ok(input) = wat::parse_str(&src) else {
+            continue;
+        };
+        if !validates(&input) {
+            continue;
+        }
         let with = wilt::optimise_with_hints(&input, &hints);
         assert!(
             validates(&with),

@@ -11,17 +11,24 @@
 //! Uses `MutModule` for COW: unchanged bodies never allocate.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::mut_module::MutModule;
 use crate::opcode;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     let input = m.input();
     // Pull info we need from WasmModule (function section type indices + type section params).
-    let Ok(wm) = WasmModule::parse(input) else { return };
+    let Ok(wm) = WasmModule::parse(input) else {
+        return;
+    };
     let num_imports = m.facts.num_func_imports;
-    let Some(type_indices) = read_function_type_indices(&wm) else { return };
-    let Some(type_param_counts) = read_type_param_counts(&wm) else { return };
+    let Some(type_indices) = read_function_type_indices(&wm) else {
+        return;
+    };
+    let Some(type_param_counts) = read_type_param_counts(&wm) else {
+        return;
+    };
 
     let _ = num_imports; // reserved for future use
     use rayon::prelude::*;
@@ -33,7 +40,9 @@ pub fn apply_mut(m: &mut MutModule<'_>) {
             reorder_body_with_edits(m.body_bytes(i), num_params).map(|(b, e)| (i, b, e))
         })
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
@@ -65,21 +74,27 @@ fn read_type_param_counts(module: &WasmModule<'_>) -> Option<Vec<u32>> {
     let (count, mut off) = leb128::read_u32(p)?;
     let mut out = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        if *p.get(off)? != 0x60 { return None; }
+        if *p.get(off)? != 0x60 {
+            return None;
+        }
         off += 1;
         let (params, c) = leb128::read_u32(&p[off..])?;
         off += c;
         for _ in 0..params {
             let v = *p.get(off)?;
             off += 1;
-            if !matches!(v, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(v, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
         }
         let (results, c) = leb128::read_u32(&p[off..])?;
         off += c;
         for _ in 0..results {
             let v = *p.get(off)?;
             off += 1;
-            if !matches!(v, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
+            if !matches!(v, 0x7B..=0x7F | 0x6F | 0x70) {
+                return None;
+            }
         }
         out.push(params);
     }
@@ -93,7 +108,8 @@ const OP_LOCAL_TEE: u8 = 0x22;
 /// Core of the pass. Returns None if the body can't be cleanly rewritten
 /// (unknown valtype, walker failure, no declared locals to reorder).
 fn reorder_body_with_edits(
-    body: &[u8], num_params: u32,
+    body: &[u8],
+    num_params: u32,
 ) -> Option<(Vec<u8>, crate::provenance::BodyEdits)> {
     // 1. Parse locals header.
     let mut off = 0;
@@ -106,11 +122,17 @@ fn reorder_body_with_edits(
         off += c;
         let vt = *body.get(off)?;
         off += 1;
-        if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) { return None; }
-        for _ in 0..n { declared_types.push(vt); }
+        if !matches!(vt, 0x7B..=0x7F | 0x6F | 0x70) {
+            return None;
+        }
+        for _ in 0..n {
+            declared_types.push(vt);
+        }
     }
     let instrs_start = off;
-    if declared_types.is_empty() { return None; }
+    if declared_types.is_empty() {
+        return None;
+    }
 
     let total_locals = num_params + declared_types.len() as u32;
 
@@ -121,24 +143,34 @@ fn reorder_body_with_edits(
         let op = body[p];
         if matches!(op, OP_LOCAL_GET | OP_LOCAL_SET | OP_LOCAL_TEE) {
             let (idx, _) = leb128::read_u32(&body[p + 1..])?;
-            if (idx as usize) < uses.len() { uses[idx as usize] += 1; }
+            if (idx as usize) < uses.len() {
+                uses[idx as usize] += 1;
+            }
         }
     }
-    if iter.failed() { return None; }
+    if iter.failed() {
+        return None;
+    }
 
-    // 3. Determine new ordering for declared locals (indices [num_params..total]).
-    //    Stable: ties break by original index so output is deterministic.
+    // 3. Determine new ordering for declared locals (indices [num_params..total]). Stable: ties
+    //    break by original index so output is deterministic.
     let mut order: Vec<u32> = (num_params..total_locals).collect();
     order.sort_by(|a, b| uses[*b as usize].cmp(&uses[*a as usize]).then(a.cmp(b)));
 
     // Identity? No-op.
-    if order.iter().enumerate().all(|(i, &orig)| orig == num_params + i as u32) {
+    if order
+        .iter()
+        .enumerate()
+        .all(|(i, &orig)| orig == num_params + i as u32)
+    {
         return None;
     }
 
     // 4. Build index_map[orig] = new for full space (params map to themselves).
     let mut remap = vec![0u32; total_locals as usize];
-    for i in 0..num_params { remap[i as usize] = i; }
+    for i in 0..num_params {
+        remap[i as usize] = i;
+    }
     for (new_pos, &orig) in order.iter().enumerate() {
         remap[orig as usize] = num_params + new_pos as u32;
     }
@@ -162,9 +194,7 @@ fn reorder_body_with_edits(
     let mut edits = crate::provenance::BodyEdits::identity();
     // Locals header is completely replaced — one big substitution.
     edits.push(
-        crate::provenance::Edit::subst(
-            0, instrs_start as u32, 0, new_header.len() as u32,
-        ),
+        crate::provenance::Edit::subst(0, instrs_start as u32, 0, new_header.len() as u32),
         None,
     );
     out.extend_from_slice(&new_header);
@@ -174,6 +204,14 @@ fn reorder_body_with_edits(
         let op = body[p];
         if matches!(op, OP_LOCAL_GET | OP_LOCAL_SET | OP_LOCAL_TEE) {
             if let Some((idx, c)) = leb128::read_u32(&body[p + 1..]) {
+                // Defensive: if the body references a local index beyond what
+                // the locals header declares, skip this body rather than
+                // panic. The scan pass bounds-checked (line ~124); reaching
+                // here with an out-of-range index means the body is malformed
+                // relative to its header — upstream linker bug.
+                if (idx as usize) >= remap.len() {
+                    return None;
+                }
                 let new_idx = remap[idx as usize];
                 if new_idx != idx {
                     out.extend_from_slice(&body[cursor..p]);
@@ -185,7 +223,10 @@ fn reorder_body_with_edits(
                     let full_out_len = out.len() as u32 - out_opcode_pos;
                     edits.push(
                         crate::provenance::Edit::subst(
-                            p as u32, full_in_len, out_opcode_pos, full_out_len,
+                            p as u32,
+                            full_in_len,
+                            out_opcode_pos,
+                            full_out_len,
                         ),
                         None,
                     );
@@ -195,7 +236,9 @@ fn reorder_body_with_edits(
         }
         let _ = len;
     }
-    if iter.failed() { return None; }
+    if iter.failed() {
+        return None;
+    }
     out.extend_from_slice(&body[cursor..]);
     Some((out, edits))
 }
@@ -224,41 +267,26 @@ mod tests {
         // body: 1 local group of (2, i32) — two i32 locals, indices 0 and 1.
         // instructions: local.get 1; local.get 1; local.get 1; local.get 0; end
         let body = vec![
-            1,          // group count
-            2, 0x7F,    // (2 locals, i32)
-            0x20, 1,    // local.get 1
-            0x20, 1,    // local.get 1
-            0x20, 1,    // local.get 1
+            1, // group count
+            2, 0x7F, // (2 locals, i32)
+            0x20, 1, // local.get 1
+            0x20, 1, // local.get 1
+            0x20, 1, // local.get 1
             0x20, 0,    // local.get 0
-            0x0B,       // end
+            0x0B, // end
         ];
         // 0 params → declared start at 0. But note: num_params = 0, so
         // both locals can be reordered. Local 1 used 3x, local 0 used 1x.
         // After reorder: local 1 → index 0, local 0 → index 1.
         let out = reorder_body(&body, 0).unwrap();
         // Expect: same header (still (2, i32)), but gets remapped.
-        let expected = vec![
-            1,
-            2, 0x7F,
-            0x20, 0,
-            0x20, 0,
-            0x20, 0,
-            0x20, 1,
-            0x0B,
-        ];
+        let expected = vec![1, 2, 0x7F, 0x20, 0, 0x20, 0, 0x20, 0, 0x20, 1, 0x0B];
         assert_eq!(out, expected);
     }
 
     #[test]
     fn noop_when_order_already_best() {
-        let body = vec![
-            1,
-            2, 0x7F,
-            0x20, 0,
-            0x20, 0,
-            0x20, 1,
-            0x0B,
-        ];
+        let body = vec![1, 2, 0x7F, 0x20, 0, 0x20, 0, 0x20, 1, 0x0B];
         assert!(reorder_body(&body, 0).is_none());
     }
 }

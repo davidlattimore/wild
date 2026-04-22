@@ -85,6 +85,68 @@ pub(crate) struct StringMergeInputs<'data> {
     input_sections_by_output: OutputSectionMap<Vec<StringMergeInputSection<'data>>>,
 }
 
+/// Collected during GC: the set of "linear input offsets" (positions
+/// within the concatenated per-output-section merge-input stream)
+/// that at least one live atom's relocation points at. `merge_strings`
+/// consults this to drop strings/literals that nobody references.
+///
+/// Keyed by raw `u64` so callers outside this module don't need to
+/// learn about `LinearInputOffset`. The mapping is computed by
+/// platform-specific reloc scanners: `section.start_input_offset +
+/// target_offset_within_input_section` → a single integer per
+/// reachable merge-section byte.
+pub(crate) struct MergeStringRefs {
+    /// `None` → no filtering (all strings get merged). `Some(_)` →
+    /// only strings whose `[start..end)` linear-input range overlaps
+    /// an entry are merged. A `BTreeSet` supports cheap range
+    /// queries for mid-string targets (reloc pointing, say, 24
+    /// bytes into a 40-byte literal — the whole string still needs
+    /// to be kept).
+    inner: std::sync::Mutex<Option<std::collections::BTreeSet<u64>>>,
+}
+
+impl MergeStringRefs {
+    /// Currently unused — wild loads every merge-string
+    /// unconditionally because the reloc scanner doesn't mark every
+    /// path that can target a merge section (see `layout.rs`
+    /// construction of `MergeStringRefs::disabled()` for the full
+    /// rationale). Kept so a future audit of the scanner can
+    /// re-enable filtering without re-deriving the infrastructure.
+    #[allow(dead_code)]
+    pub(crate) fn enabled() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(Some(std::collections::BTreeSet::default())),
+        }
+    }
+
+    pub(crate) fn disabled() -> Self {
+        Self {
+            inner: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Mark `linear_input_offset` as referenced by a live atom.
+    /// No-op when the collector is disabled.
+    pub(crate) fn mark(&self, linear_input_offset: u64) {
+        if let Some(set) = self.inner.lock().unwrap().as_mut() {
+            set.insert(linear_input_offset);
+        }
+    }
+
+    /// Take the collected set for non-locked consumption during
+    /// merge. After this call, the collector is empty; callers
+    /// must not call `mark` afterwards.
+    pub(crate) fn take_snapshot(&self) -> Option<std::collections::BTreeSet<u64>> {
+        self.inner.lock().unwrap().take()
+    }
+}
+
+impl Default for MergeStringRefs {
+    fn default() -> Self {
+        Self::disabled()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StringMergeSectionSlot {
     pub(crate) part_id: PartId,
@@ -102,6 +164,14 @@ impl StringMergeSectionSlot {
             start_input_offset: LinearInputOffset(0),
         }
     }
+
+    /// Returns the raw linear-input-offset base for this section.
+    /// Used by reloc scanners (outside this module) to translate
+    /// `target_offset_in_section` into the `MergeStringRefs` keyspace:
+    /// `linear = start_input_offset + target_offset`.
+    pub(crate) fn linear_input_base(&self) -> u64 {
+        self.start_input_offset.0
+    }
 }
 
 /// Extra stuff that we don't want to put in `StringMergeSectionSlot` because like all section
@@ -111,6 +181,10 @@ pub(crate) struct StringMergeSectionExtra<'data> {
     pub(crate) index: object::SectionIndex,
     pub(crate) section_data: &'data [u8],
     pub(crate) is_strings: bool,
+    /// `Some(n)` → split at every `n` bytes; each chunk deduplicates
+    /// independently (Mach-O `__literal4/8/16`). `None` → either
+    /// strings (`is_strings`) or single whole-section chunk.
+    pub(crate) stride: Option<u32>,
 }
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
@@ -142,6 +216,11 @@ struct StringMergeInputSection<'data> {
     start_input_offset: LinearInputOffset,
 
     is_string: bool,
+
+    /// When `Some(n)`, the section is a fixed-stride literal pool and
+    /// must be split at every `n` bytes before hashing. See
+    /// `StringMergeSectionExtra::stride`.
+    stride: Option<u32>,
 }
 
 /// A string from a string-merge section. Includes the null terminator.
@@ -217,6 +296,7 @@ pub(crate) fn merge_strings<'data, P: Platform>(
     inputs: &StringMergeInputs<'data>,
     output_sections: &OutputSections<P>,
     args: &P::Args,
+    refs: &MergeStringRefs,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
     timing_phase!("Merge strings");
 
@@ -229,6 +309,14 @@ pub(crate) fn merge_strings<'data, P: Platform>(
     ) as usize;
 
     let reuse_pool = ReusePool::new(MERGE_STRING_BUCKETS * split_parallelism);
+
+    // Snapshot the reference set into a plain HashSet for
+    // non-locked concurrent reads inside the per-bucket
+    // pipeline. Snapshot is `None` when the collector was
+    // disabled — in that case we keep the legacy "merge
+    // everything" behaviour.
+    let referenced_snapshot = refs.take_snapshot();
+    let referenced_ref = referenced_snapshot.as_ref();
 
     inputs
         .input_sections_by_output
@@ -246,7 +334,7 @@ pub(crate) fn merge_strings<'data, P: Platform>(
             );
 
             let output_section = output_string_sections.get_mut(section_id);
-            output_section.add_input_sections(input_sections, &reuse_pool, args)?;
+            output_section.add_input_sections(input_sections, &reuse_pool, args, referenced_ref)?;
 
             assert_eq!(
                 reuse_pool.available.load(Ordering::Relaxed),
@@ -323,6 +411,7 @@ fn group_merge_string_sections_by_output<'data, P: Platform>(
                         section_data: extra.section_data,
                         start_input_offset: *starting_offset,
                         is_string: extra.is_strings,
+                        stride: extra.stride,
                     });
 
                 *starting_offset = *starting_offset
@@ -363,6 +452,7 @@ fn process_input_section<'data, 'offsets>(
     buckets: &mut [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS],
     offsets_shard: &mut sharded_offset_map::Shard<'offsets, BucketOffset, MAP_BLOCK_SIZE>,
     range: &Range<LinearInputOffset>,
+    referenced: Option<&std::collections::BTreeSet<u64>>,
 ) -> Result {
     let mut input_offset = input_section.start_input_offset;
     let mut remaining = input_section.section_data;
@@ -389,6 +479,30 @@ fn process_input_section<'data, 'offsets>(
 
     let mut insert_data = |data: PreHashed<MergeString<'data>>,
                            input_offset: &mut LinearInputOffset| {
+        // Reference-driven GC: when a filter is supplied, drop
+        // strings/literals that no live atom's reloc referenced.
+        // `input_offset.0` is the linear-input offset of the
+        // string's first byte — the same key Mach-O's reloc
+        // scanner marked in `MergeStringRefs` for targets of
+        // PAGE21+PAGEOFF12 pairs and UNSIGNED relocs into merge
+        // sections. We still advance `input_offset` past the
+        // skipped string so the `offsets_shard` cursor stays
+        // aligned with the input-section layout — other strings
+        // in the same shard block rely on positional
+        // sequencing.
+        if let Some(set) = referenced {
+            // Keep the string if any reference falls within
+            // `[start..end)` — a reloc can point mid-string
+            // (non-null-terminated literal pool entries, tables,
+            // etc.).
+            let start = input_offset.0;
+            let end = start + data.bytes.len() as u64;
+            let mut range = set.range(start..end);
+            if range.next().is_none() {
+                *input_offset = *input_offset + data.bytes.len() as u64;
+                return;
+            }
+        }
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
         // the time we know the output offset, we're processing just a single bucket.
@@ -404,10 +518,30 @@ fn process_input_section<'data, 'offsets>(
         *input_offset = *input_offset + data.bytes.len() as u64;
     };
 
-    // Non-string section is just a single slice.
+    // Non-string section.
     if !input_section.is_string {
-        let section_data = MergeString::take_hashed(&mut remaining);
+        // Fixed-stride literal pool (Mach-O __literal4/8/16): split
+        // the input into `stride`-byte chunks so each literal can
+        // deduplicate independently. Mirrors ld64's
+        // `FixedSizeSection::useElementAt`
+        // (parsers/macho_relocatable_file.cpp ~445).
+        if let Some(stride) = input_section.stride {
+            let stride = stride as usize;
+            debug_assert_eq!(
+                remaining.len() % stride,
+                0,
+                "fixed-stride merge input length {} not a multiple of stride {}",
+                remaining.len(),
+                stride
+            );
+            while !remaining.is_empty() && input_offset < range.end {
+                let chunk = MergeString::take_stride_hashed(&mut remaining, stride);
+                insert_data(chunk, &mut input_offset);
+            }
+            return Ok(());
+        }
 
+        let section_data = MergeString::take_hashed(&mut remaining);
         insert_data(section_data, &mut input_offset);
         return Ok(());
     }
@@ -428,9 +562,15 @@ impl<'data> MergedStringsSection<'data> {
         input_sections: &[StringMergeInputSection<'data>],
         reuse_pool: &ReusePool,
         args: &impl platform::Args,
+        referenced: Option<&std::collections::BTreeSet<u64>>,
     ) -> Result {
-        let mut resources =
-            create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
+        let mut resources = create_split_resources(
+            &mut self.string_offsets,
+            input_sections,
+            reuse_pool,
+            args,
+            referenced,
+        );
 
         rayon::in_place_scope(|s| {
             // Spawn some number of tasks to process input section groups. As these tasks complete,
@@ -535,6 +675,12 @@ struct SplitResources<'data, 'offsets, 'scope> {
     errors: ArrayQueue<crate::error::Error>,
 
     reuse_pool: &'scope ReusePool,
+
+    /// When `Some`, only strings whose `[start..end)` linear-input
+    /// range overlaps at least one entry are merged; the rest are
+    /// dropped. Built from `MergeStringRefs::take_snapshot` at the
+    /// top of `merge_strings` (reference-driven-GC path).
+    referenced: Option<&'scope std::collections::BTreeSet<u64>>,
 }
 
 fn string_bucket_offset(input: usize, bucket: usize) -> usize {
@@ -589,6 +735,7 @@ fn create_split_resources<'data, 'offsets, 'scope>(
     input_sections: &'scope [StringMergeInputSection<'data>],
     reuse_pool: &'scope ReusePool,
     args: &impl platform::Args,
+    referenced: Option<&'scope std::collections::BTreeSet<u64>>,
 ) -> SplitResources<'data, 'offsets, 'scope> {
     verbose_timing_phase!("Create input section groups");
 
@@ -629,6 +776,7 @@ fn create_split_resources<'data, 'offsets, 'scope>(
         offset_writer,
         errors: ArrayQueue::new(1),
         reuse_pool,
+        referenced,
     };
 
     (0..MERGE_STRING_BUCKETS).for_each(|i| {
@@ -824,6 +972,7 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
             &mut buckets,
             &mut group_in.offsets_shard,
             &group_in.range,
+            resources.referenced,
         )?;
     }
 
@@ -992,6 +1141,18 @@ impl<'data> MergeString<'data> {
         let hash = crate::hash::hash_bytes(bytes);
         PreHashed::new(MergeString { bytes }, hash)
     }
+
+    /// Takes exactly `stride` bytes off the front of `source`.
+    /// Caller must ensure `source.len() >= stride`.
+    pub(crate) fn take_stride_hashed(
+        source: &mut &'data [u8],
+        stride: usize,
+    ) -> PreHashed<MergeString<'data>> {
+        let (bytes, rest) = source.split_at(stride);
+        let hash = crate::hash::hash_bytes(bytes);
+        *source = rest;
+        PreHashed::new(MergeString { bytes }, hash)
+    }
 }
 
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
@@ -1084,8 +1245,15 @@ pub(crate) fn find_string(
     }
 
     bail!(
-        "Failed to find merge-string at offset {}",
-        linear_input_offset.0
+        "Failed to find merge-string at offset {} \
+         (linear base={}, input_offset={}, part_id={:?}) — \
+         MergeStringRefs filtered it out but a reloc still referenced \
+         it. Check that every reloc scanner marks merge-section \
+         targets via `mark_merge_ref` / `MergeStringRefs::mark`.",
+        linear_input_offset.0,
+        merge_slot.start_input_offset.0,
+        input_offset,
+        merge_slot.part_id,
     )
 }
 

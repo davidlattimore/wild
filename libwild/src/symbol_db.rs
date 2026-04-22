@@ -1055,7 +1055,24 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 }
 
 pub(crate) fn linker_plugin_disabled_error() -> Error {
-    error!("Wild was compiled without linker-plugin support, but LTO inputs were detected")
+    error!(
+        "LTO inputs (LLVM bitcode) were detected but wild does not yet \
+         compile bitcode — proper LTO support for wasm requires invoking \
+         LLVM's bitcode→object compiler (`llc --march=wasm32 -filetype=obj`) \
+         which is not yet wired up.\n\n\
+         Workarounds (in order of least-invasive to most):\n  \
+         1. Build the affected dependency without LTO/embedded-bitcode:\n     \
+            [profile.release.package.\"<crate-name>\"]\n     \
+            codegen-units = 16    # forces non-LTO codegen\n  \
+         2. Disable embedded-bitcode workspace-wide via env at link-time:\n     \
+            WASM_BUILD_RUSTFLAGS=\"-C embed-bitcode=no -C lto=off\" \\\n       \
+            CARGO_TARGET_WASM32V1_NONE_LINKER=/path/to/wild cargo build\n     \
+            (this may not suffice if any dep still emits bitcode-only rlibs)\n  \
+         3. Fall back to rust-lld/wasm-ld for the runtime build until wild \
+            ships bitcode compilation.\n\n\
+         See <https://github.com/davidlattimore/wild/issues> (or file a new issue) \
+         to track progress on wasm LTO."
+    )
 }
 
 struct SymbolVecWriters<'out> {

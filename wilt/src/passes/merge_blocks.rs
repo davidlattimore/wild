@@ -7,15 +7,17 @@
 //! target is outside the removed block.
 //!
 //! Scope:
-//!   * Only `block` (`0x02`). `loop` labels are back-edges; `if`/`else`
-//!     have cond/then/else semantics we don't want to touch here.
-//!   * Bodies containing `br_table` (`0x0E`) are bailed — relabelling
-//!     all its labels is straightforward but we defer until needed.
+//!   * Only `block` (`0x02`). `loop` labels are back-edges; `if`/`else` have cond/then/else
+//!     semantics we don't want to touch here.
+//!   * Bodies containing `br_table` (`0x0E`) are bailed — relabelling all its labels is
+//!     straightforward but we defer until needed.
 //!   * One removal per invocation; the outer fixpoint iterates.
 //!
 //! Relies on `BlockWalker` Phase 2 to resolve each `br`'s target frame.
 
-use crate::block_walker::{BlockKind, BlockWalker, ModuleSigs};
+use crate::block_walker::BlockKind;
+use crate::block_walker::BlockWalker;
+use crate::block_walker::ModuleSigs;
 use crate::leb128;
 use crate::module::WasmModule;
 use crate::mut_module::MutModule;
@@ -23,25 +25,33 @@ use crate::opcode;
 
 pub fn apply_mut(m: &mut MutModule<'_>) {
     let input = m.input();
-    let Ok(wm) = WasmModule::parse(input) else { return };
-    let Some(sigs) = ModuleSigs::from_module(&wm) else { return };
+    let Ok(wm) = WasmModule::parse(input) else {
+        return;
+    };
+    let Some(sigs) = ModuleSigs::from_module(&wm) else {
+        return;
+    };
 
     use rayon::prelude::*;
     let updates: Vec<(usize, Vec<u8>, crate::provenance::BodyEdits)> = (0..m.num_bodies())
         .into_par_iter()
         .map_init(
             || Vec::with_capacity(16),
-            |frames, i| rewrite_body_with_edits(m.body_bytes(i), &sigs, frames)
-                .map(|(b, e)| (i, b, e)),
+            |frames, i| {
+                rewrite_body_with_edits(m.body_bytes(i), &sigs, frames).map(|(b, e)| (i, b, e))
+            },
         )
         .filter_map(|x| x)
         .collect();
-    for (i, b, e) in updates { m.set_body_with_edits(i, b, e); }
+    for (i, b, e) in updates {
+        m.set_body_with_edits(i, b, e);
+    }
 }
 
 #[allow(dead_code)]
 fn rewrite_body(
-    body: &[u8], sigs: &ModuleSigs,
+    body: &[u8],
+    sigs: &ModuleSigs,
     frames_buf: &mut Vec<crate::block_walker::BlockFrame>,
 ) -> Option<Vec<u8>> {
     rewrite_body_with_edits(body, sigs, frames_buf).map(|(b, _)| b)
@@ -105,8 +115,12 @@ fn rewrite_body_with_edits(
                 // (br doesn't push/pop frames.)
                 let stack_n = w.frames().len();
                 let (label, lc) = leb128::read_u32(&body[step.pos + 1..])?;
-                let Some(target) = stack_n.checked_sub(1).and_then(|x| x.checked_sub(label as usize)) else {
-                    bail = true; break;
+                let Some(target) = stack_n
+                    .checked_sub(1)
+                    .and_then(|x| x.checked_sub(label as usize))
+                else {
+                    bail = true;
+                    break;
                 };
                 if target < active.len() {
                     frame_infos[active[target]].targeted = true;
@@ -118,15 +132,21 @@ fn rewrite_body_with_edits(
                     target_stack_idx: target,
                 });
             }
-            0x0E => { bail = true; break; }
+            0x0E => {
+                bail = true;
+                break;
+            }
             _ => {}
         }
     }
-    if w.failed() || bail { return None; }
+    if w.failed() || bail {
+        return None;
+    }
 
     // Pick the first block whose label is never branched to.
     // Require end_pos > 0 (we must have seen its end during the walk).
-    let Some(removed) = frame_infos.iter()
+    let Some(removed) = frame_infos
+        .iter()
         .find(|f| matches!(f.kind, BlockKind::Block) && !f.targeted && f.end_pos > 0)
     else {
         return None;
@@ -144,10 +164,14 @@ fn rewrite_body_with_edits(
     // "Br lives inside removed": the br's imm_pos is in
     // (removed.open_pos, removed.end_pos). Equivalent: walk up from
     // br's containing frame and find `removed` as an ancestor.
-    let removed_idx = frame_infos.iter().position(|f| std::ptr::eq(f, removed)).unwrap();
+    let removed_idx = frame_infos
+        .iter()
+        .position(|f| std::ptr::eq(f, removed))
+        .unwrap();
     let mut relabels: Vec<(&BrInfo, u32)> = Vec::new();
     for br in &br_infos {
-        if br.imm_pos > removed.open_pos && br.imm_pos < removed.end_pos
+        if br.imm_pos > removed.open_pos
+            && br.imm_pos < removed.end_pos
             && br.target_stack_idx < removed.stack_idx
         {
             relabels.push((br, br.old_label - 1));
@@ -182,12 +206,19 @@ fn rewrite_body_with_edits(
                 );
                 cursor = e.pos() + len;
             }
-            Edit::Relabel { imm_pos, old_len, new_label } => {
+            Edit::Relabel {
+                imm_pos,
+                old_len,
+                new_label,
+            } => {
                 leb128::write_u32(&mut out, *new_label);
                 let out_len = out.len() as u32 - out_start;
                 body_edits.push(
                     crate::provenance::Edit::subst(
-                        *imm_pos as u32, *old_len as u32, out_start, out_len,
+                        *imm_pos as u32,
+                        *old_len as u32,
+                        out_start,
+                        out_len,
                     ),
                     None,
                 );
@@ -201,7 +232,11 @@ fn rewrite_body_with_edits(
 
 enum Edit {
     Delete(usize, usize),
-    Relabel { imm_pos: usize, old_len: usize, new_label: u32 },
+    Relabel {
+        imm_pos: usize,
+        old_len: usize,
+        new_label: u32,
+    },
 }
 
 impl Edit {
@@ -218,9 +253,8 @@ mod tests {
     use super::*;
 
     fn empty_sigs() -> ModuleSigs {
-        ModuleSigs::from_module(&WasmModule::parse(&[
-            0,0x61,0x73,0x6D,1,0,0,0
-        ]).unwrap()).unwrap()
+        ModuleSigs::from_module(&WasmModule::parse(&[0, 0x61, 0x73, 0x6D, 1, 0, 0, 0]).unwrap())
+            .unwrap()
     }
 
     fn run(body: &[u8]) -> Option<Vec<u8>> {
@@ -236,38 +270,20 @@ mod tests {
         //     nop
         //   end
         // )
-        let body = [
-            0,
-            0x02, 0x40,
-            0x01,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x02, 0x40, 0x01, 0x0B, 0x0B];
         let out = run(&body).expect("should rewrite");
         assert_eq!(out, vec![0, 0x01, 0x0B]);
     }
 
     #[test]
     fn keeps_block_targeted_by_br() {
-        let body = [
-            0,
-            0x02, 0x40,
-            0x0C, 0x00,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
         assert!(run(&body).is_none());
     }
 
     #[test]
     fn keeps_loop() {
-        let body = [
-            0,
-            0x03, 0x40,
-            0x01,
-            0x0B,
-            0x0B,
-        ];
+        let body = [0, 0x03, 0x40, 0x01, 0x0B, 0x0B];
         assert!(run(&body).is_none());
     }
 
@@ -281,36 +297,26 @@ mod tests {
         //   end
         // )
         let body = [
-            0,
-            0x02, 0x40,   // A
-            0x02, 0x40,   // B (candidate)
-            0x0C, 0x01,   // br 1 → A
-            0x0B,         // end B
-            0x0B,         // end A
-            0x0B,         // end func
+            0, 0x02, 0x40, // A
+            0x02, 0x40, // B (candidate)
+            0x0C, 0x01, // br 1 → A
+            0x0B, // end B
+            0x0B, // end A
+            0x0B, // end func
         ];
         let out = run(&body).expect("should rewrite");
         // After removing B: A opcodes stay, br 1 -> br 0, B open+end gone.
         // New sequence: locals, block A, br 0, end A, end func
-        let expected = vec![
-            0,
-            0x02, 0x40,
-            0x0C, 0x00,
-            0x0B,
-            0x0B,
-        ];
+        let expected = vec![0, 0x02, 0x40, 0x0C, 0x00, 0x0B, 0x0B];
         assert_eq!(out, expected);
     }
 
     #[test]
     fn bails_on_br_table() {
         let body = [
-            0,
-            0x02, 0x40,
-            0x41, 0,      // i32.const 0
-            0x0E, 0, 0,   // br_table with 0 labels, default 0
-            0x0B,
-            0x0B,
+            0, 0x02, 0x40, 0x41, 0, // i32.const 0
+            0x0E, 0, 0, // br_table with 0 labels, default 0
+            0x0B, 0x0B,
         ];
         assert!(run(&body).is_none());
     }

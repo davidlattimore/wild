@@ -5,31 +5,26 @@
 //!
 //! Implementation is staged:
 //!
-//! - **Step 1** (landed): preserve the input `.debug_line` bytes iff
-//!   the output's code section is byte-identical AND no function
-//!   index shifted. Otherwise drop (Names-tier fallback).
-//! - **Step 2**: broaden preservation to "per-function byte-and-
-//!   position identical". If every surviving function is byte-
-//!   identical to its input at the same code-section byte offset —
-//!   true when passes like reorder/layout changed nothing but later
-//!   sections elsewhere — we preserve.
-//! - **Step 3**: byte-level address patching for the "bodies byte-
-//!   identical but moved" case. Find each `DW_LNE_set_address`
-//!   extended opcode in the line program, look up which input
-//!   function its address pointed at, compute the new file offset
-//!   of that function in the output, patch in place.
-//! - **Step 4** (this commit): per-sequence splicing for the
-//!   "some bodies modified" case. Walk the program, delimit each
-//!   sequence by its `DW_LNE_end_sequence` boundary, drop sequences
-//!   for modified/eliminated functions, patch addresses for kept
-//!   ones, then stitch the surviving sequences into a new program
-//!   body and update the header's `unit_length`.
+//! - **Step 1** (landed): preserve the input `.debug_line` bytes iff the output's code section is
+//!   byte-identical AND no function index shifted. Otherwise drop (Names-tier fallback).
+//! - **Step 2**: broaden preservation to "per-function byte-and- position identical". If every
+//!   surviving function is byte- identical to its input at the same code-section byte offset — true
+//!   when passes like reorder/layout changed nothing but later sections elsewhere — we preserve.
+//! - **Step 3**: byte-level address patching for the "bodies byte- identical but moved" case. Find
+//!   each `DW_LNE_set_address` extended opcode in the line program, look up which input function
+//!   its address pointed at, compute the new file offset of that function in the output, patch in
+//!   place.
+//! - **Step 4** (this commit): per-sequence splicing for the "some bodies modified" case. Walk the
+//!   program, delimit each sequence by its `DW_LNE_end_sequence` boundary, drop sequences for
+//!   modified/eliminated functions, patch addresses for kept ones, then stitch the surviving
+//!   sequences into a new program body and update the header's `unit_length`.
 //!
 //! Invariant: the output either carries an *accurate* `.debug_line`
 //! or none at all. We never embed stale addresses.
 
 use crate::leb128;
-use crate::module::{self, WasmModule};
+use crate::module::WasmModule;
+use crate::module::{self};
 use crate::remap::FuncRemap;
 
 /// Return the `.debug_line` payload to embed in the optimised module.
@@ -67,8 +62,14 @@ pub fn rewrite(input: &[u8], optimised: &[u8], remap: &FuncRemap) -> Option<Vec<
     // DW_LNE_set_address opcodes in the line program with the new
     // file offsets. Same byte length, so no downstream encoding shift.
     if per_function_bytes_match(input, optimised, remap, &in_offsets, &out_offsets) {
-        if let Some(patched) = patch_addresses(line_bytes, input, optimised, remap,
-                                               &in_offsets, &out_offsets) {
+        if let Some(patched) = patch_addresses(
+            line_bytes,
+            input,
+            optimised,
+            remap,
+            &in_offsets,
+            &out_offsets,
+        ) {
             return Some(patched);
         }
     }
@@ -77,18 +78,28 @@ pub fn rewrite(input: &[u8], optimised: &[u8], remap: &FuncRemap) -> Option<Vec<
     // sequences for modified/eliminated functions, keep sequences
     // for preserved ones (with patched addresses).
     splice_preserved_sequences(
-        line_bytes, input, optimised, remap, &in_offsets, &out_offsets,
+        line_bytes,
+        input,
+        optimised,
+        remap,
+        &in_offsets,
+        &out_offsets,
     )
 }
 
 /// Build a per-input-function "preservation" map: Some(output offset)
 /// if the body survives byte-identical, None if modified or removed.
 fn preservation_map(
-    input: &[u8], output: &[u8], remap: &FuncRemap,
-    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+    input: &[u8],
+    output: &[u8],
+    remap: &FuncRemap,
+    in_offsets: &[(u32, u32)],
+    out_offsets: &[(u32, u32)],
 ) -> Option<Vec<Option<u32>>> {
     let num_defined_in = in_offsets.len() as u32;
-    if remap.len() < num_defined_in { return None; }
+    if remap.len() < num_defined_in {
+        return None;
+    }
     let num_imports = remap.len() - num_defined_in;
     let mut out = Vec::with_capacity(in_offsets.len());
     for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
@@ -99,7 +110,9 @@ fn preservation_map(
             Some(abs_out) => {
                 let def_out = (abs_out - num_imports) as usize;
                 out_offsets.get(def_out).and_then(|&(off_out, len_out)| {
-                    if len_in != len_out { return None; }
+                    if len_in != len_out {
+                        return None;
+                    }
                     let in_bytes = &input[off_in as usize..(off_in + len_in) as usize];
                     let out_bytes = &output[off_out as usize..(off_out + len_out) as usize];
                     (in_bytes == out_bytes).then_some(off_out)
@@ -120,21 +133,24 @@ fn preservation_map(
 /// unexpected DWARF v5 encoding, etc.) — caller falls back to drop.
 fn splice_preserved_sequences(
     line_bytes: &[u8],
-    input: &[u8], output: &[u8], remap: &FuncRemap,
-    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+    input: &[u8],
+    output: &[u8],
+    remap: &FuncRemap,
+    in_offsets: &[(u32, u32)],
+    out_offsets: &[(u32, u32)],
 ) -> Option<Vec<u8>> {
     let preserved = preservation_map(input, output, remap, in_offsets, out_offsets)?;
 
     // Parse header with gimli.
     let dl = gimli::DebugLine::new(line_bytes, gimli::LittleEndian);
-    let header = dl.program(
-        gimli::DebugLineOffset(0),
-        4, None, None,
-    ).ok()?.header().clone();
+    let header = dl
+        .program(gimli::DebugLineOffset(0), 4, None, None)
+        .ok()?
+        .header()
+        .clone();
     let opcode_base = header.opcode_base();
     let std_lens = header.standard_opcode_lengths();
-    let prog_off = (header.raw_program_buf().as_ptr() as usize)
-        - line_bytes.as_ptr() as usize;
+    let prog_off = (header.raw_program_buf().as_ptr() as usize) - line_bytes.as_ptr() as usize;
 
     // Build shifts for kept functions (step 3's model).
     let mut shifts: Vec<((u32, u32), i64)> = Vec::new();
@@ -160,27 +176,35 @@ fn splice_preserved_sequences(
             // Extended opcode.
             let (size, c) = leb128::read_u32(&line_bytes[off..])?;
             off += c;
-            if size == 0 { continue; }
+            if size == 0 {
+                continue;
+            }
             let sub = line_bytes[off];
             let operand_off = off + 1;
             let operand_len = (size as usize).saturating_sub(1);
             let extended_end = operand_off + operand_len;
 
             if sub == 0x02 /* DW_LNE_set_address */ && operand_len == 4 {
-                let addr_bytes: [u8; 4] = line_bytes[operand_off..operand_off + 4].try_into().ok()?;
+                let addr_bytes: [u8; 4] =
+                    line_bytes[operand_off..operand_off + 4].try_into().ok()?;
                 let addr = u32::from_le_bytes(addr_bytes);
                 if seq_first_addr.is_none() {
                     seq_first_addr = Some(addr);
                     seq_start = op_off;
                 }
-            } else if sub == 0x01 /* DW_LNE_end_sequence */ {
+            } else if sub == 0x01
+            /* DW_LNE_end_sequence */
+            {
                 sequences.push((seq_start, extended_end, seq_first_addr));
                 seq_first_addr = None;
                 seq_start = extended_end;
             }
             off = extended_end;
         } else if (op as usize) < opcode_base as usize {
-            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            let n_operands = std_lens
+                .get((op as usize).saturating_sub(1))
+                .copied()
+                .unwrap_or(0);
             for _ in 0..n_operands {
                 let (_, c) = leb128::read_u32(&line_bytes[off..])?;
                 off += c;
@@ -199,7 +223,9 @@ fn splice_preserved_sequences(
     for &(s, e, first_addr) in &sequences {
         let Some(addr) = first_addr else { continue };
         let is_preserved = shifts.iter().any(|((lo, hi), _)| addr >= *lo && addr < *hi);
-        if !is_preserved { continue; }
+        if !is_preserved {
+            continue;
+        }
         // Copy sequence bytes, then patch any DW_LNE_set_address
         // within them.
         let seq_slice = &line_bytes[s..e];
@@ -217,9 +243,13 @@ fn splice_preserved_sequences(
     // Update the `unit_length` field in the new header. First 4
     // bytes are the DWARF-32 length, OR the DWARF-64 escape
     // 0xFFFFFFFF followed by a u64 length. Handle both honestly.
-    if new_body.len() < 4 { return None; }
+    if new_body.len() < 4 {
+        return None;
+    }
     if new_body[..4] == [0xFF, 0xFF, 0xFF, 0xFF] {
-        if new_body.len() < 12 { return None; }
+        if new_body.len() < 12 {
+            return None;
+        }
         let new_unit_len = (new_body.len() - 12) as u64;
         new_body[4..12].copy_from_slice(&new_unit_len.to_le_bytes());
     } else {
@@ -246,14 +276,17 @@ fn patch_seq_addresses(
         if op == 0 {
             let (size, c) = leb128::read_u32(&buf[off..])?;
             off += c;
-            if size == 0 { continue; }
+            if size == 0 {
+                continue;
+            }
             let sub = buf[off];
             let operand_off = off + 1;
             let operand_len = (size as usize).saturating_sub(1);
             if sub == 0x02 && operand_len == 4 {
                 let addr_bytes: [u8; 4] = buf[operand_off..operand_off + 4].try_into().ok()?;
                 let addr = u32::from_le_bytes(addr_bytes);
-                let shift = shifts.iter()
+                let shift = shifts
+                    .iter()
                     .find(|((s, e), _)| addr >= *s && addr < *e)
                     .map(|(_, sh)| *sh);
                 if let Some(d) = shift {
@@ -263,7 +296,10 @@ fn patch_seq_addresses(
             }
             off = operand_off + operand_len;
         } else if (op as usize) < opcode_base as usize {
-            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            let n_operands = std_lens
+                .get((op as usize).saturating_sub(1))
+                .copied()
+                .unwrap_or(0);
             for _ in 0..n_operands {
                 let (_, c) = leb128::read_u32(&buf[off..])?;
                 off += c;
@@ -277,22 +313,37 @@ fn patch_seq_addresses(
 /// match — only that every function's body BYTES are preserved.
 /// Position changes will be addressed by the address patcher.
 fn per_function_bytes_match(
-    input: &[u8], output: &[u8], remap: &FuncRemap,
-    in_offsets: &[(u32, u32)], out_offsets: &[(u32, u32)],
+    input: &[u8],
+    output: &[u8],
+    remap: &FuncRemap,
+    in_offsets: &[(u32, u32)],
+    out_offsets: &[(u32, u32)],
 ) -> bool {
     let num_defined_in = in_offsets.len() as u32;
-    if remap.len() < num_defined_in { return false; }
+    if remap.len() < num_defined_in {
+        return false;
+    }
     let num_imports = remap.len() - num_defined_in;
     for (def_i, (off_in, len_in)) in in_offsets.iter().enumerate() {
         let abs_in = num_imports + def_i as u32;
-        let Some(abs_out) = remap.lookup(abs_in) else { return false };
-        if abs_out < num_imports { return false; }
+        let Some(abs_out) = remap.lookup(abs_in) else {
+            return false;
+        };
+        if abs_out < num_imports {
+            return false;
+        }
         let def_out = (abs_out - num_imports) as usize;
-        let Some(&(off_out, len_out)) = out_offsets.get(def_out) else { return false };
-        if *len_in != len_out { return false; }
+        let Some(&(off_out, len_out)) = out_offsets.get(def_out) else {
+            return false;
+        };
+        if *len_in != len_out {
+            return false;
+        }
         let in_bytes = &input[*off_in as usize..(*off_in + *len_in) as usize];
         let out_bytes = &output[off_out as usize..(off_out + len_out) as usize];
-        if in_bytes != out_bytes { return false; }
+        if in_bytes != out_bytes {
+            return false;
+        }
     }
     true
 }
@@ -306,13 +357,17 @@ fn build_address_shifts(
     out_offsets: &[(u32, u32)],
 ) -> Option<Vec<((u32, u32), i64)>> {
     let num_defined_in = in_offsets.len() as u32;
-    if remap.len() < num_defined_in { return None; }
+    if remap.len() < num_defined_in {
+        return None;
+    }
     let num_imports = remap.len() - num_defined_in;
     let mut shifts = Vec::with_capacity(in_offsets.len());
     for (def_i, &(off_in, len_in)) in in_offsets.iter().enumerate() {
         let abs_in = num_imports + def_i as u32;
         let abs_out = remap.lookup(abs_in)?;
-        if abs_out < num_imports { return None; }
+        if abs_out < num_imports {
+            return None;
+        }
         let def_out = (abs_out - num_imports) as usize;
         let &(off_out, _) = out_offsets.get(def_out)?;
         let shift = off_out as i64 - off_in as i64;
@@ -334,7 +389,8 @@ fn build_address_shifts(
 /// our preservation gate).
 fn patch_addresses(
     line_bytes: &[u8],
-    _input: &[u8], _output: &[u8],
+    _input: &[u8],
+    _output: &[u8],
     remap: &FuncRemap,
     in_offsets: &[(u32, u32)],
     out_offsets: &[(u32, u32)],
@@ -344,11 +400,14 @@ fn patch_addresses(
     // Parse just enough of the header to learn the address size and
     // the standard-opcode operand lengths.
     let dl = gimli::DebugLine::new(line_bytes, gimli::LittleEndian);
-    let header = dl.program(
-        gimli::DebugLineOffset(0),
-        4, // wasm address size
-        None, None,
-    ).ok()?;
+    let header = dl
+        .program(
+            gimli::DebugLineOffset(0),
+            4, // wasm address size
+            None,
+            None,
+        )
+        .ok()?;
     let header = header.header().clone();
 
     // Patch by walking the program body.
@@ -359,8 +418,7 @@ fn patch_addresses(
     // Use the spec'd header length: header_offset = (program_offset
     // - header_offset_to_program). gimli's header offers `header_size`
     // sometimes; otherwise we walk from the offset reported below.
-    let prog_off = (header.raw_program_buf().as_ptr() as usize)
-        - line_bytes.as_ptr() as usize;
+    let prog_off = (header.raw_program_buf().as_ptr() as usize) - line_bytes.as_ptr() as usize;
     let _ = header_len;
 
     let opcode_base = header.opcode_base();
@@ -374,7 +432,9 @@ fn patch_addresses(
             // Extended opcode: size LEB, sub-opcode, operands.
             let (size, c) = leb128::read_u32(&out[off..])?;
             off += c;
-            if size == 0 { continue; }
+            if size == 0 {
+                continue;
+            }
             let sub = out[off];
             // sub-opcode + operand bytes total `size` bytes.
             let operand_off = off + 1;
@@ -383,7 +443,8 @@ fn patch_addresses(
                 let addr_bytes: [u8; 4] = out[operand_off..operand_off + 4].try_into().ok()?;
                 let addr = u32::from_le_bytes(addr_bytes);
                 // Find which function contains this address.
-                let shift = shifts.iter()
+                let shift = shifts
+                    .iter()
                     .find(|((s, e), _)| addr >= *s && addr < *e)
                     .map(|(_, s)| *s);
                 let new_addr = match shift {
@@ -400,7 +461,10 @@ fn patch_addresses(
             off = operand_off + operand_len;
         } else if (op as usize) < opcode_base as usize {
             // Standard opcode: skip its LEB operands.
-            let n_operands = std_lens.get((op as usize).saturating_sub(1)).copied().unwrap_or(0);
+            let n_operands = std_lens
+                .get((op as usize).saturating_sub(1))
+                .copied()
+                .unwrap_or(0);
             for _ in 0..n_operands {
                 let (_, c) = leb128::read_u32(&out[off..])?;
                 off += c;
@@ -431,7 +495,9 @@ pub fn function_file_offsets(module: &WasmModule<'_>) -> Option<Vec<(u32, u32)>>
     // Sanity check: offsets should be strictly ascending and
     // non-overlapping.
     for w in out.windows(2) {
-        if w[0].0 + w[0].1 > w[1].0 { return None; }
+        if w[0].0 + w[0].1 > w[1].0 {
+            return None;
+        }
     }
     let _ = data;
     Some(out)
@@ -441,7 +507,8 @@ pub fn function_file_offsets(module: &WasmModule<'_>) -> Option<Vec<(u32, u32)>>
 /// function with (a) the same file offset and (b) identical body
 /// bytes.
 fn per_function_identical(
-    input: &[u8], output: &[u8],
+    input: &[u8],
+    output: &[u8],
     remap: &FuncRemap,
     in_offsets: &[(u32, u32)],
     out_offsets: &[(u32, u32)],
@@ -451,7 +518,9 @@ fn per_function_identical(
     let num_defined_out = out_offsets.len() as u32;
     // remap covers all absolute indices (imports + defined). The
     // number of imports is `remap.len() - num_defined_in`.
-    if remap.len() < num_defined_in { return false; }
+    if remap.len() < num_defined_in {
+        return false;
+    }
     let num_imports = remap.len() - num_defined_in;
 
     for (def_i, (off_in, len_in)) in in_offsets.iter().enumerate() {
@@ -466,12 +535,18 @@ fn per_function_identical(
             return false;
         }
         let def_out = (abs_out - num_imports) as usize;
-        if def_out >= num_defined_out as usize { return false; }
+        if def_out >= num_defined_out as usize {
+            return false;
+        }
         let (off_out, len_out) = out_offsets[def_out];
-        if *off_in != off_out || *len_in != len_out { return false; }
+        if *off_in != off_out || *len_in != len_out {
+            return false;
+        }
         let in_bytes = &input[*off_in as usize..(*off_in + *len_in) as usize];
         let out_bytes = &output[off_out as usize..(off_out + len_out) as usize];
-        if in_bytes != out_bytes { return false; }
+        if in_bytes != out_bytes {
+            return false;
+        }
     }
     true
 }
@@ -479,9 +554,13 @@ fn per_function_identical(
 fn find_debug_line<'a>(m: &'a WasmModule<'a>) -> Option<&'a [u8]> {
     let data = m.data();
     m.sections().iter().find_map(|s| {
-        if s.id != module::SECTION_CUSTOM { return None; }
+        if s.id != module::SECTION_CUSTOM {
+            return None;
+        }
         let name = s.custom_name?.slice(data);
-        if name != b".debug_line" { return None; }
+        if name != b".debug_line" {
+            return None;
+        }
         let p = s.payload.slice(data);
         let (nlen, c) = leb128::read_u32(p)?;
         Some(&p[c + nlen as usize..])
@@ -489,12 +568,16 @@ fn find_debug_line<'a>(m: &'a WasmModule<'a>) -> Option<&'a [u8]> {
 }
 
 fn remap_is_identity(r: &FuncRemap) -> bool {
-    r.entries().iter().enumerate().all(|(i, slot)| *slot == Some(i as u32))
+    r.entries()
+        .iter()
+        .enumerate()
+        .all(|(i, slot)| *slot == Some(i as u32))
 }
 
 fn code_section_bytes<'a>(m: &'a WasmModule<'a>) -> &'a [u8] {
     let data = m.data();
-    m.sections().iter()
+    m.sections()
+        .iter()
         .find(|s| s.id == module::SECTION_CODE)
         .map(|s| s.full.slice(data))
         .unwrap_or(&[])
@@ -577,7 +660,10 @@ mod tests {
         assert_eq!(offs.len(), 1);
         let (off, len) = offs[0];
         assert_eq!(len, 3);
-        assert_eq!(&m_bytes[off as usize..(off + len) as usize], &[0, 0x01, 0x0B]);
+        assert_eq!(
+            &m_bytes[off as usize..(off + len) as usize],
+            &[0, 0x01, 0x0B]
+        );
     }
 
     #[test]
@@ -596,8 +682,10 @@ mod tests {
         b.extend_from_slice(&[10, 9, 2, 3, 0, 0x01, 0x0B, 3, 0, 0x02, 0x0B]);
 
         let remap = FuncRemap::identity(2);
-        let mut ap = WasmModule::parse(&a).unwrap(); ap.ensure_function_bodies_parsed();
-        let mut bp = WasmModule::parse(&b).unwrap(); bp.ensure_function_bodies_parsed();
+        let mut ap = WasmModule::parse(&a).unwrap();
+        ap.ensure_function_bodies_parsed();
+        let mut bp = WasmModule::parse(&b).unwrap();
+        bp.ensure_function_bodies_parsed();
         let ao = function_file_offsets(&ap).unwrap();
         let bo = function_file_offsets(&bp).unwrap();
         assert!(!per_function_identical(&a, &b, &remap, &ao, &bo));
