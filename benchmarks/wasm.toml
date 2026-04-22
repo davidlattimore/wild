@@ -71,12 +71,6 @@ platform = "wasm"
 # / abort selector.
 platform = "wasm"
 
-[bench.wasm-codesize-regex]
-# `regular-expressions` from the code-size suite. Pulls in the
-# `regex` crate; representative of "small rust output that depends
-# on a heavy library".
-platform = "wasm"
-
 # --- Medium ---
 
 [bench.wasm-many-functions]
@@ -93,13 +87,30 @@ platform = "wasm"
 # wasm, exercises crypto / SIMD / register allocation.
 platform = "wasm"
 
-[bench.wasm-tokei]
-# `tokei` (XAMPPRocky/tokei) — line-of-code counter, pure-rust file
-# walker, no PCRE / no syscalls beyond fs walk. Builds to
-# `wasm32-wasip2` cleanly today, no patches. ~2-5 MB output. Picked
-# over ripgrep because ripgrep's WASI support is still in an
-# unmerged PR (#2994).
+[bench.wasm-rust-medium]
+# A small custom Rust binary checked in at
+# `benchmarks/wasm-savedirs/wasm-rust-medium/` — pulls in `regex`
+# + `serde_json` + a few compute loops to produce a representative
+# medium-rust output (~1-2 MB) without depending on any
+# system-config crate (etcetera, home, dirs) that would block
+# wasm32-wasip2. Picked over tokei because tokei → etcetera →
+# `home` doesn't compile on wasm32-wasip2. Picked over ripgrep
+# because ripgrep's WASI support is still an unmerged PR (#2994).
+#
+# SKIPPED today: wild produces structurally-invalid wasm output on
+# rustc-driven Rust → wasm32-wasip2 builds (every type-mismatch
+# check in `wasm-validate` fires). Reproduces on a hello-world
+# (`fn main() { println!("hi"); }`); not specific to this workload.
+# wild's own `WILD_VALIDATE_OUTPUT` doesn't catch it either —
+# meaning we'd be benchmarking the time to produce a broken
+# binary. Drop the `skip` once wild's wasm writer can link a
+# rustc-produced .o + sysroot .rlib set to a valid module.
+#
+# Save-dir builder: `benchmarks/wasm-savedirs/build-wasm-rust-medium.sh`
+# (works correctly — produces a valid output under wasm-ld; wild
+# is the side that fails).
 platform = "wasm"
+skip = true
 
 # --- Large ---
 
