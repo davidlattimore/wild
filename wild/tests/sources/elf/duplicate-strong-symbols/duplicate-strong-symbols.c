@@ -1,7 +1,7 @@
 //#Config:dup
 //#SkipLinker:ld
 //#Object:duplicate_strong_symbols2.c
-//#ExpectError:Duplicate symbols
+//#ExpectError:duplicate symbol
 
 //#Config:allow-multiple-definition
 //#RunEnabled:false
@@ -20,7 +20,7 @@
 //#LinkArgs:-nostdlib -Wl,-znow -flto
 //#SkipLinker:ld
 //#Object:duplicate_strong_symbols2.c:-flto
-//#ExpectError:Duplicate symbols
+//#ExpectError:duplicate symbol
 
 int test_func(void) { return 0; }
 
