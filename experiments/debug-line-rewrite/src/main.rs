@@ -239,9 +239,94 @@ fn write_uleb(out: &mut Vec<u8>, mut v: u64) {
     }
 }
 
-/// Emit one CU's v5 line program into `out`. Layout matches DWARF 5
-/// §6.2.4. Uses `DW_FORM_string` for paths so we don't yet need a
-/// `.debug_line_str` section.
+/// Cross-CU pool of unique path strings, emitted as the
+/// `.debug_line_str` section. Each path becomes a 4-byte offset
+/// referenced from CUs via `DW_FORM_line_strp`.
+#[derive(Default)]
+struct LineStrPool {
+    bytes: Vec<u8>,
+    offsets: std::collections::HashMap<Vec<u8>, u32>,
+}
+
+impl LineStrPool {
+    fn intern(&mut self, s: &[u8]) -> u32 {
+        if let Some(&off) = self.offsets.get(s) {
+            return off;
+        }
+        let off = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(s);
+        self.bytes.push(0);
+        self.offsets.insert(s.to_vec(), off);
+        off
+    }
+}
+
+/// Emit one CU's v5 line program using `DW_FORM_line_strp` for paths
+/// — phase 2b shape. Each path is a 4-byte offset into the shared
+/// `.debug_line_str` pool. Phase 2a's `DW_FORM_string` variant
+/// remains via [`emit_v5_line_program_inline`] for reference but is
+/// no longer the primary path.
+fn emit_v5_line_program_pooled(out: &mut Vec<u8>, cu: &CuLineInfo, pool: &mut LineStrPool) {
+    let start = out.len();
+    out.extend_from_slice(&[0u8; 4]); // unit_length placeholder (32-bit)
+    out.extend_from_slice(&5u16.to_le_bytes()); // version
+    out.push(8); // address_size (x86_64 / aarch64)
+    out.push(0); // segment_selector_size
+    out.extend_from_slice(&[0u8; 4]); // header_length placeholder
+    let header_len_pos = start + 4 + 2 + 1 + 1;
+
+    let after_header_length = out.len();
+
+    out.push(cu.min_inst_length);
+    out.push(cu.max_ops_per_inst);
+    out.push(cu.default_is_stmt);
+    out.push(cu.line_base as u8);
+    out.push(cu.line_range);
+    out.push(cu.opcode_base);
+    out.extend_from_slice(&cu.std_opcode_lengths);
+
+    // directory_entries: format = (DW_LNCT_path, DW_FORM_line_strp).
+    out.push(1);
+    write_uleb(out, gimli::constants::DW_LNCT_path.0 as u64);
+    write_uleb(out, gimli::constants::DW_FORM_line_strp.0 as u64);
+    write_uleb(out, 1 + cu.include_directories.len() as u64);
+    let comp_dir_off = pool.intern(&cu.comp_dir);
+    out.extend_from_slice(&comp_dir_off.to_le_bytes());
+    for d in &cu.include_directories {
+        let off = pool.intern(d);
+        out.extend_from_slice(&off.to_le_bytes());
+    }
+
+    // file_entries: format = (DW_LNCT_path DW_FORM_line_strp,
+    //                         DW_LNCT_directory_index DW_FORM_udata).
+    out.push(2);
+    write_uleb(out, gimli::constants::DW_LNCT_path.0 as u64);
+    write_uleb(out, gimli::constants::DW_FORM_line_strp.0 as u64);
+    write_uleb(out, gimli::constants::DW_LNCT_directory_index.0 as u64);
+    write_uleb(out, gimli::constants::DW_FORM_udata.0 as u64);
+    write_uleb(out, 1 + cu.file_entries.len() as u64);
+    let primary_off = pool.intern(&cu.primary_file_name);
+    out.extend_from_slice(&primary_off.to_le_bytes());
+    write_uleb(out, 0); // primary's dir_index = 0 (= comp_dir)
+    for (path, dir_idx) in &cu.file_entries {
+        let off = pool.intern(path);
+        out.extend_from_slice(&off.to_le_bytes());
+        write_uleb(out, *dir_idx);
+    }
+
+    let header_length = (out.len() - after_header_length) as u32;
+    out[header_len_pos..header_len_pos + 4].copy_from_slice(&header_length.to_le_bytes());
+
+    out.extend_from_slice(&cu.program_bytes);
+
+    let unit_length = (out.len() - start - 4) as u32;
+    out[start..start + 4].copy_from_slice(&unit_length.to_le_bytes());
+}
+
+/// Phase-2a variant: same shape but uses `DW_FORM_string` (inline
+/// NUL-terminated paths) so no `.debug_line_str` section is needed.
+/// Kept for reference / debugging.
+#[allow(dead_code)]
 fn emit_v5_line_program(out: &mut Vec<u8>, cu: &CuLineInfo) {
     let start = out.len();
     out.extend_from_slice(&[0u8; 4]); // unit_length placeholder (32-bit)
@@ -317,18 +402,26 @@ fn rewrite_elf(elf: &[u8]) -> Result<Vec<u8>, String> {
         return Err("no CUs with line programs".into());
     }
 
-    // Pass 2: emit new .debug_line bytes.
+    // Pass 2: emit new .debug_line bytes + populate .debug_line_str pool.
     let mut new_debug_line = Vec::new();
+    let mut pool = LineStrPool::default();
     let mut cu_offsets: Vec<(u64, u32, u32)> = Vec::with_capacity(cus.len());
     let mut owned_cus = cus;
     for cu in owned_cus.iter_mut() {
         let new_off = new_debug_line.len() as u32;
         cu.new_line_offset = new_off;
-        emit_v5_line_program(&mut new_debug_line, cu);
+        emit_v5_line_program_pooled(&mut new_debug_line, cu, &mut pool);
         cu_offsets.push((cu.stmt_list_byte_pos_in_debug_info, cu.old_line_offset, new_off));
     }
+    let new_debug_line_str = pool.bytes;
+    eprintln!(
+        ".debug_line_str pool: {} bytes ({} unique paths)",
+        new_debug_line_str.len(),
+        pool.offsets.len()
+    );
 
     let new_debug_line_size = new_debug_line.len();
+    let new_debug_line_str_size = new_debug_line_str.len();
     let old_debug_line_size = {
         let obj = object::File::parse(elf).map_err(|e| format!("parse: {e}"))?;
         obj.section_by_name(".debug_line")
@@ -336,119 +429,236 @@ fn rewrite_elf(elf: &[u8]) -> Result<Vec<u8>, String> {
             .size() as usize
     };
     eprintln!(
-        ".debug_line: {old_debug_line_size} → {new_debug_line_size} bytes \
+        ".debug_line:     {old_debug_line_size} → {new_debug_line_size} bytes \
          ({:+.2}%)",
         100.0 * (new_debug_line_size as f64 - old_debug_line_size as f64)
             / old_debug_line_size as f64
     );
+    eprintln!(".debug_line_str: 0 → {new_debug_line_str_size} bytes (new section)");
+    eprintln!(
+        "combined:        {old_debug_line_size} → {} bytes ({:+.2}%)",
+        new_debug_line_size + new_debug_line_str_size,
+        100.0
+            * ((new_debug_line_size + new_debug_line_str_size) as f64
+                - old_debug_line_size as f64)
+            / old_debug_line_size as f64
+    );
 
-    // Build new ELF. Three changes:
-    //   (a) .debug_info — patch each CU's DW_AT_stmt_list 4-byte
-    //       value to its new offset.
-    //   (b) .debug_line — replace contents with `new_debug_line`,
-    //       shift subsequent sections by the size delta.
-    //   (c) SHDR table — update sh_size of .debug_line, sh_offset of
-    //       every later section, and ehdr.e_shoff.
-    let mut data = elf.to_vec();
+    // Build new ELF. Changes vs input:
+    //   (a) .debug_info — patch each CU's DW_AT_stmt_list value to
+    //       its new offset.
+    //   (b) .debug_line — replace contents with new_debug_line.
+    //   (c) NEW .debug_line_str section — placed in the file
+    //       immediately after .debug_line. SHDR table grows by 1
+    //       entry; .shstrtab grows by ".debug_line_str\0" (16 bytes).
+    //   (d) Sections originally after .debug_line shift forward by
+    //       (new_debug_line_size - old_debug_line_size + new_debug_line_str_size).
+    //   (e) Sections after .shstrtab shift further by 16 bytes.
+    //   (f) SHDR table moves to the end (with one extra entry for
+    //       the new section); ehdr.e_shoff + e_shnum updated.
+    let data = elf.to_vec();
     let endian = ENDIAN;
 
-    // Find .debug_info + .debug_line section info.
-    let (debug_info_offset, _debug_info_size, debug_line_idx, debug_line_offset, e_shoff, e_shentsize, e_shnum) = {
+    let (
+        debug_info_offset,
+        debug_line_idx,
+        debug_line_offset,
+        shstrtab_idx,
+        shstrtab_offset,
+        shstrtab_old_size,
+        e_shoff,
+        e_shentsize,
+        e_shnum,
+    ) = {
         let header = FileHeader64::<object::Endianness>::parse(&*data)
             .map_err(|e| format!("ehdr parse: {e:?}"))?;
         let sections = header
             .sections(endian, &*data)
             .map_err(|e| format!("sections parse: {e:?}"))?;
         let mut debug_info_offset = 0u64;
-        let mut debug_info_size = 0u64;
         let mut debug_line_idx = 0usize;
         let mut debug_line_offset = 0u64;
-        let mut found_di = false;
-        let mut found_dl = false;
+        let mut shstrtab_idx = 0usize;
+        let mut shstrtab_offset = 0u64;
+        let mut shstrtab_old_size = 0u64;
+        let e_shstrndx = header.e_shstrndx(endian) as usize;
         for (idx, sect) in sections.iter().enumerate() {
             let name = sections
                 .section_name(endian, sect)
                 .map_err(|e| format!("section_name {idx}: {e:?}"))?;
             if name == b".debug_info" {
                 debug_info_offset = sect.sh_offset(endian);
-                debug_info_size = sect.sh_size(endian);
-                found_di = true;
             } else if name == b".debug_line" {
                 debug_line_idx = idx;
                 debug_line_offset = sect.sh_offset(endian);
-                found_dl = true;
+            }
+            if idx == e_shstrndx {
+                shstrtab_idx = idx;
+                shstrtab_offset = sect.sh_offset(endian);
+                shstrtab_old_size = sect.sh_size(endian);
             }
         }
-        if !found_di {
-            return Err(".debug_info missing".into());
+        if debug_info_offset == 0 {
+            return Err(".debug_info not found".into());
         }
-        if !found_dl {
-            return Err(".debug_line missing".into());
+        if debug_line_offset == 0 {
+            return Err(".debug_line not found".into());
         }
         (
             debug_info_offset,
-            debug_info_size,
             debug_line_idx,
             debug_line_offset,
+            shstrtab_idx,
+            shstrtab_offset,
+            shstrtab_old_size,
             header.e_shoff(endian) as usize,
             header.e_shentsize(endian) as usize,
             header.e_shnum(endian) as usize,
         )
     };
 
-    // (a) Patch .debug_info DW_AT_stmt_list values in place.
+    // (a) Patch .debug_info DW_AT_stmt_list values in place — all
+    //     edits are within a single byte range, no offset shift yet.
+    let mut data = data;
     for &(stmt_list_pos_in_di, _old, new_off) in &cu_offsets {
-        let abs = debug_info_offset + stmt_list_pos_in_di;
-        let abs = abs as usize;
+        let abs = (debug_info_offset + stmt_list_pos_in_di) as usize;
         if abs + 4 > data.len() {
             return Err(format!("stmt_list patch out of bounds @ {abs}"));
         }
         data[abs..abs + 4].copy_from_slice(&new_off.to_le_bytes());
     }
 
-    // (b) Replace .debug_line content + shift sections following it.
-    let delta_signed: isize = new_debug_line_size as isize - old_debug_line_size as isize;
+    // Compute deltas:
+    //   debug_line_delta: change in .debug_line size.
+    //   line_str_size:    bytes added immediately after .debug_line.
+    //   total_section_delta: combined growth of the body region from
+    //     start of .debug_line to start of .shstrtab.
+    //   shstrtab_growth: 16 bytes for ".debug_line_str\0".
+    let debug_line_delta: isize =
+        new_debug_line_size as isize - old_debug_line_size as isize;
+    let line_str_size = new_debug_line_str_size as isize;
+    let body_delta_at_debug_line = debug_line_delta + line_str_size;
+    let new_section_name = b".debug_line_str\0";
+    let shstrtab_growth = new_section_name.len() as isize;
+
     let debug_line_end = debug_line_offset as usize + old_debug_line_size;
 
-    // Build a fresh file buffer:
-    //   [0 .. debug_line_offset]            — bytes before .debug_line
-    //   [new_debug_line]                    — the rewritten section
-    //   [debug_line_end .. data.len()]      — bytes after, shifted
-    let mut new_data = Vec::with_capacity(data.len() + delta_signed.max(0) as usize);
+    // Compose new file. We rebuild from scratch by section ordering:
+    //
+    //   [0 .. debug_line_offset)                  — bytes before .debug_line
+    //   [new_debug_line]                          — replaced section
+    //   [new_debug_line_str]                      — NEW section
+    //   [middle: debug_line_end .. shstrtab_off)  — sections after debug_line, before shstrtab
+    //   [new shstrtab = old shstrtab + name]      — extended shstrtab
+    //   [tail after shstrtab .. e_shoff)          — non-shdr stuff (rare)
+    //   [new SHDR table with N+1 entries]         — relocated to the end
+    //
+    // Anything originally in the file after the SHDR table is dropped
+    // (e_shoff is normally near end of file, nothing else after).
+    let shstrtab_end = shstrtab_offset as usize + shstrtab_old_size as usize;
+    if shstrtab_end > e_shoff {
+        return Err(format!(
+            "unexpected layout: shstrtab_end {shstrtab_end} > e_shoff {e_shoff}"
+        ));
+    }
+
+    let mut new_data = Vec::with_capacity(
+        data.len()
+            + body_delta_at_debug_line.max(0) as usize
+            + shstrtab_growth.max(0) as usize
+            + e_shentsize,
+    );
     new_data.extend_from_slice(&data[..debug_line_offset as usize]);
+    let new_debug_line_offset = new_data.len();
     new_data.extend_from_slice(&new_debug_line);
-    new_data.extend_from_slice(&data[debug_line_end..]);
+    let new_line_str_offset = new_data.len();
+    new_data.extend_from_slice(&new_debug_line_str);
+    // Middle bytes (between old debug_line_end and shstrtab_offset).
+    new_data.extend_from_slice(&data[debug_line_end..shstrtab_offset as usize]);
+    let new_shstrtab_offset = new_data.len();
+    // Extended shstrtab.
+    let new_section_name_offset_in_shstrtab = shstrtab_old_size as u32;
+    new_data.extend_from_slice(&data[shstrtab_offset as usize..shstrtab_end]);
+    new_data.extend_from_slice(new_section_name);
+    let new_shstrtab_size = new_data.len() - new_shstrtab_offset;
+    // Anything between shstrtab and SHDR table (usually nothing).
+    new_data.extend_from_slice(&data[shstrtab_end..e_shoff]);
+    let new_e_shoff = new_data.len();
 
-    let new_e_shoff = if e_shoff > debug_line_end {
-        ((e_shoff as isize) + delta_signed) as usize
-    } else {
-        e_shoff
-    };
-
-    // (c) Walk SHDR entries, update sh_offset for sections past
-    //     .debug_line, and patch .debug_line's sh_size.
+    // SHDR table: N+1 entries. Build from scratch by reading each
+    // existing entry, optionally adjusting, then appending a new one.
+    let new_e_shnum = e_shnum + 1;
+    new_data.resize(new_e_shoff + new_e_shnum * e_shentsize, 0);
+    for i in 0..e_shnum {
+        let src = e_shoff + i * e_shentsize;
+        let dst = new_e_shoff + i * e_shentsize;
+        new_data[dst..dst + e_shentsize].copy_from_slice(&data[src..src + e_shentsize]);
+    }
+    // Walk + adjust each SHDR.
     for i in 0..e_shnum {
         let entry_off = new_e_shoff + i * e_shentsize;
-        if entry_off + e_shentsize > new_data.len() {
-            return Err(format!("SHDR {i} out of file"));
-        }
         let entry_bytes = &mut new_data[entry_off..entry_off + e_shentsize];
-        // SAFETY: entry_bytes is exactly the size of one Elf64_Shdr;
-        // the type is #[repr(C)] POD.
         let entry =
             unsafe { &mut *(entry_bytes.as_mut_ptr() as *mut SectionHeader64<object::Endianness>) };
         let sh_offset = entry.sh_offset.get(endian) as usize;
+
         if i == debug_line_idx {
             entry.sh_size.set(endian, new_debug_line_size as u64);
-        } else if sh_offset >= debug_line_end {
-            let shifted = ((sh_offset as isize) + delta_signed) as usize;
+            // sh_offset unchanged — it's where the new bytes also start.
+        } else if i == shstrtab_idx {
+            // Will be patched below to its new offset and size.
+        } else if sh_offset >= debug_line_end && sh_offset < shstrtab_offset as usize {
+            // Sections between .debug_line and .shstrtab shift by
+            // body_delta_at_debug_line.
+            let shifted = ((sh_offset as isize) + body_delta_at_debug_line) as usize;
+            entry.sh_offset.set(endian, shifted as u64);
+        } else if sh_offset >= shstrtab_end {
+            // Any section past the shstrtab end (rare) shifts by the
+            // full delta including shstrtab growth.
+            let shifted = ((sh_offset as isize)
+                + body_delta_at_debug_line
+                + shstrtab_growth) as usize;
             entry.sh_offset.set(endian, shifted as u64);
         }
     }
+    // Patch the shstrtab entry: new offset + new size.
+    {
+        let entry_off = new_e_shoff + shstrtab_idx * e_shentsize;
+        let entry_bytes = &mut new_data[entry_off..entry_off + e_shentsize];
+        let entry =
+            unsafe { &mut *(entry_bytes.as_mut_ptr() as *mut SectionHeader64<object::Endianness>) };
+        entry.sh_offset.set(endian, new_shstrtab_offset as u64);
+        entry.sh_size.set(endian, new_shstrtab_size as u64);
+    }
 
-    // (d) Patch ehdr.e_shoff (Elf64_Ehdr.e_shoff @ byte 40).
+    // Append the new .debug_line_str SHDR entry.
+    {
+        let new_entry_off = new_e_shoff + e_shnum * e_shentsize;
+        let entry_bytes = &mut new_data[new_entry_off..new_entry_off + e_shentsize];
+        let entry =
+            unsafe { &mut *(entry_bytes.as_mut_ptr() as *mut SectionHeader64<object::Endianness>) };
+        // Zero by default (Vec init).
+        entry
+            .sh_name
+            .set(endian, new_section_name_offset_in_shstrtab);
+        // sh_type = SHT_PROGBITS (1).
+        entry.sh_type.set(endian, 1);
+        // sh_flags = SHF_MERGE (0x10) | SHF_STRINGS (0x20).
+        entry.sh_flags.set(endian, 0x30);
+        entry.sh_addr.set(endian, 0);
+        entry.sh_offset.set(endian, new_line_str_offset as u64);
+        entry.sh_size.set(endian, new_debug_line_str_size as u64);
+        entry.sh_link.set(endian, 0);
+        entry.sh_info.set(endian, 0);
+        entry.sh_addralign.set(endian, 1);
+        entry.sh_entsize.set(endian, 1);
+    }
+
+    // Patch ehdr.e_shoff (byte 40) and e_shnum (byte 60).
     new_data[40..48].copy_from_slice(&(new_e_shoff as u64).to_le_bytes());
+    new_data[60..62].copy_from_slice(&(new_e_shnum as u16).to_le_bytes());
 
+    let _ = new_debug_line_offset;
     Ok(new_data)
 }
 
