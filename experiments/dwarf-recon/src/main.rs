@@ -63,6 +63,18 @@ struct TagStats {
     duplicate_bytes: u64,
 }
 
+/// Per-hash detail used to answer "what ARE the duplicates?"
+#[derive(Default, Debug, Clone)]
+struct HashDetail {
+    count: usize,
+    tag: u16,
+    /// Byte size estimate of one occurrence (not summed across dupes).
+    size_each: u64,
+    /// Sample name attribute if the DIE carries one — the printed
+    /// string tells you whether this is `Option<T>`, `core::fmt::Arguments`, etc.
+    sample_name: Option<String>,
+}
+
 fn is_interesting_tag(tag: gimli::DwTag) -> bool {
     use gimli::constants::*;
     matches!(
@@ -86,6 +98,12 @@ fn is_interesting_tag(tag: gimli::DwTag) -> bool {
 }
 
 fn analyse(elf_bytes: &[u8]) -> Result<Stats, String> {
+    analyse_with_details(elf_bytes).map(|(s, _)| s)
+}
+
+fn analyse_with_details(
+    elf_bytes: &[u8],
+) -> Result<(Stats, HashMap<[u8; 32], HashDetail>), String> {
     let obj = object::File::parse(elf_bytes).map_err(|e| format!("parse: {e}"))?;
     let mut stats = Stats::default();
 
@@ -109,6 +127,7 @@ fn analyse(elf_bytes: &[u8]) -> Result<Stats, String> {
 
     let mut hash_to_count: HashMap<[u8; 32], usize> = HashMap::new();
     let mut hash_to_bytes: HashMap<[u8; 32], u64> = HashMap::new();
+    let mut hash_to_detail: HashMap<[u8; 32], HashDetail> = HashMap::new();
 
     let mut units = dwarf.units();
     while let Some(header) = units.next().map_err(|e| format!("units: {e}"))? {
@@ -117,8 +136,14 @@ fn analyse(elf_bytes: &[u8]) -> Result<Stats, String> {
             .unit(header)
             .map_err(|e| format!("unit @ {:?}: {e}", header.offset()))?;
         let unit_ref = unit.unit_ref(&dwarf);
-        walk_unit(&unit_ref, &mut stats, &mut hash_to_count, &mut hash_to_bytes)
-            .map_err(|e| format!("walk_unit: {e}"))?;
+        walk_unit(
+            &unit_ref,
+            &mut stats,
+            &mut hash_to_count,
+            &mut hash_to_bytes,
+            &mut hash_to_detail,
+        )
+        .map_err(|e| format!("walk_unit: {e}"))?;
     }
 
     stats.distinct_hashes = hash_to_count.len();
@@ -132,7 +157,7 @@ fn analyse(elf_bytes: &[u8]) -> Result<Stats, String> {
         }
     }
 
-    Ok(stats)
+    Ok((stats, hash_to_detail))
 }
 
 /// Walk every DIE in the unit; for each "interesting" tag, compute
@@ -143,6 +168,7 @@ fn walk_unit(
     stats: &mut Stats,
     hash_to_count: &mut HashMap<[u8; 32], usize>,
     hash_to_bytes: &mut HashMap<[u8; 32], u64>,
+    hash_to_detail: &mut HashMap<[u8; 32], HashDetail>,
 ) -> Result<(), String> {
     let mut entries = unit.entries();
     let mut tree_stack: Vec<DieFrame> = Vec::new();
@@ -152,7 +178,7 @@ fn walk_unit(
         if delta_depth < 0 {
             for _ in 0..(-delta_depth) {
                 if let Some(frame) = tree_stack.pop() {
-                    finalize_frame(frame, stats, hash_to_count, hash_to_bytes);
+                    finalize_frame(frame, stats, hash_to_count, hash_to_bytes, hash_to_detail);
                 }
             }
         }
@@ -160,12 +186,27 @@ fn walk_unit(
         let tag = entry.tag();
         let interesting = is_interesting_tag(tag);
 
+        // If this DIE carries a DW_AT_name string attribute, capture
+        // it. Used as a sample to show what the duplicate DIEs
+        // actually are ("Option<Vec<u8>>" etc). Best-effort.
+        let sample_name = if interesting {
+            entry
+                .attr(gimli::constants::DW_AT_name)
+                .ok()
+                .flatten()
+                .and_then(|a| unit.attr_string(a.value()).ok())
+                .and_then(|s| std::str::from_utf8(s.slice()).ok().map(|s| s.to_owned()))
+        } else {
+            None
+        };
+
         let mut frame = DieFrame {
             tag,
             interesting,
             hasher: Hasher::new(),
             byte_size_estimate: 0,
             child_hashes: Vec::new(),
+            sample_name,
         };
         // Hash the tag.
         frame.hasher.update(&tag.0.to_le_bytes());
@@ -193,14 +234,14 @@ fn walk_unit(
         // If the entry has no children, immediately collapse this frame.
         if !entry.has_children() {
             if let Some(frame) = tree_stack.pop() {
-                finalize_frame(frame, stats, hash_to_count, hash_to_bytes);
+                finalize_frame(frame, stats, hash_to_count, hash_to_bytes, hash_to_detail);
             }
         }
     }
 
     // Drain remaining frames (the unit DIE itself, etc).
     while let Some(frame) = tree_stack.pop() {
-        finalize_frame(frame, stats, hash_to_count, hash_to_bytes);
+        finalize_frame(frame, stats, hash_to_count, hash_to_bytes, hash_to_detail);
     }
     Ok(())
 }
@@ -372,6 +413,7 @@ struct DieFrame {
     hasher: Hasher,
     byte_size_estimate: u64,
     child_hashes: Vec<[u8; 32]>,
+    sample_name: Option<String>,
 }
 
 fn finalize_frame(
@@ -379,6 +421,7 @@ fn finalize_frame(
     stats: &mut Stats,
     hash_to_count: &mut HashMap<[u8; 32], usize>,
     hash_to_bytes: &mut HashMap<[u8; 32], u64>,
+    hash_to_detail: &mut HashMap<[u8; 32], HashDetail>,
 ) {
     // Mix children's hashes into this DIE's hash so subtrees compose.
     for ch in &frame.child_hashes {
@@ -394,6 +437,15 @@ fn finalize_frame(
             .entry(h)
             .and_modify(|b| *b = (*b).max(frame.byte_size_estimate))
             .or_insert(frame.byte_size_estimate);
+        let detail = hash_to_detail.entry(h).or_default();
+        detail.count += 1;
+        detail.tag = frame.tag.0;
+        detail.size_each = frame.byte_size_estimate;
+        if detail.sample_name.is_none()
+            && let Some(name) = frame.sample_name.clone()
+        {
+            detail.sample_name = Some(name);
+        }
 
         let entry = stats.by_tag.entry(frame.tag.0).or_default();
         entry.count += 1;
@@ -437,7 +489,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let stats = match analyse(&bytes) {
+    let (stats, hash_to_detail) = match analyse_with_details(&bytes) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("analyse: {e}");
@@ -474,6 +526,43 @@ fn main() -> ExitCode {
     tags.sort_by_key(|(_, s)| std::cmp::Reverse(s.count));
     for (tag, ts) in tags.iter().take(15) {
         println!("    {:>22}: {:>9} DIEs", dwtag_name(**tag), ts.count);
+    }
+
+    // Top-20 duplicate groups by count * size_each. That's the
+    // "if I collapse this, how many bytes do I save" ranking.
+    println!("\n  top duplicate groups (by occurrences × est. size):");
+    let mut groups: Vec<_> = hash_to_detail
+        .iter()
+        .filter(|(_, d)| d.count > 1)
+        .collect();
+    groups.sort_by_key(|(_, d)| std::cmp::Reverse(d.count as u64 * d.size_each));
+    for (_, d) in groups.iter().take(20) {
+        let save = (d.count as u64 - 1) * d.size_each;
+        let name = d.sample_name.as_deref().unwrap_or("<anonymous>");
+        let truncated = if name.len() > 60 { &name[..60] } else { name };
+        println!(
+            "    {:>10} × {:>5}B = {:>10}B save — {:>18}  {}",
+            d.count,
+            d.size_each,
+            save,
+            dwtag_name(d.tag),
+            truncated
+        );
+    }
+
+    // Breakdown by tag of where the dedup savings concentrate.
+    // Useful for deciding which tag to prototype first.
+    println!("\n  save potential by tag (DIE-count × 32-byte estimate):");
+    let mut by_tag_save: HashMap<u16, u64> = HashMap::new();
+    for (_, d) in &hash_to_detail {
+        if d.count > 1 {
+            *by_tag_save.entry(d.tag).or_insert(0) += (d.count as u64 - 1) * d.size_each;
+        }
+    }
+    let mut ranked: Vec<_> = by_tag_save.iter().collect();
+    ranked.sort_by_key(|&(_, s)| std::cmp::Reverse(*s));
+    for (tag, save) in ranked.iter().take(10) {
+        println!("    {:>22}: {:>10} bytes", dwtag_name(**tag), save);
     }
     ExitCode::SUCCESS
 }
