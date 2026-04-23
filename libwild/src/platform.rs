@@ -68,7 +68,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
     /// Make architecture-specific parsing of the relocation types.
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
+    fn relocation_from_raw(
+        r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> Result<RelocationKindInfo>;
 
     /// Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
@@ -186,6 +188,7 @@ pub(crate) trait Platform:
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
     type DynamicSymbolDefinitionExt: Copy + Send + Sync + std::fmt::Debug + 'static;
+    type RelocationInfo: Copy + Send + Sync + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
     type EpilogueLayoutExt: Send + Sync + 'static;

@@ -24,6 +24,7 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
+use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
 use gimli::LittleEndian;
 use object::Endian;
@@ -852,6 +853,7 @@ impl platform::Platform for MachO {
     type RelocationSections = ();
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
+    type RelocationInfo = object::macho::RelocationInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
@@ -996,9 +998,9 @@ impl platform::Platform for MachO {
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // TODO
-        // for rel in state.relocations(section_index)?.relocations {
-        //     dbg!(rel.info(LE));
-        // }
+        for rel in state.relocations(section_index)?.relocations {
+            A::relocation_from_raw(dbg!(rel.info(LE)));
+        }
         Ok(())
     }
 
@@ -1221,6 +1223,12 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
+        for symbol in state.object.symbols_iter() {
+            dbg!(String::from_utf8_lossy(
+                symbol.name(LE, state.object.symbols.strings()).unwrap()
+            ));
+        }
+
         // TODO
         // let mut num_globals = 0;
         // let mut strings_size = 0;

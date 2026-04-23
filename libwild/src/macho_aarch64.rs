@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 
 use crate::macho::MachO;
+use linker_utils::elf::AllowedRange;
 
 pub(crate) struct MachOAArch64;
 
@@ -52,9 +53,16 @@ impl crate::platform::Arch for MachOAArch64 {
     }
 
     fn relocation_from_raw(
-        r_type: u32,
+        r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
     ) -> crate::error::Result<linker_utils::elf::RelocationKindInfo> {
-        todo!()
+        Ok(linker_utils::elf::RelocationKindInfo {
+            alignment: 0,
+            bias: 0,
+            kind: linker_utils::elf::RelocationKind::Absolute,
+            mask: None,
+            range: AllowedRange::no_check(),
+            size: linker_utils::elf::RelocationSize::ByteSize(1),
+        })
     }
 
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
