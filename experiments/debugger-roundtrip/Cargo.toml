@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "debugger-roundtrip"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[[bin]]
+name = "debugger-roundtrip"
+path = "src/main.rs"
+
+[dependencies]
+addr2line = "0.24"
+gimli = "0.31"
+object = { version = "0.36", features = ["read"] }
+rustc-demangle = "0.1"
