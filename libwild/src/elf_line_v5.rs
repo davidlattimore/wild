@@ -441,36 +441,30 @@ fn apply_rewrite(
     let shstrtab_end = shstrtab_offset as usize + shstrtab_old_size as usize;
     let shdr_end = e_shoff + e_shnum * e_shentsize;
 
-    // --- Layout-agnostic splice: build a list of (position, delete,
-    //     insert) operations and apply in sorted order. Works for
-    //     both gcc/ld-style layout (SHDR at end) and wild's own
-    //     layout (SHDR early). ---------------------------------------
+    // --- Layout-agnostic splice. Three in-middle ops + a
+    //     SHDR-move op handled after the splice:
     //
-    // Ops:
     //   A. Replace .debug_line bytes with new_debug_line.
     //   B. Insert .debug_line_str right after .debug_line.
     //   C. Append ".debug_line_str\0" at end of .shstrtab.
-    //   D. Append a new SHDR entry at end of the SHDR table.
-    //
-    // Each op's position is expressed in OLD file coordinates. The
-    // splice pass walks ops sorted by position, copies unchanged
-    // bytes through, and emits inserts.
+    //   D. MOVE the SHDR table to the end of the file with one
+    //      new entry appended. Old SHDR location becomes dead bytes
+    //      (not referenced by new ehdr.e_shoff). This avoids
+    //      in-file shifts within PT_LOAD regions — PHDR p_offset
+    //      fields don't know about the shift and would load
+    //      garbage otherwise. Wild's own layout (SHDR early,
+    //      PT_LOAD sections AFTER it in the file) triggers exactly
+    //      this case; growing SHDR in place would push executable
+    //      bytes to offsets PHDR can't see.
     struct Op {
         position: usize,
         delete: usize,
         insert: Vec<u8>,
     }
     let new_section_name_offset_in_shstrtab = shstrtab_old_size as u32;
+    let _ = shdr_end; // D no longer needs it; kept in scope for clarity
 
-    // We can't build the new SHDR entry for .debug_line_str until we
-    // know its final sh_offset. Compute new offset by first applying
-    // ops A-C (which determine where .debug_line_str's new position
-    // is), then add op D with the correct entry bytes, then splice.
-
-    // Build ops A, B, C first. Compute new absolute offset of
-    // .debug_line_str by accounting for any ops with position less
-    // than debug_line_end.
-    let mut ops: Vec<Op> = Vec::with_capacity(4);
+    let mut ops: Vec<Op> = Vec::with_capacity(3);
     ops.push(Op {
         position: debug_line_offset as usize,
         delete: old_debug_line_size,
@@ -486,24 +480,13 @@ fn apply_rewrite(
         delete: 0,
         insert: new_section_name.to_vec(),
     });
-    // For op D (new SHDR entry), we need to know where
-    // .debug_line_str lands in the new file. That's:
-    //   new_line_str_offset = map_offset(debug_line_end) but BEFORE
-    //   the insert at debug_line_end takes effect (since we insert
-    //   AT that position, the inserted bytes start AT that mapped
-    //   offset).
-    // map_offset(p) = p + sum over ops_q with q.position < p:
-    //                   (q.insert.len() - q.delete)
+    // map_offset(p) = p + Σ (insert.len - delete) for ops with
+    // position < p. Used to translate old file offsets to new.
     let map_offset = |p: usize, ops: &[Op]| -> usize {
         let mut delta: isize = 0;
         for op in ops {
             if op.position < p {
                 delta += op.insert.len() as isize - op.delete as isize;
-            } else if op.position == p && op.delete > 0 {
-                // Op replaces bytes starting at p — we're AT the
-                // start of the replaced region. New position is
-                // still p + delta (the replacement starts there).
-                break;
             } else {
                 break;
             }
@@ -512,68 +495,15 @@ fn apply_rewrite(
     };
     ops.sort_by_key(|op| op.position);
 
-    // Now compute new offsets for the three sections we care about
-    // (pre-op-D). These won't change when we add op D because op D
-    // is at shdr_end which is always >= any of these positions (in
-    // gcc layout) — but NOT always in wild layout where SHDR is
-    // early. In that case op D lives BEFORE .debug_line in the
-    // file, and adding it shifts .debug_line + .shstrtab forward.
-    //
-    // To handle both, include op D in the sort before computing
-    // offsets. Op D's insert bytes depend on the new offset of
-    // .debug_line_str, which in turn depends on op D's presence.
-    // Break the cycle by NOT including op D in the map for
-    // computing .debug_line_str's offset — op D's position is at
-    // shdr_end, which is AFTER any byte range op D itself would
-    // affect; it just needs all ops BEFORE it to be accounted for.
-    //
-    // Concretely: new_line_str_offset = map_offset(debug_line_end,
-    // ops_without_D). Op D shifts everything at positions >=
-    // shdr_end, and .debug_line_str lives at debug_line_end (which
-    // may be before or after shdr_end).
-    //
-    // If shdr_end <= debug_line_end: op D shifts .debug_line_str
-    // forward by +e_shentsize. Account for this.
-    let base_line_str_offset = map_offset(debug_line_end, &ops);
-    let new_line_str_offset = if shdr_end <= debug_line_end {
-        base_line_str_offset + e_shentsize
-    } else {
-        base_line_str_offset
-    };
-
-    // Build op D's entry bytes now that we know new_line_str_offset.
-    let mut new_shdr_entry = vec![0u8; e_shentsize];
-    {
-        let entry =
-            unsafe { &mut *(new_shdr_entry.as_mut_ptr() as *mut SectionHeader64<Endianness>) };
-        entry
-            .sh_name
-            .set(endian, new_section_name_offset_in_shstrtab);
-        entry.sh_type.set(endian, 1); // SHT_PROGBITS
-        entry.sh_flags.set(endian, 0x30); // SHF_MERGE | SHF_STRINGS
-        entry.sh_addr.set(endian, 0);
-        entry.sh_offset.set(endian, new_line_str_offset as u64);
-        entry.sh_size.set(endian, new_debug_line_str_size as u64);
-        entry.sh_link.set(endian, 0);
-        entry.sh_info.set(endian, 0);
-        entry.sh_addralign.set(endian, 1);
-        entry.sh_entsize.set(endian, 1);
-    }
-    ops.push(Op {
-        position: shdr_end,
-        delete: 0,
-        insert: new_shdr_entry,
-    });
-    ops.sort_by_key(|op| op.position);
-
-    // ---- Apply all ops: stream old bytes → new, inserting/replacing.
+    // ---- Apply ops A/B/C: stream old bytes → new.
     let mut new_data = Vec::with_capacity(
         data.len()
             + ops
                 .iter()
                 .map(|op| op.insert.len())
                 .sum::<usize>()
-                .saturating_sub(ops.iter().map(|op| op.delete).sum::<usize>()),
+                .saturating_sub(ops.iter().map(|op| op.delete).sum::<usize>())
+            + (e_shnum + 1) * e_shentsize,
     );
     let mut cursor = 0usize;
     for op in &ops {
@@ -589,15 +519,23 @@ fn apply_rewrite(
     }
     new_data.extend_from_slice(&data[cursor..]);
 
-    // ---- Patch SHDR entries: each existing entry's sh_offset
-    //      must be remapped through the splice. .debug_line's
-    //      sh_size changes too. .shstrtab's sh_offset and sh_size
-    //      change.
-    let new_e_shoff = map_offset(e_shoff, &ops);
+    // ---- Op D: append new SHDR table at end of file.
+    let new_e_shoff = new_data.len();
     let new_e_shnum = e_shnum + 1;
     let new_shstrtab_offset = map_offset(shstrtab_offset as usize, &ops);
-    // shstrtab's new size = old size + inserted bytes (the name).
     let new_shstrtab_size = shstrtab_old_size as usize + new_section_name.len();
+    let new_line_str_offset = map_offset(debug_line_end, &ops);
+    let new_debug_line_offset = map_offset(debug_line_offset as usize, &ops);
+
+    new_data.resize(new_e_shoff + new_e_shnum * e_shentsize, 0);
+    for i in 0..e_shnum {
+        let src = e_shoff + i * e_shentsize;
+        if src + e_shentsize > data.len() {
+            crate::bail!("elf_line_v5: source SHDR {i} out of bounds");
+        }
+        let dst = new_e_shoff + i * e_shentsize;
+        new_data[dst..dst + e_shentsize].copy_from_slice(&data[src..src + e_shentsize]);
+    }
     for i in 0..e_shnum {
         let entry_off = new_e_shoff + i * e_shentsize;
         let entry_bytes = &mut new_data[entry_off..entry_off + e_shentsize];
@@ -605,9 +543,7 @@ fn apply_rewrite(
         let sh_offset = entry.sh_offset.get(endian) as usize;
         if i == debug_line_idx {
             entry.sh_size.set(endian, new_debug_line_size as u64);
-            entry
-                .sh_offset
-                .set(endian, map_offset(sh_offset, &ops) as u64);
+            entry.sh_offset.set(endian, new_debug_line_offset as u64);
         } else if i == shstrtab_idx {
             entry.sh_offset.set(endian, new_shstrtab_offset as u64);
             entry.sh_size.set(endian, new_shstrtab_size as u64);
@@ -616,6 +552,24 @@ fn apply_rewrite(
                 .sh_offset
                 .set(endian, map_offset(sh_offset, &ops) as u64);
         }
+    }
+    // New entry for .debug_line_str at end of new SHDR.
+    {
+        let new_entry_off = new_e_shoff + e_shnum * e_shentsize;
+        let entry_bytes = &mut new_data[new_entry_off..new_entry_off + e_shentsize];
+        let entry = unsafe { &mut *(entry_bytes.as_mut_ptr() as *mut SectionHeader64<Endianness>) };
+        entry
+            .sh_name
+            .set(endian, new_section_name_offset_in_shstrtab);
+        entry.sh_type.set(endian, 1); // SHT_PROGBITS
+        entry.sh_flags.set(endian, 0x30); // SHF_MERGE | SHF_STRINGS
+        entry.sh_addr.set(endian, 0);
+        entry.sh_offset.set(endian, new_line_str_offset as u64);
+        entry.sh_size.set(endian, new_debug_line_str_size as u64);
+        entry.sh_link.set(endian, 0);
+        entry.sh_info.set(endian, 0);
+        entry.sh_addralign.set(endian, 1);
+        entry.sh_entsize.set(endian, 1);
     }
     new_data[40..48].copy_from_slice(&(new_e_shoff as u64).to_le_bytes());
     new_data[60..62].copy_from_slice(&(new_e_shnum as u16).to_le_bytes());
