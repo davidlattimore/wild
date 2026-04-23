@@ -1,47 +1,79 @@
 //#AbstractConfig:default
 //#LinkerDriver:gcc
-//#CompArgs:-g
+//#CompArgs:-g -O0
 //#LinkArgs:-Wl,--compress-debug-sections=zstd
 //#SkipLinker:ld
 //#SkipLinker:lld
 //#DiffEnabled:false
 //#ExpectCompressedSection:.debug_info
-//#ExpectCompressedSection:.debug_str
-//#ExpectCompressedSection:.debug_line
 
 //#Config:gcc:default
 
 //#Config:clang:default
 //#Compiler:clang
 
-// Tiny C program with enough code + string literals that the
-// compiler emits non-trivial .debug_info / .debug_str / .debug_line
-// sections — each big enough to pass the MIN_COMPRESSIBLE=256
-// threshold in elf_compress.rs. The message strings are irrelevant;
-// we only care that DWARF emits for them.
+// Enough structs + functions + string literals to ensure the
+// compiler emits a >256-byte .debug_info (wild's MIN_COMPRESSIBLE
+// threshold in elf_compress.rs). `.debug_str` + `.debug_line` may
+// or may not clear the threshold on tiny programs depending on
+// toolchain, so we only hard-assert `.debug_info`.
+//
+// Linker-diff is disabled because older binutils on CI hosts may
+// not know --compress-debug-sections=zstd; the SHF_COMPRESSED
+// check in ExpectCompressedSection is the assertion that matters.
 
 #include <stdio.h>
 
-static const char *messages[] = {
-    "hello from a wild-compressed debug fixture number one",
-    "this is a deliberately long string to pad .debug_str",
-    "third line to ensure the string table is meaningfully sized",
-    "fourth and final entry, all of this is repeated often enough",
+struct point { int x, y, z; const char *tag; };
+struct range { int lo, hi; double scale; };
+struct config {
+    const char *name;
+    int values[8];
+    struct point origin;
+    struct range bounds;
 };
 
-static int sum_lengths(void) {
-    int total = 0;
-    for (int i = 0; i < 4; i++) {
-        const char *s = messages[i];
-        while (*s) {
-            total += (int)*s++;
-        }
+static const char *messages[] = {
+    "entry zero: wild linker debug-info padding text one",
+    "entry one:  deliberately long so .debug_str grows",
+    "entry two:  third message to pad the merged-string table",
+    "entry three: fourth",
+    "entry four: fifth",
+    "entry five: sixth",
+    "entry six: seventh line",
+    "entry seven: eighth and final",
+};
+
+static int compute_point(struct point *p, int seed) {
+    p->x = seed;
+    p->y = seed + 1;
+    p->z = seed + 2;
+    p->tag = messages[seed & 7];
+    return p->x + p->y + p->z;
+}
+
+static int compute_range(struct range *r, int lo, int hi) {
+    r->lo = lo;
+    r->hi = hi;
+    r->scale = (double)(hi - lo) / 2.0;
+    return r->hi - r->lo;
+}
+
+static int configure(struct config *c, int seed) {
+    c->name = messages[seed & 7];
+    for (int i = 0; i < 8; i++) {
+        c->values[i] = seed + i * 3;
     }
-    return total;
+    compute_point(&c->origin, seed);
+    compute_range(&c->bounds, seed, seed + 100);
+    return c->values[0] + c->origin.x + c->bounds.lo;
 }
 
 int main(void) {
-    int a = sum_lengths();
-    int b = 42;
-    return (a + b) & 0;
+    struct config cfg;
+    int sum = 0;
+    for (int i = 0; i < 4; i++) {
+        sum += configure(&cfg, i);
+    }
+    return sum & 0;
 }
