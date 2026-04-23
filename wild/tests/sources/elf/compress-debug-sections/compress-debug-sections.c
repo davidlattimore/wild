@@ -20,13 +20,13 @@
 //#Compiler:clang
 
 // Combined -O1 path: line v5 upgrade + zstd compression. Asserts
-// the compression piece (which is universally applied). The line v5
-// piece is currently no-op'd on wild's own output layout (SHDR
-// before shstrtab) — once phase 4 generalises the layout-shift
-// logic, re-add `ExpectCompressedSection:.debug_line_str` here.
+// both effects activate together — `.debug_line_str` should exist
+// (line v5 emitted it) AND be SHF_COMPRESSED (compress ran after
+// line v5 and picked it up alongside .debug_info).
 //#Config:opt1:default
 //#LinkArgs:-Wl,-O1
 //#ExpectCompressedSection:.debug_info
+//#ExpectCompressedSection:.debug_line_str
 //#ExpectDwarfResolves:1
 
 // Enough structs + functions + string literals to ensure the
