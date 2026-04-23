@@ -6,6 +6,9 @@
 //#SkipLinker:lld
 //#DiffEnabled:false
 //#ExpectCompressedSection:.debug_info
+// At least 1 text symbol must resolve to function/file/line via DWARF.
+// Tiny fixtures may only have `main` resolvable; lower bound stays loose.
+//#ExpectDwarfResolves:1
 
 //#Config:gcc:default
 

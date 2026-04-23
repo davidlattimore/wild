@@ -66,6 +66,7 @@ mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
+addr2line = { workspace = true }
 ar = { workspace = true }
 itertools = { workspace = true }
 foldhash = { workspace = true }

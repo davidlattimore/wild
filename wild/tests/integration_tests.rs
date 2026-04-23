@@ -63,6 +63,11 @@
 //! ExpectCompressedSection:{section_name} Checks that the specified section carries
 //! SHF_COMPRESSED and starts with a valid Elf64_Chdr (ch_type = zlib or zstd).
 //!
+//! ExpectDwarfResolves:{N} Asserts that at least N text symbols resolve via the
+//! binary's DWARF to a non-empty (function, file, line) tuple. Gates DWARF
+//! rewriting passes (compression, line v5 upgrade, abbrev dedup, DIE dedup) against
+//! silent corruption — `gdb` prints `<no type>` instead of crashing on broken DWARF.
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -1043,6 +1048,14 @@ struct Assertions {
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     expected_compressed_sections: Vec<String>,
+    /// Minimum number of `text` symbols whose addresses must resolve
+    /// via DWARF to a non-empty `(function, file, line)` tuple. Set
+    /// via `//#ExpectDwarfResolves:N`. The harness samples the first
+    /// 64 unique-named text symbols and counts how many resolve via
+    /// the binary's `.debug_*` sections; the assertion is `count >= N`.
+    /// Used to gate any DWARF rewrite (compression, line v5 upgrade,
+    /// abbrev dedup, DIE dedup, …) against silent corruption.
+    expected_dwarf_resolves: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1368,6 +1381,13 @@ fn process_directive(
             .assertions
             .expected_compressed_sections
             .push(arg.trim().to_owned()),
+        "ExpectDwarfResolves" => {
+            let n: usize = arg
+                .trim()
+                .parse()
+                .with_context(|| format!("ExpectDwarfResolves expects a number, got `{arg}`"))?;
+            config.assertions.expected_dwarf_resolves = Some(n);
+        }
         "ExpectDynamic" => config
             .assertions
             .expected_dynamic_entries
@@ -3055,6 +3075,85 @@ impl Assertions {
         self.verify_dynamic_entries(&obj)?;
         self.verify_section_bytes(&obj)?;
         self.verify_compressed_sections(&obj)?;
+        self.verify_dwarf_resolves_at_path(path)?;
+        Ok(())
+    }
+
+    /// Asserts that at least `expected_dwarf_resolves` text symbols
+    /// resolve via the binary's DWARF to a non-empty `(function,
+    /// file, line)` tuple. Skips silently when the directive isn't
+    /// set on the fixture.
+    ///
+    /// Sampling logic:
+    ///   * Walk the symbol table picking text symbols whose name is
+    ///     unique (skips COMDAT-folded aliases) and whose address is
+    ///     non-zero (skips PLT stubs).
+    ///   * Take the first 64 such symbols.
+    ///   * For each, ask `addr2line::Context` to resolve the address.
+    ///   * Count those that come back with at least a function name
+    ///     AND a file AND a line.
+    ///
+    /// `addr2line::Loader` walks the binary's `.debug_*` sections
+    /// directly via gimli — no external `llvm-symbolizer` /
+    /// `addr2line` binary required. Loader handles SHF_COMPRESSED
+    /// transparently. Takes a path because Loader mmaps the file.
+    fn verify_dwarf_resolves_at_path(&self, path: &Path) -> Result {
+        let Some(min) = self.expected_dwarf_resolves else {
+            return Ok(());
+        };
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("read for DWARF check: {}", path.display()))?;
+        let obj2 = ElfFile64::parse(bytes.as_slice())
+            .with_context(|| format!("parse for DWARF check: {}", path.display()))?;
+        let loader = addr2line::Loader::new(path)
+            .map_err(|e| error!("addr2line Loader for {}: {e:?}", path.display()))?;
+
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut order: Vec<(String, u64)> = Vec::new();
+        for sym in obj2.symbols() {
+            if sym.kind() != object::SymbolKind::Text {
+                continue;
+            }
+            let Ok(name) = sym.name() else { continue };
+            if name.is_empty() {
+                continue;
+            }
+            let addr = sym.address();
+            if addr == 0 {
+                continue;
+            }
+            *counts.entry(name.to_owned()).or_insert(0) += 1;
+            order.push((name.to_owned(), addr));
+        }
+
+        let mut resolved = 0usize;
+        let mut tried = 0usize;
+        for (name, addr) in &order {
+            if counts.get(name).copied().unwrap_or(0) != 1 {
+                continue; // skip COMDAT-folded duplicates
+            }
+            tried += 1;
+            let mut frames = loader
+                .find_frames(*addr)
+                .map_err(|e| error!("find_frames @ 0x{addr:x}: {e:?}"))?;
+            if let Some(frame) = frames.next().map_err(|e| error!("frame iter: {e:?}"))?
+                && frame.function.is_some()
+                && let Some(loc) = frame.location
+                && loc.file.is_some()
+                && loc.line.is_some()
+            {
+                resolved += 1;
+            }
+            if tried >= 64 {
+                break;
+            }
+        }
+
+        ensure!(
+            resolved >= min,
+            "DWARF resolved only {resolved}/{tried} text symbols (expected ≥ {min}). \
+             Possible silent DWARF corruption in a recent rewrite pass."
+        );
         Ok(())
     }
 
