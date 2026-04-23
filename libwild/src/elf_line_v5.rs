@@ -53,15 +53,22 @@ pub(crate) fn upgrade_debug_line(sized_output: &mut SizedOutput, mode: DebugLine
     };
     let new_len = new_bytes.len();
     if new_len > sized_output.out.len() {
-        // Should not happen — line v5 + .debug_line_str on rust
-        // binaries always shrinks because path-pool dedup
-        // outweighs the new section's overhead. Bail loudly if
-        // the invariant breaks so we don't silently overrun.
-        crate::bail!(
-            "elf_line_v5: rewrite grew file from {} to {} bytes; expected to shrink",
+        // Rewrite grew the file. Happens on tiny binaries where the
+        // v5 format overhead (+ new SHDR entry + new section name in
+        // shstrtab) outweighs the cross-CU path-pool savings. On
+        // real workloads (substrate-class with thousands of CUs
+        // sharing workspace paths) this never happens.
+        //
+        // Wild's SizedOutput is a fixed-size mmap — we can't grow it
+        // post-hoc. Skip the upgrade and emit the original output
+        // unchanged.
+        eprintln!(
+            "wild: elf_line_v5: skipping (rewrite would grow output {} → {} bytes; \
+             likely too few paths to dedup)",
             sized_output.out.len(),
             new_len
         );
+        return Ok(());
     }
     sized_output.out[..new_len].copy_from_slice(&new_bytes);
     sized_output.set_final_size(new_len as u64);
