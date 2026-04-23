@@ -75,5 +75,7 @@ int main(void) {
     for (int i = 0; i < 4; i++) {
         sum += configure(&cfg, i);
     }
-    return sum & 0;
+    // wild's run-binary check expects exit code 42 (the magic number
+    // its other test fixtures use).
+    return 42 + (sum & 0);
 }
