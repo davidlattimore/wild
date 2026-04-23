@@ -74,6 +74,20 @@ impl SizedOutput {
     pub(crate) fn set_final_size(&mut self, final_size: u64) {
         self.final_size_override = Some(final_size);
     }
+
+    /// Effective logical length of the output so far. Returns the
+    /// `set_final_size` value if one's been set (a post-pass like
+    /// `elf_line_v5` has shrunk the file), else the full allocated
+    /// buffer length.
+    ///
+    /// Used by downstream passes (e.g. `elf_compress`) that want to
+    /// see only the valid bytes of the preceding pass, not the
+    /// stale trailing bytes left in the mmap-backed buffer.
+    pub(crate) fn effective_len(&self) -> usize {
+        self.final_size_override
+            .map(|n| n as usize)
+            .unwrap_or_else(|| self.out.len())
+    }
 }
 
 pub(crate) enum OutputBuffer {

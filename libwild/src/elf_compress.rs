@@ -98,7 +98,13 @@ struct Plan {
 }
 
 fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
-    let new_len = compress_zstd_in_buffer(&mut sized_output.out)?;
+    // If a prior pass (elf_line_v5) set a smaller logical size, we
+    // must only consider that prefix of the mmap — everything past
+    // it is stale leftover from the initial write pass. Pass a
+    // bounded slice to `compress_zstd_in_buffer` rather than the
+    // full mmap.
+    let effective = sized_output.effective_len();
+    let new_len = compress_zstd_in_buffer(&mut sized_output.out[..effective])?;
     if let Some(len) = new_len {
         sized_output.set_final_size(len as u64);
     }
@@ -111,15 +117,12 @@ fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
 ///
 /// Exposed so unit tests can drive the compression on a synthetic
 /// ELF without needing a real `SizedOutput` (file + mmap).
-pub(crate) fn compress_zstd_in_buffer<B>(buf: &mut B) -> Result<Option<usize>>
-where
-    B: std::ops::DerefMut<Target = [u8]>,
-{
+pub(crate) fn compress_zstd_in_buffer(buf: &mut [u8]) -> Result<Option<usize>> {
     let endian = Endianness::Little;
 
     // ---- Phase 1: discover candidate sections + capture SHDR layout
     let (e_shoff, e_shentsize, e_shnum, mut plans) = {
-        let bytes: &[u8] = &**buf;
+        let bytes: &[u8] = &*buf;
         let header = FileHeader64::<Endianness>::parse(bytes)
             .map_err(|e| crate::error!("compress: parse ehdr: {e:?}"))?;
         let sections = header
@@ -164,7 +167,7 @@ where
     }
 
     // ---- Phase 2: compress each plan in parallel ----
-    let input_buf: &[u8] = &**buf;
+    let input_buf: &[u8] = &*buf;
     let compressed: Vec<Result<Vec<u8>>> = plans
         .par_iter()
         .map(|plan| {
