@@ -98,11 +98,28 @@ struct Plan {
 }
 
 fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
+    let new_len = compress_zstd_in_buffer(&mut sized_output.out)?;
+    if let Some(len) = new_len {
+        sized_output.set_final_size(len as u64);
+    }
+    Ok(())
+}
+
+/// Buffer-level core of [`compress_zstd`]. Returns `Some(new_len)`
+/// when at least one section was compressed and the file shrank,
+/// or `None` when there was nothing eligible to compress.
+///
+/// Exposed so unit tests can drive the compression on a synthetic
+/// ELF without needing a real `SizedOutput` (file + mmap).
+pub(crate) fn compress_zstd_in_buffer<B>(buf: &mut B) -> Result<Option<usize>>
+where
+    B: std::ops::DerefMut<Target = [u8]>,
+{
     let endian = Endianness::Little;
 
     // ---- Phase 1: discover candidate sections + capture SHDR layout
     let (e_shoff, e_shentsize, e_shnum, mut plans) = {
-        let bytes: &[u8] = &sized_output.out;
+        let bytes: &[u8] = &**buf;
         let header = FileHeader64::<Endianness>::parse(bytes)
             .map_err(|e| crate::error!("compress: parse ehdr: {e:?}"))?;
         let sections = header
@@ -143,11 +160,11 @@ fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
     };
 
     if plans.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     // ---- Phase 2: compress each plan in parallel ----
-    let input_buf: &[u8] = &sized_output.out;
+    let input_buf: &[u8] = &**buf;
     let compressed: Vec<Result<Vec<u8>>> = plans
         .par_iter()
         .map(|plan| {
@@ -178,7 +195,7 @@ fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
     // Drop plans where compression didn't help.
     plans.retain(|p| p.compressed.is_some());
     if plans.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     // Sort plans by file offset — the rewrite pass walks them in
@@ -186,18 +203,18 @@ fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
     plans.sort_by_key(|p| p.old_offset);
 
     // ---- Phase 3: rewrite the buffer ----
-    let old_file_size = sized_output.out.len();
+    let old_file_size = buf.len();
     let mut new_file = Vec::with_capacity(old_file_size);
     let mut cursor = 0usize;
     for plan in &plans {
         if plan.old_offset > cursor {
-            new_file.extend_from_slice(&sized_output.out[cursor..plan.old_offset]);
+            new_file.extend_from_slice(&buf[cursor..plan.old_offset]);
         }
         new_file.extend_from_slice(plan.compressed.as_ref().unwrap());
         cursor = plan.old_offset + plan.old_size;
     }
     if cursor < old_file_size {
-        new_file.extend_from_slice(&sized_output.out[cursor..]);
+        new_file.extend_from_slice(&buf[cursor..]);
     }
 
     // For a file offset `O` in the old layout, the new offset is
@@ -265,12 +282,10 @@ fn compress_zstd(sized_output: &mut SizedOutput) -> Result {
     new_file[40..48].copy_from_slice(&(new_shoff as u64).to_le_bytes());
 
     // Copy the rewritten buffer back into the live SizedOutput and
-    // tell it the new on-disk size.
+    // return the new on-disk size.
     let new_len = new_file.len();
-    sized_output.out[..new_len].copy_from_slice(&new_file);
-    sized_output.set_final_size(new_len as u64);
-
-    Ok(())
+    buf[..new_len].copy_from_slice(&new_file);
+    Ok(Some(new_len))
 }
 
 fn write_chdr_zstd(dst: &mut [u8], decompressed_size: u64, addralign: u64) {
@@ -279,4 +294,190 @@ fn write_chdr_zstd(dst: &mut [u8], decompressed_size: u64, addralign: u64) {
     dst[4..8].copy_from_slice(&0u32.to_le_bytes());
     dst[8..16].copy_from_slice(&decompressed_size.to_le_bytes());
     dst[16..24].copy_from_slice(&addralign.to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Hand-roll a minimal ELF64-LE with:
+    ///   * ELF header (64 bytes).
+    ///   * `payload` bytes of `.debug_foo` content.
+    ///   * `.shstrtab` (NUL + ".debug_foo\0.shstrtab\0").
+    ///   * SHDR table: null entry, .debug_foo entry, .shstrtab entry.
+    ///
+    /// Not a loadable binary — just enough for the compress pass to
+    /// walk the SHDR table and find the debug section. Using
+    /// `object::write` would need the `write` feature which isn't
+    /// in wild's workspace deps; raw bytes keep the test standalone.
+    fn build_tiny_elf(payload: &[u8]) -> Vec<u8> {
+        const EHDR_SIZE: usize = 64;
+        const SHDR_SIZE: usize = 64;
+        // Layout on disk:
+        //   [ehdr]          0..64
+        //   [.debug_foo]    64..64+N
+        //   [.shstrtab]     after
+        //   [SHDR[3]]       last
+        let shstrtab_bytes: &[u8] = b"\0.debug_foo\0.shstrtab\0";
+        let debug_offset = EHDR_SIZE;
+        let shstrtab_offset = debug_offset + payload.len();
+        let shdr_offset = shstrtab_offset + shstrtab_bytes.len();
+        let total_size = shdr_offset + SHDR_SIZE * 3;
+
+        let mut out = vec![0u8; total_size];
+
+        // --- ELF header ---
+        out[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        out[4] = 2; // EI_CLASS = ELFCLASS64
+        out[5] = 1; // EI_DATA  = ELFDATA2LSB
+        out[6] = 1; // EI_VERSION
+        // e_type (ET_REL = 1)
+        out[16..18].copy_from_slice(&1u16.to_le_bytes());
+        // e_machine (EM_X86_64 = 62)
+        out[18..20].copy_from_slice(&62u16.to_le_bytes());
+        // e_version = 1
+        out[20..24].copy_from_slice(&1u32.to_le_bytes());
+        // e_shoff
+        out[40..48].copy_from_slice(&(shdr_offset as u64).to_le_bytes());
+        // e_ehsize
+        out[52..54].copy_from_slice(&(EHDR_SIZE as u16).to_le_bytes());
+        // e_shentsize
+        out[58..60].copy_from_slice(&(SHDR_SIZE as u16).to_le_bytes());
+        // e_shnum = 3
+        out[60..62].copy_from_slice(&3u16.to_le_bytes());
+        // e_shstrndx = 2 (index of .shstrtab)
+        out[62..64].copy_from_slice(&2u16.to_le_bytes());
+
+        // --- Section bodies ---
+        out[debug_offset..debug_offset + payload.len()].copy_from_slice(payload);
+        out[shstrtab_offset..shstrtab_offset + shstrtab_bytes.len()]
+            .copy_from_slice(shstrtab_bytes);
+
+        // --- SHDR[0] = null (zeros, already) ---
+        // --- SHDR[1] = .debug_foo ---
+        let s1 = shdr_offset + SHDR_SIZE;
+        // sh_name = offset of ".debug_foo" in shstrtab (after leading NUL = 1)
+        out[s1..s1 + 4].copy_from_slice(&1u32.to_le_bytes());
+        // sh_type = SHT_PROGBITS (1)
+        out[s1 + 4..s1 + 8].copy_from_slice(&1u32.to_le_bytes());
+        // sh_flags = 0
+        out[s1 + 8..s1 + 16].copy_from_slice(&0u64.to_le_bytes());
+        // sh_offset
+        out[s1 + 24..s1 + 32].copy_from_slice(&(debug_offset as u64).to_le_bytes());
+        // sh_size
+        out[s1 + 32..s1 + 40].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        // sh_addralign = 1
+        out[s1 + 48..s1 + 56].copy_from_slice(&1u64.to_le_bytes());
+
+        // --- SHDR[2] = .shstrtab ---
+        let s2 = shdr_offset + 2 * SHDR_SIZE;
+        // sh_name = offset of ".shstrtab" in shstrtab (12)
+        out[s2..s2 + 4].copy_from_slice(&12u32.to_le_bytes());
+        // sh_type = SHT_STRTAB (3)
+        out[s2 + 4..s2 + 8].copy_from_slice(&3u32.to_le_bytes());
+        // sh_offset
+        out[s2 + 24..s2 + 32].copy_from_slice(&(shstrtab_offset as u64).to_le_bytes());
+        // sh_size
+        out[s2 + 32..s2 + 40].copy_from_slice(&(shstrtab_bytes.len() as u64).to_le_bytes());
+        // sh_addralign = 1
+        out[s2 + 48..s2 + 56].copy_from_slice(&1u64.to_le_bytes());
+
+        out
+    }
+
+    #[test]
+    fn compresses_debug_section_and_shrinks_file() {
+        // Highly-compressible payload: repeat the same 64 bytes many times.
+        // zstd should knock this down dramatically.
+        let payload: Vec<u8> = b"hello from a wild linker debug section, repeated padding data!\0"
+            .iter()
+            .cycle()
+            .take(32 * 1024)
+            .copied()
+            .collect();
+        let original = build_tiny_elf(&payload);
+        let original_len = original.len();
+        let mut buf = original.clone();
+        let new_len = compress_zstd_in_buffer(&mut buf)
+            .expect("compress ok")
+            .expect("something was compressed");
+        assert!(
+            new_len < original_len,
+            "expected shrink; original={original_len}, new={new_len}"
+        );
+        buf.truncate(new_len);
+
+        // Re-parse the shrunk ELF; assert .debug_foo now carries
+        // SHF_COMPRESSED and holds a valid Elf64_Chdr + zstd stream.
+        let endian = Endianness::Little;
+        let header = FileHeader64::<Endianness>::parse(&*buf).expect("parse shrunk");
+        let sections = header.sections(endian, &*buf).expect("sections");
+        let mut found_compressed = false;
+        for (_, sect) in sections.iter().enumerate() {
+            let name = sections.section_name(endian, sect).unwrap();
+            if name == b".debug_foo" {
+                let flags = sect.sh_flags(endian);
+                assert!(
+                    flags & SHF_COMPRESSED != 0,
+                    ".debug_foo missing SHF_COMPRESSED"
+                );
+                let off = sect.sh_offset(endian) as usize;
+                let size = sect.sh_size(endian) as usize;
+                let body = &buf[off..off + size];
+                // First 4 bytes = ch_type (LE u32) = ELFCOMPRESS_ZSTD.
+                let ch_type = u32::from_le_bytes(body[0..4].try_into().unwrap());
+                assert_eq!(ch_type, ELFCOMPRESS_ZSTD, "ch_type wrong");
+                let ch_size = u64::from_le_bytes(body[8..16].try_into().unwrap());
+                assert_eq!(
+                    ch_size as usize,
+                    payload.len(),
+                    "ch_size != original payload"
+                );
+                // Decompress and compare.
+                let zstd_stream = &body[CHDR_SIZE..];
+                let decoded = zstd::decode_all(zstd_stream).expect("zstd decode");
+                assert_eq!(decoded, payload, "round-trip content mismatch");
+                found_compressed = true;
+            }
+        }
+        assert!(found_compressed, ".debug_foo section not found in output");
+    }
+
+    #[test]
+    fn skips_when_no_debug_sections() {
+        // Build a tiny ELF whose single section is `.foo` (not a
+        // `.debug_*` name) — the compress pass must leave the
+        // buffer unchanged and return Ok(None).
+        let mut buf = build_tiny_elf(b"no-debug-content-here");
+        // Rewrite the section name from `.debug_foo` → `.foo_xxxxx`
+        // by flipping the sh_name and shstrtab content. Simpler:
+        // overwrite the first byte of `.debug_foo` in shstrtab to
+        // a non-matching character so the name prefix-check fails.
+        // Find `.debug_foo` byte in shstrtab and corrupt it.
+        let pos = buf
+            .windows(b".debug_foo".len())
+            .position(|w| w == b".debug_foo")
+            .expect(".debug_foo string present");
+        buf[pos] = b'X'; // now ".debuX_foo" — not starts_with ".debug_"
+        // Adjust: actually change the leading "." to "X" so the name
+        // no longer matches ".debug_" prefix.
+        buf[pos] = b'X';
+        let original = buf.clone();
+        let result = compress_zstd_in_buffer(&mut buf).expect("compress ok");
+        assert!(result.is_none(), "expected no-op on non-debug section");
+        assert_eq!(buf, original, "buffer should be unchanged on no-op");
+    }
+
+    #[test]
+    fn skips_incompressible_tiny_debug_section() {
+        // MIN_COMPRESSIBLE = 256. A 100-byte .debug_foo must be left
+        // alone (chdr alone would be 24 bytes, and random payload may
+        // not compress below the threshold anyway).
+        let payload = vec![0x42u8; 100];
+        let original = build_tiny_elf(&payload);
+        let mut buf = original.clone();
+        let result = compress_zstd_in_buffer(&mut buf).expect("compress ok");
+        assert!(result.is_none(), "expected skip on tiny section");
+        assert_eq!(buf, original, "buffer should be unchanged");
+    }
 }
