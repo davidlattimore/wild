@@ -1,6 +1,10 @@
 //#AbstractConfig:default
 //#LinkerDriver:gcc
-//#CompArgs:-g -O0
+// -gdwarf-4 forces .debug_line v4 — wild's elf_line_v5 pass only
+// upgrades v4. Modern gcc/clang default to DWARF 5 which would
+// skip the upgrade entirely and the -O1 config below couldn't
+// assert that .debug_line_str was created.
+//#CompArgs:-g -gdwarf-4 -O0
 //#LinkArgs:-Wl,--compress-debug-sections=zstd
 //#SkipLinker:ld
 //#SkipLinker:lld

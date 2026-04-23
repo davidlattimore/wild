@@ -173,6 +173,12 @@ fn read_cus(elf: &[u8]) -> Result<Option<Vec<CuLineInfo>>> {
             continue;
         };
         let lp_header = line_program.header();
+        // We only convert v4 line programs. v5 inputs are already
+        // ahead of us. v3 / v2 are theoretically convertible but
+        // not seen on rustc output, so skip for safety.
+        if lp_header.version() != 4 {
+            continue;
+        }
         let line_offset = match lp_header.offset() {
             gimli::DebugLineOffset(o) => o as u32,
         };
