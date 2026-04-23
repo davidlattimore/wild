@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "debug-line-recon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+
+[[bin]]
+name = "debug-line-recon"
+path = "src/main.rs"
+
+[dependencies]
+gimli = "0.31"
+object = { version = "0.36", features = ["read"] }
