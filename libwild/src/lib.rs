@@ -10,6 +10,7 @@ pub(crate) mod dwarf_address_info;
 pub(crate) mod eh_frame;
 pub(crate) mod elf;
 pub(crate) mod elf_aarch64;
+pub(crate) mod elf_compress;
 pub(crate) mod elf_loongarch64;
 pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;

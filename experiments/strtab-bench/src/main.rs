@@ -87,7 +87,7 @@ fn main() -> ExitCode {
             }
         };
         // Section-level report (ELF / COFF).
-        for section_name in [".strtab", ".dynstr", ".shstrtab"] {
+        for section_name in [".strtab", ".dynstr", ".shstrtab", ".debug_str", ".debug_line_str"] {
             if let Some(section) = obj.section_by_name(section_name)
                 && let Ok(data) = section.data()
             {

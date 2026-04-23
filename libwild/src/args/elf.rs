@@ -120,7 +120,32 @@ pub struct ElfArgs {
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
 
+    /// Compression scheme to apply to non-`SHF_ALLOC` `.debug_*`
+    /// sections in the output. Default: no compression. Set via
+    /// `--compress-debug-sections=<none|zstd>`.
+    ///
+    /// Compression runs as a post-write pass: section bytes are
+    /// gathered, zstd-compressed, prepended with an `Elf64_Chdr`,
+    /// SHDR sh_size + sh_flags updated, subsequent sections
+    /// shifted forward, the file truncated. `SHF_ALLOC` sections
+    /// are never touched (would need runtime decompression).
+    pub(crate) compress_debug_sections: DebugCompression,
+
     rpath_set: IndexSet<String>,
+}
+
+/// Selects the compression scheme used for `.debug_*` sections at
+/// link time. Matches the ld / lld `--compress-debug-sections=`
+/// argument shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DebugCompression {
+    /// Emit `.debug_*` sections uncompressed (current default).
+    #[default]
+    None,
+    /// `SHF_COMPRESSED` with `ch_type = ELFCOMPRESS_ZSTD`. Tools
+    /// from binutils 2.40 + and recent gdb / lldb / llvm-objdump
+    /// decompress transparently.
+    Zstd,
 }
 
 use super::Strip;
@@ -299,6 +324,7 @@ impl Default for ElfArgs {
             rpath_set: Default::default(),
             plugin_path: None,
             plugin_args: Vec::new(),
+            compress_debug_sections: DebugCompression::None,
         }
     }
 }
@@ -806,6 +832,29 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 "relr" => args.pack_dyn_relocs = PackDynRelocs::Relr,
                 value => {
                     args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
+                }
+            }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("compress-debug-sections")
+        .help("Compress non-SHF_ALLOC .debug_* sections (none|zstd)")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                "none" => args.compress_debug_sections = DebugCompression::None,
+                "zstd" => args.compress_debug_sections = DebugCompression::Zstd,
+                "zlib" | "zlib-gnu" | "zlib-gabi" => {
+                    // Accept the lld/binutils zlib spellings but treat
+                    // them as a warning rather than silently picking
+                    // zstd — we only ship zstd today.
+                    args.warn_unsupported(&format!(
+                        "--compress-debug-sections={value} (zlib not yet supported, use zstd)"
+                    ))?;
+                }
+                value => {
+                    args.warn_unsupported(&format!("--compress-debug-sections={value}"))?;
                 }
             }
             Ok(())
