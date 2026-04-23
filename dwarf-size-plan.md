@@ -142,6 +142,76 @@ real prize and it's the harder one (intra-CU references entangle).
   is unforgiving; bugs corrupt debug info silently (gdb prints `<no
   type>` instead of crashing). Engineering risk dominates small wins.
 
+## Sneaky idea: link-time DWARF 4 → 5 upgrade
+
+> Could the linker upgrade rustc's DWARF 4 output to DWARF 5 in-flight
+> and pick up the smaller encodings for free?
+
+Worked through what each piece would cost:
+
+| DWARF 5 piece | Linker work | Saving on midnight-node |
+|---|---|---:|
+| Bump CU header `version` 4→5 + add `unit_type` byte | trivial | **0 bytes** — purely cosmetic; debuggers may reject it because attribute forms still look v4 |
+| `.debug_line` v4 → v5 (separate `.debug_line_str`, indexed file/dir tables, optional MD5 hashes) | self-contained per CU; doesn't touch the DIE tree | 5-10 MB on `.debug_line`'s 123 MB |
+| `.debug_ranges` → `.debug_rnglists` | rewrite every `DW_AT_ranges` attribute in `.debug_info` from `DW_FORM_sec_offset` → `DW_FORM_rnglistx`; update abbrev tables; emit per-CU `.debug_rnglists` headers | 40-60 MB on `.debug_ranges`'s 108 MB |
+| `.debug_loc` → `.debug_loclists` | same shape: rewrite `DW_AT_location` / `DW_AT_frame_base` references | 5-8 MB on `.debug_loc`'s 13 MB |
+| `.debug_str` → `.debug_str_offsets` indirection (`DW_FORM_strx`) | rewrite every `DW_FORM_strp` attribute in `.debug_info`; build per-CU `.debug_str_offsets` array | ~20-30 MB net (saves on attr forms, costs on offsets table) |
+| `.debug_addr` indirection (`DW_FORM_addrx`) | same idea for addresses | ~5 MB |
+
+**The "sneaky" part falls apart from row 3 onward.** Anything that
+shrinks the DIE-attribute encoding requires the linker to:
+
+1. Parse every CU's abbrev table.
+2. Generate new abbrev codes that use the new forms.
+3. Walk every DIE, rewrite each attribute's bytes when its form changed.
+4. Rebuild the per-CU abbrev table.
+5. Patch the CU header's `debug_abbrev_offset`.
+
+That's the same engineering shape as cross-CU DIE-dedup (item #9 in
+the table above) — full DWARF write pass via gimli, weeks of code,
+fragile failure mode (silent corruption → `gdb: <no type>`).
+
+**One genuinely sneaky standalone piece**: `.debug_line` v4 → v5
+upgrade. Line programs are independent per CU, separate from the DIE
+tree, and v5 compresses file/dir tables (deduped via
+`.debug_line_str`). Engineering: 1-2 weeks. Saving: 5-10 MB on
+midnight-node, larger on binaries with deeply-nested workspace paths
+(substrate's `polkadot-sdk/.../sp-runtime/...` repeats per CU).
+Risk: low — the only consumers are debuggers asking "what line is
+this address on?", and a wrong answer surfaces immediately during
+testing.
+
+**Verdict**: file the full DWARF version upgrade as a sub-item of
+"build a DWARF rewriter." If we ever do that work for DIE dedup,
+`.debug_str_offsets` and `.debug_rnglists` upgrades fall out almost
+free. As a standalone "let's just bump the version", only the
+`.debug_line` v5 piece is tractable in isolation.
+
+## Hard prerequisite for any DWARF rewrite work: debugger-based tests
+
+DWARF corruption is silent. `gdb` and `lldb` print `<no type>` or
+just resolve symbols to the wrong line — the binary still runs, the
+linker doesn't error, and unit tests on the byte layout pass. The
+only reliable signal is "does a real debugger get the right answer."
+
+Before landing **any** DWARF rewrite (line v5 upgrade, abbrev dedup,
+DIE dedup, anything), we need an integration-test harness that:
+
+1. Compiles a small fixture with `-g`.
+2. Links it twice — once via wild without the rewrite, once with.
+3. Runs `addr2line` (or `llvm-addr2line` / `llvm-symbolizer` for
+   compressed-debug paths where binutils may lack zstd) on a known
+   set of addresses extracted from the fixture's symbol table.
+4. Asserts the file/line/function output matches between the two
+   builds (and matches expected values).
+5. Optionally: drives `lldb` / `gdb` via batch scripts to set a
+   breakpoint, run, and inspect a variable's printed value. Checks
+   the variable's type name decodes correctly.
+
+This becomes the gate. No DWARF-touching commit lands without it
+passing on at least the line-table fixture for both addr2line and
+one debugger.
+
 ## Background reading
 
 - DWARF 5 spec — https://dwarfstd.org/dwarf5std.html
