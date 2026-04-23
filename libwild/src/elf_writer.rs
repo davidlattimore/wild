@@ -178,6 +178,14 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
 
+    // `--upgrade-debug-line=v5` post-pass. No-op when the flag isn't
+    // set. Runs BEFORE compress so the new `.debug_line_str` section
+    // also gets compressed if compression is on. Rewrites
+    // `.debug_line` v4 → v5 with cross-CU path pooling, adds
+    // `.debug_line_str`, patches DW_AT_stmt_list values, shifts
+    // sections, updates SHDR + ehdr.
+    crate::elf_line_v5::upgrade_debug_line(sized_output, layout.args().upgrade_debug_line)?;
+
     // `--compress-debug-sections=zstd` post-pass. No-op when the
     // flag wasn't set. Runs after build-id so the ELF is otherwise
     // final; rewrites SHDR offsets + e_shoff and shortens the file.

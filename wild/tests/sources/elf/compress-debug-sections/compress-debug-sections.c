@@ -15,6 +15,15 @@
 //#Config:clang:default
 //#Compiler:clang
 
+// Combined -O1 path: line v5 upgrade + zstd compression. Asserts
+// both effects activate together — `.debug_line_str` should exist
+// (line v5 emitted it) AND be SHF_COMPRESSED (compress ran after
+// line v5 and picked it up alongside .debug_info).
+//#Config:opt1:default
+//#LinkArgs:-Wl,-O1
+//#ExpectCompressedSection:.debug_line_str
+//#ExpectDwarfResolves:1
+
 // Enough structs + functions + string literals to ensure the
 // compiler emits a >256-byte .debug_info (wild's MIN_COMPRESSIBLE
 // threshold in elf_compress.rs). `.debug_str` + `.debug_line` may
