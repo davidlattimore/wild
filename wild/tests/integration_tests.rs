@@ -60,6 +60,9 @@
 //! ExpectSectionBytes:{section_name}=0x{hex_bytes} Checks that the specified section contains
 //! exactly the given bytes.
 //!
+//! ExpectCompressedSection:{section_name} Checks that the specified section carries
+//! SHF_COMPRESSED and starts with a valid Elf64_Chdr (ch_type = zlib or zstd).
+//!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
 //!
@@ -1039,6 +1042,7 @@ struct Assertions {
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
+    expected_compressed_sections: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1360,6 +1364,10 @@ fn process_directive(
                     expected_bytes,
                 });
         }
+        "ExpectCompressedSection" => config
+            .assertions
+            .expected_compressed_sections
+            .push(arg.trim().to_owned()),
         "ExpectDynamic" => config
             .assertions
             .expected_dynamic_entries
@@ -3046,6 +3054,52 @@ impl Assertions {
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
         self.verify_section_bytes(&obj)?;
+        self.verify_compressed_sections(&obj)?;
+        Ok(())
+    }
+
+    /// For every section named in `ExpectCompressedSection:` in the
+    /// test source, assert it's present in the output, carries the
+    /// `SHF_COMPRESSED` flag, and starts with a valid `Elf64_Chdr`
+    /// whose `ch_type` is either `ELFCOMPRESS_ZLIB` (1) or
+    /// `ELFCOMPRESS_ZSTD` (2). The decompressed-size field is
+    /// sanity-checked to be non-zero.
+    fn verify_compressed_sections(&self, obj: &ElfFile64) -> Result {
+        use object::ObjectSection as _;
+        use object::elf as oe;
+        const CHDR_SIZE: usize = 24;
+        for section_name in &self.expected_compressed_sections {
+            let section = obj
+                .section_by_name(section_name)
+                .with_context(|| format!("expected compressed section `{section_name}` missing"))?;
+            let flags: object::SectionFlags = section.flags();
+            let sh_flags = match flags {
+                object::SectionFlags::Elf { sh_flags } => sh_flags,
+                _ => bail!("section `{section_name}`: not an ELF section"),
+            };
+            ensure!(
+                sh_flags & u64::from(oe::SHF_COMPRESSED) != 0,
+                "section `{section_name}` missing SHF_COMPRESSED (sh_flags = {:#x})",
+                sh_flags
+            );
+            let data = section.data()?;
+            ensure!(
+                data.len() >= CHDR_SIZE,
+                "section `{section_name}` too small for Elf64_Chdr ({} < {})",
+                data.len(),
+                CHDR_SIZE
+            );
+            let ch_type = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            ensure!(
+                ch_type == 1 || ch_type == 2,
+                "section `{section_name}` Chdr ch_type = {ch_type} (want 1=zlib or 2=zstd)"
+            );
+            let ch_size = u64::from_le_bytes(data[8..16].try_into().unwrap());
+            ensure!(
+                ch_size > 0,
+                "section `{section_name}` Chdr ch_size = 0 (decompressed size must be non-zero)"
+            );
+        }
         Ok(())
     }
 
