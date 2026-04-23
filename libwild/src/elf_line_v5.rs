@@ -438,7 +438,16 @@ fn apply_rewrite(
     let debug_line_end = debug_line_offset as usize + old_debug_line_size;
     let shstrtab_end = shstrtab_offset as usize + shstrtab_old_size as usize;
     if shstrtab_end > e_shoff {
-        crate::bail!("elf_line_v5: shstrtab_end {shstrtab_end} > e_shoff {e_shoff}");
+        // Layout where the SHDR table is BEFORE shstrtab in the file
+        // (rather than after, as gcc/ld emits). Wild's own output
+        // does this. The current insert-and-shift logic assumes
+        // SHDR is the last thing in the file so it can grow freely;
+        // that doesn't generalise here. Skip the upgrade rather
+        // than corrupt the file. Phase 4 will lift this restriction.
+        eprintln!(
+            "wild: elf_line_v5: skipping (SHDR @ {e_shoff} precedes shstrtab end {shstrtab_end}; layout not yet supported)"
+        );
+        return Ok(elf.to_vec());
     }
 
     let mut new_data = Vec::with_capacity(
