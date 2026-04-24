@@ -34,6 +34,13 @@ min_wild_version = "0.6.0"
 
 [bench.rust-hello-world]
 
+[bench.rust-hello-full]
+# Same source as `rust-hello-world` but built with `profile.release.debug = true`
+# (full debuginfo rather than line-tables-only). Exists specifically to make
+# wild's `-O1` passes (debug_line v5 upgrade, debug_abbrev dedup, compress)
+# visible on a bench small enough to rebuild in seconds. On line-tables-only
+# binaries there's nothing for those passes to shrink.
+
 [bench.rustc]
 # Too short to be interesting and we have other short benchmarks.
 skip = true
@@ -64,4 +71,3 @@ skip_linkers = ["bfd"]
 
 [bench.clang-debug-strip]
 skip_linkers = ["bfd"]
-
