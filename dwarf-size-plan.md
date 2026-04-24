@@ -101,7 +101,7 @@ real prize and it's the harder one (intra-CU references entangle).
 
 | # | Improvement | Size impact (substrate-class) | Cost | Side |
 |---|---|---|---|---|
-| 1 | Mach-O `.debug_str` cross-CU dedup (mirror ELF SHF_MERGE) | 5-15 % of debug | 1-2 wk | linker |
+| 1 | ~~Mach-O `.debug_str` cross-CU dedup~~ | **N/A** — see note below | — | linker |
 | 2 | Dead-DIE strip under `--gc-sections` | 0-30 % depending on GC ratio | 2-4 wk | linker |
 | 3 | `.debug_abbrev` hash-and-collapse | 0.1 % of debug (small absolute) | **shipped** (`--dedup-debug-abbrev`, `-O>=1`) | linker |
 | 4 | `--gdb-index` / `.debug_names` emit | 0 %; saves debugger startup | 2-4 wk | linker |
@@ -117,10 +117,17 @@ real prize and it's the harder one (intra-CU references entangle).
 
 - **#5 is shipped** — default is now zstd; users on older wild or
   who need compatibility can pass `--compress-debug-sections=none`.
-- **#1 (Mach-O)** matters because Mach-O has no SHF_MERGE equivalent
-  flag, so wild currently passes per-CU string pools through to
-  `dsymutil` un-deduped. `dsymutil` then does the work, but the
-  intermediate output is bloated.
+- **#1 (Mach-O `.debug_str` dedup) is N/A on macOS — struck (2026-04-24).**
+  On closer inspection, `libwild/src/macho.rs:2234` excludes the entire
+  `__DWARF` segment from output. Rust Mach-O binaries don't carry any
+  `.debug_*` sections; debug info stays in the per-object `.o` files and
+  `dsymutil` later pulls them into a `.dSYM` bundle via the `N_OSO`
+  stabs wild emits. There is no `__debug_str` in wild's Mach-O output
+  to dedup — the premise "wild passes per-CU string pools through to
+  dsymutil un-deduped" isn't accurate. Any string-pool merging would
+  have to happen inside `dsymutil` itself (out of wild's scope), or in
+  a hypothetical workflow where DWARF is embedded in the executable
+  (rustc doesn't do this on Mach-O).
 - **#2 (dead-DIE strip)** has the widest range. On an embedded Rust
   binary with aggressive `--gc-sections`, it could be huge. On
   midnight-node it's harder to predict (depends on how much of the
