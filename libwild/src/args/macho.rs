@@ -1378,6 +1378,35 @@ fn collect_tbd_symbols_with_directives(
     minos: Option<u32>,
     install_name: &mut Option<Vec<u8>>,
 ) {
+    let target_version = minos.unwrap_or(0);
+    let mut hide_list = Vec::new();
+    let mut visited = std::collections::HashSet::<std::path::PathBuf>::new();
+    collect_tbd_with_directives_impl(
+        path,
+        symbols,
+        target_version,
+        install_name,
+        &mut hide_list,
+        &mut visited,
+    );
+    // Apply hide directives after all symbols are collected.
+    for sym in &hide_list {
+        symbols.remove(sym);
+    }
+}
+
+fn collect_tbd_with_directives_impl(
+    path: &Path,
+    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    target_version: u32,
+    install_name: &mut Option<Vec<u8>>,
+    hide_list: &mut Vec<Vec<u8>>,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canon) {
+        return;
+    }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -1386,8 +1415,6 @@ fn collect_tbd_symbols_with_directives(
         Ok(r) => r,
         Err(_) => return,
     };
-    let target_version = minos.unwrap_or(0);
-    let mut hide_list = Vec::new();
     for record in &records {
         match record {
             text_stub_library::TbdVersionedRecord::V4(v4) => {
@@ -1402,13 +1429,7 @@ fn collect_tbd_symbols_with_directives(
                         continue;
                     }
                     for sym in exp.symbols.iter().chain(exp.weak_symbols.iter()) {
-                        process_tbd_symbol(
-                            sym,
-                            symbols,
-                            target_version,
-                            install_name,
-                            &mut hide_list,
-                        );
+                        process_tbd_symbol(sym, symbols, target_version, install_name, hide_list);
                     }
                 }
                 for exp in &v4.re_exports {
@@ -1416,35 +1437,36 @@ fn collect_tbd_symbols_with_directives(
                         continue;
                     }
                     for sym in &exp.symbols {
-                        process_tbd_symbol(
-                            sym,
-                            symbols,
-                            target_version,
-                            install_name,
-                            &mut hide_list,
-                        );
+                        process_tbd_symbol(sym, symbols, target_version, install_name, hide_list);
                     }
                 }
             }
             text_stub_library::TbdVersionedRecord::V3(v3) => {
                 for exp in &v3.exports {
                     for sym in &exp.symbols {
-                        process_tbd_symbol(
-                            sym,
-                            symbols,
-                            target_version,
-                            install_name,
-                            &mut hide_list,
-                        );
+                        process_tbd_symbol(sym, symbols, target_version, install_name, hide_list);
                     }
                 }
             }
             _ => {}
         }
     }
-    // Apply hide directives after all symbols are collected.
-    for sym in &hide_list {
-        symbols.remove(sym);
+    // Recurse into `reexported-libraries:` (see collect_tbd_symbols_impl
+    // for why this is necessary). Child install-names shouldn't be
+    // allowed to mutate the parent's install_name — pass a scratch
+    // Option so $ld$install_name directives there don't leak up.
+    for child_install in parse_reexported_libraries(&content) {
+        if let Some(child_path) = resolve_tbd_for_install_name(path, &child_install) {
+            let mut scratch: Option<Vec<u8>> = None;
+            collect_tbd_with_directives_impl(
+                &child_path,
+                symbols,
+                target_version,
+                &mut scratch,
+                hide_list,
+                visited,
+            );
+        }
     }
 }
 
@@ -1504,6 +1526,19 @@ fn process_tbd_symbol(
 
 /// Collect exported symbols from a .tbd file into the given set (no directive processing).
 fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<u8>>) {
+    let mut visited = std::collections::HashSet::<std::path::PathBuf>::new();
+    collect_tbd_symbols_impl(path, symbols, &mut visited);
+}
+
+fn collect_tbd_symbols_impl(
+    path: &Path,
+    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canon) {
+        return;
+    }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return,
@@ -1553,6 +1588,115 @@ fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<
             }
             _ => {}
         }
+    }
+    // Follow `reexported-libraries:` chains. text-stub-library 0.9
+    // doesn't model this key; umbrella frameworks (ApplicationServices,
+    // Carbon, CoreServices) use it to point at nested frameworks
+    // they re-export. Without following it, the linker misses symbols
+    // like `_CGDisplayCreateUUIDFromDisplayID` (ColorSync, re-exported
+    // via ApplicationServices) that modern `winit`/bevy_dylib needs.
+    for install_name in parse_reexported_libraries(&content) {
+        if let Some(child) = resolve_tbd_for_install_name(path, &install_name) {
+            collect_tbd_symbols_impl(&child, symbols, visited);
+        }
+    }
+}
+
+/// Scan raw TBD YAML for the `reexported-libraries:` section and
+/// return the install-name paths it points at.
+///
+/// text-stub-library 0.9 doesn't model this key (it only models the
+/// symbol-listing `re-exports:` section). On Apple SDKs, umbrella
+/// frameworks such as `ApplicationServices` declare their nested
+/// re-exports here — linkers that miss this lose access to every
+/// nested framework's symbols (e.g. `_CGDisplayCreateUUIDFromDisplayID`
+/// lives in `ColorSync`, re-exported by `ApplicationServices`).
+///
+/// Format:
+///   reexported-libraries:
+///     - targets:   [ arm64e-macos, ... ]
+///       libraries: [ '/System/Library/Frameworks/.../X', '...' ]
+///
+/// We don't filter by target: out-of-target re-exports resolve to
+/// .tbd files whose own target filter excludes their symbols, so the
+/// cost of being permissive here is bounded by one extra stat.
+fn parse_reexported_libraries(content: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    let mut pending = String::new();
+    let mut collecting = false;
+
+    for line in content.lines() {
+        if !in_section {
+            // Top-level key (no leading whitespace) that starts
+            // `reexported-libraries` — allow optional YAML dash.
+            let stripped = line.trim_start();
+            if stripped == line && stripped.starts_with("reexported-libraries:") {
+                in_section = true;
+            }
+            continue;
+        }
+        // End of section = first non-empty top-level line.
+        if !line.is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            break;
+        }
+        let trimmed = line.trim_start();
+        // Begin a new `libraries:` array.
+        if let Some(after) = trimmed.strip_prefix("libraries:") {
+            collecting = true;
+            pending.clear();
+            pending.push_str(after);
+        } else if collecting {
+            pending.push(' ');
+            pending.push_str(trimmed);
+        }
+        if collecting {
+            // Extract all single-quoted substrings seen so far.
+            let mut iter = pending.split('\'');
+            // Skip the first piece (before the first quote).
+            let _ = iter.next();
+            let mut inside = true;
+            for piece in iter {
+                if inside {
+                    let s = piece.trim();
+                    if !s.is_empty() && !out.iter().any(|x: &String| x == s) {
+                        out.push(s.to_owned());
+                    }
+                }
+                inside = !inside;
+            }
+            if pending.contains(']') {
+                collecting = false;
+                pending.clear();
+            }
+        }
+    }
+    out
+}
+
+/// Given a `.tbd` file at `origin` and an absolute install-name
+/// path like `/System/Library/Frameworks/ColorSync.framework/.../ColorSync`,
+/// return the `.tbd` file the install-name points at (i.e.
+/// `<sdk>/System/Library/Frameworks/.../ColorSync.tbd`), or `None`
+/// if we can't locate it.
+///
+/// SDK root is derived from the origin path by splitting at
+/// `/System/Library/` or `/usr/lib/`. That matches the layout Apple
+/// ships (the SDK root always contains both subtrees).
+fn resolve_tbd_for_install_name(origin: &Path, install_name: &str) -> Option<std::path::PathBuf> {
+    let origin_str = origin.to_str()?;
+    const MARKERS: &[&str] = &["/System/Library/", "/usr/lib/"];
+    let sdk_root = MARKERS
+        .iter()
+        .find_map(|m| origin_str.find(m).map(|i| &origin_str[..i]))?;
+    let install_trim = install_name.strip_prefix('/')?;
+    let mut candidate = std::path::PathBuf::from(sdk_root);
+    candidate.push(install_trim);
+    candidate.set_extension("tbd");
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
     }
 }
 
@@ -2035,4 +2179,117 @@ fn read_uleb128(data: &[u8]) -> (u64, usize) {
         shift += 7;
     }
     (result, data.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const APPSERV_SNIPPET: &str = r#"--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64e-macos ]
+install-name:    '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/ApplicationServices'
+reexported-libraries:
+  - targets:         [ arm64e-macos ]
+    libraries:       [ '/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync',
+                       '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics' ]
+  - targets:         [ x86_64-macos ]
+    libraries:       [ '/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText' ]
+exports:
+  - targets:         [ arm64e-macos ]
+    symbols:         [ _AppServices_Symbol ]
+"#;
+
+    #[test]
+    fn parse_reexported_libraries_extracts_all_install_names() {
+        let libs = parse_reexported_libraries(APPSERV_SNIPPET);
+        assert!(
+            libs.contains(
+                &"/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync".to_owned()
+            ),
+            "missing ColorSync in {libs:?}"
+        );
+        assert!(libs.contains(
+            &"/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics".to_owned()
+        ));
+        // Permissive target filter: we accept x86_64-only entries so
+        // out-of-target re-exports still get checked via filesystem
+        // (the child .tbd's own target filter will then reject their
+        // symbols). Cheap and keeps this parser dumb.
+        assert!(libs.contains(
+            &"/System/Library/Frameworks/CoreText.framework/Versions/A/CoreText".to_owned()
+        ));
+    }
+
+    #[test]
+    fn parse_reexported_libraries_ignores_unrelated_yaml() {
+        // A tbd with no reexported-libraries section returns empty.
+        let cg_snippet = r#"--- !tapi-tbd
+tbd-version:     4
+targets:         [ arm64e-macos ]
+install-name:    '/System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics'
+exports:
+  - targets:         [ arm64e-macos ]
+    symbols:         [ _CGAffineTransformInvert ]
+"#;
+        assert!(parse_reexported_libraries(cg_snippet).is_empty());
+    }
+
+    #[test]
+    fn parse_reexported_libraries_stops_at_next_top_level_key() {
+        let snippet = r#"reexported-libraries:
+  - targets:         [ arm64e-macos ]
+    libraries:       [ '/A', '/B' ]
+exports:
+  - targets:         [ arm64e-macos ]
+    symbols:         [ '/not-a-library' ]
+"#;
+        let libs = parse_reexported_libraries(snippet);
+        assert_eq!(libs, vec!["/A".to_owned(), "/B".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_tbd_for_install_name_derives_sdk_root() {
+        // Synthesise an SDK-like tree under tempdir.
+        let tmp = std::env::temp_dir().join(format!("wild-tbd-resolve-{}", std::process::id()));
+        let sdk_rel = "System/Library/Frameworks";
+        let cs = tmp.join(sdk_rel).join("ColorSync.framework/Versions/A");
+        std::fs::create_dir_all(&cs).unwrap();
+        std::fs::write(cs.join("ColorSync.tbd"), "stub").unwrap();
+
+        let origin = tmp.join(format!(
+            "{sdk_rel}/ApplicationServices.framework/Versions/A/ApplicationServices.tbd"
+        ));
+        std::fs::create_dir_all(origin.parent().unwrap()).unwrap();
+        std::fs::write(&origin, "stub").unwrap();
+
+        let got = resolve_tbd_for_install_name(
+            &origin,
+            "/System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync",
+        );
+        assert_eq!(got.as_ref(), Some(&cs.join("ColorSync.tbd")));
+
+        // Non-existent install-name returns None.
+        let missing = resolve_tbd_for_install_name(
+            &origin,
+            "/System/Library/Frameworks/DoesNotExist.framework/Versions/A/Nope",
+        );
+        assert!(missing.is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_tbd_for_install_name_bails_when_no_marker() {
+        // Origin path with no /System/Library/ or /usr/lib/ marker
+        // — we can't derive an SDK root, so must return None rather
+        // than guess.
+        let tmp =
+            std::env::temp_dir().join(format!("wild-tbd-resolve-nomark-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let origin = tmp.join("random.tbd");
+        std::fs::write(&origin, "stub").unwrap();
+        assert!(resolve_tbd_for_install_name(&origin, "/System/Library/Frameworks/X/X").is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
