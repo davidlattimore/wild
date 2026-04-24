@@ -158,11 +158,11 @@ pub struct ElfArgs {
     /// includes SHF_COMPRESSED zstd on `.debug_*`; the layered
     /// extras are:
     ///   0 — no extra passes (baseline default, just zstd debug).
-    ///   1 — enable .debug_line v4→v5 upgrade. Combined with the
-    ///       baseline zstd this gives ~-76 % file size on Rust
-    ///       debug builds.
+    ///   1 — enable .debug_line v4→v5 upgrade + .debug_abbrev
+    ///       cross-CU dedup. Combined with the baseline zstd this
+    ///       gives ~-76 % file size on Rust debug builds.
     ///   2 — same as 1 today; reserved for future per-section
-    ///       wins (suffix-share strtab, .debug_abbrev dedup).
+    ///       wins (suffix-share strtab).
     ///   3 — same as 2 today; reserved for the heaviest passes
     ///       (cross-CU DIE dedup once it ships).
     pub(crate) opt_level: u8,

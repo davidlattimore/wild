@@ -38,14 +38,14 @@ compiler-side work (type units, DWARF 5 indirection) or
 | Improvement | Status |
 |---|---|
 | SHF_MERGE dedup on `.debug_str` | ✓ via `string_merging.rs` (ELF only — Mach-O has no equivalent flag) |
-| `--compress-debug-sections=zstd` | ✓ landed (`elf_compress.rs`) |
+| Default `--compress-debug-sections=zstd` | ✓ default since cc4ff8e; disable via `--compress-debug-sections=none` (`elf_compress.rs`) |
 | `.eh_frame` CIE deduplication | ✓ via `eh_frame.rs::Cie::eligible_for_deduplication` |
 | `.sframe` generation | ✓ via `sframe.rs` — wild leads here, most linkers don't emit it |
 | Mach-O `__compact_unwind` → `__unwind_info` | ✓ |
 | `--gdb-index` / `.debug_names` emission | ✗ silently ignored |
 | `-Zsplit-dwarf` skeleton-CU pass-through | ✗ |
 | Cross-CU DIE dedup (`dwz`-class) | ✗ |
-| `.debug_abbrev` cross-CU dedup | ✗ |
+| `.debug_abbrev` cross-CU dedup | ✓ via `elf_abbrev_dedup.rs` (`--dedup-debug-abbrev` / `-O>=1`) |
 | `.debug_line` file/dir-table dedup | ✗ |
 | Dead-DIE strip under `--gc-sections` | ✗ |
 
@@ -103,9 +103,9 @@ real prize and it's the harder one (intra-CU references entangle).
 |---|---|---|---|---|
 | 1 | Mach-O `.debug_str` cross-CU dedup (mirror ELF SHF_MERGE) | 5-15 % of debug | 1-2 wk | linker |
 | 2 | Dead-DIE strip under `--gc-sections` | 0-30 % depending on GC ratio | 2-4 wk | linker |
-| 3 | `.debug_abbrev` hash-and-collapse | 0.1 % of debug (small absolute) | 3-7 d | linker |
+| 3 | `.debug_abbrev` hash-and-collapse | 0.1 % of debug (small absolute) | **shipped** (`--dedup-debug-abbrev`, `-O>=1`) | linker |
 | 4 | `--gdb-index` / `.debug_names` emit | 0 %; saves debugger startup | 2-4 wk | linker |
-| 5 | Default `--compress-debug-sections=zstd` for ELF debug builds | -76 % already (with flag); change just makes default | 1 d | linker |
+| 5 | Default `--compress-debug-sections=zstd` for ELF debug builds | **shipped** — default as of cc4ff8e; disable via `--compress-debug-sections=none` | shipped | linker |
 | 6 | `.debug_line` file/dir table dedup | 2-5 % of debug | 1-2 wk | linker |
 | 7 | rustc opt-in to DWARF 5 (`-C dwarf-version=5`) | 10-20 % (strx + rnglists) | upstream | compiler |
 | 8 | wild support for `-Zsplit-dwarf` (skeleton CU pass-through) | binary size unchanged; ~50-70 % less link input bandwidth | 3-6 wk | linker |
@@ -115,9 +115,8 @@ real prize and it's the harder one (intra-CU references entangle).
 
 ### Notes on prioritisation
 
-- **#5 is the cheapest win** — wild already implements compression;
-  flipping the default for ELF debug builds is a one-line change plus
-  CI/docs. Most users would benefit immediately.
+- **#5 is shipped** — default is now zstd; users on older wild or
+  who need compatibility can pass `--compress-debug-sections=none`.
 - **#1 (Mach-O)** matters because Mach-O has no SHF_MERGE equivalent
   flag, so wild currently passes per-CU string pools through to
   `dsymutil` un-deduped. `dsymutil` then does the work, but the
