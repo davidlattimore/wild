@@ -142,6 +142,17 @@ pub struct ElfArgs {
     /// (each one re-emitting the same workspace path strings).
     pub(crate) upgrade_debug_line: DebugLineUpgrade,
 
+    /// Whether wild should hash each `.debug_info` CU's
+    /// `.debug_abbrev` table, collapse identical tables, and
+    /// patch every CU header's `debug_abbrev_offset`. Set by
+    /// `--dedup-debug-abbrev` or implicitly by `-O1`/`-O2`/`-O3`.
+    /// Default off.
+    ///
+    /// Small absolute saving (`.debug_abbrev` is <1 % of `.debug_*`)
+    /// but essentially free — the pass only reads the abbrev
+    /// table bytes and writes one offset per CU.
+    pub(crate) dedup_debug_abbrev: bool,
+
     /// Optimisation level (0-3). Maps from `-O<N>` and accumulates
     /// on top of wild's default post-passes. Baseline (no flag) now
     /// includes SHF_COMPRESSED zstd on `.debug_*`; the layered
@@ -365,6 +376,7 @@ impl Default for ElfArgs {
             plugin_args: Vec::new(),
             compress_debug_sections: DebugCompression::Zstd,
             upgrade_debug_line: DebugLineUpgrade::None,
+            dedup_debug_abbrev: false,
             opt_level: 0,
         }
     }
@@ -746,24 +758,41 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
     parser
         .declare_with_param()
         .prefix("O")
-        .help("Optimisation level (0-3); >=1 enables debug compression + line v5")
+        .help("Optimisation level (0-3); >=1 enables debug-line v5 + abbrev dedup")
         .execute(|args, _modifier_stack, value| {
             // Accept "0".."3"; clamp anything higher to 3 because
             // we have no further passes to enable at the moment.
             let n: u32 = value.parse().unwrap_or(0);
             let n = n.min(3) as u8;
             args.opt_level = args.opt_level.max(n);
-            // Implicit pass activations. Direct flags
-            // (`--compress-debug-sections=`, `--upgrade-debug-line=`)
-            // remain authoritative when set explicitly later — they
-            // can downgrade what -O turned on. Concretely we only
-            // raise to enabled, never lower from enabled.
+            // Implicit pass activations. Direct flags remain
+            // authoritative when set explicitly later — they can
+            // downgrade what -O turned on. Concretely we only raise
+            // to enabled, never lower from enabled.
             if n >= 1 {
                 if args.compress_debug_sections == DebugCompression::None {
                     args.compress_debug_sections = DebugCompression::Zstd;
                 }
                 if args.upgrade_debug_line == DebugLineUpgrade::None {
                     args.upgrade_debug_line = DebugLineUpgrade::V5;
+                }
+                args.dedup_debug_abbrev = true;
+            }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("dedup-debug-abbrev")
+        .help("Collapse identical `.debug_abbrev` tables across CUs (wild extension)")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                "" | "yes" | "true" | "1" => args.dedup_debug_abbrev = true,
+                "no" | "false" | "0" => args.dedup_debug_abbrev = false,
+                other => {
+                    return Err(crate::error!(
+                        "--dedup-debug-abbrev={other}: expected yes/no (or empty)"
+                    ));
                 }
             }
             Ok(())

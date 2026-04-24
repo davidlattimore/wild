@@ -178,6 +178,12 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
 
+    // `.debug_abbrev` cross-CU dedup. No-op unless enabled. Runs
+    // before the other debug passes so they see the already-deduped
+    // section (their work is independent, but staying early keeps
+    // the order deterministic and simplifies reasoning).
+    crate::elf_abbrev_dedup::dedup_debug_abbrev(sized_output, layout.args().dedup_debug_abbrev)?;
+
     // `--upgrade-debug-line=v5` post-pass. No-op when the flag isn't
     // set. Runs BEFORE compress so the new `.debug_line_str` section
     // also gets compressed if compression is on. Rewrites
