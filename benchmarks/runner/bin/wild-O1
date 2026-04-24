@@ -1,0 +1,32 @@
+#!/bin/sh
+# Thin wrapper that invokes wild with `-O1` prepended so the
+# benchmark runner can measure wild's `-O1` column alongside plain
+# wild and other linkers. Paired with `LinkerKind::WildOpt(1)` in
+# benchmarks/runner/src/main.rs, which parses the rewritten banner.
+#
+# Resolution order for the real wild binary is the same as
+# wild-ld64-compat: $WILD_BIN, then sibling `wild`, then $PATH.
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -z "${WILD_BIN:-}" ]; then
+    if [ -x "$self_dir/wild" ]; then
+        WILD_BIN="$self_dir/wild"
+    elif command -v wild >/dev/null 2>&1; then
+        WILD_BIN=$(command -v wild)
+    else
+        echo "wild-O1: cannot find wild binary (set \$WILD_BIN)" >&2
+        exit 1
+    fi
+fi
+
+case "${1:-}" in
+    --version|-v|"")
+        # Rewrite the banner so the runner sees a distinguishable
+        # LinkerKind: "Wild 0.8.0 <hash> ..." → "Wild-O1 0.8.0 ...".
+        "$WILD_BIN" -v 2>&1 | sed '1s/^Wild /Wild-O1 /' | head -1
+        exit 0
+        ;;
+esac
+
+exec "$WILD_BIN" -O1 "$@"

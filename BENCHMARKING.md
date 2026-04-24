@@ -316,6 +316,36 @@ but produces smaller output than default-mode wild — matching ld64's
 size almost exactly. If you care about bit-for-bit reproducibility
 against the Apple toolchain, the cost is negligible.
 
+#### Benchmarking wild at different `-O` levels (ELF only)
+
+`LinkerKind::WildOpt(u8)` exists so the report can graph wild's
+`-O0`/`-O1`/`-O2`/`-O3` columns alongside each other and alongside
+lld/mold/bfd. Three wrapper scripts at
+`benchmarks/runner/bin/wild-O{1,2,3}` prepend the matching `-O<N>`
+to every invocation and rewrite the banner (`Wild-O1 …`) so the
+runner keeps the columns distinct.
+
+```sh
+export WILD_BIN=$WILD_REPO/target/release/wild
+
+cargo run --release -p benchmark-runner -- \
+    bench --config benchmarks/ryzen-9955hx.toml \
+          --saves /tmp/wild-saves \
+          --tmp /tmp/linker-bench-out \
+          $WILD_BIN \
+          $WILD_REPO/benchmarks/runner/bin/wild-O1 \
+          $WILD_REPO/benchmarks/runner/bin/wild-O2 \
+          $WILD_REPO/benchmarks/runner/bin/wild-O3 \
+          /usr/bin/ld.lld /usr/bin/mold
+```
+
+Today `-O1` enables `.debug_line` v4→v5 + `.debug_abbrev` cross-CU
+dedup (SHF_COMPRESSED zstd is on by default since cc4ff8e, so the
+`-O0` column already includes it). `-O2` and `-O3` alias to `-O1`
+until the heavier passes (suffix-share strtab, cross-CU DIE dedup)
+ship. The wrappers are ELF-only — the Mach-O config filter skips
+them because libwild's `-O` flag parser lives in `args::elf`.
+
 #### Generating save-dirs for each Mach-O bench
 
 Each entry in `benchmarks/macos-arm64.toml` needs a directory

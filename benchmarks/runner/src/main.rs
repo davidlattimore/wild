@@ -223,6 +223,12 @@ enum LinkerKind {
     /// report distinguishes plain wild's default output from the
     /// bit-for-bit-vs-ld64 mode.
     WildCompat,
+    /// Wild invoked with `-O<N>` (N = 1..=3) via the matching
+    /// `benchmarks/runner/bin/wild-O<N>` wrapper. Carries the opt
+    /// level so the report can label each column (Wild, Wild-O1,
+    /// Wild-O2, Wild-O3) and keep them visually distinct. ELF-only
+    /// today — libwild's `-O` flag parser lives in `args::elf`.
+    WildOpt(u8),
     /// rust-lld's `wasm-ld` symlink (or any LLD invoked under that
     /// name). Same binary as `Lld` — disambiguated by filename in the
     /// `LinkerIdentifier::parse` path. Exists as its own kind so the
@@ -248,6 +254,10 @@ impl LinkerKind {
             LinkerKind::Bfd => "GNU ld",
             LinkerKind::Ld64 => "ld64",
             LinkerKind::WildCompat => "Wild-compat",
+            LinkerKind::WildOpt(1) => "Wild -O1",
+            LinkerKind::WildOpt(2) => "Wild -O2",
+            LinkerKind::WildOpt(3) => "Wild -O3",
+            LinkerKind::WildOpt(_) => "Wild -O?",
             LinkerKind::WasmLd => "wasm-ld",
         }
     }
@@ -256,7 +266,10 @@ impl LinkerKind {
         match arg {
             "--no-fork" => matches!(
                 self,
-                LinkerKind::Wild | LinkerKind::WildCompat | LinkerKind::Mold
+                LinkerKind::Wild
+                    | LinkerKind::WildCompat
+                    | LinkerKind::WildOpt(_)
+                    | LinkerKind::Mold
             ),
             _ => true,
         }
@@ -265,15 +278,17 @@ impl LinkerKind {
     /// Which output formats this linker can produce. Wild handles all
     /// three (ELF, Mach-O, Wasm); the rest are single-format.
     /// `WildCompat` is Mach-O-only because `-ld64_compat` has no
-    /// meaning for ELF / Wasm outputs. `WasmLd` is the same LLD
-    /// binary as `Lld` but invoked under the `wasm-ld` filename, so
-    /// it produces wasm32/64 output.
+    /// meaning for ELF / Wasm outputs. `WildOpt(_)` is ELF-only
+    /// because libwild's `-O` flag parser only exists for ELF today.
+    /// `WasmLd` is the same LLD binary as `Lld` but invoked under
+    /// the `wasm-ld` filename, so it produces wasm32/64 output.
     fn supports_platform(&self, platform: crate::config::Platform) -> bool {
         use crate::config::Platform as P;
         match self {
             LinkerKind::Wild => true,
             LinkerKind::Lld | LinkerKind::Mold | LinkerKind::Bfd => platform == P::Elf,
             LinkerKind::Ld64 | LinkerKind::WildCompat => platform == P::Macho,
+            LinkerKind::WildOpt(_) => platform == P::Elf,
             LinkerKind::WasmLd => platform == P::Wasm,
         }
     }
@@ -385,6 +400,16 @@ impl LinkerIdentifier {
                 hash = Some(take_word(&mut rest)?.replace(['(', ')'], ""));
             }
             kind = LinkerKind::WildCompat;
+        } else if let Some((opt_level, mut rest)) = strip_wild_opt_prefix(version_line) {
+            // Wrappers at `benchmarks/runner/bin/wild-O<N>` rewrite the
+            // banner to "Wild-O<N> <ver> <hash> ..." so the report
+            // labels each opt level distinctly. Format after the
+            // prefix matches plain Wild.
+            version = take_word(&mut rest)?.to_owned();
+            if !bin_path.to_string_lossy().contains(&version) {
+                hash = Some(take_word(&mut rest)?.replace(['(', ')'], ""));
+            }
+            kind = LinkerKind::WildOpt(opt_level);
         } else if let Some(mut rest) = version_line
             .strip_prefix("Wild version ")
             .or_else(|| version_line.strip_prefix("Wild "))
@@ -472,6 +497,22 @@ impl LinkerIdentifier {
         }
         parts
     }
+}
+
+/// Match a banner of the form `Wild-O<N> <rest...>` where N ∈ 1..=3.
+/// Returns the opt level and the slice after the prefix + single
+/// space. Any other digit (including 0) is rejected so plain
+/// `Wild` is still routed through the next branch rather than
+/// being mis-tagged as `WildOpt(0)`.
+fn strip_wild_opt_prefix(line: &str) -> Option<(u8, &str)> {
+    let rest = line.strip_prefix("Wild-O")?;
+    let (digit_ch, rest) = rest.split_at(rest.chars().next()?.len_utf8());
+    let level: u8 = digit_ch.parse().ok()?;
+    if !(1..=3).contains(&level) {
+        return None;
+    }
+    let rest = rest.strip_prefix(' ')?;
+    Some((level, rest))
 }
 
 /// True when the binary path is `…/wasm-ld[.exe]`. Used to flag the
@@ -612,6 +653,44 @@ mod tests {
             assert_eq!(host, Platform::Macho);
         } else {
             assert_eq!(host, Platform::Elf);
+        }
+    }
+
+    #[test]
+    fn test_parse_wild_opt_banner() {
+        for level in 1u8..=3 {
+            let line =
+                format!("Wild-O{level} 0.8.0 abcdef1234567890 (compatible with GNU linkers)");
+            let id =
+                LinkerIdentifier::parse(&line, Path::new(&format!("/opt/wild/bin/wild-O{level}")))
+                    .unwrap_or_else(|| panic!("wild-O{level} banner parse failed"));
+            assert_eq!(id.kind, LinkerKind::WildOpt(level));
+            assert_eq!(id.version, "0.8.0");
+            assert_eq!(id.hash.as_deref(), Some("abcdef1234567890"));
+        }
+    }
+
+    #[test]
+    fn test_parse_wild_opt_rejects_invalid_level() {
+        // Only -O1..=-O3 are recognised. -O0 collides with plain Wild
+        // (we don't want to tag baseline runs as WildOpt(0)) and
+        // -O4+ isn't a real wild optimisation level.
+        assert!(strip_wild_opt_prefix("Wild-O0 0.8.0").is_none());
+        assert!(strip_wild_opt_prefix("Wild-O4 0.8.0").is_none());
+        assert!(strip_wild_opt_prefix("Wild-Ox 0.8.0").is_none());
+        // Plain Wild banner doesn't match either.
+        assert!(strip_wild_opt_prefix("Wild 0.8.0").is_none());
+    }
+
+    #[test]
+    fn test_wild_opt_supports_elf_only() {
+        use crate::config::Platform;
+        for level in 1u8..=3 {
+            let k = LinkerKind::WildOpt(level);
+            assert!(k.supports_platform(Platform::Elf));
+            assert!(!k.supports_platform(Platform::Macho));
+            assert!(!k.supports_platform(Platform::Wasm));
+            assert!(k.supports_arg("--no-fork"));
         }
     }
 

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Thin wrapper invoking wild with `-O3` prepended. See wild-O1 for
+# the design. Paired with `LinkerKind::WildOpt(3)`.
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -z "${WILD_BIN:-}" ]; then
+    if [ -x "$self_dir/wild" ]; then
+        WILD_BIN="$self_dir/wild"
+    elif command -v wild >/dev/null 2>&1; then
+        WILD_BIN=$(command -v wild)
+    else
+        echo "wild-O3: cannot find wild binary (set \$WILD_BIN)" >&2
+        exit 1
+    fi
+fi
+
+case "${1:-}" in
+    --version|-v|"")
+        "$WILD_BIN" -v 2>&1 | sed '1s/^Wild /Wild-O3 /' | head -1
+        exit 0
+        ;;
+esac
+
+exec "$WILD_BIN" -O3 "$@"
