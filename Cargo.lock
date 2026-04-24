@@ -624,9 +624,9 @@ checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
 name = "gimli"
-version = "0.33.1"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19e16c5073773ccf057c282be832a59ee53ef5ff98db3aeff7f8314f52ffc196"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
 dependencies = [
  "fnv",
  "hashbrown 0.16.1",
@@ -856,7 +856,7 @@ dependencies = [
  "derive_more",
  "flate2",
  "foldhash 0.2.0",
- "gimli 0.33.1",
+ "gimli 0.33.0",
  "glob",
  "hashbrown 0.16.1",
  "hex",
@@ -897,7 +897,7 @@ dependencies = [
  "anyhow",
  "clap",
  "colored",
- "gimli 0.33.1",
+ "gimli 0.33.0",
  "hashbrown 0.16.1",
  "iced-x86",
  "itertools",
