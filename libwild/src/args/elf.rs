@@ -121,7 +121,7 @@ pub struct ElfArgs {
     pub(crate) should_output_partial_object: bool,
 
     /// Compression scheme to apply to non-`SHF_ALLOC` `.debug_*`
-    /// sections in the output. Default: no compression. Set via
+    /// sections in the output. Default: `Zstd`. Override via
     /// `--compress-debug-sections=<none|zstd>`.
     ///
     /// Compression runs as a post-write pass: section bytes are
@@ -129,6 +129,8 @@ pub struct ElfArgs {
     /// SHDR sh_size + sh_flags updated, subsequent sections
     /// shifted forward, the file truncated. `SHF_ALLOC` sections
     /// are never touched (would need runtime decompression).
+    /// Release builds without `-g` emit no `.debug_*` sections,
+    /// so the pass is a no-op for them.
     pub(crate) compress_debug_sections: DebugCompression,
 
     /// Whether wild should rewrite each CU's `.debug_line` from
@@ -140,10 +142,14 @@ pub struct ElfArgs {
     /// (each one re-emitting the same workspace path strings).
     pub(crate) upgrade_debug_line: DebugLineUpgrade,
 
-    /// Optimisation level (0-3). Maps from `-O<N>` and accumulates:
-    ///   0 — no extra passes (current default).
-    ///   1 — enable .debug_line v5 upgrade and SHF_COMPRESSED zstd
-    ///       on .debug_*. Net: -75-78 % file size on debug builds.
+    /// Optimisation level (0-3). Maps from `-O<N>` and accumulates
+    /// on top of wild's default post-passes. Baseline (no flag) now
+    /// includes SHF_COMPRESSED zstd on `.debug_*`; the layered
+    /// extras are:
+    ///   0 — no extra passes (baseline default, just zstd debug).
+    ///   1 — enable .debug_line v4→v5 upgrade. Combined with the
+    ///       baseline zstd this gives ~-76 % file size on Rust
+    ///       debug builds.
     ///   2 — same as 1 today; reserved for future per-section
     ///       wins (suffix-share strtab, .debug_abbrev dedup).
     ///   3 — same as 2 today; reserved for the heaviest passes
@@ -158,12 +164,15 @@ pub struct ElfArgs {
 /// argument shape.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DebugCompression {
-    /// Emit `.debug_*` sections uncompressed (current default).
-    #[default]
+    /// Emit `.debug_*` sections uncompressed.
     None,
     /// `SHF_COMPRESSED` with `ch_type = ELFCOMPRESS_ZSTD`. Tools
     /// from binutils 2.40 + and recent gdb / lldb / llvm-objdump
-    /// decompress transparently.
+    /// decompress transparently. This is wild's default — only
+    /// `.debug_*` sections that exceed the compressibility threshold
+    /// are touched; release builds (no `-g`) see no effect. Disable
+    /// via `--compress-debug-sections=none`.
+    #[default]
     Zstd,
 }
 
@@ -354,7 +363,7 @@ impl Default for ElfArgs {
             rpath_set: Default::default(),
             plugin_path: None,
             plugin_args: Vec::new(),
-            compress_debug_sections: DebugCompression::None,
+            compress_debug_sections: DebugCompression::Zstd,
             upgrade_debug_line: DebugLineUpgrade::None,
             opt_level: 0,
         }
