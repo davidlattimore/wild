@@ -26,7 +26,6 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
 use std::io::Read as _;
 use std::io::Write as _;
 use std::path::Path;
@@ -70,7 +69,7 @@ pub(crate) fn sdk_cache_path(sysroot: &Path) -> Option<PathBuf> {
 /// Anything else (missing file, short read, schema drift, stat
 /// drift) returns `None` and the caller falls through to the
 /// full walk.
-pub(crate) fn load_sdk_symbols(sysroot: &Path) -> Option<HashSet<Vec<u8>>> {
+pub(crate) fn load_sdk_symbols(sysroot: &Path) -> Option<crate::args::macho::DylibSymbols> {
     let cache_path = sdk_cache_path(sysroot)?;
     let mut f = std::fs::File::open(&cache_path).ok()?;
     let mut buf = Vec::new();
@@ -100,7 +99,8 @@ pub(crate) fn load_sdk_symbols(sysroot: &Path) -> Option<HashSet<Vec<u8>>> {
     }
     let count = u32::from_le_bytes(buf[36..40].try_into().ok()?) as usize;
     let mut cursor = 40;
-    let mut out: HashSet<Vec<u8>> = HashSet::with_capacity(count);
+    let mut out: crate::args::macho::DylibSymbols =
+        hashbrown::HashSet::with_capacity_and_hasher(count, Default::default());
     for _ in 0..count {
         if cursor + 2 > buf.len() {
             return None;
@@ -120,7 +120,7 @@ pub(crate) fn load_sdk_symbols(sysroot: &Path) -> Option<HashSet<Vec<u8>>> {
 /// failures (cache dir not writable, quota, etc.) are logged to
 /// stderr under `WILD_INCREMENTAL_DEBUG` but never fail the link —
 /// a skipped write just means the next invocation walks again.
-pub(crate) fn save_sdk_symbols(sysroot: &Path, symbols: &HashSet<Vec<u8>>) {
+pub(crate) fn save_sdk_symbols(sysroot: &Path, symbols: &crate::args::macho::DylibSymbols) {
     let Some(cache_path) = sdk_cache_path(sysroot) else {
         return;
     };
@@ -206,7 +206,9 @@ fn tbd_cache_path(tbd_path: &Path) -> Option<PathBuf> {
 /// Load the cached `(install_name, symbols)` pair for a `.tbd` file
 /// if the on-disk file's `(size, mtime_ns)` still matches what was
 /// recorded.
-pub(crate) fn load_tbd_symbols(tbd_path: &Path) -> Option<(Option<Vec<u8>>, HashSet<Vec<u8>>)> {
+pub(crate) fn load_tbd_symbols(
+    tbd_path: &Path,
+) -> Option<(Option<Vec<u8>>, crate::args::macho::DylibSymbols)> {
     let cache_path = tbd_cache_path(tbd_path)?;
     let mut f = std::fs::File::open(&cache_path).ok()?;
     let mut buf = Vec::new();
@@ -250,7 +252,8 @@ pub(crate) fn load_tbd_symbols(tbd_path: &Path) -> Option<(Option<Vec<u8>>, Hash
     }
     let count = u32::from_le_bytes(buf[cursor..cursor + 4].try_into().ok()?) as usize;
     cursor += 4;
-    let mut symbols: HashSet<Vec<u8>> = HashSet::with_capacity(count);
+    let mut symbols: crate::args::macho::DylibSymbols =
+        hashbrown::HashSet::with_capacity_and_hasher(count, Default::default());
     for _ in 0..count {
         if cursor + 2 > buf.len() {
             return None;
@@ -272,7 +275,7 @@ pub(crate) fn load_tbd_symbols(tbd_path: &Path) -> Option<(Option<Vec<u8>>, Hash
 pub(crate) fn save_tbd_symbols(
     tbd_path: &Path,
     install_name: Option<&[u8]>,
-    symbols: &HashSet<Vec<u8>>,
+    symbols: &crate::args::macho::DylibSymbols,
 ) {
     let Some(cache_path) = tbd_cache_path(tbd_path) else {
         return;

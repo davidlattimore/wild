@@ -14,6 +14,12 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Hashbrown-backed symbol set using foldhash. Dylib symbol keys
+/// come from trusted on-disk TBD content; the std HashSet's SipHash
+/// only buys DoS resistance we don't need and was ~12 % of wild's
+/// bevy-dylib wall-clock (profiled via samply).
+pub(crate) type DylibSymbols = hashbrown::HashSet<Vec<u8>, foldhash::fast::FixedState>;
+
 /// What kind of LC_LOAD_* command to emit for a dylib dependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DylibLoadKind {
@@ -52,7 +58,11 @@ pub struct MachOArgs {
     pub(crate) force_undefined: Vec<String>,
     /// Symbols exported by linked dylibs (from .tbd parsing). Used to distinguish
     /// undefined symbols that are dylib imports from truly missing symbols.
-    pub(crate) dylib_symbols: std::collections::HashSet<Vec<u8>>,
+    ///
+    /// Backed by hashbrown + foldhash — the keys come from trusted
+    /// on-disk TBD content, so the std HashSet's SipHash is wasted
+    /// DoS-resistance and used to be ~12% of wild's bevy-dylib wall-clock.
+    pub(crate) dylib_symbols: DylibSymbols,
     /// Path of the `system/` TBD re-exports directory we've already
     /// walked during `-lSystem` / `-lc` / `-lm` / `-lpthread`
     /// handling. rustc typically passes all four in sequence and each
@@ -326,7 +336,7 @@ impl platform::Args for MachOArgs {
         self.object_path_lto.as_deref()
     }
 
-    fn dylib_symbols(&self) -> &std::collections::HashSet<Vec<u8>> {
+    fn dylib_symbols(&self) -> &DylibSymbols {
         &self.dylib_symbols
     }
 
@@ -1374,7 +1384,7 @@ fn parse_macho_version(s: &str) -> u32 {
 /// Collect exported symbols from a .tbd file, processing $ld$ linker directives.
 fn collect_tbd_symbols_with_directives(
     path: &Path,
-    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    symbols: &mut DylibSymbols,
     minos: Option<u32>,
     install_name: &mut Option<Vec<u8>>,
 ) {
@@ -1397,7 +1407,7 @@ fn collect_tbd_symbols_with_directives(
 
 fn collect_tbd_with_directives_impl(
     path: &Path,
-    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    symbols: &mut DylibSymbols,
     target_version: u32,
     install_name: &mut Option<Vec<u8>>,
     hide_list: &mut Vec<Vec<u8>>,
@@ -1474,7 +1484,7 @@ fn collect_tbd_with_directives_impl(
 /// Returns Some(sym_name) for $ld$hide$ directives to remove in a second pass.
 fn process_tbd_symbol(
     sym: &str,
-    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    symbols: &mut DylibSymbols,
     target_version: u32,
     install_name: &mut Option<Vec<u8>>,
     hide_list: &mut Vec<Vec<u8>>,
@@ -1525,14 +1535,14 @@ fn process_tbd_symbol(
 }
 
 /// Collect exported symbols from a .tbd file into the given set (no directive processing).
-fn collect_tbd_symbols(path: &Path, symbols: &mut std::collections::HashSet<Vec<u8>>) {
+fn collect_tbd_symbols(path: &Path, symbols: &mut DylibSymbols) {
     let mut visited = std::collections::HashSet::<std::path::PathBuf>::new();
     collect_tbd_symbols_impl(path, symbols, &mut visited);
 }
 
 fn collect_tbd_symbols_impl(
     path: &Path,
-    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    symbols: &mut DylibSymbols,
     visited: &mut std::collections::HashSet<std::path::PathBuf>,
 ) {
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -1745,7 +1755,7 @@ fn link_framework(args: &mut MachOArgs, name: &str) -> Result {
             // Miss: parse the .tbd, then persist the result for
             // the next link.
             let install_name = parse_tbd_install_name(&tbd_path);
-            let mut fresh_symbols: std::collections::HashSet<Vec<u8>> = Default::default();
+            let mut fresh_symbols: DylibSymbols = Default::default();
             collect_tbd_symbols(&tbd_path, &mut fresh_symbols);
             if let Some(ref dylib_path) = install_name {
                 args.add_dylib(dylib_path.clone(), DylibLoadKind::Normal);
@@ -2005,7 +2015,7 @@ fn collect_dylib_reexport_symbols(
     rpaths: &[PathBuf],
     loader_dir: Option<&Path>,
     output_dir: Option<&Path>,
-    symbols: &mut std::collections::HashSet<Vec<u8>>,
+    symbols: &mut DylibSymbols,
     depth: usize,
 ) {
     if depth > 8 {

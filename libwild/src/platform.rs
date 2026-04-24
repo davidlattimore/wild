@@ -1322,9 +1322,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     }
 
     /// Returns the set of symbols known to be provided by linked dylibs (Mach-O .tbd parsing).
-    fn dylib_symbols(&self) -> &std::collections::HashSet<Vec<u8>> {
-        static EMPTY: std::sync::LazyLock<std::collections::HashSet<Vec<u8>>> =
-            std::sync::LazyLock::new(Default::default);
+    fn dylib_symbols(&self) -> &crate::args::macho::DylibSymbols {
+        static EMPTY: std::sync::LazyLock<crate::args::macho::DylibSymbols> =
+            std::sync::LazyLock::new(crate::args::macho::DylibSymbols::default);
         &EMPTY
     }
 
