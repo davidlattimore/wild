@@ -445,12 +445,10 @@ impl LinkerIdentifier {
         } else if let Some(mut rest) = version_line.strip_prefix("mold ") {
             kind = LinkerKind::Mold;
             version = take_word(&mut rest)?.to_owned();
-        } else if let Some(mut rest) =
-            version_line.strip_prefix("GNU ld (GNU Binutils for Ubuntu) ")
-        {
+        } else if let Some((vendor, mut rest)) = strip_gnu_ld_banner(version_line) {
             kind = LinkerKind::Bfd;
             version = take_word(&mut rest)?.to_owned();
-            variant = Some("Ubuntu".to_owned());
+            variant = vendor.map(str::to_owned);
         } else if let Some(rest) = version_line.strip_prefix("@(#)PROGRAM:ld ")
             && let Some(rest) = rest.split_whitespace().find_map(|w| {
                 w.strip_prefix("PROJECT:ld-")
@@ -497,6 +495,25 @@ impl LinkerIdentifier {
         }
         parts
     }
+}
+
+/// Match a GNU-ld first-line banner. Accepts both the vendored
+/// variants (`GNU ld (GNU Binutils for Ubuntu) 2.40`) and the plain
+/// upstream / Nix form (`GNU ld (GNU Binutils) 2.44`). Returns an
+/// optional vendor tag (`Some("Ubuntu")`, `Some("Debian")`, or
+/// `None` for plain) and the remainder of the line starting at the
+/// version number.
+fn strip_gnu_ld_banner(line: &str) -> Option<(Option<&'static str>, &str)> {
+    for (prefix, vendor) in [
+        ("GNU ld (GNU Binutils for Ubuntu) ", Some("Ubuntu")),
+        ("GNU ld (GNU Binutils for Debian) ", Some("Debian")),
+        ("GNU ld (GNU Binutils) ", None),
+    ] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some((vendor, rest));
+        }
+    }
+    None
 }
 
 /// Match a banner of the form `Wild-O<N> <rest...>` where N ∈ 1..=3.
