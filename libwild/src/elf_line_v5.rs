@@ -355,6 +355,59 @@ fn emit_v5_line_program_pooled(out: &mut Vec<u8>, cu: &CuLineInfo, pool: &mut Li
     out[start..start + 4].copy_from_slice(&unit_length.to_le_bytes());
 }
 
+/// One byte-range edit applied during the splice pass in
+/// [`apply_rewrite`]. Positions are expressed in the OLD file's
+/// coordinate system; the splice pass walks ops in sorted order
+/// and maintains a cumulative delta between old and new offsets.
+///
+/// Four kinds of op drive the rewrite:
+///   * replace: `delete > 0`, `insert.len() > 0` — op A (.debug_line).
+///   * pure insert: `delete = 0`, `insert.len() > 0` — op B (the new
+///     .debug_line_str) and op C (.shstrtab name append).
+///   * pure delete: `delete > 0`, `insert = []` — not currently used
+///     but the machinery handles it.
+struct Op {
+    position: usize,
+    delete: usize,
+    insert: Vec<u8>,
+}
+
+/// Distinguishes two semantics of remapping an old offset `p` into
+/// the new file, needed when an insert op sits exactly at `p`.
+///
+/// Triggered by proc-macro `.so` files which happen to place a
+/// section starting exactly at `debug_line_end` — without this
+/// split they'd collide with our new `.debug_line_str` insert.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MapKind {
+    /// Return the position where an op at `p` itself begins
+    /// inserting. Used when computing OUR OWN inserts' new
+    /// positions (e.g. `.debug_line_str`'s `sh_offset`). Insert
+    /// ops at exactly `p` do NOT contribute.
+    Before,
+    /// Return the position of bytes that WERE at `p` in the old
+    /// file. An insert op at exactly `p` pushes those bytes
+    /// forward by its insert length.
+    After,
+}
+
+/// Translate an old-file byte offset to its position in the new
+/// file after `ops` have been applied. `ops` must be sorted by
+/// `position` ascending.
+fn map_offset(p: usize, ops: &[Op], kind: MapKind) -> usize {
+    let mut delta: isize = 0;
+    for op in ops {
+        if op.position < p {
+            delta += op.insert.len() as isize - op.delete as isize;
+        } else if op.position == p && op.delete == 0 && kind == MapKind::After {
+            delta += op.insert.len() as isize;
+        } else {
+            break;
+        }
+    }
+    (p as isize + delta) as usize
+}
+
 fn apply_rewrite(
     elf: &[u8],
     cu_offsets: &[(u64, u32)],
@@ -456,13 +509,8 @@ fn apply_rewrite(
     //      PT_LOAD sections AFTER it in the file) triggers exactly
     //      this case; growing SHDR in place would push executable
     //      bytes to offsets PHDR can't see.
-    struct Op {
-        position: usize,
-        delete: usize,
-        insert: Vec<u8>,
-    }
     let new_section_name_offset_in_shstrtab = shstrtab_old_size as u32;
-    let _ = shdr_end; // D no longer needs it; kept in scope for clarity
+    let _ = shdr_end; // kept in scope for clarity; used by assertions
 
     let mut ops: Vec<Op> = Vec::with_capacity(3);
     ops.push(Op {
@@ -480,46 +528,6 @@ fn apply_rewrite(
         delete: 0,
         insert: new_section_name.to_vec(),
     });
-    // Remap an old file offset to its new position after all ops
-    // have been applied. Two flavours:
-    //
-    //   * `Before`: return the position WHERE an op at exactly `p`
-    //     will start inserting. Used for computing our own inserts'
-    //     new offsets (e.g. .debug_line_str's sh_offset = where
-    //     op B begins inserting, not where the post-insert bytes
-    //     land).
-    //
-    //   * `After`: return the position of bytes that WERE at `p`
-    //     in the old file. If an insert op sits exactly at `p`
-    //     (delete=0), those bytes shift forward by the insert size.
-    //     Used for remapping existing SHDR entries — a section
-    //     whose sh_offset equals an insert's position needs its
-    //     post-insert location, not the insert's own location.
-    //
-    // The bug we're avoiding: proc-macro .so files may have a
-    // section whose sh_offset exactly equals debug_line_end. Under
-    // the `Before` rule that section would map to .debug_line_str's
-    // new position, colliding. `After` moves it past the insert.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum MapKind {
-        Before,
-        After,
-    }
-    let map_offset = |p: usize, ops: &[Op], kind: MapKind| -> usize {
-        let mut delta: isize = 0;
-        for op in ops {
-            if op.position < p {
-                delta += op.insert.len() as isize - op.delete as isize;
-            } else if op.position == p && op.delete == 0 && kind == MapKind::After {
-                // Pure insert AT p — old content at p is pushed
-                // forward by the insert's size.
-                delta += op.insert.len() as isize;
-            } else {
-                break;
-            }
-        }
-        (p as isize + delta) as usize
-    };
     ops.sort_by_key(|op| op.position);
 
     // ---- Apply ops A/B/C: stream old bytes → new.
@@ -611,4 +619,500 @@ fn apply_rewrite(
     new_data[60..62].copy_from_slice(&(new_e_shnum as u16).to_le_bytes());
 
     Ok(new_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- map_offset: Before vs After semantics -------------------
+
+    fn op_replace(position: usize, delete: usize, insert: &[u8]) -> Op {
+        Op {
+            position,
+            delete,
+            insert: insert.to_vec(),
+        }
+    }
+    fn op_insert(position: usize, insert: &[u8]) -> Op {
+        op_replace(position, 0, insert)
+    }
+
+    /// Regression for phase 4d (bug 3). Under `Before`, an insert
+    /// op at the query position doesn't contribute. Under `After`,
+    /// a pure insert at the query position pushes the query forward
+    /// by the insert's length. A replacement op at the position
+    /// never contributes for either kind (the queried bytes are
+    /// what's being replaced).
+    #[test]
+    fn map_offset_handles_insert_at_query_position() {
+        let ops = vec![op_insert(100, b"XXXX")]; // +4 bytes at 100
+        assert_eq!(map_offset(100, &ops, MapKind::Before), 100);
+        assert_eq!(map_offset(100, &ops, MapKind::After), 104);
+        assert_eq!(map_offset(99, &ops, MapKind::After), 99);
+        assert_eq!(map_offset(101, &ops, MapKind::After), 105);
+    }
+
+    #[test]
+    fn map_offset_replacement_at_query_position_is_identity_for_both_kinds() {
+        // Replacement (delete > 0) at position 100: bytes at 100
+        // are what's being replaced, so for the replaced thing's
+        // own identity both kinds return 100 + prior deltas (here 0).
+        let ops = vec![op_replace(100, 50, b"ZZZ")]; // -47 bytes net
+        assert_eq!(map_offset(100, &ops, MapKind::Before), 100);
+        assert_eq!(map_offset(100, &ops, MapKind::After), 100);
+        // Bytes right after the replacement shift by net delta.
+        assert_eq!(map_offset(150, &ops, MapKind::Before), 103);
+        assert_eq!(map_offset(150, &ops, MapKind::After), 103);
+    }
+
+    #[test]
+    fn map_offset_accumulates_multiple_prior_ops() {
+        let ops = vec![
+            op_insert(10, b"AA"),     // +2 at 10
+            op_replace(50, 10, b"B"), // -9 at 50
+            op_insert(100, b"CCCC"),  // +4 at 100
+        ];
+        // Query points before all, between, and after.
+        assert_eq!(map_offset(5, &ops, MapKind::Before), 5);
+        assert_eq!(map_offset(20, &ops, MapKind::Before), 22); // +2
+        assert_eq!(map_offset(60, &ops, MapKind::Before), 53); // +2 - 9
+        assert_eq!(map_offset(100, &ops, MapKind::Before), 93);
+        assert_eq!(map_offset(100, &ops, MapKind::After), 97); // +2-9+4
+        assert_eq!(map_offset(200, &ops, MapKind::Before), 197); // +2-9+4
+    }
+
+    // ---- apply_rewrite on synthetic ELFs ---------------------------
+
+    const ELF64_EHDR_SIZE: usize = 64;
+    const ELF64_PHDR_SIZE: usize = 56;
+    const ELF64_SHDR_SIZE: usize = 64;
+
+    /// Build a minimal ELF64-LE with one PT_LOAD segment + three
+    /// sections: null, `.debug_line` (filled with `0xDE` pattern),
+    /// `.shstrtab`. No `.debug_info` / `.debug_abbrev` — we pass
+    /// empty `cu_offsets` to `apply_rewrite` so nothing's patched
+    /// DIE-side.
+    ///
+    /// `layout` picks where the SHDR table lives in the file:
+    ///   * `ShdrLate` — after all sections (gcc/ld convention).
+    ///   * `ShdrEarly` — right after PHDR, BEFORE section content
+    ///     (wild's own convention; exercises phase 4b's SHDR-move
+    ///     fix).
+    ///
+    /// `extra_section_at_debug_line_end`: when true, add a 4th
+    /// SHDR entry for a zero-size section whose `sh_offset` is
+    /// exactly `debug_line_offset + debug_line_size`. This is the
+    /// shape proc-macro `.so` files have and exercises phase 4d's
+    /// Before/After split.
+    #[derive(Clone, Copy)]
+    enum ShdrLayout {
+        Early,
+        Late,
+    }
+
+    #[allow(dead_code)] // some fields read only in select test assertions
+    struct SyntheticParts {
+        bytes: Vec<u8>,
+        debug_line_offset: usize,
+        debug_line_size: usize,
+        shstrtab_offset: usize,
+        shstrtab_size: usize,
+        /// When the test built it with the trailing-section flag,
+        /// this is the old `sh_offset` we'll assert gets correctly
+        /// remapped past `.debug_line_str` in the new file.
+        trailing_section_old_offset: Option<usize>,
+        phdr_load_offset: u64,
+        phdr_load_size: u64,
+    }
+
+    fn build_synthetic_elf(
+        layout: ShdrLayout,
+        extra_section_at_debug_line_end: bool,
+    ) -> SyntheticParts {
+        let shstrtab_bytes: Vec<u8> = {
+            let mut s = vec![0u8];
+            s.extend_from_slice(b".debug_line\0");
+            s.extend_from_slice(b".shstrtab\0");
+            s.extend_from_slice(b".debug_info\0");
+            if extra_section_at_debug_line_end {
+                s.extend_from_slice(b".edge\0");
+            }
+            s
+        };
+        let debug_line_bytes = vec![0xDEu8; 256];
+        let debug_info_bytes = vec![0xD1u8; 32];
+        let phdr_load_bytes = vec![0xAAu8; 128]; // distinct fingerprint
+
+        // Sections: null, .debug_info, .debug_line, (optional .edge), .shstrtab
+        let n_sections = if extra_section_at_debug_line_end {
+            5
+        } else {
+            4
+        };
+
+        // Layout planning ------------------------------------------
+        // Common prefix: ehdr (64) + phdr (56).
+        let ehdr_end = ELF64_EHDR_SIZE;
+        let phdr_off = ehdr_end;
+        let phdr_end = phdr_off + ELF64_PHDR_SIZE;
+
+        let (
+            e_shoff,
+            phdr_load_off,
+            debug_info_off,
+            debug_line_off,
+            shstrtab_off,
+            trailing_off,
+            file_size,
+        ) = match layout {
+            ShdrLayout::Late => {
+                // ehdr | phdr | PT_LOAD | .debug_info | .debug_line | [trail_edge] | .shstrtab | SHDR
+                let load_off = phdr_end;
+                let load_end = load_off + phdr_load_bytes.len();
+                let di = load_end;
+                let di_end = di + debug_info_bytes.len();
+                let dl = di_end;
+                let dl_end = dl + debug_line_bytes.len();
+                let trail = if extra_section_at_debug_line_end {
+                    Some(dl_end)
+                } else {
+                    None
+                };
+                let trail_size = if trail.is_some() { 16 } else { 0 };
+                let sh = dl_end + trail_size;
+                let sh_end = sh + shstrtab_bytes.len();
+                let shoff = sh_end;
+                let total = shoff + n_sections * ELF64_SHDR_SIZE;
+                (shoff, load_off, di, dl, sh, trail, total)
+            }
+            ShdrLayout::Early => {
+                // ehdr | phdr | SHDR | PT_LOAD | .debug_info | .debug_line | [trail_edge] | .shstrtab
+                let shoff = phdr_end;
+                let shdr_end = shoff + n_sections * ELF64_SHDR_SIZE;
+                let load_off = shdr_end;
+                let load_end = load_off + phdr_load_bytes.len();
+                let di = load_end;
+                let di_end = di + debug_info_bytes.len();
+                let dl = di_end;
+                let dl_end = dl + debug_line_bytes.len();
+                let trail = if extra_section_at_debug_line_end {
+                    Some(dl_end)
+                } else {
+                    None
+                };
+                let trail_size = if trail.is_some() { 16 } else { 0 };
+                let sh_str = dl_end + trail_size;
+                let sh_str_end = sh_str + shstrtab_bytes.len();
+                (shoff, load_off, di, dl, sh_str, trail, sh_str_end)
+            }
+        };
+
+        let mut out = vec![0u8; file_size];
+
+        // ehdr
+        out[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        out[4] = 2; // ELFCLASS64
+        out[5] = 1; // ELFDATA2LSB
+        out[6] = 1; // EI_VERSION
+        out[16..18].copy_from_slice(&3u16.to_le_bytes()); // e_type ET_DYN
+        out[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+        out[20..24].copy_from_slice(&1u32.to_le_bytes());
+        out[32..40].copy_from_slice(&(phdr_off as u64).to_le_bytes()); // e_phoff
+        out[40..48].copy_from_slice(&(e_shoff as u64).to_le_bytes()); // e_shoff
+        out[52..54].copy_from_slice(&(ELF64_EHDR_SIZE as u16).to_le_bytes());
+        out[54..56].copy_from_slice(&(ELF64_PHDR_SIZE as u16).to_le_bytes());
+        out[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+        out[58..60].copy_from_slice(&(ELF64_SHDR_SIZE as u16).to_le_bytes());
+        out[60..62].copy_from_slice(&(n_sections as u16).to_le_bytes());
+        out[62..64].copy_from_slice(&2u16.to_le_bytes()); // e_shstrndx (shstrtab is index 2)
+
+        // Section slot layout:
+        //   0: null
+        //   1: .debug_info
+        //   2: .debug_line
+        //   3: .edge       (optional, only when extra_section_at_debug_line_end)
+        //   last: .shstrtab
+        let shstrtab_idx: u16 = if extra_section_at_debug_line_end {
+            4
+        } else {
+            3
+        };
+        out[62..64].copy_from_slice(&shstrtab_idx.to_le_bytes());
+
+        // phdr (one PT_LOAD)
+        // Elf64_Phdr: p_type(u32) p_flags(u32) p_offset(u64) p_vaddr(u64)
+        // p_paddr(u64) p_filesz(u64) p_memsz(u64) p_align(u64) = 56 bytes.
+        out[phdr_off..phdr_off + 4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        out[phdr_off + 4..phdr_off + 8].copy_from_slice(&7u32.to_le_bytes()); // RWX
+        out[phdr_off + 8..phdr_off + 16].copy_from_slice(&(phdr_load_off as u64).to_le_bytes());
+        out[phdr_off + 16..phdr_off + 24].copy_from_slice(&(phdr_load_off as u64).to_le_bytes());
+        out[phdr_off + 24..phdr_off + 32].copy_from_slice(&(phdr_load_off as u64).to_le_bytes());
+        out[phdr_off + 32..phdr_off + 40]
+            .copy_from_slice(&(phdr_load_bytes.len() as u64).to_le_bytes());
+        out[phdr_off + 40..phdr_off + 48]
+            .copy_from_slice(&(phdr_load_bytes.len() as u64).to_le_bytes());
+        out[phdr_off + 48..phdr_off + 56].copy_from_slice(&4096u64.to_le_bytes());
+
+        // Section data
+        out[phdr_load_off..phdr_load_off + phdr_load_bytes.len()].copy_from_slice(&phdr_load_bytes);
+        out[debug_info_off..debug_info_off + debug_info_bytes.len()]
+            .copy_from_slice(&debug_info_bytes);
+        out[debug_line_off..debug_line_off + debug_line_bytes.len()]
+            .copy_from_slice(&debug_line_bytes);
+        if let Some(_t) = trailing_off {
+            // 16 zero bytes already in-place from vec![0; file_size].
+        }
+        out[shstrtab_off..shstrtab_off + shstrtab_bytes.len()].copy_from_slice(&shstrtab_bytes);
+
+        // SHDR entries
+        // sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size,
+        // sh_link, sh_info, sh_addralign, sh_entsize = 64 bytes.
+        let write_shdr = |out: &mut [u8],
+                          slot: usize,
+                          sh_name: u32,
+                          sh_type: u32,
+                          sh_flags: u64,
+                          sh_offset: u64,
+                          sh_size: u64| {
+            let off = e_shoff + slot * ELF64_SHDR_SIZE;
+            out[off..off + 4].copy_from_slice(&sh_name.to_le_bytes());
+            out[off + 4..off + 8].copy_from_slice(&sh_type.to_le_bytes());
+            out[off + 8..off + 16].copy_from_slice(&sh_flags.to_le_bytes());
+            out[off + 16..off + 24].copy_from_slice(&0u64.to_le_bytes());
+            out[off + 24..off + 32].copy_from_slice(&sh_offset.to_le_bytes());
+            out[off + 32..off + 40].copy_from_slice(&sh_size.to_le_bytes());
+            out[off + 40..off + 44].copy_from_slice(&0u32.to_le_bytes()); // sh_link
+            out[off + 44..off + 48].copy_from_slice(&0u32.to_le_bytes()); // sh_info
+            out[off + 48..off + 56].copy_from_slice(&1u64.to_le_bytes()); // sh_addralign
+            out[off + 56..off + 64].copy_from_slice(&0u64.to_le_bytes()); // sh_entsize
+        };
+
+        // Slot 0: SHT_NULL (already zero).
+        // Shstrtab name-offset helpers.
+        let debug_line_name_off = 1u32;
+        let shstrtab_name_off = (1 + b".debug_line\0".len()) as u32;
+        let debug_info_name_off = (1 + b".debug_line\0".len() + b".shstrtab\0".len()) as u32;
+        let edge_name_off =
+            (1 + b".debug_line\0".len() + b".shstrtab\0".len() + b".debug_info\0".len()) as u32;
+
+        // Slot 1: .debug_info
+        write_shdr(
+            &mut out,
+            1,
+            debug_info_name_off,
+            1,
+            0,
+            debug_info_off as u64,
+            debug_info_bytes.len() as u64,
+        );
+        // Slot 2: .debug_line
+        write_shdr(
+            &mut out,
+            2,
+            debug_line_name_off,
+            1,
+            0,
+            debug_line_off as u64,
+            debug_line_bytes.len() as u64,
+        );
+        if extra_section_at_debug_line_end {
+            // Slot 3: .edge — sh_offset = debug_line_end.
+            write_shdr(
+                &mut out,
+                3,
+                edge_name_off,
+                1,
+                0,
+                trailing_off.unwrap() as u64,
+                16,
+            );
+            // Slot 4: .shstrtab
+            write_shdr(
+                &mut out,
+                4,
+                shstrtab_name_off,
+                3,
+                0,
+                shstrtab_off as u64,
+                shstrtab_bytes.len() as u64,
+            );
+        } else {
+            // Slot 3: .shstrtab
+            write_shdr(
+                &mut out,
+                3,
+                shstrtab_name_off,
+                3,
+                0,
+                shstrtab_off as u64,
+                shstrtab_bytes.len() as u64,
+            );
+        }
+
+        SyntheticParts {
+            bytes: out,
+            debug_line_offset: debug_line_off,
+            debug_line_size: debug_line_bytes.len(),
+            shstrtab_offset: shstrtab_off,
+            shstrtab_size: shstrtab_bytes.len(),
+            trailing_section_old_offset: trailing_off,
+            phdr_load_offset: phdr_load_off as u64,
+            phdr_load_size: phdr_load_bytes.len() as u64,
+        }
+    }
+
+    /// Phase 4b regression: when SHDR is early in the file (wild's
+    /// layout), the rewrite must MOVE SHDR to the end of file rather
+    /// than grow it in place. PT_LOAD content must NOT shift —
+    /// PHDR p_offset fields aren't updated and exec would load
+    /// garbage.
+    #[test]
+    fn synthetic_elf_parses_via_object_crate() {
+        // Sanity: both layouts produce an ELF that `object` can
+        // parse + section-walk without error. If this fails, the
+        // more complex rewrite tests downstream will hit confusing
+        // "section_name 0" errors originating from the synthetic,
+        // not from any apply_rewrite bug.
+        for &layout in &[ShdrLayout::Early, ShdrLayout::Late] {
+            for &extra in &[false, true] {
+                let parts = build_synthetic_elf(layout, extra);
+                let obj = object::File::parse(parts.bytes.as_slice()).unwrap_or_else(|e| {
+                    panic!(
+                        "object::File::parse failed (layout={:?}, extra={}): {e}",
+                        match layout {
+                            ShdrLayout::Early => "Early",
+                            ShdrLayout::Late => "Late",
+                        },
+                        extra
+                    )
+                });
+                use object::Object as _;
+                use object::ObjectSection as _;
+                for s in obj.sections() {
+                    let _ = s.name().expect("section name readable");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_moves_shdr_to_end_on_early_shdr_layout() {
+        let parts = build_synthetic_elf(ShdrLayout::Early, false);
+        let new_debug_line = vec![0xCAu8; 128]; // smaller than original 256
+        let new_debug_line_str = vec![0xFBu8; 64];
+        let out = apply_rewrite(
+            &parts.bytes,
+            &[],
+            &new_debug_line,
+            &new_debug_line_str,
+            new_debug_line.len(),
+            new_debug_line_str.len(),
+        )
+        .expect("apply_rewrite ok");
+
+        // ehdr.e_shoff should point at (new_file_size - new_shnum*64).
+        let new_e_shoff = u64::from_le_bytes(out[40..48].try_into().unwrap()) as usize;
+        let new_e_shnum = u16::from_le_bytes(out[60..62].try_into().unwrap()) as usize;
+        assert_eq!(
+            new_e_shoff + new_e_shnum * ELF64_SHDR_SIZE,
+            out.len(),
+            "SHDR must live at end of new file (phase 4b)"
+        );
+        // 4 original sections (null, .debug_info, .debug_line, .shstrtab)
+        // + 1 new (.debug_line_str) = 5.
+        assert_eq!(
+            new_e_shnum, 5,
+            "one extra SHDR entry added (.debug_line_str)"
+        );
+
+        // PT_LOAD content must be byte-identical at its old offset.
+        let load_off = parts.phdr_load_offset as usize;
+        let load_sz = parts.phdr_load_size as usize;
+        assert_eq!(
+            &out[load_off..load_off + load_sz],
+            &parts.bytes[load_off..load_off + load_sz],
+            "PT_LOAD content shifted — PHDR p_offset would be stale (phase 4b regression)"
+        );
+    }
+
+    /// Phase 4d regression: proc-macro `.so` files have a section
+    /// starting exactly at `debug_line_end`. Under the old
+    /// (single-mode) `map_offset`, such a section's new `sh_offset`
+    /// collided with the newly-inserted `.debug_line_str`. The
+    /// Before/After split moves it past the insert.
+    #[test]
+    fn rewrite_remaps_section_at_debug_line_end_past_the_insert() {
+        let parts = build_synthetic_elf(ShdrLayout::Late, true);
+        let new_debug_line = vec![0xCAu8; 128];
+        let new_debug_line_str = vec![0xFBu8; 48];
+        let out = apply_rewrite(
+            &parts.bytes,
+            &[],
+            &new_debug_line,
+            &new_debug_line_str,
+            new_debug_line.len(),
+            new_debug_line_str.len(),
+        )
+        .expect("apply_rewrite ok");
+
+        // New SHDR is at end of file. .edge is slot 3 (after null,
+        // .debug_info, .debug_line). .debug_line_str is the
+        // last slot.
+        let new_e_shoff = u64::from_le_bytes(out[40..48].try_into().unwrap()) as usize;
+        let edge_entry_off = new_e_shoff + 3 * ELF64_SHDR_SIZE;
+        let edge_sh_offset = u64::from_le_bytes(
+            out[edge_entry_off + 24..edge_entry_off + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        let new_e_shnum = u16::from_le_bytes(out[60..62].try_into().unwrap()) as usize;
+        let line_str_entry_off = new_e_shoff + (new_e_shnum - 1) * ELF64_SHDR_SIZE;
+        let line_str_sh_offset = u64::from_le_bytes(
+            out[line_str_entry_off + 24..line_str_entry_off + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let line_str_sh_size = u64::from_le_bytes(
+            out[line_str_entry_off + 32..line_str_entry_off + 40]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        assert_eq!(
+            line_str_sh_size,
+            new_debug_line_str.len(),
+            "new .debug_line_str entry carries expected size"
+        );
+        // `.edge` must not collide with `.debug_line_str`. Under
+        // the pre-phase-4d bug, both had the same sh_offset.
+        assert!(
+            edge_sh_offset >= line_str_sh_offset + line_str_sh_size,
+            "section at debug_line_end must be remapped past .debug_line_str \
+             (edge_sh_offset={edge_sh_offset}, \
+              line_str=[{line_str_sh_offset}, +{line_str_sh_size})) — phase 4d regression"
+        );
+        // Sanity: the parts.trailing_section_old_offset was debug_line_end
+        // in the OLD file. In the NEW file it should equal
+        // (old position) + (new_debug_line size - old size) + new_debug_line_str.len().
+        let expected_new_edge = parts.trailing_section_old_offset.unwrap() as isize
+            + (new_debug_line.len() as isize - parts.debug_line_size as isize)
+            + new_debug_line_str.len() as isize;
+        assert_eq!(edge_sh_offset as isize, expected_new_edge);
+    }
+
+    /// Phase 4-"grew": tiny-input case. No regression test at this
+    /// level because `apply_rewrite` is only called after
+    /// `rewrite_buffer` has already decided to upgrade. The
+    /// "grew" check lives in `upgrade_debug_line` and is exercised
+    /// by the `opt1` integration fixture (small C program; rewrite
+    /// always produces bigger output for such tiny inputs, so the
+    /// skip path fires). Explicit unit coverage would need to
+    /// construct a real DWARF 4 line program to drive `rewrite_buffer`
+    /// end-to-end, which is more scaffolding than the payoff
+    /// justifies right now.
+    #[test]
+    #[ignore = "see comment on rewrite_grew_skip_is_integration_only"]
+    fn rewrite_grew_skip_is_integration_only() {}
 }

@@ -45,16 +45,22 @@
 
 #include <stdio.h>
 
-struct point { int x, y, z; const char *tag; };
-struct range { int lo, hi; double scale; };
+struct point {
+  int x, y, z;
+  const char* tag;
+};
+struct range {
+  int lo, hi;
+  double scale;
+};
 struct config {
-    const char *name;
-    int values[8];
-    struct point origin;
-    struct range bounds;
+  const char* name;
+  int values[8];
+  struct point origin;
+  struct range bounds;
 };
 
-static const char *messages[] = {
+static const char* messages[] = {
     "entry zero: wild linker debug-info padding text one",
     "entry one:  deliberately long so .debug_str grows",
     "entry two:  third message to pad the merged-string table",
@@ -65,38 +71,38 @@ static const char *messages[] = {
     "entry seven: eighth and final",
 };
 
-static int compute_point(struct point *p, int seed) {
-    p->x = seed;
-    p->y = seed + 1;
-    p->z = seed + 2;
-    p->tag = messages[seed & 7];
-    return p->x + p->y + p->z;
+static int compute_point(struct point* p, int seed) {
+  p->x = seed;
+  p->y = seed + 1;
+  p->z = seed + 2;
+  p->tag = messages[seed & 7];
+  return p->x + p->y + p->z;
 }
 
-static int compute_range(struct range *r, int lo, int hi) {
-    r->lo = lo;
-    r->hi = hi;
-    r->scale = (double)(hi - lo) / 2.0;
-    return r->hi - r->lo;
+static int compute_range(struct range* r, int lo, int hi) {
+  r->lo = lo;
+  r->hi = hi;
+  r->scale = (double)(hi - lo) / 2.0;
+  return r->hi - r->lo;
 }
 
-static int configure(struct config *c, int seed) {
-    c->name = messages[seed & 7];
-    for (int i = 0; i < 8; i++) {
-        c->values[i] = seed + i * 3;
-    }
-    compute_point(&c->origin, seed);
-    compute_range(&c->bounds, seed, seed + 100);
-    return c->values[0] + c->origin.x + c->bounds.lo;
+static int configure(struct config* c, int seed) {
+  c->name = messages[seed & 7];
+  for (int i = 0; i < 8; i++) {
+    c->values[i] = seed + i * 3;
+  }
+  compute_point(&c->origin, seed);
+  compute_range(&c->bounds, seed, seed + 100);
+  return c->values[0] + c->origin.x + c->bounds.lo;
 }
 
 int main(void) {
-    struct config cfg;
-    int sum = 0;
-    for (int i = 0; i < 4; i++) {
-        sum += configure(&cfg, i);
-    }
-    // wild's run-binary check expects exit code 42 (the magic number
-    // its other test fixtures use).
-    return 42 + (sum & 0);
+  struct config cfg;
+  int sum = 0;
+  for (int i = 0; i < 4; i++) {
+    sum += configure(&cfg, i);
+  }
+  // wild's run-binary check expects exit code 42 (the magic number
+  // its other test fixtures use).
+  return 42 + (sum & 0);
 }
