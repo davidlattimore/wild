@@ -38,6 +38,36 @@
 //! correctness-critical change fused with a storage-format churn.
 
 use std::mem::size_of;
+use std::path::Path;
+use std::path::PathBuf;
+
+/// Locate the on-disk cache file for a given input. Returns
+/// `None` when we can't determine a cache directory (no
+/// `$XDG_CACHE_HOME` *and* no `$HOME`), in which case callers
+/// fall back to the re-parse path without caching.
+///
+/// File name is derived from blake3(absolute_input_path) ‖ schema
+/// so different inputs with the same basename (very common across
+/// cargo's `deps/` directory — the `libfoo-<hash>.rlib` shape) can't
+/// collide. `std::path::Path::canonicalize` is deliberately NOT
+/// used here: wild's input fingerprints are path-string-based too,
+/// so staying symlink-literal keeps the two layers consistent.
+pub(crate) fn cache_path_for_input(input: &Path) -> Option<PathBuf> {
+    let dir = if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+        PathBuf::from(xdg).join("wild").join("parsed-inputs")
+    } else {
+        let home = std::env::var_os("HOME")?;
+        PathBuf::from(home)
+            .join(".cache")
+            .join("wild")
+            .join("parsed-inputs")
+    };
+    let mut key = blake3::Hasher::new();
+    key.update(input.as_os_str().as_encoded_bytes());
+    key.update(&SCHEMA.to_le_bytes());
+    let hex = key.finalize().to_hex();
+    Some(dir.join(format!("{hex}.wildpi")))
+}
 
 /// 8-byte magic at the head of every cache file. Distinct from
 /// `WILDIH01` (the `.wild-hashes` side-car magic) so mixing the two
@@ -265,6 +295,19 @@ impl CacheBuilder {
         });
     }
 
+    /// Atomically write the cache to `path`. Uses the same
+    /// tmp-file-and-rename pattern as other wild side-cars so a
+    /// concurrent reader never observes a torn cache.
+    pub(crate) fn write_to(self, path: &std::path::Path) -> std::io::Result<()> {
+        let bytes = self.finish();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("wildpi.tmp");
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, path)
+    }
+
     pub(crate) fn finish(self) -> Vec<u8> {
         let header_size = size_of::<CacheHeader>();
         let sym_bytes = self.entries.len() * size_of::<CachedSymbol>();
@@ -455,6 +498,59 @@ mod tests {
         let view = CacheView::from_bytes(&buf).unwrap();
         assert!(view.is_empty());
         assert_eq!(view.iter().count(), 0);
+    }
+
+    #[test]
+    fn write_to_atomically_persists_and_reloads() {
+        let mut b = CacheBuilder::default();
+        b.add(b"_a", 1, 0, CachedSymbolKind::Defined);
+        b.add(b"_b", 2, 0x10, CachedSymbolKind::Undefined);
+
+        let tmp =
+            std::env::temp_dir().join(format!("wild-parsed-cache-{}.wildpi", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+
+        b.write_to(&tmp).expect("write");
+        // The tmp-suffix file must not be left behind — rename
+        // should have consumed it.
+        let leftover = tmp.with_extension("wildpi.tmp");
+        assert!(!leftover.exists(), "tmp {leftover:?} should be gone");
+
+        let bytes = std::fs::read(&tmp).unwrap();
+        let buf = aligned(&bytes);
+        let view = CacheView::from_bytes(&buf).expect("view from file bytes");
+        assert_eq!(view.len(), 2);
+        assert_eq!(view.get(0).unwrap().name, b"_a");
+        assert_eq!(view.get(1).unwrap().name, b"_b");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn cache_path_derivation_is_collision_free_for_same_basename() {
+        // The `libfoo-<hash>.rlib` cargo convention means multiple
+        // inputs with the same basename live in different dirs.
+        // cache_path_for_input must disambiguate.
+        // Force XDG_CACHE_HOME so the test is deterministic.
+        let prev = std::env::var_os("XDG_CACHE_HOME");
+        unsafe {
+            std::env::set_var("XDG_CACHE_HOME", std::env::temp_dir());
+        }
+        let a = cache_path_for_input(Path::new("/tmp/build-a/libfoo-abc.rlib"));
+        let b = cache_path_for_input(Path::new("/tmp/build-b/libfoo-abc.rlib"));
+        let a = a.expect("a");
+        let b = b.expect("b");
+        assert_ne!(
+            a, b,
+            "same-basename inputs from different dirs produced the same cache path"
+        );
+        // Same input twice → same cache path.
+        let a2 = cache_path_for_input(Path::new("/tmp/build-a/libfoo-abc.rlib")).unwrap();
+        assert_eq!(a, a2, "identical input path produced different cache paths");
+        // Restore env.
+        match prev {
+            Some(v) => unsafe { std::env::set_var("XDG_CACHE_HOME", v) },
+            None => unsafe { std::env::remove_var("XDG_CACHE_HOME") },
+        }
     }
 
     #[test]
