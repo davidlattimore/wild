@@ -480,13 +480,40 @@ fn apply_rewrite(
         delete: 0,
         insert: new_section_name.to_vec(),
     });
-    // map_offset(p) = p + Σ (insert.len - delete) for ops with
-    // position < p. Used to translate old file offsets to new.
-    let map_offset = |p: usize, ops: &[Op]| -> usize {
+    // Remap an old file offset to its new position after all ops
+    // have been applied. Two flavours:
+    //
+    //   * `Before`: return the position WHERE an op at exactly `p`
+    //     will start inserting. Used for computing our own inserts'
+    //     new offsets (e.g. .debug_line_str's sh_offset = where
+    //     op B begins inserting, not where the post-insert bytes
+    //     land).
+    //
+    //   * `After`: return the position of bytes that WERE at `p`
+    //     in the old file. If an insert op sits exactly at `p`
+    //     (delete=0), those bytes shift forward by the insert size.
+    //     Used for remapping existing SHDR entries — a section
+    //     whose sh_offset equals an insert's position needs its
+    //     post-insert location, not the insert's own location.
+    //
+    // The bug we're avoiding: proc-macro .so files may have a
+    // section whose sh_offset exactly equals debug_line_end. Under
+    // the `Before` rule that section would map to .debug_line_str's
+    // new position, colliding. `After` moves it past the insert.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum MapKind {
+        Before,
+        After,
+    }
+    let map_offset = |p: usize, ops: &[Op], kind: MapKind| -> usize {
         let mut delta: isize = 0;
         for op in ops {
             if op.position < p {
                 delta += op.insert.len() as isize - op.delete as isize;
+            } else if op.position == p && op.delete == 0 && kind == MapKind::After {
+                // Pure insert AT p — old content at p is pushed
+                // forward by the insert's size.
+                delta += op.insert.len() as isize;
             } else {
                 break;
             }
@@ -522,10 +549,14 @@ fn apply_rewrite(
     // ---- Op D: append new SHDR table at end of file.
     let new_e_shoff = new_data.len();
     let new_e_shnum = e_shnum + 1;
-    let new_shstrtab_offset = map_offset(shstrtab_offset as usize, &ops);
+    // For .shstrtab and .debug_line: their NEW position is where
+    // op A's replacement / op C's append START — Before-kind.
+    let new_shstrtab_offset = map_offset(shstrtab_offset as usize, &ops, MapKind::Before);
     let new_shstrtab_size = shstrtab_old_size as usize + new_section_name.len();
-    let new_line_str_offset = map_offset(debug_line_end, &ops);
-    let new_debug_line_offset = map_offset(debug_line_offset as usize, &ops);
+    // .debug_line_str's sh_offset = where op B begins inserting.
+    // Use Before so we don't get pushed past our own insert.
+    let new_line_str_offset = map_offset(debug_line_end, &ops, MapKind::Before);
+    let new_debug_line_offset = map_offset(debug_line_offset as usize, &ops, MapKind::Before);
 
     new_data.resize(new_e_shoff + new_e_shnum * e_shentsize, 0);
     for i in 0..e_shnum {
@@ -548,9 +579,14 @@ fn apply_rewrite(
             entry.sh_offset.set(endian, new_shstrtab_offset as u64);
             entry.sh_size.set(endian, new_shstrtab_size as u64);
         } else if sh_offset > 0 {
+            // After-kind: a section whose sh_offset coincides with
+            // an insert op's position must shift past the inserted
+            // bytes, not collide with them. Hits proc-macro .so
+            // files where some section starts exactly at
+            // debug_line_end (= op B's insert point).
             entry
                 .sh_offset
-                .set(endian, map_offset(sh_offset, &ops) as u64);
+                .set(endian, map_offset(sh_offset, &ops, MapKind::After) as u64);
         }
     }
     // New entry for .debug_line_str at end of new SHDR.
