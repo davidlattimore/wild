@@ -99,10 +99,33 @@ pub(crate) enum SymbolPlacement<'data> {
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
 
-    /// Symbol will point to the start of the named program segment.
-    /// `name` is the conventional GNU ld segment name (e.g. b"text", b"data", b"bss", b"rodata").
-    /// `default` is the fallback address when no matching segment is found.
-    SegmentStart(&'data [u8], u64),
+    /// Symbol defined via `SEGMENT_START("name", default)` in a linker script.
+    /// Resolves to the value of the corresponding `-Ttext`/`-Tdata`/`-Tbss` command-line
+    /// override if provided, otherwise to `default`.
+    SegmentStart(SegmentName, u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SegmentName {
+    Text,
+    Rodata,
+    Data,
+    Bss,
+}
+
+impl SegmentName {
+    pub(crate) fn from_bytes(name: &[u8]) -> crate::error::Result<Self> {
+        match name {
+            b"text" => Ok(Self::Text),
+            b"rodata" => Ok(Self::Rodata),
+            b"data" => Ok(Self::Data),
+            b"bss" => Ok(Self::Bss),
+            other => Err(crate::error!(
+                "unknown SEGMENT_START segment name '{}'",
+                String::from_utf8_lossy(other)
+            )),
+        }
+    }
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".

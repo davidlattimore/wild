@@ -38,7 +38,7 @@ fn placement_from_symbol_definition_value<'data>(
     let placement = match value {
         Expression::SegmentStart(seg_name, default_expr) => {
             let default = crate::expression_eval::eval_constant_expr(default_expr).unwrap_or(0);
-            SymbolPlacement::SegmentStart(seg_name, default)
+            SymbolPlacement::SegmentStart(*seg_name, default)
         }
         Expression::Number(n) => SymbolPlacement::DefsymAbsolute(*n),
         Expression::Symbol(sym) => {
@@ -280,7 +280,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                         default_expr,
                                                     )
                                                     .unwrap_or(0);
-                                                SymbolPlacement::SegmentStart(name, default)
+                                                SymbolPlacement::SegmentStart(*name, default)
                                             }
                                             _other => {
                                                 // Unsupported RHS expression: skip this symbol

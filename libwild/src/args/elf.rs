@@ -89,6 +89,10 @@ pub struct ElfArgs {
     /// Section start addresses from `--section-start` options. Maps section name to address.
     pub(crate) section_start: HashMap<Vec<u8>, u64>,
 
+    /// Segment start address overrides from `-Ttext`, `-Tdata`, `-Tbss`.
+    /// Used to implement `SEGMENT_START("name", default)` per GNU ld behaviour.
+    pub(crate) segment_start_overrides: HashMap<crate::parsing::SegmentName, u64>,
+
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
@@ -287,6 +291,7 @@ impl Default for ElfArgs {
             export_list_path: None,
             defsym: Vec::new(),
             section_start: HashMap::new(),
+            segment_start_overrides: HashMap::new(),
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -1264,6 +1269,39 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
+            // -Ttext=ADDR, -Tdata=ADDR, -Tbss=ADDR are segment start overrides,
+            // not linker script paths. Handle them here since they share the -T prefix.
+            // The prefix handler gives us the part after "-T", which may be:
+            //   "text=0x700000"  (from -Ttext=0x700000)
+            //   "text"           (from -Ttext 0x700000, where 0x700000 was consumed as next arg)
+            // We only handle the "name=ADDR" form here; the space-separated form would
+            // require consuming the next argument which the prefix handler already did,
+            // passing just the name as value. That case falls through to the script handler
+            // and will fail, but it matches GNU ld's documented syntax of -Ttext=ADDR.
+            if let Some(addr) = value.strip_prefix("text=") {
+                args.segment_start_overrides.insert(
+                    crate::parsing::SegmentName::Text,
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Ttext"))?,
+                );
+                return Ok(());
+            }
+            if let Some(addr) = value.strip_prefix("data=") {
+                args.segment_start_overrides.insert(
+                    crate::parsing::SegmentName::Data,
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Tdata"))?,
+                );
+                return Ok(());
+            }
+            if let Some(addr) = value.strip_prefix("bss=") {
+                args.segment_start_overrides.insert(
+                    crate::parsing::SegmentName::Bss,
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Tbss"))?,
+                );
+                return Ok(());
+            }
             args.common_mut().save_dir.handle_file(value);
             args.common_mut().add_script(value);
             Ok(())
@@ -1831,6 +1869,10 @@ impl platform::Args for ElfArgs {
 
     fn start_address_for_section(&self, section_name: SectionName) -> Option<u64> {
         self.section_start.get(section_name.bytes()).copied()
+    }
+
+    fn segment_start_override(&self, name: crate::parsing::SegmentName) -> Option<u64> {
+        self.segment_start_overrides.get(&name).copied()
     }
 
     fn version_script_path(&self) -> Option<&Path> {

@@ -198,8 +198,8 @@ fn evaluate_expression<'data, P: Platform>(
                 })?;
             eval!(&region.length)
         }
-        // SEGMENT_START: segment layout is not available in this evaluator context,
-        // so fall back to evaluating the default expression.
+        // SEGMENT_START: segment layout and -T overrides are not available in this evaluator
+        // context, so fall back to evaluating the default expression.
         Expression::SegmentStart(_name, default_expr) => eval!(default_expr),
     }
 }
