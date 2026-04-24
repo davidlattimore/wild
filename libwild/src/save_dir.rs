@@ -191,13 +191,10 @@ impl SaveDirState {
 
     /// Writes arguments to `out`.
     ///
-    /// When `is_at_file` is false (writing the main run-with script), each `@file` argument is
-    /// saved as a separate file in the save-dir with path substitutions applied. The shell script
-    /// setup code (temp-file creation + `envsubst` expansion) is emitted to `setup_out`, and the
-    /// argument becomes `@$WILD_AT_N` in the exec line.
-    ///
-    /// When `is_at_file` is true (writing saved at-file content), nested `@file` arguments are
-    /// expanded inline so the at-file content stays self-contained.
+    /// When `is_rsp_file` is false (writing the main run-with script), each response file
+    /// (@-prefixed argument) is saved as a separate file in the save-dir with path substitutions
+    /// applied. Otherwise, nested `@file` arguments are expanded inline so the response file
+    /// content stays self-contained.
     fn write_args(
         &self,
         args: &[String],
@@ -205,7 +202,7 @@ impl SaveDirState {
         setup_out: &mut dyn Write,
         original_output_file: &mut Option<String>,
         at_file_counter: &mut usize,
-        is_at_file: bool,
+        is_rsp_file: bool,
     ) -> Result {
         let mut args = args.iter();
 
@@ -213,8 +210,8 @@ impl SaveDirState {
             if let Some(args_path) = arg.strip_prefix("@") {
                 let args_from_file = crate::args::read_args_from_file(Path::new(args_path))?;
 
-                if is_at_file {
-                    // Expand nested @-files inline into the current at-file.
+                if is_rsp_file {
+                    // Expand nested response files inline into the current file.
                     self.write_args(
                         &args_from_file,
                         out,
@@ -225,9 +222,9 @@ impl SaveDirState {
                     )?;
                 } else {
                     // Save to a separate file and reference it via a temp variable.
-                    let at_index = *at_file_counter;
+                    let rsp_index = *at_file_counter;
                     *at_file_counter += 1;
-                    let at_filename = format!("at-{at_index}.txt");
+                    let at_filename = format!("at-{rsp_index}.txt");
                     let at_path = self.dir.join(&at_filename);
 
                     {
@@ -249,18 +246,22 @@ impl SaveDirState {
 
                     write!(
                         setup_out,
-                        "WILD_AT_{at_index}=$(mktemp)\n\
-                         envsubst '$D $OUT' < \"$D/{at_filename}\" > \"$WILD_AT_{at_index}\"\n\
-                         trap \"rm -f \\\"$WILD_AT_{at_index}\\\"\" EXIT\n"
+                        "RSP_{rsp_index}=$(mktemp)\n\
+                         while IFS= read -r LINE || [ -n \"$LINE\" ]; do\n\
+                           LINE=\"${{LINE//\\$D/$D}}\"\n\
+                           LINE=\"${{LINE//\\$OUT/$OUT}}\"\n\
+                           printf '%s\\n' \"$LINE\"\n\
+                         done < \"$D/{at_filename}\" > \"$RSP_{rsp_index}\"\n\
+                         trap \"rm -f \\\"$RSP_{rsp_index}\\\"\" EXIT\n"
                     )?;
 
                     write_script_arg_separator(out)?;
-                    write!(out, "@$WILD_AT_{at_index}")?;
+                    write!(out, "@$RSP_{rsp_index}")?;
                 }
                 continue;
             }
 
-            write_arg_separator(out, is_at_file)?;
+            write_arg_separator(out, is_rsp_file)?;
 
             if let Some(mut path) = arg.strip_prefix("-o") {
                 if path.is_empty() {
@@ -294,7 +295,7 @@ impl SaveDirState {
                 let path = std::path::absolute(maybe_path)?;
                 if self.output_path(&path).exists() {
                     write_copied_file_arg(out, &path)?;
-                } else if is_at_file {
+                } else if is_rsp_file {
                     // At-file content is consumed directly by the linker, not by a shell, so no
                     // shell escaping is needed.
                     out.write_all(maybe_path.as_bytes())?;

@@ -144,6 +144,14 @@
 //!
 //! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
+//! DriverMode:{mode} Links using a non-standard mode. See Driver Modes section below.
+//!
+//! ## Driver Modes
+//!
+//! save-dir-response: Writes all arguments to a response file, passes that response file to the
+//! linker driver to produce a save-dir, then runs the save-dir's run-with script to perform
+//! linking. This is intended to exercise save-dir's handling of response files.
+//!
 //! ## Inputs
 //!
 //! The following input types support an optional template parameter. This should look something
@@ -236,6 +244,7 @@ use std::time::Duration;
 use std::time::Instant;
 use strum::Display;
 use strum::EnumString;
+use strum::VariantNames;
 use wait_timeout::ChildExt;
 
 fn main() -> Result<std::process::ExitCode> {
@@ -667,6 +676,7 @@ struct Config {
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
     available_linkers: Vec<Linker>,
+    driver_mode: Option<DriverMode>,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
@@ -731,6 +741,12 @@ enum PlatformKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DirectConfig {
     mode: Mode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, VariantNames)]
+#[strum(serialize_all = "kebab-case")]
+enum DriverMode {
+    SaveDirResponse,
 }
 
 #[derive(Debug, Clone)]
@@ -1207,6 +1223,7 @@ impl Config {
             tracked_files: Default::default(),
             available_linkers: available_linkers.to_owned(),
             so_single_linker: None,
+            driver_mode: None,
         }
     }
 }
@@ -1547,6 +1564,14 @@ fn process_directive(
         }
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.to_lowercase().parse()?;
+        }
+        "DriverMode" => {
+            config.driver_mode = Some(DriverMode::from_str(arg).map_err(|_| {
+                error!(
+                    "Unknown driver mode `{arg}`, supported options are: {}",
+                    DriverMode::VARIANTS.join(",")
+                )
+            })?);
         }
         other => bail!("Unknown directive '{other}'"),
     }
@@ -2884,6 +2909,12 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
+        if let Some(mode) = config.driver_mode {
+            match mode {
+                DriverMode::SaveDirResponse => return self.run_save_dir_response(config),
+            }
+        }
+
         // If we're linking with wild and we're going to be invoking the linker directly, then just
         // use libwild as a library. This is marginally faster, since we avoid the process startup
         // costs. It also allows us to exercise wild as a library. We still exercise wild from the
@@ -2950,6 +2981,103 @@ impl LinkCommand {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    fn run_save_dir_response(&mut self, config: &Config) -> Result {
+        let save_dir = self.output_path.with_extension("save");
+        self.command.env("WILD_SAVE_DIR", &save_dir);
+        self.opt_save_dir = Some(save_dir.clone());
+
+        let rsp_path = self.output_path.with_extension("rsp");
+        let rsp_contents = self
+            .command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        std::fs::write(&rsp_path, format!("{rsp_contents}\n"))
+            .with_context(|| format!("Failed to write response file `{}`", rsp_path.display()))?;
+
+        let mut create_save_dir_cmd = Command::new(self.command.get_program());
+        create_save_dir_cmd.arg(format!("@{}", rsp_path.display()));
+
+        for (key, value) in self.command.get_envs() {
+            if let Some(value) = value {
+                create_save_dir_cmd.env(key, value);
+            } else {
+                create_save_dir_cmd.env_remove(key);
+            }
+        }
+
+        if let Some(dir) = self.command.get_current_dir() {
+            create_save_dir_cmd.current_dir(dir);
+        }
+
+        create_save_dir_cmd.env("WILD_SAVE_DIR", &save_dir);
+        create_save_dir_cmd.env("WILD_SAVE_SKIP_LINKING", "1");
+
+        let output = create_save_dir_cmd.output().with_context(|| {
+            format!(
+                "Failed to run {}",
+                create_save_dir_cmd.get_program().to_string_lossy()
+            )
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            bail!(
+                "Failed to run: {}\nOutput:\n{stdout}{stderr}",
+                command_as_str(&create_save_dir_cmd)
+            );
+        }
+
+        let run_with = run_with_path(&save_dir);
+        if !run_with.exists() {
+            bail!(
+                "run-with script wasn't generated at `{}`. Command:\n{}\nOutput:\n{stdout}{stderr}",
+                run_with.display(),
+                command_as_str(&create_save_dir_cmd),
+            );
+        }
+
+        let mut run_save_dir_cmd = Command::new("bash");
+        run_save_dir_cmd.arg(&run_with);
+        run_save_dir_cmd.arg(wild_path());
+
+        // The fact that our save-dirs use D is an implementation detail, but it's convenient to
+        // stress-test our handling of that variable by setting it to an invalid value here.
+        run_save_dir_cmd.env("D", "/definitely/wrong/save-dir");
+
+        let output = run_save_dir_cmd
+            .output()
+            .with_context(|| format!("Failed to run save-dir script `{}`", run_with.display()))?;
+
+        let stdout = std::str::from_utf8(&output.stdout).context("script stdout is not UTF-8")?;
+        let stderr = std::str::from_utf8(&output.stderr).context("script stderr is not UTF-8")?;
+
+        self.check_messages(&config.expect_stderr, "stderr", stderr, stdout, stderr)?;
+        self.check_messages(&config.expect_stdout, "stdout", stdout, stdout, stderr)?;
+
+        if !output.status.success() {
+            bail!(
+                "save-dir run-with script failed:\n{stdout}{stderr}\nRelink with:\n{}",
+                run_with.display()
+            );
+        }
+
+        let bin_output = save_dir.join("bin");
+        std::fs::rename(&bin_output, &self.output_path).with_context(|| {
+            format!(
+                "Failed to rename save-dir output from `{}` to `{}`",
+                bin_output.display(),
+                self.output_path.display()
+            )
+        })?;
 
         Ok(())
     }
