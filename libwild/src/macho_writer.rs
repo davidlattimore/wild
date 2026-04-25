@@ -429,9 +429,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     let _addend = rel.r_address;
     let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
 
+    const MASK: u64 = (1 << 27) - 1;
     let value = match rel_info.kind {
         // TODO: assuming it's JUMP26
-        RelocationKind::Relative => (resolution.raw_value.wrapping_sub(place)) >> 2,
+        RelocationKind::Relative => ((resolution.raw_value.wrapping_sub(place)) >> 2) & MASK,
         _ => todo!(),
     };
 
