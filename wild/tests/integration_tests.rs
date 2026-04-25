@@ -538,8 +538,43 @@ impl Architecture {
         }
     }
 
+    fn cross_triplet(&self) -> String {
+        let suse_triplet = format!("{self}-suse-linux");
+        if std::path::Path::new(&format!("/usr/{suse_triplet}/sys-root")).exists() {
+            return suse_triplet;
+        }
+        format!("{self}-linux-gnu")
+    }
+
     fn get_cross_sysroot_path(&self) -> String {
-        format!("/usr/{self}-linux-gnu")
+        let triplet = self.cross_triplet();
+        if triplet.ends_with("-suse-linux") {
+            format!("/usr/{triplet}/sys-root")
+        } else {
+            format!("/usr/{triplet}")
+        }
+    }
+
+    /// Returns extra library directories that should be added to `LD_LIBRARY_PATH` when running
+    /// binaries under qemu.
+    fn qemu_extra_lib_paths(&self) -> Vec<String> {
+        let triplet = self.cross_triplet();
+        let gcc_base = format!("/usr/lib64/gcc/{triplet}");
+        let Ok(entries) = std::fs::read_dir(&gcc_base) else {
+            return Vec::new();
+        };
+
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.join("libstdc++.so.6").exists() {
+                    path.to_str().map(|s| s.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn parse(name: &str) -> Result<Architecture> {
@@ -867,7 +902,7 @@ int main(void) {
     let is_cross = arch != host_arch;
 
     let (compiler, sysroot) = if is_cross {
-        let cross_compiler = format!("{}-linux-gnu-gcc", arch);
+        let cross_compiler = format!("{}-gcc", arch.cross_triplet());
         let sysroot = arch.get_cross_sysroot_path();
         (cross_compiler, Some(sysroot))
     } else {
@@ -1858,6 +1893,13 @@ impl Program<'_> {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
             c.arg(arch.get_cross_sysroot_path());
+
+            let extra_lib_paths = arch.qemu_extra_lib_paths();
+            if !extra_lib_paths.is_empty() {
+                c.arg("-E");
+                c.arg(format!("LD_LIBRARY_PATH={}", extra_lib_paths.join(":")));
+            }
+
             c.arg(&self.link_output.binary);
             c
         } else {
@@ -2150,14 +2192,14 @@ fn get_c_compiler(
             ),
             "gcc" | "g++",
             CLanguage::C,
-        ) => Ok(format!("{arch}-linux-gnu-gcc")),
+        ) => Ok(format!("{}-gcc", arch.cross_triplet())),
         (
             Some(
                 arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
             ),
             "gcc" | "g++",
             CLanguage::Cpp,
-        ) => Ok(format!("{arch}-linux-gnu-g++")),
+        ) => Ok(format!("{}-g++", arch.cross_triplet())),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
 }
