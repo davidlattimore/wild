@@ -1560,7 +1560,7 @@ pub(crate) fn get_segment_sections<'data>(
 #[inline(always)]
 fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     object: &layout::ObjectLayoutState<'data, MachO>,
-    common: &mut layout::CommonGroupState<'data, MachO>,
+    common: &layout::CommonGroupState<'data, MachO>,
     rel: &Relocation,
     section: layout::Section,
     resources: &'scope layout::GraphResources<'data, '_, MachO>,

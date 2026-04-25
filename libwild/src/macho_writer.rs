@@ -40,13 +40,11 @@ use crate::part_id;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
-use crate::platform::RelocationList;
 use crate::resolution::SectionSlot;
 use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
-use gimli::LittleEndian;
 use linker_utils::elf::RelocationKind;
 use object::BigEndian;
 use object::Endianness;
@@ -61,7 +59,6 @@ use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
-use object::macho::Relocation;
 use object::macho::RelocationInfo;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
@@ -396,13 +393,11 @@ fn write_object_section<'data, A: Arch<Platform = MachO>>(
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let mut out = write_section_raw(object_layout, layout, section, section_index, buffers)?;
+    let out = write_section_raw(object_layout, layout, section, section_index, buffers)?;
 
     let section_address = object_layout.section_resolutions[section_index.0]
         .address()
         .context("Attempted to apply relocations to a section that we didn't load")?;
-    dbg!(section_address);
-    let object_section = object_layout.object.section(section_index)?;
 
     for rel in object_layout.relocations(section_index)?.relocations {
         apply_relocation::<A>(object_layout, section_address, rel.info(LE), layout, out)?;
@@ -417,7 +412,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     section_address: u64,
     rel: RelocationInfo,
     layout: &MachOLayout<'data>,
-    out: &mut [u8],
+    _out: &mut [u8],
 ) -> Result {
     let offset_in_section = u64::from(rel.r_address);
     let place = section_address + offset_in_section;
@@ -430,8 +425,8 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     .entered();
 
     let rel_info = A::relocation_from_raw(rel)?;
-    let mut addend = rel.r_address;
-    let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
+    let _addend = rel.r_address;
+    let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
 
     tracing::trace!(
             ?rel_info.kind,
@@ -439,10 +434,10 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
 
-    let value = match rel_info.kind {
+    let _value = match rel_info.kind {
         RelocationKind::Relative => {
-            dbg!(resolution);
-            todo!()
+            assert_ne!(resolution.raw_value, 0);
+            resolution.raw_value
         }
         _ => todo!(),
     };
