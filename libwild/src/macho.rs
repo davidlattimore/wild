@@ -61,6 +61,7 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
+// TODO: optionality of __DATA and __CONST_DATA segments not respected
 pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
 pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
     (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
@@ -80,7 +81,7 @@ pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endian
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
 
-// TODO: move to object crate
+// TODO: move the following data types to object crate
 
 // values for dyld_chained_fixups_header.imports_format
 #[allow(non_camel_case_types)]
@@ -708,7 +709,13 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn always_keep(self) -> bool {
-        true
+        matches!(
+            self.segment_type,
+            SegmentType::Text
+                | SegmentType::LoadCommands
+                | SegmentType::TextSections
+                | SegmentType::LinkeditSections
+        )
     }
 
     fn is_loadable(self) -> bool {
@@ -1164,13 +1171,17 @@ impl platform::Platform for MachO {
                     * count_sections_for_segment_type(output_sections, SegmentType::TextSections))
                 as u64,
         );
-        sizes.increment(
-            part_id::DATA_SEGMENT,
-            (size_of::<SegmentCommand>()
-                + size_of::<SectionEntry>()
-                    * count_sections_for_segment_type(output_sections, SegmentType::DataSections))
-                as u64,
-        );
+        if has_active_segment(header_info, SegmentType::DataSections) {
+            sizes.increment(
+                part_id::DATA_SEGMENT,
+                (size_of::<SegmentCommand>()
+                    + size_of::<SectionEntry>()
+                        * count_sections_for_segment_type(
+                            output_sections,
+                            SegmentType::DataSections,
+                        )) as u64,
+            );
+        }
         sizes.increment(
             part_id::LINK_EDIT_SEGMENT,
             size_of::<SegmentCommand>() as u64,
@@ -1452,6 +1463,14 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     },
 ];
 
+fn has_active_segment(header_info: &crate::layout::HeaderInfo, segment_type: SegmentType) -> bool {
+    header_info.active_segment_ids.iter().any(|id| {
+        PROGRAM_SEGMENT_DEFS
+            .get(id.as_usize())
+            .is_some_and(|def| def.segment_type == segment_type)
+    })
+}
+
 fn count_sections_for_segment_type(
     output_sections: &crate::output_section_id::OutputSections<MachO>,
     segment_type: SegmentType,
@@ -1474,7 +1493,7 @@ pub(crate) struct SegmentSectionsInfo<'data> {
 pub(crate) fn get_segment_sections<'data>(
     layout: &Layout<'data, MachO>,
     segment_type: SegmentType,
-) -> SegmentSectionsInfo<'data> {
+) -> Option<SegmentSectionsInfo<'data>> {
     let mut in_matching_segment = false;
     let mut sections = Vec::new();
     let mut segment_id = None;
@@ -1506,14 +1525,15 @@ pub(crate) fn get_segment_sections<'data>(
     }
 
     let segment_id = segment_id.expect("must be visited in the output order");
-    SegmentSectionsInfo {
+    let segment_size = layout
+        .segment_layouts
+        .segments
+        .iter()
+        .find(|seg| seg.id == segment_id)
+        .map(|seg| seg.sizes);
+
+    segment_size.map(|segment_size| SegmentSectionsInfo {
         segment_sections: sections,
-        segment_size: layout
-            .segment_layouts
-            .segments
-            .iter()
-            .find(|seg| seg.id == segment_id)
-            .unwrap()
-            .sizes,
-    }
+        segment_size,
+    })
 }

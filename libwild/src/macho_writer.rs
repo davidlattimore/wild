@@ -118,7 +118,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
-    populate_file_header::<A>(layout, &prelude.header_info, header);
+    populate_file_header::<A>(layout, &prelude.header_info, header)?;
 
     write_segment_commands::<A>(layout, buffers)?;
 
@@ -126,7 +126,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         from_bytes_mut(buffers.get_mut(part_id::ENTRY_POINT))
             .map_err(|_| error!("Invalid ENTRY_POINT command allocation"))?
             .0;
-    write_entry_point_command::<A>(layout, entry_point_command);
+    write_entry_point_command::<A>(layout, entry_point_command)?;
 
     let (dylinker_command, dylinker_path_buffer): (&mut DylinkerCommand, &mut [u8]) =
         from_bytes_mut(buffers.get_mut(part_id::INTERP))
@@ -165,20 +165,30 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     _header_info: &HeaderInfo,
     header: &mut FileHeader,
-) {
-    let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands);
+) -> Result {
+    let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands)
+        .ok_or_else(|| error!("LoadCommands segment is mandatory"))?;
 
     header.magic = U32::new(BigEndian, MH_CIGAM_64);
     header.cputype = U32::new(LE, CPU_TYPE_ARM64);
     header.cpusubtype = U32::new(LE, 0);
     header.filetype = U32::new(LE, MH_EXECUTE);
-    header.ncmds = U32::new(LE, load_commands_info.segment_sections.len() as u32);
+    // TODO: a cleaner way how to filter out sections being part of the final output?
+    header.ncmds = U32::new(
+        LE,
+        load_commands_info
+            .segment_sections
+            .iter()
+            .filter(|s| s.0.mem_size > 0)
+            .count() as u32,
+    );
     header.sizeofcmds = U32::new(LE, load_commands_info.segment_size.file_size as u32);
     header.flags = U32::new(
         LE,
         macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL,
     );
     header.reserved = U32::new(LE, 0);
+    Ok(())
 }
 
 fn split_segment_command_buffer(
@@ -214,10 +224,13 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         0,
     );
 
-    let text_segment_sections =
-        get_segment_sections(layout, SegmentType::TextSections).segment_sections;
+    let text_segment_sections = get_segment_sections(layout, SegmentType::TextSections)
+        .ok_or_else(|| error!("TextSections segment is mandatory"))?
+        .segment_sections;
     // The __TEXT segment in the layout includes also all the commands!
-    let text_segment_size = get_segment_sections(layout, SegmentType::Text).segment_size;
+    let text_segment_size = get_segment_sections(layout, SegmentType::Text)
+        .ok_or_else(|| error!("Text segment is mandatory"))?
+        .segment_size;
     let (text_segment, text_sections) = split_segment_command_buffer(
         buffers.get_mut(part_id::TEXT_SEGMENT),
         text_segment_sections.len(),
@@ -235,28 +248,30 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     );
     write_sections(SEG_TEXT, text_sections, &text_segment_sections)?;
 
-    let data_segment_sections =
-        get_segment_sections(layout, SegmentType::DataSections).segment_sections;
-    let data_segment_size = get_segment_sections(layout, SegmentType::DataSections).segment_size;
-    let (data_segment, data_sections) = split_segment_command_buffer(
-        buffers.get_mut(part_id::DATA_SEGMENT),
-        data_segment_sections.len(),
-    )?;
-    write_segment(
-        layout,
-        part_id::DATA_SEGMENT,
-        SEG_DATA,
-        data_segment,
-        data_segment_size.file_offset as u64,
-        data_segment_size.file_size as u64,
-        data_segment_size.mem_offset,
-        data_segment_size.mem_size,
-        data_segment_sections.len(),
-    );
-    write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
+    if let Some(data_segment_info) = get_segment_sections(layout, SegmentType::DataSections) {
+        let data_segment_sections = data_segment_info.segment_sections;
+        let data_segment_size = data_segment_info.segment_size;
+        let (data_segment, data_sections) = split_segment_command_buffer(
+            buffers.get_mut(part_id::DATA_SEGMENT),
+            data_segment_sections.len(),
+        )?;
+        write_segment(
+            layout,
+            part_id::DATA_SEGMENT,
+            SEG_DATA,
+            data_segment,
+            data_segment_size.file_offset as u64,
+            data_segment_size.file_size as u64,
+            data_segment_size.mem_offset,
+            data_segment_size.mem_size,
+            data_segment_sections.len(),
+        );
+        write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
+    }
 
-    let linkedit_segment_size =
-        get_segment_sections(layout, SegmentType::LinkeditSections).segment_size;
+    let linkedit_segment_size = get_segment_sections(layout, SegmentType::LinkeditSections)
+        .ok_or_else(|| error!("LinkeditSections segment is mandatory"))?
+        .segment_size;
     let linkedit_segment =
         split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?.0;
     write_segment(
@@ -415,9 +430,10 @@ fn write_section_raw<'out, 'data>(
 fn write_entry_point_command<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     command: &mut EntryPointCommand,
-) {
+) -> Result {
     let SegmentSectionsInfo { segment_size, .. } =
-        get_segment_sections(layout, SegmentType::TextSections);
+        get_segment_sections(layout, SegmentType::TextSections)
+            .ok_or_else(|| error!("TextSections segment is mandatory"))?;
 
     command.cmd.set(LE, LC_MAIN);
     command
@@ -425,6 +441,7 @@ fn write_entry_point_command<A: Arch<Platform = MachO>>(
         .set(LE, size_of::<EntryPointCommand>() as u32);
     command.entryoff.set(LE, segment_size.file_offset as u64);
     command.stacksize.set(LE, 0);
+    Ok(())
 }
 
 fn write_dylinker_command<A: Arch<Platform = MachO>>(
