@@ -999,7 +999,7 @@ impl platform::Platform for MachO {
     ) -> crate::error::Result {
         // TODO
         for rel in state.relocations(section_index)?.relocations {
-            A::relocation_from_raw(dbg!(rel.info(LE)));
+            dbg!(A::relocation_from_raw(rel.info(LE))?);
         }
         Ok(())
     }

@@ -1,8 +1,13 @@
 // TODO
 #![allow(unused_variables)]
 
+use crate::bail;
 use crate::macho::MachO;
 use linker_utils::elf::AllowedRange;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
+use linker_utils::elf::Sign;
 
 pub(crate) struct MachOAArch64;
 
@@ -53,15 +58,32 @@ impl crate::platform::Arch for MachOAArch64 {
     }
 
     fn relocation_from_raw(
-        r_type: <Self::Platform as crate::platform::Platform>::RelocationInfo,
-    ) -> crate::error::Result<linker_utils::elf::RelocationKindInfo> {
-        Ok(linker_utils::elf::RelocationKindInfo {
-            alignment: 0,
+        rel: object::macho::RelocationInfo,
+    ) -> crate::error::Result<RelocationKindInfo> {
+        let rel_size_in_bytes = 1 << rel.r_type;
+        let rel_kind = if rel.r_pcrel {
+            RelocationKind::Relative
+        } else {
+            RelocationKind::Absolute
+        };
+        let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
+
+        let (range, alignment) = match rel.r_type {
+            object::macho::ARM64_RELOC_UNSIGNED => (AllowedRange::no_check(), 0),
+            object::macho::ARM64_RELOC_BRANCH26 => (
+                AllowedRange::from_bit_size(28, Sign::Signed),
+                // TODO: use RelocationSize::bit_mask_aarch64(2, 28, AArch64Instruction::JumpCall),
+                0,
+            ),
+            _ => bail!("Unknown relocation: {}", rel.r_type),
+        };
+        Ok(RelocationKindInfo {
+            alignment,
             bias: 0,
-            kind: linker_utils::elf::RelocationKind::Absolute,
+            kind: rel_kind,
             mask: None,
-            range: AllowedRange::no_check(),
-            size: linker_utils::elf::RelocationSize::ByteSize(1),
+            range,
+            size: rel_size,
         })
     }
 
