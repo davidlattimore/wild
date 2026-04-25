@@ -194,7 +194,7 @@ pub(crate) enum Expression<'a> {
     Max(Box<Expression<'a>>, Box<Expression<'a>>),
     /// SEGMENT_START("segment-name", default) — returns the `-T` command-line override for the
     /// named segment if one was provided, otherwise returns `default`.
-    /// The segment name is validated at parse time; unknown names are a parse error.
+    /// Unknown segment names always return `default` (matching GNU ld behavior).
     SegmentStart(crate::parsing::SegmentName, Box<Expression<'a>>),
     /// Bitwise AND, OR and XOR
     BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -767,9 +767,7 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 let default_expr = parse_expression.parse_next(input)?;
                 multispace0.parse_next(input)?;
                 ')'.parse_next(input)?;
-                let segment_name = crate::parsing::SegmentName::from_bytes(name).map_err(|_| {
-                    ContextError::from_external_error(input, LinkerScriptError::UnknownSegmentName)
-                })?;
+                let segment_name = crate::parsing::SegmentName::from_bytes(name);
                 Ok(Expression::SegmentStart(
                     segment_name,
                     Box::new(default_expr),
@@ -1098,7 +1096,6 @@ fn to_str(bytes: &[u8]) -> Result<&str> {
 enum LinkerScriptError {
     InvalidAlignment,
     UnclosedComment,
-    UnknownSegmentName,
 }
 
 impl std::error::Error for LinkerScriptError {}
@@ -1108,9 +1105,6 @@ impl std::fmt::Display for LinkerScriptError {
         match self {
             LinkerScriptError::InvalidAlignment => write!(f, "Invalid alignment"),
             LinkerScriptError::UnclosedComment => write!(f, "Unclosed comment"),
-            LinkerScriptError::UnknownSegmentName => {
-                write!(f, "Unknown SEGMENT_START segment name")
-            }
         }
     }
 }

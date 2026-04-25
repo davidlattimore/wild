@@ -91,7 +91,9 @@ pub struct ElfArgs {
 
     /// Segment start address overrides from `-Ttext`, `-Tdata`, `-Tbss`.
     /// Used to implement `SEGMENT_START("name", default)` per GNU ld behaviour.
-    pub(crate) segment_start_overrides: HashMap<crate::parsing::SegmentName, u64>,
+    pub(crate) ttext: Option<u64>,
+    pub(crate) tdata: Option<u64>,
+    pub(crate) tbss: Option<u64>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -291,7 +293,9 @@ impl Default for ElfArgs {
             export_list_path: None,
             defsym: Vec::new(),
             section_start: HashMap::new(),
-            segment_start_overrides: HashMap::new(),
+            ttext: None,
+            tdata: None,
+            tbss: None,
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -1279,24 +1283,21 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             // passing just the name as value. That case falls through to the script handler
             // and will fail, but it matches GNU ld's documented syntax of -Ttext=ADDR.
             if let Some(addr) = value.strip_prefix("text=") {
-                args.segment_start_overrides.insert(
-                    crate::parsing::SegmentName::Text,
+                args.ttext = Some(
                     parse_number(addr)
                         .with_context(|| format!("Invalid address `{addr}` in -Ttext"))?,
                 );
                 return Ok(());
             }
             if let Some(addr) = value.strip_prefix("data=") {
-                args.segment_start_overrides.insert(
-                    crate::parsing::SegmentName::Data,
+                args.tdata = Some(
                     parse_number(addr)
                         .with_context(|| format!("Invalid address `{addr}` in -Tdata"))?,
                 );
                 return Ok(());
             }
             if let Some(addr) = value.strip_prefix("bss=") {
-                args.segment_start_overrides.insert(
-                    crate::parsing::SegmentName::Bss,
+                args.tbss = Some(
                     parse_number(addr)
                         .with_context(|| format!("Invalid address `{addr}` in -Tbss"))?,
                 );
@@ -1872,7 +1873,12 @@ impl platform::Args for ElfArgs {
     }
 
     fn segment_start_override(&self, name: crate::parsing::SegmentName) -> Option<u64> {
-        self.segment_start_overrides.get(&name).copied()
+        match name {
+            crate::parsing::SegmentName::Text => self.ttext,
+            crate::parsing::SegmentName::Data => self.tdata,
+            crate::parsing::SegmentName::Bss => self.tbss,
+            crate::parsing::SegmentName::Rodata | crate::parsing::SegmentName::Other => None,
+        }
     }
 
     fn version_script_path(&self) -> Option<&Path> {

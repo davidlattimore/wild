@@ -5,6 +5,10 @@
 // RISC-V: BFD complains about missing __global_pointer$ (defined in the default
 // linker script)
 //#SkipArch:riscv64
+// ld merges all sections into a single segment when no PHDRS are specified,
+// while wild uses separate RO/RX/RW segments.
+//#DiffIgnore:segment.LOAD.RWX.alignment
+//#DiffIgnore:segment.LOAD.RX.alignment
 
 // Config 1: no -T flags — SEGMENT_START returns the linker script defaults.
 // text/rodata default to 0x600000, data/bss default to 0.

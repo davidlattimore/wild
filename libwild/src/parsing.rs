@@ -105,25 +105,25 @@ pub(crate) enum SymbolPlacement<'data> {
     SegmentStart(SegmentName, u64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SegmentName {
     Text,
     Rodata,
     Data,
     Bss,
+    /// Any segment name not in the known set. Wild has no `-T` override for
+    /// these, so they always resolve to the default value.
+    Other,
 }
 
 impl SegmentName {
-    pub(crate) fn from_bytes(name: &[u8]) -> crate::error::Result<Self> {
+    pub(crate) fn from_bytes(name: &[u8]) -> Self {
         match name {
-            b"text" => Ok(Self::Text),
-            b"rodata" => Ok(Self::Rodata),
-            b"data" => Ok(Self::Data),
-            b"bss" => Ok(Self::Bss),
-            other => Err(crate::error!(
-                "unknown SEGMENT_START segment name '{}'",
-                String::from_utf8_lossy(other)
-            )),
+            b"text" => Self::Text,
+            b"rodata" => Self::Rodata,
+            b"data" => Self::Data,
+            b"bss" => Self::Bss,
+            _ => Self::Other,
         }
     }
 }
