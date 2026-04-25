@@ -826,7 +826,9 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     }
 
     fn is_default(&self) -> bool {
-        false
+        // This port does not use symbol versioning, so every symbol is treated as
+        // the default version.
+        true
     }
 }
 

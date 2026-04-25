@@ -46,6 +46,7 @@ use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use linker_utils::elf::RelocationKind;
+use linker_utils::utils::or_from_slice;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
@@ -412,7 +413,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     section_address: u64,
     rel: RelocationInfo,
     layout: &MachOLayout<'data>,
-    _out: &mut [u8],
+    out: &mut [u8],
 ) -> Result {
     let offset_in_section = u64::from(rel.r_address);
     let place = section_address + offset_in_section;
@@ -428,19 +429,24 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     let _addend = rel.r_address;
     let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
 
+    let value = match rel_info.kind {
+        // TODO: assuming it's JUMP26
+        RelocationKind::Relative => (resolution.raw_value.wrapping_sub(place)) >> 2,
+        _ => todo!(),
+    };
+
     tracing::trace!(
             ?rel_info.kind,
             %rel_info.size,
+            value,
+            value_hex = %HexU64::new(value),
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
 
-    let _value = match rel_info.kind {
-        RelocationKind::Relative => {
-            assert_ne!(resolution.raw_value, 0);
-            resolution.raw_value
-        }
-        _ => todo!(),
-    };
+    or_from_slice(
+        &mut out[offset_in_section as usize..offset_in_section as usize + 4],
+        &(value as u32).to_le_bytes(),
+    );
 
     Ok(())
 }
