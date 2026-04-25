@@ -3867,6 +3867,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             return Ok(None);
         }
 
+        eprintln!("{}", resources.symbol_debug(symbol_id));
+
         let raw_value = if let Some(section_index) = self
             .object
             .symbol_section(local_symbol, local_symbol_index)?

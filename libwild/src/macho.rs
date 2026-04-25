@@ -265,6 +265,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
         if symbol.n_type & N_TYPE == N_SECT && symbol.n_sect != 0 {
+            // The index is one-based, NO_SECT == 0, marks a missing section for the symbol.
             Ok(Some(object::SectionIndex(usize::from(symbol.n_sect - 1))))
         } else {
             Ok(None)
@@ -1569,6 +1570,7 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
     scope: &rayon::Scope<'scope>,
 ) -> Result {
     let rel_info = rel.info(LE);
+    // r_extern == true if the reference points to a symbol
     if rel_info.r_extern {
         let local_sym_index = SymbolIndex(rel_info.r_symbolnum as usize);
         let symbol_db = resources.symbol_db;
