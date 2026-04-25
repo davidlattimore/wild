@@ -13,6 +13,7 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::macho::ChainedFixupsHeader;
 use crate::macho::DEFAULT_SEGMENT_COUNT;
@@ -33,16 +34,23 @@ use crate::macho::get_segment_sections;
 use crate::output_section_id;
 use crate::output_section_id::SectionName;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::platform::RelocationList;
 use crate::resolution::SectionSlot;
+use crate::symbol_db::SymbolId;
 use crate::timing_phase;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use gimli::LittleEndian;
+use linker_utils::elf::RelocationKind;
 use object::BigEndian;
 use object::Endianness;
+use object::SymbolIndex;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho;
@@ -53,6 +61,8 @@ use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
+use object::macho::Relocation;
+use object::macho::RelocationInfo;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
 use object::macho::SEG_PAGEZERO;
@@ -380,16 +390,64 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
 }
 
 fn write_object_section<'data, A: Arch<Platform = MachO>>(
-    object: &ObjectLayout<'data, MachO>,
+    object_layout: &ObjectLayout<'data, MachO>,
     layout: &MachOLayout<'data>,
     section: &Section,
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    write_section_raw(object, layout, section, section_index, buffers)?;
-    Ok(())
+    let mut out = write_section_raw(object_layout, layout, section, section_index, buffers)?;
 
-    // TODO: process relocations
+    let section_address = object_layout.section_resolutions[section_index.0]
+        .address()
+        .context("Attempted to apply relocations to a section that we didn't load")?;
+    dbg!(section_address);
+    let object_section = object_layout.object.section(section_index)?;
+
+    for rel in object_layout.relocations(section_index)?.relocations {
+        apply_relocation::<A>(object_layout, section_address, rel.info(LE), layout, out)?;
+    }
+
+    Ok(())
+}
+
+#[inline(always)]
+fn apply_relocation<'data, A: Arch<Platform = MachO>>(
+    object_layout: &ObjectLayout<'data, MachO>,
+    section_address: u64,
+    rel: RelocationInfo,
+    layout: &MachOLayout<'data>,
+    out: &mut [u8],
+) -> Result {
+    let offset_in_section = u64::from(rel.r_address);
+    let place = section_address + offset_in_section;
+
+    let _span = tracing::trace_span!(
+        "relocation",
+        address = place,
+        address_hex = %HexU64::new(place)
+    )
+    .entered();
+
+    let rel_info = A::relocation_from_raw(rel)?;
+    let mut addend = rel.r_address;
+    let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
+
+    tracing::trace!(
+            ?rel_info.kind,
+            %rel_info.size,
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relocation applied");
+
+    let value = match rel_info.kind {
+        RelocationKind::Relative => {
+            dbg!(resolution);
+            todo!()
+        }
+        _ => todo!(),
+    };
+
+    Ok(())
 }
 
 fn write_section_raw<'out, 'data>(
@@ -425,6 +483,38 @@ fn write_section_raw<'out, 'data>(
     } else {
         Ok(&mut [])
     }
+}
+
+fn get_resolution<'data>(
+    rel: RelocationInfo,
+    object_layout: &ObjectLayout<'data, MachO>,
+    layout: &MachOLayout,
+) -> Result<(Resolution<MachO>, SymbolIndex, SymbolId)> {
+    let symbol_index = SymbolIndex(rel.r_symbolnum as usize);
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let resolution = layout
+        .merged_symbol_resolution(local_symbol_id)
+        .or_else(|| {
+            section_index.and_then(|section_index| {
+                let section_address =
+                    object_layout.section_resolutions[section_index.0].address()?;
+                Some(Resolution {
+                    raw_value: section_address,
+                    dynamic_symbol_index: None,
+                    flags: ValueFlags::empty(),
+                    format_specific: Default::default(),
+                })
+            })
+        })
+        .with_context(|| {
+            format!(
+                "Missing resolution for: {}",
+                layout.symbol_debug(local_symbol_id)
+            )
+        })?;
+    Ok((resolution, symbol_index, local_symbol_id))
 }
 
 fn write_entry_point_command<A: Arch<Platform = MachO>>(
