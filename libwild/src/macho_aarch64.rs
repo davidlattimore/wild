@@ -64,12 +64,12 @@ impl crate::platform::Arch for MachOAArch64 {
         rel: object::macho::RelocationInfo,
     ) -> crate::error::Result<RelocationKindInfo> {
         let rel_size_in_bytes = 1 << rel.r_type;
+        let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
         let rel_kind = if rel.r_pcrel {
             RelocationKind::Relative
         } else {
             RelocationKind::Absolute
         };
-        let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
 
         let (kind, size, mask, range, alignment) = match rel.r_type {
             object::macho::ARM64_RELOC_UNSIGNED => {
