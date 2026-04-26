@@ -5,7 +5,7 @@ use crate::bail;
 use crate::macho::MachO;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
-use linker_utils::elf::PAGE_MASK_4GB;
+use linker_utils::elf::PAGE_MASK_4KB;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -90,7 +90,7 @@ impl crate::platform::Arch for MachOAArch64 {
                 (
                     rel_kind,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
-                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4GB)),
+                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
                     1,
                 )

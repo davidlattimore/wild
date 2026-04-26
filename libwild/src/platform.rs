@@ -707,6 +707,14 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         symbol: &<Self::Platform as Platform>::SymtabEntry,
     ) -> Result<&'data [u8]>;
 
+    fn symbol_value_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
+
     fn num_sections(&self) -> usize;
 
     fn section_iter(&self) -> <Self::Platform as Platform>::SectionIterator<'data>;

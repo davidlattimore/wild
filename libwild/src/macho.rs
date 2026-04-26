@@ -218,6 +218,20 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(symbol.name(LE, self.symbols.strings())?)
     }
 
+    // On Mach-O the symbol value is the global offset, not a relative to the start of a section.
+    fn symbol_value_in_section(
+        &self,
+        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> crate::error::Result<u64> {
+        let section = self.section(section_index)?;
+        symbol
+            .n_value
+            .get(LE)
+            .checked_sub(section.addr.get(LE))
+            .ok_or_else(|| error!("Mach-O symbol value is before its section address"))
+    }
+
     fn num_sections(&self) -> usize {
         self.sections.len()
     }
