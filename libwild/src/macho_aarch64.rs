@@ -71,11 +71,14 @@ impl crate::platform::Arch for MachOAArch64 {
         };
         let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
 
-        let (size, mask, range, alignment) = match rel.r_type {
-            object::macho::ARM64_RELOC_UNSIGNED => (rel_size, None, AllowedRange::no_check(), 1),
+        let (kind, size, mask, range, alignment) = match rel.r_type {
+            object::macho::ARM64_RELOC_UNSIGNED => {
+                (rel_kind, rel_size, None, AllowedRange::no_check(), 1)
+            }
             object::macho::ARM64_RELOC_BRANCH26 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
+                    rel_kind,
                     RelocationSize::bit_mask_aarch64(2, 28, AArch64Instruction::JumpCall),
                     None,
                     AllowedRange::from_bit_size(28, Sign::Signed),
@@ -85,6 +88,7 @@ impl crate::platform::Arch for MachOAArch64 {
             object::macho::ARM64_RELOC_PAGE21 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
+                    rel_kind,
                     RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
                     Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4GB)),
                     AllowedRange::from_bit_size(33, Sign::Signed),
@@ -94,6 +98,7 @@ impl crate::platform::Arch for MachOAArch64 {
             object::macho::ARM64_RELOC_PAGEOFF12 => {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
+                    RelocationKind::AbsoluteLowPart,
                     RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::Add),
                     None,
                     AllowedRange::no_check(),
@@ -105,10 +110,10 @@ impl crate::platform::Arch for MachOAArch64 {
         Ok(RelocationKindInfo {
             alignment,
             bias: 0,
-            kind: rel_kind,
-            mask: None,
+            kind,
+            mask,
             range,
-            size: rel_size,
+            size,
         })
     }
 
