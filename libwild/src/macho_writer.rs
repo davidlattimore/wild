@@ -1,4 +1,5 @@
 use crate::bail;
+use crate::elf::get_page_mask;
 use crate::ensure;
 use crate::error;
 use crate::error::Context;
@@ -67,6 +68,7 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use std::ops::BitAnd;
 use tracing::debug_span;
 use zerocopy::FromZeros;
 
@@ -428,8 +430,14 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     let _addend = rel.r_address;
     let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
 
+    let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
-        RelocationKind::Relative => resolution.raw_value.wrapping_sub(place),
+        RelocationKind::Absolute => resolution.raw_value.bitand(mask.symbol_plus_addend),
+        RelocationKind::AbsoluteLowPart => resolution.raw_value.bitand(mask.symbol_plus_addend),
+        RelocationKind::Relative => resolution
+            .raw_value
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(place.bitand(mask.place)),
         _ => todo!(),
     };
 
