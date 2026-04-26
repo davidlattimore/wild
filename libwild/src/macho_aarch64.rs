@@ -63,7 +63,7 @@ impl crate::platform::Arch for MachOAArch64 {
     fn relocation_from_raw(
         rel: object::macho::RelocationInfo,
     ) -> crate::error::Result<RelocationKindInfo> {
-        let rel_size_in_bytes = 1 << rel.r_type;
+        let rel_size_in_bytes = 1 << rel.r_length;
         let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
         let rel_kind = if rel.r_pcrel {
             RelocationKind::Relative
