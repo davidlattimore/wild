@@ -3,7 +3,10 @@
 
 use crate::bail;
 use crate::macho::MachO;
+use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
+use linker_utils::elf::PAGE_MASK_4GB;
+use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -68,13 +71,35 @@ impl crate::platform::Arch for MachOAArch64 {
         };
         let rel_size = RelocationSize::ByteSize(rel_size_in_bytes);
 
-        let (range, alignment) = match rel.r_type {
-            object::macho::ARM64_RELOC_UNSIGNED => (AllowedRange::no_check(), 0),
-            object::macho::ARM64_RELOC_BRANCH26 => (
-                AllowedRange::from_bit_size(28, Sign::Signed),
-                // TODO: use RelocationSize::bit_mask_aarch64(2, 28, AArch64Instruction::JumpCall),
-                0,
-            ),
+        let (size, mask, range, alignment) = match rel.r_type {
+            object::macho::ARM64_RELOC_UNSIGNED => (rel_size, None, AllowedRange::no_check(), 1),
+            object::macho::ARM64_RELOC_BRANCH26 => {
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationSize::bit_mask_aarch64(2, 28, AArch64Instruction::JumpCall),
+                    None,
+                    AllowedRange::from_bit_size(28, Sign::Signed),
+                    4,
+                )
+            }
+            object::macho::ARM64_RELOC_PAGE21 => {
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
+                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4GB)),
+                    AllowedRange::from_bit_size(33, Sign::Signed),
+                    1,
+                )
+            }
+            object::macho::ARM64_RELOC_PAGEOFF12 => {
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::Add),
+                    None,
+                    AllowedRange::no_check(),
+                    1,
+                )
+            }
             _ => bail!("Unknown relocation: {}", rel.r_type),
         };
         Ok(RelocationKindInfo {
