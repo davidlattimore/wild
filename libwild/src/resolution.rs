@@ -1029,10 +1029,9 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
 
     let (section_name, is_start) = if let Some(s) = symbol_name_bytes.strip_prefix(b"__start_") {
         (s, true)
-    } else if let Some(s) = symbol_name_bytes.strip_prefix(b"__stop_") {
-        (s, false)
     } else {
-        return None;
+        let s = symbol_name_bytes.strip_prefix(b"__stop_")?;
+        (s, false)
     };
 
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
