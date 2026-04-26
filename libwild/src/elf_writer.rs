@@ -30,7 +30,6 @@ use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::VersionDef;
 use crate::elf::Versym;
-use crate::elf::write_relocation_to_buffer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -3156,7 +3155,7 @@ fn apply_relocation<
             "relocation applied");
     }
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
+    rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
 
     Ok(next_modifier)
 }
@@ -3284,7 +3283,7 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
         section_tombstone_value
     };
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
+    rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
 
     Ok(())
 }

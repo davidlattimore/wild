@@ -46,7 +46,6 @@ use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use linker_utils::elf::RelocationKind;
-use linker_utils::utils::or_from_slice;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
@@ -429,10 +428,8 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     let _addend = rel.r_address;
     let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
 
-    const MASK: u64 = (1 << 27) - 1;
     let value = match rel_info.kind {
-        // TODO: assuming it's JUMP26
-        RelocationKind::Relative => ((resolution.raw_value.wrapping_sub(place)) >> 2) & MASK,
+        RelocationKind::Relative => resolution.raw_value.wrapping_sub(place),
         _ => todo!(),
     };
 
@@ -444,10 +441,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
 
-    or_from_slice(
-        &mut out[offset_in_section as usize..offset_in_section as usize + 4],
-        &(value as u32).to_le_bytes(),
-    );
+    rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
 
     Ok(())
 }
