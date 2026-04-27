@@ -3874,7 +3874,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
                 let input_offset = self
                     .object
-                    .symbol_value_in_section(local_symbol, section_index)?;
+                    .symbol_offset_in_section(local_symbol, section_index)?;
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,

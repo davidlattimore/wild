@@ -218,13 +218,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(symbol.name(LE, self.symbols.strings())?)
     }
 
-    // On Mach-O the symbol value is the global offset, not a relative to the start of a section.
-    fn symbol_value_in_section(
+    fn symbol_offset_in_section(
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
         section_index: object::SectionIndex,
     ) -> crate::error::Result<u64> {
         let section = self.section(section_index)?;
+        // On Mach-O the symbol value is the global offset, not a relative to the start of a
+        // section.
         symbol
             .n_value
             .get(LE)

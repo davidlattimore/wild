@@ -2490,6 +2490,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             // checks our shared object against those.
             && has_complete_deps(self, resources)
     }
+
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
 }
 
 impl DynamicLayoutStateExt<'_> {

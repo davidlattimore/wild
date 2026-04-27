@@ -707,13 +707,12 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         symbol: &<Self::Platform as Platform>::SymtabEntry,
     ) -> Result<&'data [u8]>;
 
-    fn symbol_value_in_section(
+    // Get the offset of a symbol relative to the section identified by `section_index`.
+    fn symbol_offset_in_section(
         &self,
         symbol: &<Self::Platform as Platform>::SymtabEntry,
-        _section_index: object::SectionIndex,
-    ) -> Result<u64> {
-        Ok(symbol.value())
-    }
+        section_index: object::SectionIndex,
+    ) -> Result<u64>;
 
     fn num_sections(&self) -> usize;
 
