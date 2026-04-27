@@ -67,7 +67,7 @@ fn inform_parent_done(fds: &[c_int]) {
     unsafe {
         libc::close(fds[0]);
         let stream = libc::fdopen(fds[1], "w".as_ptr() as *const c_char);
-        let bytes: [u8; 1] = [b'X'];
+        let bytes: [u8; 1] = *b"X";
         libc::fwrite(bytes.as_ptr() as *const c_void, 1, 1, stream);
         libc::fclose(stream);
         libc::close(libc::STDOUT_FILENO);
