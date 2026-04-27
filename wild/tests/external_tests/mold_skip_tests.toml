@@ -183,7 +183,6 @@ tests = [
   "warn-unresolved-symbols.sh",     # Different message formats
   "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
-  "exception-multiple-ehframe.sh",  # Support handling multiple .eh_frame sections.
 ]
 
 [skipped_groups.uncommon]

@@ -971,6 +971,7 @@ impl platform::Platform for Elf {
         let file_symbol_id_range = object.symbol_id_range;
         let eh_frame_section = object.object.section(eh_frame_section_index)?;
         let data = object.object.raw_section_data(eh_frame_section)?;
+        let frame_index_offset = object.format_specific.exception_frames.len();
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
                 ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
@@ -980,6 +981,8 @@ impl platform::Platform for Elf {
                     resources,
                     queue,
                     eh_frame_section,
+                    eh_frame_section_index,
+                    frame_index_offset,
                     data,
                     &relocations,
                     scope,
@@ -993,6 +996,8 @@ impl platform::Platform for Elf {
                     resources,
                     queue,
                     eh_frame_section,
+                    eh_frame_section_index,
+                    frame_index_offset,
                     data,
                     &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
                     scope,
@@ -1000,7 +1005,10 @@ impl platform::Platform for Elf {
             }
         };
 
-        object.format_specific.exception_frames = exception_frames;
+        object
+            .format_specific
+            .exception_frames
+            .extend(exception_frames);
         object.format_specific.eh_frame_section = Some(eh_frame_section);
 
         Ok(())
@@ -2518,6 +2526,8 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    eh_frame_section_index: object::SectionIndex,
+    frame_index_offset: usize,
     data: &'data [u8],
     relocations: &R::Sequence<'data>,
     scope: &Scope<'scope>,
@@ -2612,7 +2622,8 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
             if let Some(section_index) = section_index
                 && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
             {
-                let frame_index = FrameIndex::from_usize(exception_frames.len());
+                let frame_index =
+                    FrameIndex::from_usize(frame_index_offset + exception_frames.len());
 
                 // Update our unloaded section to point to our new frame. Our frame will then in
                 // turn point to whatever the section pointed to before.
@@ -2622,13 +2633,14 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     relocations: relocations.subsequence(rel_start_index..rel_end_index),
                     frame_size: size as u32,
                     previous_frame_for_section,
+                    eh_frame_section_index,
                 });
             }
         }
         offset = next_offset;
     }
 
-    common.format_specific.exception_frame_count += object.format_specific.exception_frames.len();
+    common.format_specific.exception_frame_count += exception_frames.len();
 
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
@@ -2660,22 +2672,21 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
 
         // Request loading of any sections/symbols referenced by the FDEs for our
         // section.
-        if let Some(eh_frame_section) = object.format_specific.eh_frame_section {
-            for rel in frame_data.relocations.rel_iter() {
-                process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
-                    object,
-                    common,
-                    &rel,
-                    eh_frame_section,
-                    resources,
-                    queue,
-                    false,
-                    scope,
-                )?;
-            }
-            common.format_specific.exception_frame_relocations +=
-                frame_data.relocations.num_relocations();
+        let eh_frame_section = object.object.section(frame_data.eh_frame_section_index)?;
+        for rel in frame_data.relocations.rel_iter() {
+            process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                object,
+                common,
+                &rel,
+                eh_frame_section,
+                resources,
+                queue,
+                false,
+                scope,
+            )?;
         }
+        common.format_specific.exception_frame_relocations +=
+            frame_data.relocations.num_relocations();
     }
 
     Ok(EhFrameSizes {
@@ -4070,13 +4081,30 @@ enum ExceptionFrames<'data> {
     Crel(Vec<ExceptionFrame<'data, Crel>>),
 }
 
+impl<'data> ExceptionFrames<'data> {
+    fn extend(&mut self, other: Self) {
+        match (self, other) {
+            (ExceptionFrames::Rela(a), ExceptionFrames::Rela(b)) => a.extend(b),
+            (ExceptionFrames::Crel(a), ExceptionFrames::Crel(b)) => a.extend(b),
+            (a, b) if a.is_empty() => *a = b,
+            _ => panic!("Mixed exception frame relocations"),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            ExceptionFrames::Rela(a) => a.is_empty(),
+            ExceptionFrames::Crel(a) => a.is_empty(),
+        }
+    }
+}
+
 impl<'data> Default for ExceptionFrames<'data> {
     fn default() -> Self {
         ExceptionFrames::Rela(Vec::new())
     }
 }
 
-#[derive(Default)]
 struct ExceptionFrame<'data, R: Relocation> {
     /// The relocations that need to be processed if we load this frame.
     relocations: R::Sequence<'data>,
@@ -4086,6 +4114,8 @@ struct ExceptionFrame<'data, R: Relocation> {
 
     /// The index of the previous frame that is for the same section.
     previous_frame_for_section: Option<FrameIndex>,
+
+    eh_frame_section_index: object::SectionIndex,
 }
 
 struct EhFrameSizes {
