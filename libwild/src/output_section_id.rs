@@ -52,6 +52,7 @@ pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) index: object::SectionIndex,
     pub(crate) alignment: Alignment,
+    pub(crate) is_unique: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -575,7 +576,17 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             let location = args
                 .start_address_for_section(custom.name)
                 .map(|address| linker_script::Location { address });
-            let section_id = self.add_named_section(custom.name, custom.alignment, location);
+            let section_id = if custom.is_unique {
+                self.section_infos.add_new(SectionOutputInfo {
+                    kind: SectionKind::Primary(custom.name),
+                    section_attributes: Default::default(),
+                    min_alignment: custom.alignment,
+                    location,
+                    secondary_order: None,
+                })
+            } else {
+                self.add_named_section(custom.name, custom.alignment, location)
+            };
 
             section_part_ids[custom.index.0] = section_id.part_id_with_alignment(custom.alignment);
         }

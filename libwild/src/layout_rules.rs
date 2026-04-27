@@ -103,6 +103,7 @@ pub(crate) enum SectionRuleOutcome {
     Debug,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
+    Group,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

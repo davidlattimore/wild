@@ -65,6 +65,7 @@ use crate::platform::Symbol as _;
 use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
+use crate::resolution::SectionSlot;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::symbol::UnversionedSymbolName;
@@ -130,6 +131,7 @@ use std::mem::offset_of;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::ops::Range;
+use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -665,6 +667,7 @@ impl platform::Platform for Elf {
         LayoutResourcesExt {
             sonames: Sonames::new(groups),
             uses_tlsld: AtomicBool::new(false),
+            comdat_groups: Mutex::new(hashbrown::HashSet::new()),
         }
     }
 
@@ -1878,8 +1881,7 @@ impl platform::Platform for Elf {
             secnames::STRTAB_SECTION_NAME
             | secnames::SYMTAB_SECTION_NAME
             | secnames::SHSTRTAB_SECTION_NAME
-            | secnames::SYMTAB_SHNDX_SECTION_NAME
-            | secnames::GROUP_SECTION_NAME => {
+            | secnames::SYMTAB_SHNDX_SECTION_NAME => {
                 return SectionRuleOutcome::Discard;
             }
             secnames::RISCV_ATTRIBUTES_SECTION_NAME => return SectionRuleOutcome::RiscVAttribute,
@@ -1889,6 +1891,7 @@ impl platform::Platform for Elf {
                     output_section_id::NOTE_ABI_TAG,
                 ));
             }
+            secnames::GROUP_SECTION_NAME => return SectionRuleOutcome::Group,
             _ => {}
         }
 
@@ -1941,6 +1944,63 @@ impl platform::Platform for Elf {
 
     fn default_symtab_entry() -> Self::SymtabEntry {
         Default::default()
+    }
+
+    fn process_group_sections<'data, A: Arch<Platform = Self>>(
+        object: &mut ObjectLayoutState<'data, Self>,
+        common: &mut layout::CommonGroupState<'data, Self>,
+        group_section_indices: Vec<object::SectionIndex>,
+        resources: &layout::GraphResources<'data, '_, Self>,
+    ) -> Result {
+        let e = LittleEndian;
+        for index in group_section_indices {
+            let group_header = object.object.section(index)?;
+            let symbol_index = object::SymbolIndex(group_header.sh_info.get(e) as usize);
+            let symbol_id = object.symbol_id_range.input_to_id(symbol_index);
+            let raw_data = object.object.raw_section_data(group_header)?;
+
+            if raw_data.len() < 4 || raw_data.len() % 4 != 0 {
+                continue;
+            }
+
+            if u32::from_le_bytes(raw_data[0..4].try_into().unwrap()) != object::elf::GRP_COMDAT {
+                continue;
+            }
+
+            let sym = object.object.symbol(symbol_index)?;
+            let sig_name = object.object.symbol_name(sym)?;
+            let is_first = resources
+                .layout_resources_ext
+                .comdat_groups
+                .lock()
+                .unwrap()
+                .insert(sig_name);
+
+            if !is_first {
+                object.sections[index.0] = SectionSlot::Discard;
+                let num_members = (raw_data.len() - 4) / 4;
+                for i in 0..num_members {
+                    let member_idx =
+                        u32::from_le_bytes(raw_data[4 + i * 4..4 + i * 4 + 4].try_into().unwrap());
+                    let member_idx = member_idx as usize;
+                    if member_idx < object.sections.len() {
+                        object.sections[member_idx] = SectionSlot::Discard;
+                    }
+                }
+                continue;
+            }
+
+            let SectionSlot::UnloadedGroup(idx) = object.sections[index.0] else {
+                continue;
+            };
+
+            let part_id = object.section_part_id(idx, &resources.symbol_db.section_part_ids);
+
+            let section = layout::Section::create(group_header, object, part_id)?;
+            common.section_loaded(part_id, group_header, section, resources.output_sections());
+            object.sections[index.0] = SectionSlot::LoadedGroup { section, symbol_id };
+        }
+        Ok(())
     }
 }
 
@@ -4146,6 +4206,7 @@ fn has_complete_deps<'data>(
 pub(crate) struct LayoutResourcesExt<'data> {
     sonames: Sonames<'data>,
     uses_tlsld: AtomicBool,
+    comdat_groups: Mutex<hashbrown::HashSet<&'data [u8]>>,
 }
 
 #[derive(Debug)]
