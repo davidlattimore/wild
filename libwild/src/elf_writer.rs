@@ -1779,13 +1779,6 @@ fn write_rela_sections<'data>(
                     matches!(object.sections.get(sec_idx.0), Some(SectionSlot::Discard))
                 });
 
-            if section_discarded {
-                out.r_offset.set(e, section_address + offset);
-                out.r_addend.set(e, 0);
-                out.set_r_info(e, false, 0, 0);
-                return;
-            }
-
             let sym_idx = sym
                 .and_then(|s| {
                     let symbol_id = object.symbol_id_range.input_to_id(s);
@@ -1799,6 +1792,14 @@ fn write_rela_sections<'data>(
                         .flatten()
                 })
                 .unwrap_or(0);
+
+            if section_discarded && sym_idx == 0 {
+                out.r_offset.set(e, section_address + offset);
+                out.r_addend.set(e, 0);
+                out.set_r_info(e, false, 0, 0);
+                return;
+            }
+
             let addend = sym
                 .and_then(|s| {
                     let sym_entry = object.object.symbol(s).ok()?;
