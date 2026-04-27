@@ -1449,6 +1449,22 @@ mod tests {
     }
 
     #[test]
+    fn test_discard_section_command() {
+        check_section_command(
+            "/DISCARD/ : { *(.data.drop .debug_*) }",
+            &SectionCommand::Section(Section {
+                output_section_name: b"/DISCARD/",
+                commands: vec![ContentsCommand::Matcher(Matcher {
+                    must_keep: false,
+                    input_file_pattern: None,
+                    input_section_name_patterns: vec![b".data.drop", b".debug_*"],
+                })],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[test]
     fn test_assert_command() {
         check_linker_script(
             r#"

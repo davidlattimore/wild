@@ -3620,10 +3620,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 self.load_debug_section::<A>(common, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
-                bail!(
-                    "{self}: Don't know what segment to put `{}` in, but it's referenced",
-                    self.object.section_display_name(section_index),
-                );
+                // Section is discarded, so we silently skip loading it even if it's referenced.
             }
             SectionSlot::Loaded(_)
             | SectionSlot::FrameData(..)
@@ -3880,6 +3877,10 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 )? {
                     Some(x) => x,
                     None => {
+                        if matches!(self.sections[section_index.0], SectionSlot::Discard) {
+                            // Symbols from explicitly discarded sections must not be emitted.
+                            return Ok(None);
+                        }
                         // Don't error for mapping symbols. They cannot have relocations refer to
                         // them, so we don't need to produce a resolution.
                         if resources.symbol_db.is_mapping_symbol(symbol_id) {
@@ -3937,6 +3938,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                 continue;
             }
 
+            if let Ok(Some(section_index)) = self.object.symbol_section(sym, sym_index)
+                && matches!(self.sections[section_index.0], SectionSlot::Discard)
+            {
+                // Symbols from explicitly discarded sections must not be exported to dynsym.
+                continue;
+            }
+
             let old_flags = resources
                 .per_symbol_flags
                 .get_atomic(symbol_id)
@@ -3971,6 +3979,15 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
         if !can_export_symbol(sym, symbol_id, resources, true) {
+            return Ok(());
+        }
+
+        if let Ok(Some(section_index)) = self
+            .object
+            .symbol_section(sym, self.symbol_id_range.id_to_input(symbol_id))
+            && matches!(self.sections[section_index.0], SectionSlot::Discard)
+        {
+            // Symbols from explicitly discarded sections must not be exported to dynsym.
             return Ok(());
         }
 
