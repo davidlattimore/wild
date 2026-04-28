@@ -229,8 +229,8 @@ impl Config {
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // LLD does some different relaxations to us
-                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.dynamic-pie",
-                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.dynamic-pie",
+                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.*",
+                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.*",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
@@ -268,6 +268,10 @@ impl Config {
                 // TODO: Figure out why this is happening.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                // Different linkers put the PLT in different locations relative to .text, so
+                // whether range-extension thunks are needed varies.
+                "rel.plt.extra-thunk",
+                "rel.plt.absent-thunk",
                 // On some systems Wild outputs these symbols while GNU ld does not.
             ]
             .into_iter()

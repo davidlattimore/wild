@@ -192,6 +192,84 @@ impl Arch for AArch64 {
             .or_else(|| decode_plt_entry_template_2(plt_entry, plt_base, plt_offset))
     }
 
+    fn decode_thunk(bytes: &[u8], address: u64) -> Option<u64> {
+        if bytes.len() >= 4 {
+            let insn0 = u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+
+            // B <label> - a single unconditional branch used as a short-range thunk.
+            // Encoding: bits[31:26]=000101, bits[25:0]=imm26 (signed, <<2 = byte offset).
+            const B_MASK: u32 = 0xFC000000;
+            const B_OPCODE: u32 = 0x14000000;
+            if insn0 & B_MASK == B_OPCODE {
+                let imm26 = insn0 & 0x03FFFFFF;
+                let imm26_sext = ((imm26 << 6) as i32) >> 6;
+                return Some((address as i64 + i64::from(imm26_sext) * 4) as u64);
+            }
+
+            // LDR x16, <pc_rel_literal> / BR x16.
+            // LDR Xt (literal): bits[31:30]=01(64-bit), bits[29:27]=011, bit[26]=V=0,
+            //   bits[25:5]=imm19 (PC-relative word offset), bits[4:0]=Rt=x16(=0b10000)
+            // The target absolute address is stored as a 64-bit literal at PC + imm19*4.
+            const LDR_X16_LITERAL_MASK: u32 = 0xFF00001F;
+            const LDR_X16_LITERAL: u32 = 0x58000010;
+            if bytes.len() >= 16 {
+                let insn1 = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+                if insn0 & LDR_X16_LITERAL_MASK == LDR_X16_LITERAL && insn1 == 0xD61F0200 {
+                    let imm19 = ((insn0 >> 5) & 0x7FFFF) as i32;
+                    let imm19_sext = (imm19 << 13) >> 13;
+                    let byte_offset = i64::from(imm19_sext) * 4;
+                    // `bytes` starts at `address`, so the literal buffer offset equals byte_offset.
+                    if let Ok(buf_offset) = usize::try_from(byte_offset)
+                        && buf_offset + 8 <= bytes.len()
+                    {
+                        let target =
+                            u64::from_le_bytes(bytes[buf_offset..buf_offset + 8].try_into().ok()?);
+                        return Some(target);
+                    }
+                }
+            }
+
+            // ADRP x16, <page> - page-relative address load
+            // ADD  x16, x16, #lo12
+            // BR   x16
+            if bytes.len() >= 12 {
+                const BR_X16: u32 = 0xD61F0200;
+
+                let insn1 = u32::from_le_bytes(bytes[4..8].try_into().ok()?);
+                let insn2 = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+
+                // Check ADRP x16 (Rd=16=0b10000): fixed bits [31]=1, [28:24]=10000, [4:0]=10000
+                const ADRP_MASK: u32 = 0x9F00001F;
+                const ADRP_X16: u32 = 0x90000010;
+                // Check ADD x16, x16, #imm (no shift): bits [31:29]=100, [28:24]=10001,
+                //   [23:22]=00, [9:5]=10000(Rn=x16), [4:0]=10000(Rd=x16)
+                const ADD_MASK: u32 = 0xFFC003FF;
+                const ADD_X16_X16: u32 = 0x91000210;
+
+                if insn0 & ADRP_MASK == ADRP_X16
+                    && insn1 & ADD_MASK == ADD_X16_X16
+                    && insn2 == BR_X16
+                {
+                    // Decode ADRP immediate: immlo=[30:29], immhi=[23:5], imm = immhi:immlo
+                    let immlo = (insn0 >> 29) & 0x3;
+                    let immhi = (insn0 >> 5) & 0x7FFFF;
+                    let imm21 = ((immhi << 2) | immlo) as i32;
+                    // Sign-extend 21-bit value
+                    let imm21_sext = (imm21 << 11) >> 11;
+                    let page_offset = i64::from(imm21_sext) << 12;
+                    let page_base = (address & !0xFFF) as i64;
+                    let adrp_result = (page_base + page_offset) as u64;
+
+                    // Decode ADD immediate: imm12=[21:10]
+                    let add_imm = (insn1 >> 10) & 0xFFF;
+                    return Some(adrp_result + u64::from(add_imm));
+                }
+            }
+        }
+
+        None
+    }
+
     fn should_chain_relocations(chain_prefix: &[Self::RType]) -> bool {
         CHAINS
             .iter()

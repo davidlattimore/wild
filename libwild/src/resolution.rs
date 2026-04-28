@@ -710,6 +710,10 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
+
+    /// Total size in bytes of all executable input sections in this object. Used to determine
+    /// early-on if we can be sure that thunks won't be needed.
+    pub(crate) executable_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -1102,6 +1106,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             string_merge_extras: Default::default(),
             custom_sections: Default::default(),
             init_fini_sections: Default::default(),
+            executable_bytes: 0,
         }
     }
 }
@@ -1134,8 +1139,12 @@ fn resolve_sections_for_object<'data, P: Platform>(
     // would result in resizing.
     let mut sections = Vec::with_capacity(obj.common.object.num_sections());
     let mut section_part_ids = Vec::with_capacity(obj.common.object.num_sections());
-
+    let mut executable_bytes: u64 = 0;
     for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
+        let section_size = obj.common.object.section_size(input_section).unwrap_or(0);
+        if input_section.is_executable() {
+            executable_bytes += section_size;
+        }
         let (slot, part_id) = resolve_section(
             input_section_index,
             input_section,
@@ -1148,7 +1157,7 @@ fn resolve_sections_for_object<'data, P: Platform>(
         sections.push(slot);
         section_part_ids.push(part_id);
     }
-
+    obj.executable_bytes = executable_bytes;
     Ok((sections, section_part_ids))
 }
 

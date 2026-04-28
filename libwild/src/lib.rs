@@ -68,6 +68,7 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
+pub(crate) mod thunks;
 #[cfg(all(test, not(target_family = "wasm")))]
 mod tidy_tests;
 pub(crate) mod timing;

@@ -33,6 +33,7 @@ itertools = { workspace = true }
 foldhash = { workspace = true }
 hex = { workspace = true }
 linker-diff = { path = "../linker-diff" }
+linker-layout = { path = "../linker-layout" }
 libloading = { workspace = true }
 libtest-mimic =  { workspace = true }
 object = { workspace = true }

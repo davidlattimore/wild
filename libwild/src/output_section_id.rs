@@ -754,6 +754,14 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         }
     }
 
+    pub(crate) fn part_debug(&self, part_id: PartId) -> String {
+        let alignment = part_id.alignment(self);
+        format!(
+            "{} align={alignment}",
+            self.section_debug(part_id.output_section_id())
+        )
+    }
+
     pub(crate) fn section_debug(&self, section_id: OutputSectionId) -> String {
         let merge_target = self.primary_output_section(section_id);
         let merge = if merge_target == section_id {
