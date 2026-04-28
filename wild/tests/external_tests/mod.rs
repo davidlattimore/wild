@@ -1,4 +1,3 @@
-#[cfg(feature = "mold_tests")]
 mod mold_tests;
 
 use crate::Filter;
@@ -13,8 +12,7 @@ use std::process::Output;
 use std::sync::OnceLock;
 
 pub(super) fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
-    #[cfg(feature = "mold_tests")]
-    {
+    if cfg!(feature = "mold_tests") {
         mold_tests::collect_tests(tests, filter)?;
     }
 
