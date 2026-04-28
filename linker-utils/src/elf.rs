@@ -1268,6 +1268,8 @@ pub enum AArch64Instruction {
     TstBr,
     Bcond,
     JumpCall,
+    // Mach-O specific
+    MachOLow12,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]

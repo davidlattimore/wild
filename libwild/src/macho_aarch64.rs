@@ -99,7 +99,7 @@ impl crate::platform::Arch for MachOAArch64 {
                 debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
                 (
                     RelocationKind::AbsoluteLowPart,
-                    RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::Add),
+                    RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::MachOLow12),
                     None,
                     AllowedRange::no_check(),
                     1,
