@@ -151,8 +151,8 @@ fn load_skip_tests_config() -> &'static Option<Vec<String>> {
 
                 config
                     .skipped_groups
-                    .into_iter()
-                    .flat_map(|(_, group)| group.tests)
+                    .into_values()
+                    .flat_map(|group| group.tests)
                     .collect()
             })
             .ok()

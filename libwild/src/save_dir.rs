@@ -462,12 +462,9 @@ fn create_symlink(target: &Path, dest_path: &Path) -> Result {
     #[cfg(windows)]
     {
         use std::os::windows::fs::FileTypeExt as _;
-        let is_dir = std::fs::metadata(target)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
-        let is_symlink_dir = std::fs::symlink_metadata(target)
-            .map(|meta| meta.file_type().is_symlink_dir())
-            .unwrap_or(false);
+        let is_dir = std::fs::metadata(target).is_ok_and(|meta| meta.is_dir());
+        let is_symlink_dir =
+            std::fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink_dir());
         let result = if is_dir || is_symlink_dir {
             std::os::windows::fs::symlink_dir(target, dest_path)
         } else {
