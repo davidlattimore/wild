@@ -1009,8 +1009,6 @@ impl platform::Platform for Elf {
             .format_specific
             .exception_frames
             .extend(exception_frames);
-        object.format_specific.eh_frame_section = Some(eh_frame_section);
-
         Ok(())
     }
 
@@ -3279,7 +3277,6 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
-    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
 
     /// Indexed by `FrameIndex`.
