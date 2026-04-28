@@ -208,15 +208,19 @@ pub(crate) enum Expression<'a> {
     Negate(Box<Expression<'a>>),
 }
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub(crate) struct SectionPattern<'a> {
+    pub(crate) name: &'a [u8],
+    pub(crate) sorted: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Matcher<'a> {
     pub(crate) must_keep: bool,
-
     /// Optional glob pattern for matching input filenames. `None` means match all files (i.e. the
     /// `*` wildcard was used, or no filename was specified).
     pub(crate) input_file_pattern: Option<&'a [u8]>,
-
-    pub(crate) input_section_name_patterns: Vec<&'a [u8]>,
+    pub(crate) input_section_name_patterns: Vec<SectionPattern<'a>>,
 }
 
 impl<'data> LinkerScript<'data> {
@@ -1019,10 +1023,32 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
     })
 }
 
-fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
-    let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
-    skip_comments_and_whitespace(input)?;
-    Ok(pattern)
+fn parse_pattern<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<SectionPattern<'input>> {
+    // Handling SORT(...) wrapper: SORT is an alias for SORT_BY_NAME in GNU ld.
+    if input.starts_with(b"SORT") {
+        // Consume "SORT"
+        "SORT".parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        // Expect '('
+        '('.parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+
+        // Inside SORT(...), accept a single wildcard pattern up to ')'
+        let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        // Closing ')'
+        ')'.parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+
+        Ok(SectionPattern { name, sorted: true })
+    } else {
+        // Original behavior: bare pattern
+        let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        Ok(SectionPattern { name, sorted: false })
+    }
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -1228,12 +1254,12 @@ mod tests {
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![b".text", b".text2"],
+                        input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }, SectionPattern { name: b".text2", sorted: false }],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![b".text3"],
+                        input_section_name_patterns: vec![SectionPattern { name: b".text3", sorted: false }],
                     }),
                 ],
                 alignment: None,
@@ -1251,7 +1277,7 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
                     input_file_pattern: None,
-                    input_section_name_patterns: vec![b"___ksymtab+"],
+                    input_section_name_patterns: vec![SectionPattern { name: b"___ksymtab+", sorted: false }],
                 })],
                 alignment: Some(Alignment::new(8).unwrap()),
                 start_address_expression: Some(Expression::Number(0)),
@@ -1297,7 +1323,7 @@ mod tests {
                                     ContentsCommand::Matcher(Matcher {
                                         must_keep: true,
                                         input_file_pattern: None,
-                                        input_section_name_patterns: vec![b".rodata.foo"],
+                                        input_section_name_patterns: vec![SectionPattern { name: b".rodata.foo", sorted: false }],
                                     }),
                                     ContentsCommand::Align(Alignment::new(32).unwrap()),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
@@ -1432,12 +1458,12 @@ mod tests {
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: Some(b"foo.o"),
-                        input_section_name_patterns: vec![b".text", b".text2"],
+                        input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }, SectionPattern { name: b".text2", sorted: false }],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![b".text3"],
+                        input_section_name_patterns: vec![SectionPattern { name: b".text3", sorted: false }],
                     }),
                 ],
                 alignment: None,
@@ -1455,7 +1481,7 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
                     input_file_pattern: Some(b"*crtbegin*.o"),
-                    input_section_name_patterns: vec![b".ctors"],
+                    input_section_name_patterns: vec![SectionPattern { name: b".ctors", sorted: false }],
                 })],
                 alignment: None,
                 start_address_expression: None,
@@ -1472,7 +1498,7 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: true,
                     input_file_pattern: Some(b"crti.o"),
-                    input_section_name_patterns: vec![b".init"],
+                    input_section_name_patterns: vec![SectionPattern { name: b".init", sorted: false }],
                 })],
                 alignment: None,
                 start_address_expression: None,
@@ -1497,7 +1523,7 @@ mod tests {
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![b".text"],
+                                input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }],
                             })],
                             alignment: None,
                             start_address_expression: None,
@@ -1533,7 +1559,7 @@ mod tests {
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![b".text"],
+                                input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }],
                             })],
                             alignment: None,
                             start_address_expression: None,
