@@ -966,6 +966,10 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         range,
         alignment,
         bias: 0,
+        thunkable: matches!(
+            r_type,
+            object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26
+        ),
     })
 }
 

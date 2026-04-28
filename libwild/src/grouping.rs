@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
+use crate::input_section_id::InputSectionId;
 use crate::input_section_id::SectionIdRange;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
@@ -291,6 +292,19 @@ impl<'data, P: Platform> SequencedInputObject<'data, P> {
         };
         SymbolStrength::of(obj_symbol)
     }
+
+    fn input_section_id_for_symbol(&self, symbol_id: SymbolId) -> Option<InputSectionId> {
+        let symbol_index = self.symbol_id_range.id_to_input(symbol_id);
+        let symtab_entry = self.parsed.object.symbol(symbol_index).ok()?;
+
+        let section_index = self
+            .parsed
+            .object
+            .symbol_section(symtab_entry, symbol_index)
+            .ok()??;
+
+        Some(self.section_id_range.input_to_id(section_index))
+    }
 }
 
 impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
@@ -325,6 +339,19 @@ impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
             o.symbol_strength(symbol_id)
         } else {
             SymbolStrength::Undefined
+        }
+    }
+
+    /// Returns the ID of the input section in which the specified symbol is defined.
+    pub(crate) fn input_section_id_for_symbol(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Option<InputSectionId> {
+        match self {
+            SequencedInput::Object(sequenced_input_object) => {
+                sequenced_input_object.input_section_id_for_symbol(symbol_id)
+            }
+            _ => None,
         }
     }
 }

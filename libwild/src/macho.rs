@@ -987,7 +987,7 @@ impl platform::Platform for MachO {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: platform::Arch<Platform = Self>>(
-        state: &crate::layout::ObjectLayoutState<'data, Self>,
+        state: &mut crate::layout::ObjectLayoutState<'data, Self>,
         common: &mut crate::layout::CommonGroupState<'data, Self>,
         queue: &mut crate::layout::LocalWorkQueue,
         resources: &'scope crate::layout::GraphResources<'data, '_, Self>,

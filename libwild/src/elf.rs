@@ -62,6 +62,7 @@ use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
+use crate::platform::ThunkConfig;
 use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
@@ -144,6 +145,8 @@ use zerocopy::KnownLayout;
 pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
+
+pub(crate) const THUNK_SYMBOL_PREFIX: &str = "__thunk_";
 
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
@@ -557,6 +560,10 @@ impl platform::Platform for Elf {
         memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
+    fn file_thunk_config<'data>(file: &File<'data>) -> Option<ThunkConfig> {
+        thunk_config_for_object(file)
+    }
+
     fn finalise_layout_dynamic<'data>(
         state: &mut layout::DynamicLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -669,7 +676,7 @@ impl platform::Platform for Elf {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
+        state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
@@ -1524,6 +1531,25 @@ impl platform::Platform for Elf {
         Ok(())
     }
 
+    fn allocate_thunk_symbol_sizes(
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbols: &[SymbolId],
+        symbol_db: &SymbolDb<Self>,
+    ) {
+        let total_name_bytes: usize = symbols
+            .iter()
+            .map(|&sym_id| {
+                let name_len = symbol_db.symbol_name(sym_id).map_or(0, |n| n.bytes().len());
+                elf::THUNK_SYMBOL_PREFIX.len() + name_len + 1
+            })
+            .sum();
+        sizes.increment(
+            part_id::SYMTAB_LOCAL,
+            symbols.len() as u64 * size_of::<elf::SymtabEntry>() as u64,
+        );
+        sizes.increment(part_id::STRTAB, total_name_bytes as u64);
+    }
+
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
@@ -1802,10 +1828,12 @@ impl platform::Platform for Elf {
         builder.add_sections(&custom.ro);
 
         builder.add_section(output_section_id::PLT_GOT);
-        builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::INIT);
         builder.add_section(output_section_id::FINI);
         builder.add_sections(&custom.exec);
+        // We want ThunkConfig::primary_function_part_id to be more or less last, since we only
+        // support generating thunks before the primary_function_part, not after.
+        builder.add_section(output_section_id::TEXT);
 
         builder.add_section(output_section_id::TDATA);
         builder.add_sections(&custom.tdata);
@@ -2571,6 +2599,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     common,
                     rel,
                     eh_frame_section,
+                    output_section_id::EH_FRAME.base_part_id(),
                     resources,
                     queue,
                     false,
@@ -2677,9 +2706,10 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
                 common,
                 &rel,
                 eh_frame_section,
+                output_section_id::EH_FRAME.base_part_id(),
                 resources,
                 queue,
-                false,
+                true,
                 scope,
             )?;
         }
@@ -4744,11 +4774,15 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             modifier = RelocationModifier::Normal;
             continue;
         }
+        let section_header = state.object.section(section_index)?;
+        let section_part_id =
+            state.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         modifier = process_relocation::<A, R>(
             state,
             common,
             &rel,
-            state.object.section(section_index)?,
+            section_header,
+            section_part_id,
             resources,
             queue,
             false,
@@ -4767,10 +4801,11 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
 
 #[inline(always)]
 fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
-    object: &layout::ObjectLayoutState<'data, Elf>,
+    object: &ObjectLayoutState<'data, Elf>,
     common: &mut CommonGroupState<'data, Elf>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
+    section_part_id: crate::part_id::PartId,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
@@ -4903,6 +4938,16 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             }
 
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
+        }
+
+        if !is_debug_section {
+            crate::thunks::handle_thunk_extensions_for_relocation::<A>(
+                section_part_id,
+                resources,
+                local_symbol_id,
+                symbol_id,
+                r_type,
+            );
         }
 
         layout::check_for_undefined::<A>(
@@ -5351,5 +5396,14 @@ impl CopyRelocationInfo {
 
         self.symbol_id = symbol_id;
         self.is_weak = false;
+    }
+}
+
+/// Returns the thunk config for the architecture of the given object. This is only needed in
+/// contexts that aren't currently generic over Arch.
+fn thunk_config_for_object(file: &File) -> Option<ThunkConfig> {
+    match file.arch {
+        crate::arch::Architecture::AArch64 => crate::elf_aarch64::ElfAArch64::thunk_config(),
+        _ => None,
     }
 }

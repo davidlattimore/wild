@@ -61,6 +61,9 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::symbol_db::is_mapping_symbol_name;
+use crate::thunks;
+use crate::thunks::ThunkBlockId;
+use crate::thunks::ThunkLayoutBuilder;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
@@ -83,6 +86,7 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::replace;
@@ -137,13 +141,16 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             )
         },
     );
+
     let merged_strings = merged_strings?;
     let gc_outputs = gc_outputs?;
 
     let mut group_states = gc_outputs.group_states;
+    let thunk_layout_builder = gc_outputs.thunk_layout_builder;
 
     let epilogue_file_id = FileId::new(group_states.len() as u32, 0);
 
+    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     P::finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     let mut dynamic_symbol_definitions =
@@ -205,6 +212,25 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         gc_outputs.must_keep_sections,
         &finalise_sizes_resources,
     )?;
+
+    let thunk_blocks = thunk_layout_builder
+        .map(|builder| {
+            builder.build(
+                &mut group_states,
+                &symbol_db,
+                &per_symbol_flags,
+                &output_sections,
+                &section_part_sizes,
+            )
+        })
+        .unwrap_or_default();
+
+    allocate_thunk_block_space::<A::Platform>(
+        &mut group_states,
+        &thunk_blocks,
+        &mut section_part_sizes,
+        &symbol_db,
+    );
 
     let mut section_part_layouts = layout_section_parts::<A::Platform>(
         &section_part_sizes,
@@ -268,6 +294,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .map(|group| res_writer.take_shard(group.num_symbols))
         .collect_vec();
 
+    let thunk_block_addresses_out = std::iter::repeat_with(Default::default)
+        .take(thunk_blocks.len())
+        .collect();
+
     let resources = FinaliseLayoutResources {
         symbol_db: &symbol_db,
         output_sections: &output_sections,
@@ -280,6 +310,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         segment_layouts: &segment_layouts,
         program_segments: &program_segments,
         format_specific: &properties_and_attributes,
+        thunk_blocks: &thunk_blocks,
+        thunk_block_addresses: &thunk_block_addresses_out,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -311,6 +343,11 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &resources.symbol_db.args.common().warning_callback,
     )?;
 
+    let thunk_block_addresses = thunk_block_addresses_out
+        .into_iter()
+        .map(|m| m.into_inner().unwrap())
+        .collect();
+
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
     Ok(Layout {
@@ -333,6 +370,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         per_symbol_flags,
         dynamic_symbol_definitions,
         properties_and_attributes,
+        thunk_block_addresses,
     })
 }
 
@@ -552,6 +590,9 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
     pub(crate) properties_and_attributes: P::LayoutExt,
+    /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
+    /// of the thunk for that symbol within the block.
+    pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
 }
 
 #[derive(Debug, Default)]
@@ -691,10 +732,19 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) section_id_range: SectionIdRange,
+
     /// SFrame section ranges for this object, relative to the start of the .sframe output section.
     pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
+
     /// Sparse map from section index to relaxation delta details.
     pub(crate) section_relax_deltas: RelaxDeltaMap,
+
+    /// Which ThunkBlock holds primary thunks for this object. Used during relocation writing to
+    /// look up the thunk address for out-of-range branch targets.
+    pub(crate) thunk_block_id: crate::thunks::ThunkBlockId,
+
+    /// Whether this object is responsible for writing the thunks in its ThunkBlock.
+    pub(crate) owns_thunk_block: bool,
 }
 
 #[derive(Debug)]
@@ -1086,6 +1136,16 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
     section_relax_deltas: RelaxDeltaMap,
+
+    /// Which ThunkBlock handles primary-part thunks for this object.
+    pub(crate) thunk_block_id: ThunkBlockId,
+
+    /// Whether this object is responsible for writing the thunk block.
+    pub(crate) owns_thunk_block: bool,
+
+    /// Total bytes of primary-function-part sections that survived GC. Used to help determine
+    /// distances for range-extension thunks.
+    pub(crate) post_gc_primary_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1182,6 +1242,8 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     has_variant_pcs: AtomicBool,
 
+    pub(crate) thunk_layout_builder: Option<crate::thunks::ThunkLayoutBuilder>,
+
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
@@ -1208,6 +1270,14 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
     format_specific: &'scope P::LayoutExt,
+
+    pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
+
+    /// Per-thunk-block addresses-maps. We could store this on ObjectLayoutState, but only a small
+    /// fraction of the input objects will be thunk-block owners, so it'd seem wasteful. Instead we
+    /// put it here and wrap each map in a mutex. Since each map is only written by its owner, each
+    /// mutex should only ever get locked once during its lifetime.
+    pub(crate) thunk_block_addresses: &'scope Vec<Mutex<BTreeMap<SymbolId, u64>>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1368,6 +1438,8 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
+        let thunk_count = self.thunk_count();
+
         let files = self
             .group_layouts
             .iter()
@@ -1408,7 +1480,18 @@ impl<'data, P: Platform> Layout<'data, P> {
                 })
             })
             .collect();
-        linker_layout::Layout { files }
+
+        linker_layout::Layout {
+            files,
+            metrics: linker_layout::Metrics { thunk_count },
+        }
+    }
+
+    fn thunk_count(&self) -> u64 {
+        self.thunk_block_addresses
+            .iter()
+            .map(|m| m.len() as u64)
+            .sum()
     }
 
     pub(crate) fn flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
@@ -1743,6 +1826,47 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     Ok(total_sizes)
 }
 
+/// Allocates space for thunk blocks in each object that owns one.
+fn allocate_thunk_block_space<P: Platform>(
+    group_states: &mut [GroupState<P>],
+    thunk_blocks: &[crate::thunks::ThunkBlock],
+    total_sizes: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<P>,
+) {
+    if thunk_blocks.is_empty() {
+        return;
+    }
+
+    verbose_timing_phase!("Apply thunk block sizes");
+
+    let emit_symbols = !symbol_db.args.should_strip_all();
+
+    for group_state in group_states.iter_mut() {
+        let mut extra_thunk_sizes: OutputSectionPartMap<u64> =
+            OutputSectionPartMap::with_size(total_sizes.num_parts());
+        for file in &group_state.files {
+            if let FileLayoutState::Object(obj) = file
+                && let Some(config) = P::file_thunk_config(obj.object)
+                && obj.owns_thunk_block
+            {
+                let block = thunk_blocks.get(obj.thunk_block_id.as_usize());
+                let count = block.map_or(0, |b| b.symbols.len());
+                let size = count as u64 * config.thunk_size;
+                extra_thunk_sizes.increment(config.primary_function_part_id, size);
+                if emit_symbols && let Some(block) = block {
+                    P::allocate_thunk_symbol_sizes(
+                        &mut extra_thunk_sizes,
+                        &block.symbols,
+                        symbol_db,
+                    );
+                }
+            }
+        }
+        group_state.common.mem_sizes.merge(&extra_thunk_sizes);
+        total_sizes.merge(&extra_thunk_sizes);
+    }
+}
+
 /// Propagates attributes from input sections to the output sections into which they were placed.
 fn propagate_section_attributes<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
@@ -1823,6 +1947,7 @@ struct GcOutputs<'data, P: Platform> {
     must_keep_sections: OutputSectionMap<bool>,
     has_static_tls: bool,
     has_variant_pcs: bool,
+    thunk_layout_builder: Option<ThunkLayoutBuilder>,
 }
 
 struct GroupActivationInputs<'data, P: Platform> {
@@ -1848,6 +1973,7 @@ impl<'data, P: Platform> GroupActivationInputs<'data, P> {
             .into_iter()
             .map(|file| file.create_layout_state(resources.symbol_db.args))
             .collect();
+
         let mut group = GroupState {
             queue: LocalWorkQueue::new(group_index),
             num_symbols,
@@ -1901,6 +2027,8 @@ fn find_required_sections<'data, A: Arch>(
 
     let num_groups = groups_in.len();
 
+    let thunk_layout_builder = thunks::ThunkLayoutBuilder::new::<A>(&groups_in);
+
     let mut worker_slots = Vec::with_capacity(num_groups);
     worker_slots.resize_with(num_groups, || {
         Mutex::new(WorkerSlot {
@@ -1918,6 +2046,7 @@ fn find_required_sections<'data, A: Arch>(
         must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
+        thunk_layout_builder,
         start_stop_sections: output_sections.new_section_map(),
         activations_remaining: AtomicUsize::new(num_groups),
         delay_processing: ArrayQueue::new(1),
@@ -1959,6 +2088,7 @@ fn find_required_sections<'data, A: Arch>(
         must_keep_sections,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
         has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
+        thunk_layout_builder: resources.thunk_layout_builder,
     })
 }
 
@@ -3478,6 +3608,9 @@ fn new_object_layout_state<P: Platform>(
         relocations: input_state.relocations,
         format_specific: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
+        thunk_block_id: ThunkBlockId::default(),
+        owns_thunk_block: false,
+        post_gc_primary_bytes: 0,
     })
 }
 
@@ -3668,6 +3801,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         common.section_loaded(part_id, header, section, resources.output_sections);
 
+        if let Some(config) = A::thunk_config()
+            && resources.thunk_layout_builder.is_some()
+            && part_id == config.primary_function_part_id
+        {
+            self.post_gc_primary_bytes += section.size;
+        }
+
         let section_id = part_id.output_section_id();
 
         if section.size > 0 {
@@ -3730,6 +3870,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
 
         P::finalise_object_sizes(self, common);
+
         Ok(())
     }
 
@@ -3815,6 +3956,24 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         P::finalise_object_layout(&self, memory_offsets);
 
+        // If this object owns a ThunkBlock, assign addresses for the block's thunks and write
+        // them directly into the shared output map.
+        if self.owns_thunk_block
+            && let Some(config) = P::file_thunk_config(self.object)
+            && let Some(block) = resources.thunk_blocks.get(self.thunk_block_id.as_usize())
+            && !block.symbols.is_empty()
+        {
+            let mut addresses = resources.thunk_block_addresses[self.thunk_block_id.as_usize()]
+                .lock()
+                .unwrap();
+
+            let addr = memory_offsets.get_mut(config.primary_function_part_id);
+            for &symbol_id in &block.symbols {
+                addresses.insert(symbol_id, *addr);
+                *addr += config.thunk_size;
+            }
+        }
+
         Ok(ObjectLayout {
             input: self.input,
             file_id: self.file_id,
@@ -3826,6 +3985,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             section_id_range: self.section_id_range,
             sframe_ranges,
             section_relax_deltas: self.section_relax_deltas,
+            thunk_block_id: self.thunk_block_id,
+            owns_thunk_block: self.owns_thunk_block,
         })
     }
 

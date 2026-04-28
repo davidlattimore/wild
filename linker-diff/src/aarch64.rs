@@ -17,6 +17,8 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::utils::u32_from_slice;
+use linker_utils::utils::u64_from_slice;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,6 +192,73 @@ impl Arch for AArch64 {
     ) -> Option<crate::arch::PltEntry> {
         decode_plt_entry_template_1(plt_entry, plt_base, plt_offset)
             .or_else(|| decode_plt_entry_template_2(plt_entry, plt_base, plt_offset))
+    }
+
+    fn decode_thunk(bytes: &[u8], address: u64) -> Option<u64> {
+        if bytes.len() >= 4 {
+            let insn0 = u32_from_slice(&bytes[0..4]);
+
+            // B <label> - a single unconditional branch used as a short-range thunk.
+            // Encoding: bits[31:26]=000101, bits[25:0]=imm26 (signed, <<2 = byte offset).
+            const B_MASK: u32 = 0xFC000000;
+            const B_OPCODE: u32 = 0x14000000;
+            if insn0 & B_MASK == B_OPCODE {
+                let (imm26_sext, _) = AArch64Instruction::JumpCall.read_value(&bytes[0..4]);
+                return Some((address as i64 + imm26_sext as i64 * 4) as u64);
+            }
+
+            // LDR x16, <pc_rel_literal> / BR x16.
+            // LDR Xt (literal): bits[31:30]=01(64-bit), bits[29:27]=011, bit[26]=V=0,
+            //   bits[25:5]=imm19 (PC-relative word offset), bits[4:0]=Rt=x16(=0b10000)
+            // The target absolute address is stored as a 64-bit literal at PC + imm19*4.
+            const LDR_X16_LITERAL_MASK: u32 = 0xFF00001F;
+            const LDR_X16_LITERAL: u32 = 0x58000010;
+            if bytes.len() >= 16 {
+                let insn1 = u32_from_slice(&bytes[4..8]);
+                if insn0 & LDR_X16_LITERAL_MASK == LDR_X16_LITERAL && insn1 == 0xD61F0200 {
+                    let (imm19_sext, _) = AArch64Instruction::Ldr.read_value(&bytes[0..4]);
+                    let byte_offset = imm19_sext as i64 * 4;
+                    if let Ok(buf_offset) = usize::try_from(byte_offset)
+                        && buf_offset + 8 <= bytes.len()
+                    {
+                        return Some(u64_from_slice(&bytes[buf_offset..buf_offset + 8]));
+                    }
+                }
+            }
+
+            // ADRP x16, <page> - page-relative address load
+            // ADD  x16, x16, #lo12
+            // BR   x16
+            if bytes.len() >= 12 {
+                const BR_X16: u32 = 0xD61F0200;
+
+                let insn1 = u32_from_slice(&bytes[4..8]);
+                let insn2 = u32_from_slice(&bytes[8..12]);
+
+                // Check ADRP x16 (Rd=16=0b10000): fixed bits [31]=1, [28:24]=10000, [4:0]=10000
+                const ADRP_MASK: u32 = 0x9F00001F;
+                const ADRP_X16: u32 = 0x90000010;
+                // Check ADD x16, x16, #imm (no shift): bits [31:29]=100, [28:24]=10001,
+                //   [23:22]=00, [9:5]=10000(Rn=x16), [4:0]=10000(Rd=x16)
+                const ADD_MASK: u32 = 0xFFC003FF;
+                const ADD_X16_X16: u32 = 0x91000210;
+
+                if insn0 & ADRP_MASK == ADRP_X16
+                    && insn1 & ADD_MASK == ADD_X16_X16
+                    && insn2 == BR_X16
+                {
+                    let (imm21_sext, _) = AArch64Instruction::Adr.read_value(&bytes[0..4]);
+                    let page_offset = (imm21_sext as i64) << 12;
+                    let page_base = (address & !0xFFF) as i64;
+                    let adrp_result = (page_base + page_offset) as u64;
+
+                    let (add_imm, _) = AArch64Instruction::Add.read_value(&bytes[4..8]);
+                    return Some(adrp_result + add_imm);
+                }
+            }
+        }
+
+        None
     }
 
     fn should_chain_relocations(chain_prefix: &[Self::RType]) -> bool {

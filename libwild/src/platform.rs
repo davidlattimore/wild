@@ -52,6 +52,22 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Configuration for range-extension thunks on architectures that need them.
+/// Returned by `Arch::thunk_config()`; `None` means the architecture never needs thunks.
+pub(crate) struct ThunkConfig {
+    /// PartId for the primary function part (main `.text` alignment bucket). This is the
+    /// alignment used by the vast majority of code and is where per-object thunks are placed.
+    pub(crate) primary_function_part_id: PartId,
+
+    /// Minimum branch range across all range-limited branch relocations for this architecture.
+    /// If the total executable input size is below this, thunks can be disabled entirely.
+    pub(crate) min_branch_range: u64,
+
+    /// Size in bytes of a single thunk. Must be a multiple of the `primary_function_part_id`
+    /// alignment.
+    pub(crate) thunk_size: u64,
+}
+
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
@@ -148,6 +164,21 @@ pub(crate) trait Arch: Send + Sync + 'static {
         _riscv_attributes_section_index: object::SectionIndex,
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
+    }
+
+    /// Returns the thunk configuration for this architecture, or `None` if this architecture
+    /// doesn't need thunks or we just don't support them yet.
+    fn thunk_config() -> Option<ThunkConfig> {
+        None
+    }
+
+    /// Writes a thunk into the supplied buffer that jumps to the given target address. The thunk is
+    /// placed at `thunk_address`. The buffer size equals `ThunkConfig::thunk_size`. The thunk must
+    /// be position-independent (PC-relative).
+    fn write_thunk(_thunk_address: u64, _target_address: u64, _buf: &mut [u8]) {
+        // Should only be called if thunk_config returns Some, in which case this must be
+        // overridden.
+        unimplemented!();
     }
 }
 
@@ -337,6 +368,12 @@ pub(crate) trait Platform:
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 
+    /// Return the thunk configuration for the given object file, or `None` if range-extension
+    /// thunks are not needed for this file's architecture.
+    fn file_thunk_config<'data>(_file: &Self::File<'data>) -> Option<ThunkConfig> {
+        None
+    }
+
     fn finalise_layout_dynamic<'data>(
         state: &mut layout::DynamicLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -362,7 +399,7 @@ pub(crate) trait Platform:
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
+        state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
@@ -557,6 +594,13 @@ pub(crate) trait Platform:
         symbol_db: &SymbolDb<'data, Self>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result;
+
+    fn allocate_thunk_symbol_sizes(
+        _sizes: &mut OutputSectionPartMap<u64>,
+        _symbols: &[SymbolId],
+        _symbol_db: &SymbolDb<Self>,
+    ) {
+    }
 
     fn allocate_internal_symbol(
         symbol_id: SymbolId,

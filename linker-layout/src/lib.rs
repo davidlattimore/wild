@@ -9,10 +9,20 @@ use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Default)]
+pub struct Metrics {
+    /// Total number of range-extension thunks allocated across all input objects.
+    pub thunk_count: u64,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct Layout {
     /// The input files to the linker.
     pub files: Vec<InputFile>,
+
+    /// Metrics collected during linking.
+    #[serde(default)]
+    pub metrics: Metrics,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -94,6 +104,7 @@ mod tests {
                 sections: vec![Some(Section { mem_range: 42..48 })],
                 temporary: true,
             }],
+            metrics: Metrics { thunk_count: 3 },
         };
         let bytes = layout.to_bytes().unwrap();
         let layout2 = Layout::from_bytes(&bytes).unwrap();

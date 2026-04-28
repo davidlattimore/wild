@@ -87,6 +87,7 @@ use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::thunks::ThunkBlockId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
@@ -131,6 +132,7 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::Cursor;
 use std::io::Write;
@@ -1520,6 +1522,97 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     } else if !layout.args().should_strip_all() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
+    if object.owns_thunk_block
+        && let Some(addresses) = layout
+            .thunk_block_addresses
+            .get(object.thunk_block_id.as_usize())
+    {
+        write_thunks::<A>(
+            addresses,
+            buffers,
+            layout,
+            &mut table_writer.debug_symbol_writer,
+        )?;
+    }
+    Ok(())
+}
+
+/// Write thunk instructions for a set of (SymbolId -> thunk_address) mappings.
+///
+/// Thunks are sorted by SymbolId for determinism and written consecutively into the primary
+/// function part buffer. Space must already have been reserved during `finalise_sizes`.
+fn write_thunks<'data, A: Arch<Platform = Elf>>(
+    thunk_addresses: &BTreeMap<crate::symbol_db::SymbolId, u64>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &ElfLayout<'data>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+) -> Result {
+    if thunk_addresses.is_empty() {
+        return Ok(());
+    }
+
+    let config = A::thunk_config().expect("write_thunks called without thunk config");
+    let thunk_size = config.thunk_size as usize;
+    let primary_part_id = config.primary_function_part_id;
+    let emit_symbols = !layout.args().should_strip_all();
+
+    let text_section_id = primary_part_id.output_section_id();
+    let text_shndx = layout
+        .output_sections
+        .output_index_of_section(text_section_id)
+        .unwrap_or(0);
+
+    for (symbol_id, &thunk_address) in thunk_addresses {
+        debug_assert_ne!(thunk_address, 0, "Thunk address should have been assigned");
+
+        let res = layout
+            .merged_symbol_resolution(*symbol_id)
+            .with_context(|| {
+                format!(
+                    "No resolution for symbol {} needed by thunk",
+                    layout.symbol_db.symbol_name_for_display(*symbol_id)
+                )
+            })?;
+
+        // For ifunc symbols, the raw_value is the resolver address, but the thunk must
+        // branch to the PLT stub that loads the resolved function pointer from the GOT.
+        let target_address = if res.flags.is_ifunc() {
+            res.plt_address().with_context(|| {
+                format!(
+                    "Ifunc symbol {} has no PLT entry for thunk",
+                    layout.symbol_db.symbol_name_for_display(*symbol_id)
+                )
+            })?
+        } else {
+            res.raw_value
+        };
+
+        let buf = buffers.get_mut(primary_part_id);
+        let thunk_buf = buf
+            .split_off_mut(..thunk_size)
+            .ok_or_else(|| crate::file_writer::insufficient_allocation("thunk space in .text"))?;
+
+        A::write_thunk(thunk_address, target_address, thunk_buf);
+
+        if emit_symbols {
+            let orig_name = layout
+                .symbol_db
+                .symbol_name(*symbol_id)
+                .map(|n| n.bytes().to_vec())
+                .unwrap_or_default();
+            let mut thunk_name = crate::elf::THUNK_SYMBOL_PREFIX.as_bytes().to_vec();
+            thunk_name.extend_from_slice(&orig_name);
+            let entry = symbol_writer.define_symbol(
+                true,
+                SymbolSection::Index(text_shndx),
+                thunk_address,
+                thunk_size as u64,
+                &thunk_name,
+            )?;
+            entry.set_st_info(object::elf::STB_LOCAL, object::elf::STT_FUNC);
+        }
+    }
+
     Ok(())
 }
 
@@ -2170,6 +2263,7 @@ fn apply_relocations<
                 section_address,
                 is_writable: object_section.is_writable(),
                 section_flags,
+                part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
             },
             layout,
             out,
@@ -2414,6 +2508,9 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                         section_address: output_pos as u64 + table_writer.eh_frame_start_address,
                         is_writable: false,
                         section_flags,
+                        // .eh_frame relocations never need thunks; use the eh_frame section's
+                        // base part as a placeholder so the thunk lookup always misses.
+                        part_id: output_section_id::EH_FRAME.base_part_id(),
                     },
                     layout,
                     entry_out,
@@ -2512,6 +2609,7 @@ struct SectionInfo<S: platform::SectionFlags> {
     section_address: u64,
     is_writable: bool,
     section_flags: S,
+    part_id: crate::part_id::PartId,
 }
 
 fn get_resolution<'data, R: Relocation>(
@@ -3156,9 +3254,92 @@ fn apply_relocation<
             "relocation applied");
     }
 
+    if let Some(thunked_value) = maybe_get_thunk_for_relocation::<A>(
+        object_layout,
+        section_info,
+        layout,
+        rel_info,
+        local_symbol_id,
+        place,
+        value,
+    )? {
+        value = thunked_value;
+    };
+
     write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
 
     Ok(next_modifier)
+}
+
+/// Checks if we need to use a thunk for a relocation and if we do, return the value to use for the
+/// thunk.
+fn maybe_get_thunk_for_relocation<A: Arch<Platform = Elf>>(
+    object_layout: &ObjectLayout<Elf>,
+    section_info: SectionInfo<SectionFlags>,
+    layout: &Layout<Elf>,
+    rel_info: RelocationKindInfo,
+    local_symbol_id: SymbolId,
+    place: u64,
+    value: u64,
+) -> Result<Option<u64>> {
+    let Some(config) = A::thunk_config() else {
+        return Ok(None);
+    };
+
+    if !rel_info.thunkable {
+        return Ok(None);
+    }
+
+    if rel_info.range.contains(value as i64) {
+        return Ok(None);
+    }
+
+    let canonical_id = layout.symbol_db.definition(local_symbol_id);
+
+    let thunk_id = if section_info.part_id == config.primary_function_part_id {
+        object_layout.thunk_block_id
+    } else {
+        ThunkBlockId::FIRST
+    };
+
+    let thunk_address_opt = layout
+        .thunk_block_addresses
+        .get(thunk_id.as_usize())
+        .and_then(|m| m.get(&canonical_id))
+        .copied();
+
+    if let Some(thunk_address) = thunk_address_opt {
+        if thunk_address == 0 {
+            bail!(
+                "Thunk address not yet allocated for symbol {}",
+                layout.symbol_db.symbol_name_for_display(local_symbol_id)
+            );
+        }
+
+        let mask = get_page_mask(rel_info.mask);
+        let new_value = thunk_address
+            .wrapping_add(rel_info.bias)
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(place.bitand(mask.place));
+
+        tracing::trace!(
+            old_value = value,
+            new_value,
+            thunk_address,
+            "Using thunk instead of out-of-range branch"
+        );
+
+        return Ok(Some(new_value));
+    }
+
+    bail!(
+        "Branch relocation out of range by {over} for symbol {sym} \
+         but no thunk allocated. Part: {part}. Offset: {offset}",
+        over = rel_info.range.overrun(value as i64),
+        sym = layout.symbol_db.symbol_name_for_display(local_symbol_id),
+        part = layout.output_sections.part_debug(section_info.part_id),
+        offset = value as i64,
+    );
 }
 
 fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(

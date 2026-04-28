@@ -1497,6 +1497,18 @@ impl AllowedRange {
     pub fn contains(&self, value: i64) -> bool {
         self.min <= value && value < self.max
     }
+
+    /// Returns how far we're outside the allowed range.
+    #[must_use]
+    pub fn overrun(&self, value: i64) -> i64 {
+        if value < self.min {
+            value - self.min
+        } else if value > self.max {
+            value - self.max
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -1507,6 +1519,8 @@ pub struct RelocationKindInfo {
     pub range: AllowedRange,
     pub alignment: usize,
     pub bias: u64,
+    /// Whether this relocation type supports range-extension thunks.
+    pub thunkable: bool,
 }
 
 impl RelocationKindInfo {

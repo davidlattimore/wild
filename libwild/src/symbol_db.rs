@@ -30,6 +30,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
+use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
@@ -1018,6 +1019,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         match &self.groups[file_id.group()] {
             Group::Objects(objects) => {
                 let file = &objects[file_id.file()];
+
                 let local_index = file.symbol_id_range.id_to_input(symbol_id);
                 file.parsed
                     .object
@@ -1032,6 +1034,18 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
     pub(crate) fn warning(&self, message: impl Into<String>) {
         self.args.warning(message);
+    }
+
+    pub(crate) fn part_id_for_symbol(&self, symbol_id: SymbolId) -> PartId {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        let file = self.file(file_id);
+        if file.is_dynamic() {
+            return part_id::UNMAPPED;
+        }
+        let Some(input_section_id) = file.input_section_id_for_symbol(symbol_id) else {
+            return part_id::UNMAPPED;
+        };
+        self.section_part_ids[input_section_id.as_usize()]
     }
 }
 
