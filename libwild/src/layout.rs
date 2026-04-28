@@ -3503,7 +3503,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        let mut frame_section_index = None;
+        let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
 
@@ -3544,7 +3544,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     }
                 }
                 SectionSlot::FrameData(index) => {
-                    frame_section_index = Some(*index);
+                    frame_section_indices.push(*index);
                 }
                 SectionSlot::NoteGnuProperty(index) => {
                     note_gnu_property_section = Some(*index);
@@ -3556,7 +3556,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
         }
 
-        if let Some(frame_data_section_index) = frame_section_index {
+        for frame_data_section_index in frame_section_indices {
             <A::Platform as Platform>::load_exception_frame_data::<A>(
                 self,
                 common,
