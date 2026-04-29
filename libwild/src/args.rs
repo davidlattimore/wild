@@ -92,6 +92,8 @@ pub struct CommonArgs {
 
     /// The version of the linker being used.
     pub(crate) version: std::borrow::Cow<'static, str>,
+
+    has_flavor: bool,
 }
 
 pub type WarningCallback = dyn Fn(Warning) + Send + Sync + 'static;
@@ -109,15 +111,33 @@ impl Args {
     {
         let mut input = input();
 
-        // TODO: Select platform based on executable name and/or the first argument.
-        let _executable_name = input
-            .next()
-            .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
+        let prog_name = input.next().context("Missing argument 0 (program name)")?;
 
-        match PlatformKind::host() {
-            PlatformKind::Elf => Ok(Args::Elf(elf::ElfArgs::new()?)),
-            PlatformKind::MachO => Ok(Args::MachO(macho::MachOArgs::new()?)),
-        }
+        let mut has_flavor = false;
+
+        let platform = if input.next().is_some_and(|arg| arg.as_ref() == "-flavor") {
+            has_flavor = true;
+
+            let flavor = input
+                .next()
+                .context("-flavor requires an argument (gnu, darwin, or link)")?;
+
+            PlatformKind::from_flavor(flavor.as_ref())?
+        } else if let Some(platform) = PlatformKind::from_executable_name(prog_name.as_ref()) {
+            platform
+        } else {
+            PlatformKind::host()
+        };
+
+        let mut args = match platform {
+            PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
+            PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
+        };
+
+        // Store whether we got a flavor arg to make parsing simpler.
+        args.common_mut().has_flavor = has_flavor;
+
+        Ok(args)
     }
 
     /// Parse CLI arguments. Runs format-specific parser based on the host target.
@@ -133,6 +153,11 @@ impl Args {
 
         // Skip the program name.
         input.next();
+
+        if self.common().has_flavor {
+            input.next();
+            input.next();
+        }
 
         match self {
             Args::Elf(args) => args.parse(input),
@@ -180,6 +205,29 @@ impl PlatformKind {
             PlatformKind::MachO
         } else {
             PlatformKind::Elf
+        }
+    }
+
+    fn from_flavor(flavor: &str) -> Result<Self> {
+        match flavor {
+            "gnu" | "ld" => Ok(PlatformKind::Elf),
+            "darwin" | "ld64" => Ok(PlatformKind::MachO),
+            "link" => bail!("Windows (link flavor) is not yet supported"),
+            "wasm" | "ld-wasm" => bail!("Wasm (link flavor) is not yet supported"),
+            _ => bail!(
+                "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
+                flavor
+            ),
+        }
+    }
+
+    fn from_executable_name(name: &str) -> Option<Self> {
+        let base_name = Path::new(name).file_stem().and_then(|n| n.to_str())?;
+
+        match base_name {
+            "ld" => Some(PlatformKind::Elf),
+            "ld64" => Some(PlatformKind::MachO),
+            _ => None,
         }
     }
 }
@@ -244,6 +292,7 @@ impl Default for CommonArgs {
             time_phase_options: None,
             warning_callback: Box::new(default_warning_callback),
             version: std::borrow::Cow::Borrowed("unknown version"),
+            has_flavor: false,
         }
     }
 }
@@ -1187,5 +1236,38 @@ impl std::str::FromStr for CounterKind {
             "l1d-miss" => CounterKind::L1dMiss,
             other => bail!("Unsupported performance counter `{other}`"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flavor() {
+        let args = Args::new(|| ["ld.wild"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+
+        let args = Args::new(|| ["ld64.wild"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        let mut args = Args::new(|| ["wild", "-flavor", "gnu"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+        args.parse(|| ["wild", "-flavor", "gnu"].into_iter())
+            .unwrap();
+        assert!(args.common().inputs.is_empty());
+
+        let args = Args::new(|| ["wild", "-flavor", "darwin"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        // -flavor has priority
+        let args = Args::new(|| ["ld.wild", "-flavor", "darwin"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        let args = Args::new(|| ["ld64.wild", "-flavor", "gnu"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+
+        assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
+        assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());
     }
 }
