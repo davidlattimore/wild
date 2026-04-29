@@ -122,6 +122,8 @@ pub struct ElfArgs {
     pub(crate) should_output_partial_object: bool,
 
     rpath_set: IndexSet<String>,
+
+    pub experimental_sframe: bool,
 }
 
 #[derive(Debug)]
@@ -307,6 +309,8 @@ impl Default for ElfArgs {
             rpath_set: Default::default(),
             plugin_path: None,
             plugin_args: Vec::new(),
+
+            experimental_sframe: false,
         }
     }
 }
@@ -1736,6 +1740,15 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Do not use Android version of SHT_RELR and DT_RELR (default)")
         .execute(|args, _modifier_stack| {
             args.use_android_relr_tags = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("wild-experimental-sframe")
+        .help("Enable experimental support for SFrame V2 (this option may be removed at any time)")
+        .execute(|args, _modifier_stack| {
+            args.experimental_sframe = true;
             Ok(())
         });
 
