@@ -157,6 +157,8 @@ pub(crate) enum ExcludeLibs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PackDynRelocs {
     None,
+    Android,
+    AndroidRelr,
     Relr,
 }
 
@@ -342,7 +344,9 @@ impl ElfArgs {
     }
 
     pub(crate) fn is_relr_enabled(&self) -> bool {
-        self.z_pack_relative_relocs || self.pack_dyn_relocs == PackDynRelocs::Relr
+        self.z_pack_relative_relocs
+            || self.pack_dyn_relocs == PackDynRelocs::Relr
+            || self.pack_dyn_relocs == PackDynRelocs::AndroidRelr
     }
 }
 
@@ -393,6 +397,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     if !args.auxiliary.is_empty() && args.should_output_executable {
         bail!("-f may not be used without -shared");
+    }
+
+    if args.pack_dyn_relocs == PackDynRelocs::Android
+        || args.pack_dyn_relocs == PackDynRelocs::AndroidRelr
+    {
+        args.warn_unsupported("--pack-dyn-relocs=android")?;
     }
 
     Ok(())
@@ -810,6 +820,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             match value {
                 "none" => args.pack_dyn_relocs = PackDynRelocs::None,
                 "relr" => args.pack_dyn_relocs = PackDynRelocs::Relr,
+                "android" => args.pack_dyn_relocs = PackDynRelocs::Android,
+                "android+relr" => args.pack_dyn_relocs = PackDynRelocs::AndroidRelr,
                 value => {
                     args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
                 }
