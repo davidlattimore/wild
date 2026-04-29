@@ -264,8 +264,7 @@ impl Config {
                 // Wild does.
                 "segment.GNU_PROPERTY.alignment",
                 "segment.GNU_PROPERTY.flags",
-                // GNU ld and lld sometimes don’t generate .sframe sections in cases where we do.
-                // TODO: Figure out why this is happening.
+                // Our SFrame support is experimental.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
                 // On some systems Wild outputs these symbols while GNU ld does not.

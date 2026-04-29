@@ -1240,4 +1240,9 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn should_output_partial_object(&self) -> bool {
         false
     }
+
+    // TODO: ELF specific, but the code that requires it is in generic path.
+    fn should_emit_sframe(&self) -> bool {
+        false
+    }
 }
