@@ -1957,10 +1957,6 @@ impl platform::Args for ElfArgs {
     fn should_output_partial_object(&self) -> bool {
         self.should_output_partial_object
     }
-
-    fn should_emit_sframe(&self) -> bool {
-        self.experimental_sframe
-    }
 }
 
 #[cfg(test)]
