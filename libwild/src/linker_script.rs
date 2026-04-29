@@ -70,7 +70,7 @@ pub(crate) enum Command<'a> {
     Version(&'a [u8]),
     SymbolDefinition {
         name: &'a [u8],
-        value: &'a [u8],
+        value: Expression<'a>,
     },
     Provide(ProvideSymbolDefinition<'a>),
     Assert(AssertCommand<'a>),
@@ -121,6 +121,7 @@ pub(crate) enum ContentsCommand<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SymbolAssignment<'a> {
     pub(crate) name: &'a [u8],
+    pub(crate) expr: Expression<'a>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -155,7 +156,7 @@ impl<'a> Eq for AssertCommand<'a> {}
 /// - Bitwise: &, |, ^, ~, <<, >>
 /// - Logical: &&, ||
 /// - Unary: -, !, ~
-/// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX
+/// - Functions: SIZEOF, ALIGNOF, LENGTH, ORIGIN, ADDR, LOADADDR, ALIGN, MIN, MAX, SEGMENT_START
 /// - Numbers (hex/decimal), symbols, location counter (.)
 /// - Parentheses for grouping
 ///
@@ -192,6 +193,10 @@ pub(crate) enum Expression<'a> {
     /// MIN and MAX functions (take two expressions)
     Min(Box<Expression<'a>>, Box<Expression<'a>>),
     Max(Box<Expression<'a>>, Box<Expression<'a>>),
+    /// SEGMENT_START("segment-name", default) — returns the `-T` command-line override for the
+    /// named segment if one was provided, otherwise returns `default`.
+    /// Unknown segment names always return `default` (matching GNU ld behavior).
+    SegmentStart(crate::parsing::SegmentName, Box<Expression<'a>>),
     /// Bitwise AND, OR and XOR
     BitwiseAnd(Box<Expression<'a>>, Box<Expression<'a>>),
     BitwiseOr(Box<Expression<'a>>, Box<Expression<'a>>),
@@ -310,8 +315,8 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
                 // Symbol definition
                 '='.parse_next(input)?;
                 skip_comments_and_whitespace(input)?;
-                let value = take_while(1.., |b| b != b';').parse_next(input)?;
-                let value = value.trim_ascii_end();
+                let value = parse_expression.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
                 opt(';').parse_next(input)?;
                 Command::SymbolDefinition { name: other, value }
             } else {
@@ -750,6 +755,25 @@ fn parse_identifier_or_function<'a>(input: &mut &'a BStr) -> winnow::Result<Expr
                 ')'.parse_next(input)?;
                 Ok(Expression::Max(Box::new(first), Box::new(second)))
             }
+            b"SEGMENT_START" => {
+                multispace0.parse_next(input)?;
+                '"'.parse_next(input)?;
+                let name = take_while(1.., |b: u8| b != b'"')
+                    .verify(|s: &[u8]| !s.is_empty())
+                    .parse_next(input)?;
+                '"'.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ','.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                let default_expr = parse_expression.parse_next(input)?;
+                multispace0.parse_next(input)?;
+                ')'.parse_next(input)?;
+                let segment_name = crate::parsing::SegmentName::from_bytes(name);
+                Ok(Expression::SegmentStart(
+                    segment_name,
+                    Box::new(default_expr),
+                ))
+            }
             _ => Err(ContextError::default()),
         }
     } else {
@@ -964,11 +988,24 @@ fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<Contents
     '='.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
+    let expr = parse_expression.parse_next(input)?;
+
     let cmd = if name == b"." {
-        ContentsCommand::Align(parse_alignment(input)?)
+        // `. = ALIGN(n)` inside section bodies
+        if let Expression::Align(alignment_expr) = &expr {
+            if let Expression::Number(n) = alignment_expr.as_ref() {
+                let alignment = Alignment::new(*n).map_err(|_| {
+                    ContextError::from_external_error(input, LinkerScriptError::InvalidAlignment)
+                })?;
+                ContentsCommand::Align(alignment)
+            } else {
+                return Err(ContextError::default());
+            }
+        } else {
+            return Err(ContextError::default());
+        }
     } else {
-        '.'.parse_next(input)?;
-        ContentsCommand::SymbolAssignment(SymbolAssignment { name })
+        ContentsCommand::SymbolAssignment(SymbolAssignment { name, expr })
     };
 
     opt(';').parse_next(input)?;
@@ -1293,6 +1330,7 @@ mod tests {
                                 commands: vec![
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
                                         name: b"start_foo",
+                                        expr: Expression::LocationCounter,
                                     }),
                                     ContentsCommand::Matcher(Matcher {
                                         must_keep: true,
@@ -1302,6 +1340,7 @@ mod tests {
                                     ContentsCommand::Align(Alignment::new(32).unwrap()),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
                                         name: b"end_foo",
+                                        expr: Expression::LocationCounter,
                                     }),
                                 ],
                                 alignment: Some(Alignment::new(8).unwrap()),

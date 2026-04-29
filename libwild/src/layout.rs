@@ -3368,6 +3368,12 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
             .iter()
             .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
+
+        SymbolPlacement::SegmentStart(name, default) => resources
+            .symbol_db
+            .args
+            .segment_start_override(name)
+            .unwrap_or(default),
     };
 
     Some(P::create_resolution(

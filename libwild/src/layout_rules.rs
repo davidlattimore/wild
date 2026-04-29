@@ -28,6 +28,63 @@ use hashbrown::HashTable;
 use std::borrow::Cow;
 use std::mem::replace;
 
+/// Determine the `SymbolPlacement` for a top-level symbol definition (`name = value;`).
+///
+/// Maps a parsed linker script expression to a `SymbolPlacement`.
+fn placement_from_symbol_definition_value<'data>(
+    name: &[u8],
+    value: &crate::linker_script::Expression<'data>,
+) -> crate::error::Result<SymbolPlacement<'data>> {
+    use crate::linker_script::Expression;
+
+    let placement = match value {
+        Expression::SegmentStart(seg_name, default_expr) => {
+            let default = crate::expression_eval::eval_constant_expr(default_expr).unwrap_or(0);
+            SymbolPlacement::SegmentStart(*seg_name, default)
+        }
+        Expression::Number(n) => SymbolPlacement::DefsymAbsolute(*n),
+        Expression::Symbol(sym) => {
+            let sym_str = std::str::from_utf8(sym)
+                .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+            SymbolPlacement::DefsymSymbol(sym_str, 0)
+        }
+        Expression::Add(l, r) => {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
+            {
+                let sym_str = std::str::from_utf8(sym)
+                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+                SymbolPlacement::DefsymSymbol(sym_str, *offset as i64)
+            } else {
+                return Err(crate::error!(
+                    "Unsupported expression in symbol definition for '{}'",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+        }
+        Expression::Subtract(l, r) => {
+            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
+            {
+                let sym_str = std::str::from_utf8(sym)
+                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
+                SymbolPlacement::DefsymSymbol(sym_str, -(*offset as i64))
+            } else {
+                return Err(crate::error!(
+                    "Unsupported expression in symbol definition for '{}'",
+                    String::from_utf8_lossy(name)
+                ));
+            }
+        }
+        _ => {
+            return Err(crate::error!(
+                "Unsupported expression in symbol definition for '{}'",
+                String::from_utf8_lossy(name)
+            ));
+        }
+    };
+
+    Ok(placement)
+}
+
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
 }
@@ -149,10 +206,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let value_str = std::str::from_utf8(value)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
-
-                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
+                let placement = placement_from_symbol_definition_value(name, value)?;
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
@@ -224,17 +278,35 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_section_id = Some(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        symbol_defs.push(if let Some(id) = last_section_id {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionEnd(id),
-                                                assignment.name,
-                                            )
-                                        } else {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionStart(primary_section_id),
-                                                assignment.name,
-                                            )
-                                        });
+                                        use crate::linker_script::Expression;
+                                        let placement = match &assignment.expr {
+                                            Expression::LocationCounter => {
+                                                if let Some(id) = last_section_id {
+                                                    SymbolPlacement::SectionEnd(id)
+                                                } else {
+                                                    SymbolPlacement::SectionStart(
+                                                        primary_section_id,
+                                                    )
+                                                }
+                                            }
+                                            Expression::SegmentStart(name, default_expr) => {
+                                                let default =
+                                                    crate::expression_eval::eval_constant_expr(
+                                                        default_expr,
+                                                    )
+                                                    .unwrap_or(0);
+                                                SymbolPlacement::SegmentStart(*name, default)
+                                            }
+                                            _other => {
+                                                // Unsupported RHS expression: skip this symbol
+                                                // definition
+                                                continue;
+                                            }
+                                        };
+                                        symbol_defs.push(InternalSymDefInfo::new(
+                                            placement,
+                                            assignment.name,
+                                        ));
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {

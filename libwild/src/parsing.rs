@@ -98,6 +98,34 @@ pub(crate) enum SymbolPlacement<'data> {
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
+
+    /// Symbol defined via `SEGMENT_START("name", default)` in a linker script.
+    /// Resolves to the value of the corresponding `-Ttext`/`-Tdata`/`-Tbss` command-line
+    /// override if provided, otherwise to `default`.
+    SegmentStart(SegmentName, u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SegmentName {
+    Text,
+    Rodata,
+    Data,
+    Bss,
+    /// Any segment name not in the known set. Wild has no `-T` override for
+    /// these, so they always resolve to the default value.
+    Other,
+}
+
+impl SegmentName {
+    pub(crate) fn from_bytes(name: &[u8]) -> Self {
+        match name {
+            b"text" => Self::Text,
+            b"rodata" => Self::Rodata,
+            b"data" => Self::Data,
+            b"bss" => Self::Bss,
+            _ => Self::Other,
+        }
+    }
 }
 
 /// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".
