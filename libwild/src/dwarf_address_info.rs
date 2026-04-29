@@ -25,7 +25,7 @@ use std::path::PathBuf;
 const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
 
 /// Attempts to locate source info for `offset_in_section` within `section`.
-pub(crate) fn get_source_info<A: Arch>(
+pub(crate) fn get_source_info<A: Arch<Platform = crate::elf::Elf>>(
     object: &File,
     relocations: &RelocationSections,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -91,7 +91,7 @@ pub(crate) fn get_source_info<A: Arch>(
 }
 
 /// Gets the data for section `id` from `object` and applies relocations to it.
-fn section_data_with_relocations<A: Arch>(
+fn section_data_with_relocations<A: Arch<Platform = crate::elf::Elf>>(
     object: &File,
     relocations: &RelocationSections,
     id: gimli::SectionId,
@@ -129,7 +129,7 @@ fn section_data_with_relocations<A: Arch>(
     Ok(data)
 }
 
-fn apply_section_relocations<A: Arch, R: Relocation>(
+fn apply_section_relocations<A: Arch<Platform = crate::elf::Elf>, R: Relocation>(
     object: &File<'_>,
     section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
     section_data: &mut [u8],

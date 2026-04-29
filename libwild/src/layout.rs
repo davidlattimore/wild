@@ -4033,7 +4033,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = local_symbol.value();
+                let input_offset = self
+                    .object
+                    .symbol_offset_in_section(local_symbol, section_index)?;
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,

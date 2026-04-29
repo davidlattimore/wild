@@ -322,11 +322,11 @@ pub(crate) fn handle_thunk_extensions_for_relocation<A: Arch>(
     resources: &layout::GraphResources<'_, '_, A::Platform>,
     local_symbol_id: SymbolId,
     symbol_id: SymbolId,
-    r_type: u32,
+    rel: <A::Platform as Platform>::RelocationInfo,
 ) {
     if resources.thunk_layout_builder.is_some()
         && let Some(config) = A::thunk_config()
-        && let Some(rel_info) = A::relocation_from_raw(r_type).ok()
+        && let Some(rel_info) = A::relocation_from_raw(rel).ok()
         && rel_info.thunkable
     {
         if section_part_id == config.primary_function_part_id {

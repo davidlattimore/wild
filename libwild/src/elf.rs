@@ -82,13 +82,9 @@ use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
-use linker_utils::bit_misc::BitExtraction;
-use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentFlags;
@@ -312,6 +308,7 @@ impl platform::Platform for Elf {
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
+    type RelocationInfo = u32;
     type LayoutExt = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
@@ -2527,6 +2524,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             // checks our shared object against those.
             && has_complete_deps(self, resources)
     }
+
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
 }
 
 impl DynamicLayoutStateExt<'_> {
@@ -3120,48 +3125,6 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
             ..Default::default()
         },
     }
-}
-
-#[inline(always)]
-pub(crate) fn write_relocation_to_buffer(
-    rel_info: RelocationKindInfo,
-    value: u64,
-    output: &mut [u8],
-) -> Result<()> {
-    rel_info.verify(value as i64)?;
-
-    if matches!(rel_info.kind, RelocationKind::PairSubtractionULEB128(..)) {
-        // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
-        let mut writer = Cursor::new(vec![0u8; 10]);
-        let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
-        ensure!(
-            output.len() >= n,
-            "cannot write encoded ULEB128 value of {n} bytes"
-        );
-        output[..n].copy_from_slice(&writer.into_inner()[..n]);
-    } else {
-        match rel_info.size {
-            RelocationSize::ByteSize(byte_size) => {
-                ensure!(
-                    byte_size <= output.len(),
-                    "Relocation outside of bounds of section"
-                );
-                let value_bytes = value.to_le_bytes();
-                output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
-            }
-            RelocationSize::BitMasking(BitMask {
-                range,
-                instruction: insn,
-            }) => {
-                let extracted_value = value.extract_bit_range(range.start..range.end);
-                let negative = (value as i64).is_negative();
-                let output_len = output.len();
-                insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[derive(Default, Debug, Clone, Copy)]

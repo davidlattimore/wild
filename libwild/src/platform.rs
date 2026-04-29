@@ -84,7 +84,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
     /// Make architecture-specific parsing of the relocation types.
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
+    fn relocation_from_raw(
+        r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> Result<RelocationKindInfo>;
 
     /// Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
@@ -217,6 +219,7 @@ pub(crate) trait Platform:
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
     type DynamicSymbolDefinitionExt: Copy + Send + Sync + std::fmt::Debug + 'static;
+    type RelocationInfo: Copy + Send + Sync + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
     type EpilogueLayoutExt: Send + Sync + 'static;
@@ -747,6 +750,13 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         &self,
         symbol: &<Self::Platform as Platform>::SymtabEntry,
     ) -> Result<&'data [u8]>;
+
+    // Get the offset of a symbol relative to the section identified by `section_index`.
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> Result<u64>;
 
     fn num_sections(&self) -> usize;
 

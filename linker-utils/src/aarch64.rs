@@ -1032,6 +1032,22 @@ impl AArch64Instruction {
             AArch64Instruction::JumpCall => {
                 mask = extracted_value as u32;
             }
+            AArch64Instruction::MachOLow12 => {
+                // The relocation value is scaled by the access size for ADD, LDR and STR
+                // instructions. The following logic is taken from LLVM
+                // (encodePageOff12).
+                let insn = u32_from_slice(&dest[0..4]);
+                let mut scale = 0;
+                if (insn & 0x3b00_0000) == 0x3900_0000 {
+                    // load/store
+                    scale = insn >> 30;
+                    if scale == 0 && (insn & 0x0480_0000) == 0x0480_0000 {
+                        // 128-bit variant
+                        scale = 4;
+                    }
+                }
+                mask = (extracted_value as u32) >> scale;
+            }
         }
         // Read the original value and combine it with the prepared mask.
         or_from_slice(dest, &mask.to_le_bytes());
@@ -1070,6 +1086,7 @@ impl AArch64Instruction {
             AArch64Instruction::Bcond => (value >> 5).low_bits_signed(19),
             // C6.2.33
             AArch64Instruction::JumpCall => value.low_bits_signed(26),
+            AArch64Instruction::MachOLow12 => todo!(),
         };
 
         (extracted_value, negative)

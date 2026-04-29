@@ -7,12 +7,15 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
+use crate::elf::ResolutionExt;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::file_writer::copy_section_data;
+use crate::layout;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
+use crate::layout::Resolution;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::macho_writer;
@@ -24,10 +27,13 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
+use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
+use crate::value_flags::ValueFlags;
 use gimli::LittleEndian;
 use object::Endian;
 use object::Endianness;
+use object::SymbolIndex;
 use object::U32;
 use object::macho;
 use object::macho::N_ABS;
@@ -212,6 +218,21 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         Ok(symbol.name(LE, self.symbols.strings())?)
     }
 
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> crate::error::Result<u64> {
+        let section = self.section(section_index)?;
+        // On Mach-O the symbol value is the global offset, not a relative to the start of a
+        // section.
+        symbol
+            .n_value
+            .get(LE)
+            .checked_sub(section.addr.get(LE))
+            .ok_or_else(|| error!("Mach-O symbol value is before its section address"))
+    }
+
     fn num_sections(&self) -> usize {
         self.sections.len()
     }
@@ -259,7 +280,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
         if symbol.n_type & N_TYPE == N_SECT && symbol.n_sect != 0 {
-            Ok(Some(object::SectionIndex(usize::from(symbol.n_sect))))
+            // The index is one-based, NO_SECT == 0, marks a missing section for the symbol.
+            Ok(Some(object::SectionIndex(usize::from(symbol.n_sect - 1))))
         } else {
             Ok(None)
         }
@@ -433,7 +455,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.sectname.starts_with(b"__text")
     }
 
     fn is_tls(&self) -> bool {
@@ -526,7 +548,8 @@ impl platform::SectionFlags for SectionFlags {
 // Documentation link for Nlist64 type: https://leopard-adc.pepas.com/documentation/DeveloperTools/Conceptual/MachORuntime/Reference/reference.html
 impl platform::Symbol for SymtabEntry {
     fn as_common(&self) -> Option<platform::CommonSymbol> {
-        todo!()
+        // TODO
+        None
     }
 
     fn is_undefined(&self) -> bool {
@@ -784,7 +807,7 @@ pub(crate) struct DynamicTagValues<'data> {
 
 #[derive(Debug)]
 pub(crate) struct RelocationList<'data> {
-    relocations: &'data [Relocation],
+    pub(crate) relocations: &'data [Relocation],
 }
 
 impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
@@ -818,7 +841,9 @@ impl<'data> platform::RawSymbolName<'data> for RawSymbolName<'data> {
     }
 
     fn is_default(&self) -> bool {
-        false
+        // This port does not use symbol versioning, so every symbol is treated as
+        // the default version.
+        true
     }
 }
 
@@ -852,6 +877,7 @@ impl platform::Platform for MachO {
     type RelocationSections = ();
     type DynamicEntry = ();
     type DynamicSymbolDefinitionExt = ();
+    type RelocationInfo = object::macho::RelocationInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
     type EpilogueLayoutExt = ();
@@ -996,9 +1022,9 @@ impl platform::Platform for MachO {
         scope: &rayon::Scope<'scope>,
     ) -> crate::error::Result {
         // TODO
-        // for rel in state.relocations(section_index)?.relocations {
-        //     dbg!(rel.info(LE));
-        // }
+        for rel in state.relocations(section_index)?.relocations {
+            process_relocation::<A>(state, common, rel, section, resources, queue, false, scope)?;
+        }
         Ok(())
     }
 
@@ -1221,6 +1247,12 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
+        for symbol in state.object.symbols_iter() {
+            // dbg!(String::from_utf8_lossy(
+            //     symbol.name(LE, state.object.symbols.strings()).unwrap()
+            // ));
+        }
+
         // TODO
         // let mut num_globals = 0;
         // let mut strings_size = 0;
@@ -1267,7 +1299,12 @@ impl platform::Platform for MachO {
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
-        todo!()
+        Resolution {
+            raw_value,
+            dynamic_symbol_index,
+            format_specific: (),
+            flags,
+        }
     }
 
     fn raw_symbol_name<'data>(
@@ -1536,4 +1573,40 @@ pub(crate) fn get_segment_sections<'data>(
         segment_sections: sections,
         segment_size,
     })
+}
+
+#[inline(always)]
+fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
+    object: &layout::ObjectLayoutState<'data, MachO>,
+    common: &layout::CommonGroupState<'data, MachO>,
+    rel: &Relocation,
+    section: layout::Section,
+    resources: &'scope layout::GraphResources<'data, '_, MachO>,
+    queue: &mut layout::LocalWorkQueue,
+    is_debug_section: bool,
+    scope: &rayon::Scope<'scope>,
+) -> Result {
+    let rel_info = rel.info(LE);
+    // r_extern == true if the reference points to a symbol
+    if rel_info.r_extern {
+        let local_sym_index = SymbolIndex(rel_info.r_symbolnum as usize);
+        let symbol_db = resources.symbol_db;
+        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+        let symbol_id = symbol_db.definition(local_symbol_id);
+        let mut flags = resources.local_flags_for_symbol(symbol_id);
+        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
+        let rel_offset = rel_info.r_address;
+
+        let rel_info = A::relocation_from_raw(rel_info)?;
+        let mut flags_to_add = layout::resolution_flags(rel_info.kind);
+
+        let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
+        let previous_flags = atomic_flags.fetch_or(flags_to_add);
+
+        if !previous_flags.has_resolution() {
+            queue.send_symbol_request::<A>(symbol_id, resources, scope);
+        }
+    }
+
+    Ok(())
 }

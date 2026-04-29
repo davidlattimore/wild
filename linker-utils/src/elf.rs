@@ -1,3 +1,4 @@
+use crate::bit_misc::BitExtraction;
 use crate::bit_misc::BitRange;
 use anyhow::Result;
 use object::LittleEndian;
@@ -5,6 +6,7 @@ use object::read::elf::ProgramHeader as _;
 use object::read::elf::SectionHeader;
 use std::borrow::Cow;
 use std::fmt;
+use std::io::Cursor;
 
 macro_rules! const_name_by_value {
     ($needle: expr, $( $const:ident ),* $(,)?) => {
@@ -1266,6 +1268,8 @@ pub enum AArch64Instruction {
     TstBr,
     Bcond,
     JumpCall,
+    // Mach-O specific
+    MachOLow12,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1390,7 +1394,8 @@ impl fmt::Display for RelocationSize {
 }
 
 impl RelocationSize {
-    pub(crate) const fn bit_mask_aarch64(
+    #[must_use]
+    pub const fn bit_mask_aarch64(
         bit_start: u32,
         bit_end: u32,
         instruction: AArch64Instruction,
@@ -1402,7 +1407,8 @@ impl RelocationSize {
         ))
     }
 
-    pub(crate) const fn bit_mask_riscv(
+    #[must_use]
+    pub const fn bit_mask_riscv(
         bit_start: u32,
         bit_end: u32,
         instruction: RiscVInstruction,
@@ -1414,7 +1420,8 @@ impl RelocationSize {
         ))
     }
 
-    pub(crate) const fn bit_mask_loongarch64(
+    #[must_use]
+    pub const fn bit_mask_loongarch64(
         bit_start: u32,
         bit_end: u32,
         instruction: LoongArch64Instruction,
@@ -1525,7 +1532,7 @@ pub struct RelocationKindInfo {
 
 impl RelocationKindInfo {
     #[inline(always)]
-    pub fn verify(&self, value: i64) -> Result<()> {
+    fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
             (value as usize).is_multiple_of(self.alignment),
             "Relocation {value} not aligned to {} bytes",
@@ -1538,6 +1545,44 @@ impl RelocationKindInfo {
                 self.range.min, self.range.max
             )
         );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn write_to_buffer(self, value: u64, output: &mut [u8]) -> Result<()> {
+        self.verify(value as i64)?;
+
+        if matches!(self.kind, RelocationKind::PairSubtractionULEB128(..)) {
+            // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
+            let mut writer = Cursor::new(vec![0u8; 10]);
+            let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
+            anyhow::ensure!(
+                output.len() >= n,
+                "cannot write encoded ULEB128 value of {n} bytes"
+            );
+            output[..n].copy_from_slice(&writer.into_inner()[..n]);
+        } else {
+            match self.size {
+                RelocationSize::ByteSize(byte_size) => {
+                    anyhow::ensure!(
+                        byte_size <= output.len(),
+                        "Relocation outside of bounds of section"
+                    );
+                    let value_bytes = value.to_le_bytes();
+                    output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+                }
+                RelocationSize::BitMasking(BitMask {
+                    range,
+                    instruction: insn,
+                }) => {
+                    let extracted_value = value.extract_bit_range(range.start..range.end);
+                    let negative = (value as i64).is_negative();
+                    let output_len = output.len();
+                    insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
+                }
+            }
+        }
+
         Ok(())
     }
 }
