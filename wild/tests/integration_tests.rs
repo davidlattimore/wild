@@ -211,6 +211,7 @@ use libwild::bail;
 use libwild::ensure;
 use libwild::error;
 use libwild::error::Context as _;
+use object::Endian as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
@@ -266,81 +267,82 @@ fn main() -> Result<std::process::ExitCode> {
 fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
     let test_config = read_test_config()?;
 
-    let platform = PlatformKind::Elf;
-    let platform_name = platform.to_str();
-
     let host_arch = get_host_architecture();
 
-    if filter.excludes(platform_name) {
-        return Ok(());
-    }
+    for platform in [PlatformKind::Elf, PlatformKind::MachO] {
+        let linkers = platform.available_linkers()?;
 
-    let root = src_path(platform_name);
-    let dir = std::fs::read_dir(&root)
-        .with_context(|| format!("Failed to read directory {}", root.display()))?;
+        let platform_name = platform.to_str();
 
-    let is_nextest = std::env::var("NEXTEST").is_ok();
-
-    let linkers = available_linkers()?;
-
-    for entry in dir {
-        let entry = entry?;
-        let path = entry.path();
-        if path.ends_with("common") {
+        if filter.excludes(platform_name) {
             continue;
         }
 
-        let base_name = path
-            .file_name()
-            .context("Missing filename")?
-            .to_str()
-            .context("Non-UTF-8 path")?
-            .to_owned();
+        let root = src_path(platform_name);
+        let dir = std::fs::read_dir(&root)
+            .with_context(|| format!("Failed to read directory {}", root.display()))?;
 
-        for &arch in ALL_ARCHITECTURES {
-            let name_prefix = format!("{platform_name}/{arch}/{base_name}");
-            if filter.excludes(&name_prefix) {
+        let is_nextest = std::env::var("NEXTEST").is_ok();
+
+        for entry in dir {
+            let entry = entry?;
+            let path = entry.path();
+            if path.ends_with("common") {
                 continue;
             }
 
-            let primary_source_file = identify_primary_source(&path, &base_name)?;
+            let base_name = path
+                .file_name()
+                .context("Missing filename")?
+                .to_str()
+                .context("Non-UTF-8 path")?
+                .to_owned();
 
-            let configs = parse_configs(
-                &primary_source_file,
-                &Config::new(
-                    base_name.clone(),
-                    platform,
-                    arch,
-                    path.clone(),
-                    &test_config,
-                    &linkers,
-                ),
-            )?;
-
-            let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
-
-            for config in configs {
-                if config.should_skip(arch) {
+            for &arch in platform.supported_architectures() {
+                let name_prefix = format!("{platform_name}/{arch}/{base_name}");
+                if filter.excludes(&name_prefix) {
                     continue;
                 }
 
-                let full_name = format!("{name_prefix}/{}", config.config_name);
-                let test_config = test_config.clone();
-                let program_inputs = program_inputs.clone();
+                let primary_source_file = identify_primary_source(&path, &base_name)?;
 
-                // Nextest spawns a process for every test, so emitting a large number of tests that
-                // we'll ignore at runtime is a bit wasteful. There are various different criteria
-                // for ignoring tests, but the biggest one is that the architecture isn't enabled.
-                // So we just filter for that and only when running under nextest. For the normal
-                // test runner, it doesn't matter much.
-                if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
-                    continue;
+                let configs = parse_configs(
+                    &primary_source_file,
+                    &Config::new(
+                        base_name.clone(),
+                        platform,
+                        arch,
+                        path.clone(),
+                        &test_config,
+                        &linkers,
+                    ),
+                )?;
+
+                let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+
+                for config in configs {
+                    if config.should_skip(arch) {
+                        continue;
+                    }
+
+                    let full_name = format!("{name_prefix}/{}", config.config_name);
+                    let test_config = test_config.clone();
+                    let program_inputs = program_inputs.clone();
+
+                    // Nextest spawns a process for every test, so emitting a large number of tests
+                    // that we'll ignore at runtime is a bit wasteful. There are various different
+                    // criteria for ignoring tests, but the biggest one is that the architecture
+                    // isn't enabled. So we just filter for that and only when running under
+                    // nextest. For the normal test runner, it doesn't matter much.
+                    if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+                        continue;
+                    }
+
+                    tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
+                        run_integration_test(arch, &program_inputs, config, &test_config)
+                            .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+                    }));
                 }
-
-                tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
-                    run_integration_test(arch, &program_inputs, config, &test_config)
-                        .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-                }));
             }
         }
     }
@@ -463,6 +465,10 @@ impl Linker {
             Linker::ThirdParty(l) => l.enabled_by_default,
         }
     }
+
+    fn is_lld(&self) -> bool {
+        self.name() == "lld"
+    }
 }
 
 fn wild_path() -> &'static Path {
@@ -531,14 +537,24 @@ impl Architecture {
         }
     }
 
-    fn default_target_triple(&self) -> String {
-        format!("{self}-unknown-linux-gnu")
+    fn darwin_arch_name(&self) -> &'static str {
+        match self {
+            Architecture::AArch64 => "arm64",
+            _ => panic!("Unsupported architecture {self} for darwin"),
+        }
     }
 
-    fn default_target_triple_rustc(&self) -> String {
-        match self {
-            Architecture::RISCV64 => "riscv64gc-unknown-linux-gnu".to_string(),
-            other => other.default_target_triple(),
+    fn default_target_triple(&self, platform: PlatformKind) -> String {
+        match platform {
+            PlatformKind::Elf => format!("{self}-unknown-linux-gnu"),
+            PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
+        }
+    }
+
+    fn default_target_triple_rustc(&self, platform: PlatformKind) -> String {
+        match (platform, self) {
+            (PlatformKind::Elf, Architecture::RISCV64) => "riscv64gc-unknown-linux-gnu".to_string(),
+            _ => self.default_target_triple(platform),
         }
     }
 
@@ -775,6 +791,7 @@ enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformKind {
     Elf,
+    MachO,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -988,6 +1005,7 @@ impl Config {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
             || (arch != get_host_architecture()
+                && self.platform == PlatformKind::Elf
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
@@ -1194,13 +1212,6 @@ impl ArgumentSet {
         })
     }
 
-    fn default_for_linking() -> Self {
-        Self {
-            // Wild linker uses -znow by default!
-            args: vec!["-z".to_owned(), "now".to_owned()],
-        }
-    }
-
     fn default_for_compiling() -> Self {
         Self { args: Vec::new() }
     }
@@ -1228,8 +1239,8 @@ impl Config {
             variant_num: None,
             assertions: Default::default(),
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
-            linker_args: ArgumentSet::default_for_linking(),
-            linker_so_args: ArgumentSet::default_for_linking(),
+            linker_args: platform.default_args_for_linking(),
+            linker_so_args: platform.default_args_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
@@ -1240,9 +1251,9 @@ impl Config {
             is_abstract: false,
             deps: Default::default(),
             remove_sections: Vec::new(),
-            compiler: "gcc".to_owned(),
-            should_diff: true,
-            should_run: true,
+            compiler: platform.default_c_compiler().to_owned(),
+            should_diff: platform.diff_supported(),
+            should_run: platform.can_execute_on_host(),
             run_dyn_sym: None,
             should_error: false,
             expect_stderr: Default::default(),
@@ -1666,11 +1677,7 @@ impl ProgramInputs {
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
-        if config.test_update_in_place
-            && matches!(linker, Linker::Wild)
-            && !config.should_error
-            && (config.should_diff || config.should_run)
-        {
+        if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
         }
 
@@ -1822,7 +1829,7 @@ fn remove_sections(
 /// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
 fn sections_with_diffs(bytes_a: &[u8], bytes_b: &[u8]) -> Result<Vec<SectionDiff>> {
     let file =
-        ElfFile64::parse(bytes_a).context("Failed to parse output with --update-in-place")?;
+        object::File::parse(bytes_a).context("Failed to parse output with --update-in-place")?;
 
     let mut sections = HashMap::new();
 
@@ -2296,7 +2303,7 @@ fn build_obj(
                 command.arg("-fdiagnostics-color=always");
             }
 
-            add_cross_args(&mut command, &compiler_args, cross_arch);
+            add_cross_args(&mut command, &compiler_args, cross_arch, config.platform);
 
             command.arg("-c");
 
@@ -2326,8 +2333,11 @@ fn build_obj(
 
             if let Some(arch) = cross_arch {
                 let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
-                    command.arg(format!("--target={}", arch.default_target_triple_rustc()));
-                    arch.default_target_triple().to_owned()
+                    command.arg(format!(
+                        "--target={}",
+                        arch.default_target_triple_rustc(config.platform)
+                    ));
+                    arch.default_target_triple(config.platform).to_owned()
                 });
                 let target_underscore = target.replace('-', "_");
                 let target_triple = target.replace("-unknown", "");
@@ -2488,11 +2498,9 @@ fn add_cross_args(
     command: &mut Command,
     compiler_args: &[String],
     cross_arch: Option<Architecture>,
+    platform: PlatformKind,
 ) {
-    let Some(cross_arch) = cross_arch else {
-        return;
-    };
-
+    // We currently only support cross compiling with clang.
     if !command
         .get_program()
         .as_encoded_bytes()
@@ -2501,10 +2509,13 @@ fn add_cross_args(
         return;
     }
 
-    let target = get_target(compiler_args)
-        .cloned()
-        .unwrap_or_else(|_| cross_arch.default_target_triple().to_owned());
-    command.arg(format!("--target={target}"));
+    if !platform.is_host() || cross_arch.is_some() {
+        let arch = cross_arch.unwrap_or_else(get_host_architecture);
+        let target = get_target(compiler_args)
+            .cloned()
+            .unwrap_or_else(|_| arch.default_target_triple(platform).to_owned());
+        command.arg(format!("--target={target}"));
+    }
 }
 
 impl RustcChannel {
@@ -2848,7 +2859,7 @@ impl LinkCommand {
                                     .expect("Linker path must be valid UTF-8")
                             ));
 
-                            add_cross_args(&mut command, &[], cross_arch);
+                            add_cross_args(&mut command, &[], cross_arch, config.platform);
                         }
                         Compiler::Gcc(_) => {
                             match linker {
@@ -2881,25 +2892,45 @@ impl LinkCommand {
                 LinkerDriver::Direct(direct_config) => {
                     command = Command::new(linker_path);
 
-                    if let Some(arch) = cross_arch {
-                        command.arg("-m").arg(arch.emulation_name());
+                    // Only some linkers support -flavor
+                    if linker.is_wild() || linker.is_lld() {
+                        command.arg("-flavor").arg(config.platform.flavor());
                     }
 
-                    match direct_config.mode {
-                        Mode::Dynamic => {
-                            command
-                                .arg("-dynamic-linker")
-                                .arg(dynamic_linker_path(cross_arch));
+                    match config.platform {
+                        PlatformKind::Elf => {
+                            if let Some(arch) = cross_arch {
+                                command.arg("-m").arg(arch.emulation_name());
+                            }
+
+                            match direct_config.mode {
+                                Mode::Dynamic => {
+                                    command
+                                        .arg("-dynamic-linker")
+                                        .arg(dynamic_linker_path(cross_arch));
+                                }
+                                Mode::Static => {
+                                    command.arg("-static");
+                                }
+                                Mode::Unspecified => {}
+                            }
+
+                            if !linker_args.args.iter().any(|a| a == "-r") {
+                                command.arg("--gc-sections");
+                            }
                         }
-                        Mode::Static => {
-                            command.arg("-static");
+                        PlatformKind::MachO => {
+                            if linker.is_lld() {
+                                let arch = cross_arch.unwrap_or(arch);
+                                command.arg("-arch").arg(arch.darwin_arch_name());
+                                command.arg("-platform_version");
+                                command.arg("macos");
+                                command.arg("11.0");
+                                command.arg("11.0");
+                            }
                         }
-                        Mode::Unspecified => {}
                     }
 
-                    if !linker_args.args.iter().any(|a| a == "-r") {
-                        command.arg("--gc-sections");
-                    }
                     command.args(&linker_args.args);
                 }
             }
@@ -2948,12 +2979,14 @@ impl LinkCommand {
             output_path: output_path.to_owned(),
         };
 
-        link_command
-            .command
-            .arg(invocation_mode.format_arg(&format!(
-                "--dependency-file={}",
-                link_command.depfile_path().display()
-            )));
+        if config.platform == PlatformKind::Elf {
+            link_command
+                .command
+                .arg(invocation_mode.format_arg(&format!(
+                    "--dependency-file={}",
+                    link_command.depfile_path().display()
+                )));
+        }
 
         Ok(link_command)
     }
@@ -3041,10 +3074,24 @@ impl LinkCommand {
         self.opt_save_dir = Some(save_dir.clone());
 
         let rsp_path = self.output_path.with_extension("rsp");
+
+        // Collect args but skip -flavor (it should be the first arg, not in response file)
+        let mut skip_next = false;
         let rsp_contents = self
             .command
             .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
+            .filter_map(|arg| {
+                if skip_next {
+                    skip_next = false;
+                    return None;
+                }
+                let arg_str = arg.to_string_lossy();
+                if arg_str == "-flavor" {
+                    skip_next = true;
+                    return None;
+                }
+                Some(arg_str.into_owned())
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -3052,6 +3099,26 @@ impl LinkCommand {
             .with_context(|| format!("Failed to write response file `{}`", rsp_path.display()))?;
 
         let mut create_save_dir_cmd = Command::new(self.command.get_program());
+
+        // Add -flavor as the first argument if present
+        let has_flavor = self
+            .command
+            .get_args()
+            .any(|arg| arg.to_string_lossy() == "-flavor");
+        if has_flavor {
+            create_save_dir_cmd.arg("-flavor");
+            // Find the flavor value
+            let mut args = self.command.get_args();
+            while let Some(arg) = args.next() {
+                if arg.to_string_lossy() == "-flavor" {
+                    if let Some(flavor_value) = args.next() {
+                        create_save_dir_cmd.arg(flavor_value);
+                    }
+                    break;
+                }
+            }
+        }
+
         create_save_dir_cmd.arg(format!("@{}", rsp_path.display()));
 
         for (key, value) in self.command.get_envs() {
@@ -3270,6 +3337,13 @@ fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
 
 impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
+        // If the output file doesn't exist and we have no assertions, then skip parsing the output
+        // file. This allows tests like the one that writes to /dev/null to succeed, while still
+        // checking that the output file is valid in cases where we don't have any assertions.
+        if !link_output.binary.exists() && *self == Self::default() {
+            return Ok(());
+        }
+
         self.check_path(&link_output.binary, &link_output.linker_used)?;
         self.check_output_files(link_output)?;
         Ok(())
@@ -3296,29 +3370,57 @@ impl Assertions {
     }
 
     fn check_path(&self, path: &PathBuf, linker_used: &Linker) -> Result {
-        let bytes = std::fs::read(path)?;
-        let obj = ElfFile64::parse(bytes.as_slice())?;
+        let bytes =
+            std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_file_kind(&obj)?;
-        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())
-            .context(".symtab assertion failed")?;
-        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())
-            .context(".dynsym assertion failed")?;
-        self.verify_symbols_absent(&self.no_sym, obj.symbols(), ".symtab")?;
-        self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
-        self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
-        self.verify_comment_section(&obj, linker_used)?;
-        self.verify_strings(&bytes)?;
-        self.verify_load_alignment(&obj)?;
-        self.verify_dynamic_entries(&obj)?;
+        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols(), "symtab")?;
+        verify_symbol_assertions(
+            &obj,
+            &self.expected_dynsym_entries,
+            obj.dynamic_symbols(),
+            "dynsym",
+        )?;
+        self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_section_bytes(&obj)?;
+        self.verify_strings(&bytes)?;
+
+        match obj {
+            object::File::Elf64(elf_obj) => {
+                self.verify_comment_section(&elf_obj, linker_used)?;
+                self.verify_load_alignment(&elf_obj)?;
+                self.verify_dynamic_entries(&elf_obj)?;
+                self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
+                self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
+            }
+            object::File::MachO64(_) => {
+                if !self.expected_comments.is_empty() {
+                    bail!("ExpectComment is not supported for MachO",);
+                }
+                if !self.no_dynsym.is_empty() {
+                    bail!("NoDynSym is not supported for MachO",);
+                }
+                if self.expected_load_alignment.is_some() {
+                    bail!("ExpectLoadAlignment is not supported for MachO",);
+                }
+                if !self.expected_dynamic_entries.is_empty() {
+                    bail!("ExpectDynamic is not supported for MachO",);
+                }
+                if !self.absent_dynamic_entries.is_empty() {
+                    bail!("NoDynamic is not supported for MachO",);
+                }
+            }
+            _ => bail!("Unsupported object file format"),
+        }
+
         if linker_used.is_wild() {
             self.verify_max_thunks(path)?;
         }
         Ok(())
     }
 
-    fn verify_section_bytes(&self, obj: &ElfFile64) -> Result {
+    fn verify_section_bytes(&self, obj: &object::File) -> Result {
         for expected in &self.expected_section_bytes {
             let section = obj
                 .section_by_name(&expected.section_name)
@@ -3356,7 +3458,11 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_comment_section(&self, obj: &ElfFile64, linker_used: &Linker) -> Result {
+    fn verify_comment_section<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        linker_used: &Linker,
+    ) -> Result {
         if obj.kind() == ObjectKind::Relocatable {
             return Ok(());
         }
@@ -3419,12 +3525,15 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_load_alignment(&self, obj: &ElfFile64) -> Result {
+    fn verify_load_alignment<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
         let Some(expected) = self.expected_load_alignment else {
             return Ok(());
         };
 
-        let endian = LittleEndian;
+        let endian = obj.endian();
         let segments = obj.elf_program_headers();
         for segment in segments {
             if segment.p_type(endian) == object::elf::PT_LOAD {
@@ -3440,12 +3549,16 @@ impl Assertions {
         bail!("No LOAD segment found");
     }
 
-    fn verify_symbols_absent(
+    fn verify_symbols_absent<'a, I>(
         &self,
         absent_syms: &HashSet<String>,
-        symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
+        symbols: I,
         table_name: &str,
-    ) -> Result {
+    ) -> Result
+    where
+        I: Iterator,
+        I::Item: object::ObjectSymbol<'a>,
+    {
         if absent_syms.is_empty() {
             return Ok(());
         }
@@ -3461,7 +3574,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_file_kind(&self, obj: &ElfFile64) -> Result {
+    fn verify_file_kind(&self, obj: &object::File) -> Result {
         // For now, our file-kind identification is limited to just whether there's a dynamic symbol
         // table.
         if self.expect_dynamic {
@@ -3474,7 +3587,10 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_dynamic_entries(&self, obj: &ElfFile64) -> Result {
+    fn verify_dynamic_entries<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
         if self.expected_dynamic_entries.is_empty() && self.absent_dynamic_entries.is_empty() {
             return Ok(());
         }
@@ -3490,11 +3606,12 @@ impl Assertions {
         };
 
         let data = dynamic_section.data()?;
-        let entry_size = std::mem::size_of::<object::elf::Dyn64<LittleEndian>>();
+        let endian = obj.endian();
+        let entry_size = std::mem::size_of::<object::elf::Dyn64<object::Endianness>>();
         let mut found_tags: HashSet<String> = HashSet::new();
 
         for chunk in data.chunks_exact(entry_size) {
-            let tag = i64::from_le_bytes(chunk[0..8].try_into().unwrap());
+            let tag = endian.read_i64(chunk[0..8].try_into().unwrap());
             if let Some(name) = dynamic_tag_name(tag) {
                 found_tags.insert(name.to_string());
             }
@@ -3586,11 +3703,20 @@ fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
     })
 }
 
-fn verify_symbol_assertions(
-    obj: &ElfFile64,
+fn verify_symbol_assertions<'a, I>(
+    obj: &object::File,
     assertions: &[ExpectedSymtabEntry],
-    symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
-) -> Result {
+    symbols: I,
+    context_name: &str,
+) -> Result
+where
+    I: Iterator,
+    I::Item: object::ObjectSymbol<'a>,
+{
+    if assertions.is_empty() {
+        return Ok(());
+    }
+
     let mut missing = assertions
         .iter()
         .map(|exp| (exp.name.as_str(), exp))
@@ -3600,7 +3726,10 @@ fn verify_symbol_assertions(
         let Ok(name) = sym.name() else {
             continue;
         };
-        let Some(exp) = missing.remove(name) else {
+
+        let exp = missing.remove(name);
+
+        let Some(exp) = exp else {
             continue;
         };
 
@@ -3612,8 +3741,9 @@ fn verify_symbol_assertions(
 
                     if section_name != exp_name {
                         bail!(
-                            "Expected symbol `{name}` to be in section `{exp_name}`, \
-                                but it was in `{section_name}`"
+                            "Expected symbol `{}` to be in section `{exp_name}`, \
+                                but it was in `{section_name}`",
+                            exp.name
                         );
                     }
 
@@ -3621,16 +3751,18 @@ fn verify_symbol_assertions(
                         let actual_offset = sym.address().wrapping_sub(section.address());
                         if expected_offset != actual_offset {
                             bail!(
-                                "Expected symbol `{name}` to be at offset {expected_offset} \
+                                "Expected symbol `{}` to be at offset {expected_offset} \
                                     in section `{exp_name}`, but it was actually at offset {}",
+                                exp.name,
                                 actual_offset as i64
                             );
                         }
                     }
                 }
                 other => bail!(
-                    "Expected symbol `name` to be in section `{exp_name}`, \
-                     but it was {other:?}"
+                    "Expected symbol `{}` to be in section `{exp_name}`, \
+                     but it was {other:?}",
+                    exp.name
                 ),
             }
         }
@@ -3640,8 +3772,9 @@ fn verify_symbol_assertions(
             let actual_address = sym.address();
             if expected_address != actual_address {
                 bail!(
-                    "Expected symbol `{name}` to have address {expected_address:#x}, \
-                                but it actually had address {actual_address:#x}"
+                    "Expected symbol `{}` to have address {expected_address:#x}, \
+                                but it actually had address {actual_address:#x}",
+                    exp.name
                 );
             }
         }
@@ -3650,8 +3783,9 @@ fn verify_symbol_assertions(
             let actual_size = sym.size();
             if expected_size != actual_size {
                 bail!(
-                    "Expected symbol `{name}` to have size {expected_size}, \
-                                but it actually had size {actual_size}"
+                    "Expected symbol `{}` to have size {expected_size}, \
+                                but it actually had size {actual_size}",
+                    exp.name
                 );
             }
         }
@@ -3659,8 +3793,9 @@ fn verify_symbol_assertions(
         if let Some(expected_binding) = exp.assertions.binding.as_deref() {
             if !matches!(expected_binding, "local" | "global" | "weak") {
                 bail!(
-                    "Invalid binding value `{expected_binding}` for symbol `{name}`. \
-                     Must be one of: local, global, weak"
+                    "Invalid binding value `{expected_binding}` for symbol `{}`. \
+                     Must be one of: local, global, weak",
+                    exp.name
                 );
             }
             let actual_binding = if sym.is_weak() {
@@ -3672,8 +3807,9 @@ fn verify_symbol_assertions(
             };
             if expected_binding != actual_binding {
                 bail!(
-                    "Expected symbol `{name}` to have binding `{expected_binding}`, \
-                     but it actually had binding `{actual_binding}`"
+                    "Expected symbol `{}` to have binding `{expected_binding}`, \
+                     but it actually had binding `{actual_binding}`",
+                    exp.name
                 );
             }
         }
@@ -3681,14 +3817,19 @@ fn verify_symbol_assertions(
 
     let missing = missing.into_keys().collect_vec();
     if !missing.is_empty() {
-        bail!("Missing expected symbol(s): {}", missing.join(", "));
+        bail!(
+            "Missing expected symbol(s) in {context_name}: {}",
+            missing.join(", ")
+        );
     };
 
     Ok(())
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
-fn was_linked_with_wild(obj: &ElfFile64) -> bool {
+fn was_linked_with_wild<'data>(
+    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+) -> bool {
     let Ok(actual_comments) = read_comments(obj) else {
         return false;
     };
@@ -3697,7 +3838,9 @@ fn was_linked_with_wild(obj: &ElfFile64) -> bool {
         .any(|comment| comment.starts_with("Linker: Wild "))
 }
 
-fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'data, str>>> {
+fn read_comments<'data>(
+    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+) -> Result<Vec<std::borrow::Cow<'data, str>>> {
     let comment_section = obj
         .section_by_name(".comment")
         .context("Missing .comment section")?;
@@ -4068,7 +4211,7 @@ impl PartialEq for ErrorMatcher {
 
 impl Eq for ErrorMatcher {}
 
-fn available_linkers() -> Result<Vec<Linker>> {
+fn available_linkers_for_linux() -> Result<Vec<Linker>> {
     let mut linkers = vec![Linker::ThirdParty(ThirdPartyLinker {
         name: "ld",
         gcc_name: "bfd",
@@ -4105,6 +4248,24 @@ fn available_linkers() -> Result<Vec<Linker>> {
             path,
             cross_paths: find_cross_paths("mold"),
             enabled_by_default: false,
+        }));
+    }
+
+    linkers.push(Linker::Wild);
+
+    Ok(linkers)
+}
+
+fn available_linkers_for_mac() -> Result<Vec<Linker>> {
+    let mut linkers = Vec::new();
+
+    if let Ok(path) = find_bin(&["ld.lld"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "lld",
+            gcc_name: "lld",
+            path,
+            cross_paths: find_cross_paths("ld.lld"),
+            enabled_by_default: true,
         }));
     }
 
@@ -4174,20 +4335,10 @@ fn run_with_config(
     }
 
     for program in programs {
-        if config.should_run || program.assertions != &Assertions::default() {
-            program
-                .assertions
-                .check(&program.link_output)
-                .with_context(|| format!("Output binary assertions failed. {program}"))?;
-        } else if program.link_output.linker_used.is_wild() && program.link_output.binary.is_file()
-        {
-            // Even when no other assertions are set, always verify max_thunks for Wild so that
-            // tests catch unexpected thunk allocation by default.
-            program
-                .assertions
-                .verify_max_thunks(&program.link_output.binary)
-                .with_context(|| format!("Output binary assertions failed. {program}"))?;
-        }
+        program
+            .assertions
+            .check(&program.link_output)
+            .with_context(|| format!("Output binary assertions failed. {program}"))?;
 
         if config.should_run {
             // If RunDynSym is set, execute our binary by loading it dynamically and calling the
@@ -4239,6 +4390,11 @@ fn run_integration_test(
     }
 
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
+
+    // For cross-platform tests (e.g., Mac binaries on Linux), link but don't execute
+    if !config.platform.can_execute_on_host() {
+        config.should_run = false;
+    }
 
     config.rustc_channel = test_config.rustc_channel;
 
@@ -4460,9 +4616,70 @@ fn read_test_config() -> Result<TestConfig> {
 }
 
 impl PlatformKind {
+    fn host() -> Option<Self> {
+        if cfg!(target_os = "linux") {
+            Some(PlatformKind::Elf)
+        } else if cfg!(target_os = "macos") {
+            Some(PlatformKind::MachO)
+        } else {
+            None
+        }
+    }
+
     fn to_str(self) -> &'static str {
         match self {
             PlatformKind::Elf => "elf",
+            PlatformKind::MachO => "macho",
+        }
+    }
+
+    fn flavor(self) -> &'static str {
+        match self {
+            PlatformKind::Elf => "gnu",
+            PlatformKind::MachO => "darwin",
+        }
+    }
+
+    fn is_host(self) -> bool {
+        Some(self) == PlatformKind::host()
+    }
+
+    fn can_execute_on_host(self) -> bool {
+        self.is_host()
+    }
+
+    fn diff_supported(self) -> bool {
+        self == PlatformKind::Elf
+    }
+
+    fn available_linkers(self) -> Result<Vec<Linker>> {
+        match self {
+            PlatformKind::Elf => available_linkers_for_linux(),
+            PlatformKind::MachO => available_linkers_for_mac(),
+        }
+    }
+
+    fn supported_architectures(self) -> &'static [Architecture] {
+        match self {
+            PlatformKind::Elf => ALL_ARCHITECTURES,
+            PlatformKind::MachO => &[Architecture::AArch64],
+        }
+    }
+
+    fn default_args_for_linking(self) -> ArgumentSet {
+        match self {
+            PlatformKind::Elf => ArgumentSet {
+                // Wild linker uses -znow by default!
+                args: vec!["-z".to_owned(), "now".to_owned()],
+            },
+            PlatformKind::MachO => ArgumentSet::empty(),
+        }
+    }
+
+    fn default_c_compiler(self) -> &'static str {
+        match self {
+            PlatformKind::Elf => "gcc",
+            PlatformKind::MachO => "clang",
         }
     }
 }
