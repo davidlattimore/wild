@@ -1268,11 +1268,12 @@ fn resolve_section<'data, P: Platform>(
             ));
         }
         SectionRuleOutcome::SFrame => {
-            if args.should_emit_sframe() {
-                must_load |= true;
+            if !args.should_emit_sframe() {
+                return Ok((SectionSlot::Discard, part_id::UNMAPPED));
             }
 
             part_id = part_id::SFRAME;
+            must_load |= true;
             unloaded_section = UnloadedSection::new();
         }
     };
