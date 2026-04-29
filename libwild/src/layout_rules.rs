@@ -169,6 +169,40 @@ impl<'data> LayoutRulesBuilder<'data> {
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
+                            if sec.output_section_name == b"/DISCARD/" {
+                                for contents_cmd in &sec.commands {
+                                    match contents_cmd {
+                                        ContentsCommand::Matcher(matcher) => {
+                                            for pattern in &matcher.input_section_name_patterns {
+                                                self.add_section_rule(SectionRule::new(
+                                                    pattern,
+                                                    matcher.input_file_pattern,
+                                                    crate::layout_rules::SectionRuleOutcome::Discard,
+                                                )?);
+                                            }
+                                        }
+                                        ContentsCommand::Align(_) => {
+                                            // Ignore align directives in /DISCARD/, since this
+                                            // pseudo-section doesn't create output sections.
+                                        }
+                                        ContentsCommand::SymbolAssignment(assignment) => {
+                                            return Err(crate::error!(
+                                                "Unsupported symbol assignment `{}` in /DISCARD/",
+                                                String::from_utf8_lossy(assignment.name)
+                                            ));
+                                        }
+                                        ContentsCommand::Provide(provide) => {
+                                            return Err(crate::error!(
+                                                "Unsupported PROVIDE `{}` in /DISCARD/",
+                                                String::from_utf8_lossy(provide.name)
+                                            ));
+                                        }
+                                    }
+                                }
+
+                                continue;
+                            }
+
                             let min_alignment = sec
                                 .alignment
                                 .unwrap_or(alignment::MIN)
