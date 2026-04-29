@@ -1,3 +1,4 @@
+use crate::alignment::Alignment;
 use crate::elf::Elf;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
@@ -5,6 +6,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::output_section_id;
 use crate::platform::ObjectFile as _;
 use crate::platform::Platform;
 use linker_utils::aarch64::RelaxationKind;
@@ -28,6 +30,16 @@ const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x20, 0x02, 0x1f, 0xd6, // br x17
     0x1f, 0x20, 0x03, 0xd5, // nop
 ];
+
+// ADRP+ADD+BR thunk template.
+const THUNK_TEMPLATE: &[u8] = &[
+    0x10, 0x00, 0x00, 0x90, // ADRP x16, 0
+    0x10, 0x02, 0x00, 0x91, // ADD  x16, x16, #0
+    0x00, 0x02, 0x1F, 0xD6, // BR   x16
+];
+
+/// The shortest range-limited branch for this arch.
+const MIN_BRANCH_RANGE: u64 = 128 * 1024 * 1024;
 
 const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
@@ -295,6 +307,33 @@ impl crate::platform::Arch for ElfAArch64 {
             section,
             offset_in_section,
         )
+    }
+
+    fn thunk_config() -> Option<crate::platform::ThunkConfig> {
+        Some(crate::platform::ThunkConfig {
+            primary_function_part_id: const {
+                output_section_id::TEXT.part_id_with_alignment(Alignment { exponent: 2 })
+            },
+            min_branch_range: MIN_BRANCH_RANGE,
+            thunk_size: THUNK_TEMPLATE.len() as u64,
+        })
+    }
+
+    fn write_thunk(thunk_address: u64, target_address: u64, buf: &mut [u8]) {
+        // Use ADRP+ADD+BR - a PC-relative thunk that works in PIE binaries.
+        buf.copy_from_slice(THUNK_TEMPLATE);
+
+        let thunk_page = thunk_address & !PAGE_MASK_4KB;
+        let target_page = target_address & !PAGE_MASK_4KB;
+        let page_diff = (target_page as i64).wrapping_sub(thunk_page as i64);
+        let page_count = (page_diff / SIZE_4KB as i64) as u64 & 0x1F_FFFF;
+        AArch64Instruction::Adr.write_to_value(page_count, false, &mut buf[0..4]);
+
+        AArch64Instruction::Add.write_to_value(
+            target_address & PAGE_MASK_4KB,
+            false,
+            &mut buf[4..8],
+        );
     }
 }
 

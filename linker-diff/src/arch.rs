@@ -106,6 +106,13 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
 
     fn decode_plt_entry(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry>;
 
+    /// If `bytes` at the given `address` form a range-extension thunk, returns the absolute target
+    /// address. The default implementation returns `None` (no thunks on this architecture).
+    fn decode_thunk(bytes: &[u8], address: u64) -> Option<u64> {
+        let _ = (bytes, address);
+        None
+    }
+
     /// Returns whether the supplied relocations should be chained together. `chain_prefix` will
     /// always be of length at least 2.
     fn should_chain_relocations(chain_prefix: &[Self::RType]) -> bool;

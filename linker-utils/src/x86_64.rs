@@ -370,5 +370,6 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
         range,
         alignment: 1,
         bias: 0,
+        thunkable: false,
     })
 }

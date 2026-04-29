@@ -142,6 +142,10 @@
 //! at least one line matching the specified regex. Such output files are generally written by
 //! specifying a flag in LinkArgs that uses $OUT_DIR.
 //!
+//! MaxThunks:{count} Maximum number of range-extension thunks that should be allocated by Wild.
+//! Defaults to 0. The test will fail if Wild allocates more than this many thunks. Tests that
+//! need thunks must specify a sufficiently large value here.
+//!
 //! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
 //! DriverMode:{mode} Links using a non-standard mode. See Driver Modes section below.
@@ -1107,6 +1111,7 @@ struct Assertions {
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     output_file_matches: Vec<OutputFileMatch>,
+    max_thunks: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1607,6 +1612,9 @@ fn process_directive(
                     DriverMode::VARIANTS.join(",")
                 )
             })?);
+        }
+        "MaxThunks" => {
+            config.assertions.max_thunks = arg.parse().context("Invalid MaxThunks value")?;
         }
         other => bail!("Unknown directive '{other}'"),
     }
@@ -2915,7 +2923,7 @@ impl LinkCommand {
                 command.env(libwild::args::VALIDATE_ENV, "1");
             }
 
-            if config.should_diff {
+            if config.should_diff || config.assertions.requires_metrics() {
                 if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
                     command.arg("--write-layout");
                     command.arg("--write-trace");
@@ -3304,6 +3312,9 @@ impl Assertions {
         self.verify_load_alignment(&obj)?;
         self.verify_dynamic_entries(&obj)?;
         self.verify_section_bytes(&obj)?;
+        if linker_used.is_wild() {
+            self.verify_max_thunks(path)?;
+        }
         Ok(())
     }
 
@@ -3321,6 +3332,27 @@ impl Assertions {
                 data,
             );
         }
+        Ok(())
+    }
+
+    fn verify_max_thunks(&self, binary_path: &Path) -> Result {
+        let layout_path = linker_layout::layout_path(binary_path);
+        let layout_bytes = std::fs::read(&layout_path);
+        if layout_bytes.is_err() && !self.requires_metrics() {
+            return Ok(());
+        }
+        let layout_bytes = layout_bytes.with_context(|| {
+            format!("Failed to read layout file for `{}`", layout_path.display())
+        })?;
+        let layout = linker_layout::Layout::from_bytes(&layout_bytes)
+            .with_context(|| format!("Failed to read layout from `{}`", layout_path.display()))?;
+        let actual = layout.metrics.thunk_count;
+        ensure!(
+            actual <= self.max_thunks,
+            "Too many thunks allocated: expected at most {}, but got {}",
+            self.max_thunks,
+            actual,
+        );
         Ok(())
     }
 
@@ -3488,6 +3520,14 @@ impl Assertions {
         }
 
         Ok(())
+    }
+
+    /// Returns whether we have assertions configured that require metrics to be enabled. Even if
+    /// this returns false, if diffing is enabled, we'll collect metrics and check them.
+    fn requires_metrics(&self) -> bool {
+        // If max_thunks is 0 (the default), then we consider checking it to be optional. e.g. it
+        // won't be checked for the test that writes the output to /dev/null.
+        self.max_thunks > 0
     }
 }
 
@@ -4138,6 +4178,14 @@ fn run_with_config(
             program
                 .assertions
                 .check(&program.link_output)
+                .with_context(|| format!("Output binary assertions failed. {program}"))?;
+        } else if program.link_output.linker_used.is_wild() && program.link_output.binary.is_file()
+        {
+            // Even when no other assertions are set, always verify max_thunks for Wild so that
+            // tests catch unexpected thunk allocation by default.
+            program
+                .assertions
+                .verify_max_thunks(&program.link_output.binary)
                 .with_context(|| format!("Output binary assertions failed. {program}"))?;
         }
 

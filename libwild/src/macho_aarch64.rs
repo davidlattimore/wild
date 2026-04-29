@@ -114,6 +114,7 @@ impl crate::platform::Arch for MachOAArch64 {
             mask,
             range,
             size,
+            thunkable: false,
         })
     }
 

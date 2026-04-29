@@ -178,6 +178,7 @@ fn check_elf_specific_code() -> Result {
         "parsing.rs",
         "resolution.rs",
         "symbol_db.rs",
+        "thunks.rs",
     ];
 
     // Patterns that we still allow. These should probably be dealt with, either by renaming these

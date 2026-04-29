@@ -99,6 +99,11 @@ bitflags! {
         /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
         /// entry which will be resolved to the actual function address at runtime.
         const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
+
+        /// Set on a local symbol (i.e. the symbol reference in the calling object) when the symbol
+        /// is the target of a range-limited relocation in a primary-part section that may need a
+        /// range-extension thunk.
+        const HAS_RANGE_LIMITED_REL = 1 << 15;
     }
 }
 
