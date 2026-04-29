@@ -14,7 +14,7 @@
 
 //#Config:sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
-//#WildExtraLinkArgs:--wild-experimental-sframe
+//#WildExtraLinkArgs:-Wl,--wild-experimental-sframe
 //#RemoveSection:.eh_frame
 //#RemoveSection:.eh_frame_hdr
 //#RequiresGlibcVersion:2.42
