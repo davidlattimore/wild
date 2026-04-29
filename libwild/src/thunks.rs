@@ -94,8 +94,9 @@ pub(crate) struct ThunkLayoutBuilder {
 /// particular reference. i.e. we subtract this from the relocation range. At some stage, we may
 /// want to try and get rid of this so that we have tighter bounds on when thunks are used. In that
 /// case, a good starting bound would be a count of the number of symbols in each block where we set
-/// ValueFlags::HAS_RANGE_LIMITED_REL.
-const MAXIMUM_THUNK_BYTES_PER_BLOCK: u64 = 1024 * 1024;
+/// ValueFlags::HAS_RANGE_LIMITED_REL. This value is enough to link a debug build of Chromium, which
+/// has slightly more than 1MB of thunks in its largest thunk block.
+const MAXIMUM_THUNK_BYTES_PER_BLOCK: u64 = 2 * 1024 * 1024;
 
 impl ThunkLayoutBuilder {
     /// Creates a thunk layout builder or returns None if thunks either aren't supported or aren't
