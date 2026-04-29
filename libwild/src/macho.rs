@@ -455,7 +455,7 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        self.sectname.starts_with(b"__text")
     }
 
     fn is_tls(&self) -> bool {
