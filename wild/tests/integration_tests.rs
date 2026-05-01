@@ -201,6 +201,8 @@
 //!
 //! binding=local|global|weak: Type: string. Asserts the binding of the symbol (STB_LOCAL,
 //! STB_GLOBAL or STB_WEAK).
+//!
+//! line={num} Parses debug info to check that the symbol is on the line specified.
 
 mod external_tests;
 
@@ -1147,6 +1149,8 @@ struct SymtabAssertions {
     size: Option<u64>,
 
     binding: Option<String>,
+
+    line: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
@@ -3586,6 +3590,46 @@ fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
     })
 }
 
+fn lookup_line_for_symbol(obj: &ElfFile64, sym_address: u64) -> Result<Option<u64>> {
+    let load_section = |id: gimli::SectionId| -> Result<std::borrow::Cow<[u8]>> {
+        match obj.section_by_name(id.name()) {
+            Some(section) => section
+                .uncompressed_data()
+                .map_err(|e| libwild::error::Error::from(format!("Failed to read section: {}", e))),
+            None => Ok(std::borrow::Cow::Borrowed(&[])),
+        }
+    };
+
+    let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+
+    let borrow_section: &dyn for<'a> Fn(
+        &'a std::borrow::Cow<[u8]>,
+    ) -> gimli::EndianSlice<'a, gimli::LittleEndian> =
+        &|section| gimli::EndianSlice::new(section, gimli::LittleEndian);
+
+    let dwarf = dwarf_sections.borrow(borrow_section);
+
+    let mut iter = dwarf.units();
+    while let Some(header) = iter.next()? {
+        let unit = dwarf.unit(header)?;
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+
+        let mut rows = program.rows();
+        while let Some((_header, row)) = rows.next_row()? {
+            if row.address() > sym_address {
+                break;
+            }
+            if row.address() == sym_address {
+                return Ok(row.line().map(|l| l.get()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 fn verify_symbol_assertions(
     obj: &ElfFile64,
     assertions: &[ExpectedSymtabEntry],
@@ -3674,6 +3718,21 @@ fn verify_symbol_assertions(
                 bail!(
                     "Expected symbol `{name}` to have binding `{expected_binding}`, \
                      but it actually had binding `{actual_binding}`"
+                );
+            }
+        }
+
+        if let Some(expected_line) = exp.assertions.line {
+            let address = sym.address();
+
+            let actual_line = lookup_line_for_symbol(obj, address)
+                .with_context(|| format!("Error reading line info for `{name}` (0x{address:x})"))?
+                .with_context(|| format!("Missing line info for `{name}` (0x{address:x})"))?;
+
+            if actual_line != expected_line {
+                bail!(
+                    "Expected symbol `{name}` to be on line {expected_line}, \
+                     but it was on line {actual_line}"
                 );
             }
         }
