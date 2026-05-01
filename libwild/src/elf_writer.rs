@@ -127,10 +127,11 @@ use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::ParallelBridge;
-use rayon::iter::ParallelIterator;
-use rayon::slice::ParallelSliceMut;
+use rayon::iter::IntoParallelIterator as _;
+use rayon::iter::IntoParallelRefMutIterator as _;
+use rayon::iter::ParallelBridge as _;
+use rayon::iter::ParallelIterator as _;
+use rayon::slice::ParallelSliceMut as _;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::Cursor;
@@ -1989,6 +1990,14 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let section_id = part_id.output_section_id();
+
+    if layout.compressed_debug_sections.get(section_id).is_some() {
+        // Compressed debug sections are written by the epilogue.
+        return Ok(());
+    }
+
     let out = write_section_raw(object, layout, section, section_index, buffers)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
@@ -2292,7 +2301,7 @@ fn apply_relocations<
     Ok(())
 }
 
-fn apply_debug_relocations<
+pub(crate) fn apply_debug_relocations<
     'data,
     A: Arch<Platform = Elf>,
     R: Relocation,
@@ -3606,17 +3615,7 @@ fn write_merged_strings(
         if merged.len() > 0 {
             let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
 
-            merged
-                .buckets
-                .iter()
-                .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
-                .par_bridge()
-                .for_each(|(bucket, mut buffer)| {
-                    for string in &bucket.strings {
-                        let dest = buffer.split_off_mut(..string.len()).unwrap();
-                        dest.copy_from_slice(string);
-                    }
-                });
+            write_merged_strings_to_buffer(merged, buffer);
         }
     });
 
@@ -3629,6 +3628,23 @@ fn write_merged_strings(
             .unwrap()
             .copy_from_slice(prelude.identity.as_bytes());
     }
+}
+
+pub(crate) fn write_merged_strings_to_buffer(
+    merged: &crate::string_merging::MergedStringsSection,
+    buffer: &mut &mut [u8],
+) {
+    merged
+        .buckets
+        .iter()
+        .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
+        .par_bridge()
+        .for_each(|(bucket, mut buffer)| {
+            for string in &bucket.strings {
+                let dest = buffer.split_off_mut(..string.len()).unwrap();
+                dest.copy_from_slice(string);
+            }
+        });
 }
 
 fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
@@ -3958,7 +3974,34 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
     build_id_buffer.fill(0);
 
+    write_compressed_debug_sections(layout, buffers);
+
     Ok(())
+}
+
+fn write_compressed_debug_sections(
+    layout: &ElfLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) {
+    verbose_timing_phase!("Write compressed debug sections");
+
+    let mut work = Vec::new();
+
+    for (section_id, _section_info) in layout.output_sections.ids_with_info() {
+        if let Some(compressed_section) = layout.compressed_debug_sections.get(section_id) {
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            let buffer = buffers.get_mut(part_id);
+            for chunk in &compressed_section.compressed_chunks {
+                let out = buffer.split_off_mut(..chunk.len()).unwrap();
+                work.push((out, chunk));
+            }
+        }
+    }
+
+    work.par_iter_mut().for_each(|(out, chunk)| {
+        verbose_timing_phase!("Copy compressed chunk");
+        out.copy_from_slice(chunk);
+    });
 }
 
 fn write_gnu_property_notes(
@@ -5257,14 +5300,15 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         };
         entry.sh_type.set(e, sh_type);
 
-        // TODO: Sections are always uncompressed and the output compression is not supported yet.
-        entry.sh_flags.set(
-            e,
-            output_sections
-                .section_flags(section_id)
-                .without(shf::COMPRESSED)
-                .raw(),
-        );
+        let mut flags = output_sections.section_flags(section_id);
+
+        if layout.compressed_debug_sections.get(section_id).is_some() {
+            flags = flags.with(shf::COMPRESSED);
+        } else {
+            flags = flags.without(shf::COMPRESSED);
+        }
+
+        entry.sh_flags.set(e, flags.raw());
 
         let name = layout.output_sections.name(section_id).with_context(|| {
             format!(

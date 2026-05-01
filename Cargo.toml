@@ -62,6 +62,8 @@ memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
 object = { version = "0.39.1", default-features = false, features = [
+    # Note that compression is only actually needed for linker-diff
+    "compression",
     "elf",
     "macho",
     "read_core",
@@ -69,7 +71,7 @@ object = { version = "0.39.1", default-features = false, features = [
     "unaligned",
     "archive",
 ] }
-os_info = "3.0.0"
+os_info = { version = "3.1.0", default-features = false }
 paste = "1.0.15"
 # 0.4.9 contains breaking changes.
 perf-event = "=0.4.8"

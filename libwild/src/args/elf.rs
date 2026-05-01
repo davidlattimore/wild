@@ -130,6 +130,8 @@ pub struct ElfArgs {
     rpath_set: IndexSet<String>,
 
     pub experimental_sframe: bool,
+
+    pub(crate) debug_compression_kind: Option<CompressionKind>,
 }
 
 #[derive(Debug)]
@@ -168,6 +170,12 @@ pub(crate) enum PackDynRelocs {
     Android,
     AndroidRelr,
     Relr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompressionKind {
+    Zlib,
+    Zstd,
 }
 
 impl ExcludeLibs {
@@ -320,6 +328,7 @@ impl Default for ElfArgs {
             plugin_args: Vec::new(),
 
             experimental_sframe: false,
+            debug_compression_kind: None,
         }
     }
 }
@@ -1088,6 +1097,20 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Do not export dynamic symbols")
         .execute(|args, _modifier_stack| {
             args.export_all_dynamic_symbols = false;
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("compress-debug-sections")
+        .help("Compress debug sections using zlib or zstd")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                "none" => args.debug_compression_kind = None,
+                "zlib" => args.debug_compression_kind = Some(CompressionKind::Zlib),
+                "zstd" => args.debug_compression_kind = Some(CompressionKind::Zstd),
+                value => bail!("--compress-debug-sections={value}"),
+            }
             Ok(())
         });
 

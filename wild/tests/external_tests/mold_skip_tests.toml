@@ -3,8 +3,6 @@ reason = "These tests use unsupported options"
 tests = [
   "audit.sh",
   "color-diagnostics.sh",
-  "compress-debug-sections-zstd.sh",   # Compressed debug sections support #493
-  "compress-debug-sections.sh",        # Compressed debug sections support #493
   "default-symver-version-script.sh",
   "default-symver.sh",
   "depaudit.sh",

@@ -370,6 +370,8 @@ pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
     layout: &Layout<'data, P>,
     mut data: &'out mut [u8],
 ) -> OutputSectionMap<&'out mut [u8]> {
+    verbose_timing_phase!("Split output by section");
+
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
     layout.section_layouts.for_each(|id, s| {
         section_allocations.push(SectionAllocation {

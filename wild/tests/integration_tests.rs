@@ -124,6 +124,10 @@
 //! test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements are
 //! met and no tests are skipped.
 //!
+//! RequiresLinkerFlags:{flag} Checks if the system linker supports the specified flag(s) and skips
+//! the test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements
+//! are met and no tests are skipped.
+//!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
@@ -145,8 +149,8 @@
 //! specifying a flag in LinkArgs that uses $OUT_DIR.
 //!
 //! MaxThunks:{count} Maximum number of range-extension thunks that should be allocated by Wild.
-//! Defaults to 0. The test will fail if Wild allocates more than this many thunks. Tests that
-//! need thunks must specify a sufficiently large value here.
+//! Defaults to 0. The test will fail if Wild allocates more than this many thunks. Tests that need
+//! thunks must specify a sufficiently large value here.
 //!
 //! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
 //!
@@ -219,10 +223,9 @@ use object::Endian as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
-use object::ObjectSection as _;
+use object::ObjectSection;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
-use os_info::Type;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -681,12 +684,12 @@ fn get_host_architecture() -> Architecture {
 fn is_host_debian_based() -> bool {
     matches!(
         os_info::get().os_type(),
-        Type::Debian | Type::Ubuntu | Type::Pop
+        os_info::Type::Debian | os_info::Type::Ubuntu | os_info::Type::Pop
     )
 }
 
 fn is_musl_used() -> bool {
-    os_info::get().os_type() == Type::Alpine
+    os_info::get().os_type() == os_info::Type::Alpine
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -725,6 +728,7 @@ struct Config {
     requires_glibc_version: Option<String>,
     requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
+    requires_linker_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     remove_sections: Vec<String>,
@@ -1272,6 +1276,7 @@ impl Config {
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
+            requires_linker_flags: Vec::new(),
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
             auto_add_objects: true,
@@ -1615,6 +1620,11 @@ fn process_directive(
         "RequiresCompilerFlags" => {
             config
                 .requires_compiler_flags
+                .extend(arg.trim().split(' ').map(str::to_owned));
+        }
+        "RequiresLinkerFlags" => {
+            config
+                .requires_linker_flags
                 .extend(arg.trim().split(' ').map(str::to_owned));
         }
         "RequiresNightlyRustc" => {
@@ -3411,6 +3421,7 @@ impl Assertions {
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_section_bytes(&obj)?;
         self.verify_strings(&bytes)?;
+        verify_no_overlapping_sections(&obj)?;
 
         match obj {
             object::File::Elf64(elf_obj) => {
@@ -3672,6 +3683,24 @@ impl Assertions {
         // won't be checked for the test that writes the output to /dev/null.
         self.max_thunks > 0
     }
+}
+
+fn verify_no_overlapping_sections(obj: &object::File) -> Result {
+    let mut previous_range = None;
+    for section in obj.sections() {
+        if let Some((_, prev_end)) = previous_range
+            && let Some((start, _)) = section.file_range()
+            && start < prev_end
+        {
+            bail!("Section {} overlaps with previous section", section.name()?);
+        }
+
+        previous_range = section.file_range();
+
+        section.data()?;
+    }
+
+    Ok(())
 }
 
 fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
@@ -4543,19 +4572,39 @@ fn verify_platform_requirements(
         verify_linker_plugin_requirements(config, cross_arch, src_path)?;
     }
 
-    if config.requires_compiler_flags.is_empty() {
-        return Ok(());
+    if !config.requires_compiler_flags.is_empty() {
+        let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
+            return Ok(());
+        };
+
+        verify_command_success(
+            Command::new(&compiler)
+                .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+                .args(&config.requires_compiler_flags),
+        )?;
     }
 
-    let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
-        return Ok(());
-    };
+    if !config.requires_linker_flags.is_empty() {
+        let linker = config
+            .platform
+            .available_linkers()?
+            .iter()
+            .find_map(|linker| match linker {
+                Linker::ThirdParty(third_party_linker) if third_party_linker.enabled_by_default => {
+                    Some(third_party_linker.path.clone())
+                }
+                _ => None,
+            })
+            .context("RequiresLinkerFlags is set, but no system linker was configured")?;
 
-    verify_command_success(
-        Command::new(&compiler)
-            .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
-            .args(&config.requires_compiler_flags),
-    )
+        verify_command_success(
+            Command::new(&linker)
+                .arg("-v")
+                .args(&config.requires_linker_flags),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn verify_linker_plugin_requirements(

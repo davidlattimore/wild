@@ -478,6 +478,13 @@ impl OutputSectionId {
         }
     }
 
+    pub(crate) fn parts(self) -> PartIdIterator {
+        PartIdIterator {
+            next: self.base_part_id(),
+            remaining: self.num_parts(),
+        }
+    }
+
     pub(crate) fn opt_built_in_details<P: Platform>(
         self,
     ) -> Option<&'static P::BuiltInSectionDetails> {
@@ -916,6 +923,26 @@ impl Display for SectionKind<'_> {
         match self {
             SectionKind::Primary(section_name) => write!(f, "{section_name}"),
             SectionKind::Secondary(primary_id) => write!(f, "Secondary to {primary_id}"),
+        }
+    }
+}
+
+pub(crate) struct PartIdIterator {
+    next: PartId,
+    remaining: usize,
+}
+
+impl Iterator for PartIdIterator {
+    type Item = PartId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            None
+        } else {
+            self.remaining -= 1;
+            let id = self.next;
+            self.next = self.next.offset(1);
+            Some(id)
         }
     }
 }

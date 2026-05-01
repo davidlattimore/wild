@@ -366,6 +366,12 @@ impl platform::Platform for Elf {
         output.write(layout, elf_writer::write::<A>)
     }
 
+    fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
+        layout: &mut layout::Layout<'data, Self>,
+    ) -> Result {
+        crate::compression::maybe_compress_debug_sections_elf::<A>(layout)
+    }
+
     fn maybe_init_linker_plugin<'data>(
         args: &'data Self::Args,
         linker_plugin_arena: &'data colosseum::sync::Arena<crate::linker_plugins::LoadedPlugin>,

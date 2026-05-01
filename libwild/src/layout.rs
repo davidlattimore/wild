@@ -6,6 +6,7 @@ use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::bail;
+use crate::compression::CompressedSection;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
@@ -257,8 +258,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     let mut merged_section_layouts = section_layouts.clone();
     merge_secondary_parts(&output_sections, &mut merged_section_layouts);
 
-    output.set_size(compute_total_file_size(&section_layouts));
-
     let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
     else {
@@ -350,7 +349,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
-    Ok(Layout {
+    let num_sections = output_sections.num_sections();
+
+    let mut layout = Layout {
         symbol_db,
         symbol_resolutions,
         segment_layouts,
@@ -371,7 +372,14 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         dynamic_symbol_definitions,
         properties_and_attributes,
         thunk_block_addresses,
-    })
+        compressed_debug_sections: OutputSectionMap::with_size(num_sections),
+    };
+
+    P::maybe_compress_debug_sections::<A>(&mut layout)?;
+
+    output.set_size(compute_total_file_size(&layout.section_layouts));
+
+    Ok(layout)
 }
 
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
@@ -593,6 +601,8 @@ pub struct Layout<'data, P: Platform> {
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.
     pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
+
+    pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
 }
 
 #[derive(Debug, Default)]
@@ -1551,7 +1561,7 @@ fn layout_sections<P: Platform>(
     })
 }
 
-fn merge_secondary_parts<P: Platform>(
+pub(crate) fn merge_secondary_parts<P: Platform>(
     output_sections: &OutputSections<P>,
     section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
 ) {

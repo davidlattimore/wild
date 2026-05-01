@@ -3,6 +3,7 @@ pub use args::Args;
 pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
+pub(crate) mod compression;
 pub(crate) mod debug_trace;
 pub(crate) mod diagnostics;
 pub(crate) mod diff;

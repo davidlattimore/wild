@@ -268,6 +268,12 @@ pub(crate) trait Platform:
         layout: &Layout<'data, Self>,
     ) -> Result;
 
+    fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
+        _layout: &mut Layout<'data, Self>,
+    ) -> Result {
+        Ok(())
+    }
+
     /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
     /// that one should be used.
     fn maybe_init_linker_plugin<'data>(
