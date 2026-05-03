@@ -19,8 +19,8 @@
 //! * Non-primary part references non-primary part: Assumed to be in range.
 //! * Non-primary part references primary part: Stored in
 //!   ThunkLayoutBuilder::non_primary_referenced_symbols.
-//! * Prmary part references anything: ValueFlags::HAS_RANGE_LIMITED_REL set for local symbol in the
-//!   object that made the reference.
+//! * Prmary part references anything: the (file_id, local_symbol_id) pair is pushed into
+//!   ThunkLayoutBuilder::primary_thunkable_locals.
 
 use crate::input_data::FileId;
 use crate::layout;
@@ -87,14 +87,20 @@ pub(crate) struct ThunkLayoutBuilder {
     /// Symbols that are defined in primary parts and referenced by range-limited relocations from
     /// non-primary parts.
     non_primary_referenced_symbols: SegQueue<SymbolId>,
+
+    /// `(file_id, local_symbol_id)` pairs recorded each time a thunkable, range-limited
+    /// relocation is encountered in a primary-part section. Filled in concurrently during
+    /// relocation processing and consumed once when building the thunk layout. May contain
+    /// duplicates.
+    primary_thunkable_locals: SegQueue<(FileId, SymbolId)>,
 }
 
 /// How much space we allow for the thunks themselves in the thunk block. Note, we don't actually
 /// allocate this much space. This is used for determining whether we might need a thunk for a
 /// particular reference. i.e. we subtract this from the relocation range. At some stage, we may
 /// want to try and get rid of this so that we have tighter bounds on when thunks are used. In that
-/// case, a good starting bound would be a count of the number of symbols in each block where we set
-/// ValueFlags::HAS_RANGE_LIMITED_REL. This value is enough to link a debug build of Chromium, which
+/// case, a good starting bound would be a count of the number of symbols in each block where we
+/// have a range-limited reference. This value is enough to link a debug build of Chromium, which
 /// has slightly more than 1MB of thunks in its largest thunk block.
 const MAXIMUM_THUNK_BYTES_PER_BLOCK: u64 = 2 * 1024 * 1024;
 
@@ -129,6 +135,7 @@ impl ThunkLayoutBuilder {
             branch_range: config.min_branch_range - MAXIMUM_THUNK_BYTES_PER_BLOCK,
             primary_function_part_id: config.primary_function_part_id,
             non_primary_referenced_symbols: SegQueue::new(),
+            primary_thunkable_locals: SegQueue::new(),
         })
     }
 
@@ -210,6 +217,14 @@ impl ThunkLayoutBuilder {
     ) {
         verbose_timing_phase!("Process primary part refs");
 
+        let mut buckets: Vec<Vec<Vec<SymbolId>>> = primary_ranges
+            .iter()
+            .map(|group| (0..group.len()).map(|_| Vec::new()).collect())
+            .collect();
+        while let Some((file_id, local_symbol_id)) = self.primary_thunkable_locals.pop() {
+            buckets[file_id.group()][file_id.file()].push(local_symbol_id);
+        }
+
         let primary_range_for_symbol = |definition_id: SymbolId| -> Option<(u64, u64)> {
             let definition_flags = per_symbol_flags.flags_for_symbol(definition_id);
 
@@ -242,7 +257,9 @@ impl ThunkLayoutBuilder {
             src_end < self.branch_range
         };
 
-        // Collect primary-section range-limited symbols by scanning each block's objects in
+        let buckets = &buckets;
+
+        // Collect primary-section range-limited symbols by processing each block's objects in
         // parallel, then reducing object-local symbol sets into one set per block.
         block_builders.into_par_iter().for_each(|block| {
             let symbols = block
@@ -252,23 +269,18 @@ impl ThunkLayoutBuilder {
                     verbose_timing_phase!("Collect object primary part thunks");
 
                     let mut object_symbols = HashSet::new();
-                    for (i, raw_flags) in per_symbol_flags
-                        .raw_range(obj.symbol_id_range)
-                        .iter()
-                        .enumerate()
-                    {
-                        if !raw_flags.get().contains(ValueFlags::HAS_RANGE_LIMITED_REL) {
+                    let Some((src_start, src_end)) =
+                        primary_ranges[obj.file_id.group()][obj.file_id.file()]
+                    else {
+                        return object_symbols;
+                    };
+
+                    let bucket = &buckets[obj.file_id.group()][obj.file_id.file()];
+                    for &local_symbol_id in bucket {
+                        let definition_id = symbol_db.definition(local_symbol_id);
+                        if object_symbols.contains(&definition_id) {
                             continue;
                         }
-
-                        let local_symbol_id = obj.symbol_id_range.offset_to_id(i);
-                        let definition_id = symbol_db.definition(local_symbol_id);
-                        let Some((src_start, src_end)) =
-                            primary_ranges[obj.file_id.group()][obj.file_id.file()]
-                        else {
-                            continue;
-                        };
-
                         if !provably_in_range(src_start, src_end, definition_id) {
                             object_symbols.insert(definition_id);
                         }
@@ -321,29 +333,26 @@ fn collect_primary_ranges<P: Platform>(
 pub(crate) fn handle_thunk_extensions_for_relocation<A: Arch>(
     section_part_id: PartId,
     resources: &layout::GraphResources<'_, '_, A::Platform>,
+    object: &layout::ObjectLayoutState<'_, A::Platform>,
     local_symbol_id: SymbolId,
     symbol_id: SymbolId,
     rel: <A::Platform as Platform>::RelocationInfo,
 ) {
-    if resources.thunk_layout_builder.is_some()
+    if let Some(builder) = resources.thunk_layout_builder.as_ref()
         && let Some(config) = A::thunk_config()
         && let Some(rel_info) = A::relocation_from_raw(rel).ok()
         && rel_info.thunkable
     {
         if section_part_id == config.primary_function_part_id {
-            resources
-                .per_symbol_flags
-                .get_atomic(local_symbol_id)
-                .or_assign(ValueFlags::HAS_RANGE_LIMITED_REL);
+            builder
+                .primary_thunkable_locals
+                .push((object.file_id, local_symbol_id));
         } else {
             let canonical_symbol_id = resources.symbol_db.definition(symbol_id);
             if resources.symbol_db.part_id_for_symbol(canonical_symbol_id)
                 == config.primary_function_part_id
             {
-                resources
-                    .thunk_layout_builder
-                    .as_ref()
-                    .unwrap()
+                builder
                     .non_primary_referenced_symbols
                     .push(canonical_symbol_id);
             }

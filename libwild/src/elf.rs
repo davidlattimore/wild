@@ -4907,6 +4907,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             crate::thunks::handle_thunk_extensions_for_relocation::<A>(
                 section_part_id,
                 resources,
+                object,
                 local_symbol_id,
                 symbol_id,
                 r_type,
