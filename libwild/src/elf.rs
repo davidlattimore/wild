@@ -815,6 +815,13 @@ impl platform::Platform for Elf {
                 }
             }
         }
+
+        // The PHDR program header should only be present if --nmagic is not set
+        for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+            if segment_def.segment_type == pt::PHDR {
+                *keep = !args.nmagic;
+            }
+        }
     }
 
     fn program_segment_defs() -> &'static [ProgramSegmentDef] {
@@ -4313,7 +4320,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn always_keep(self) -> bool {
-        self.segment_type == pt::PHDR
+        false
     }
 
     fn is_loadable(self) -> bool {

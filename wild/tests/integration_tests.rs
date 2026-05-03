@@ -54,8 +54,8 @@
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
-//! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
-//! the specified alignment.
+//! ExpectLoadAlignment:{alignment} {alignment} ... Checks that the first N PT_LOAD segments in the
+//! output binary have the specified alignment.
 //!
 //! ExpectProgramHeader:{type} Checks that the output binary contains a program header of the
 //! specified type.
@@ -1168,7 +1168,7 @@ struct Assertions {
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
-    expected_load_alignment: Option<u64>,
+    expected_load_alignments: Vec<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
@@ -1525,16 +1525,19 @@ fn process_directive(
             .absent_dynamic_entries
             .push(arg.trim().to_owned()),
         "ExpectLoadAlignment" => {
-            let alignment_str = arg.trim();
-            let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
-                u64::from_str_radix(hex, 16)
-                    .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
-            } else {
-                alignment_str
-                    .parse()
-                    .with_context(|| format!("Invalid alignment: {alignment_str}"))?
-            };
-            config.assertions.expected_load_alignment = Some(alignment);
+            let alignment_strs = arg.split(" ").map(str::trim);
+            let alignments = alignment_strs.map(|alignment_str| {
+                if let Some(hex) = alignment_str.strip_prefix("0x") {
+                    u64::from_str_radix(hex, 16)
+                        .with_context(|| format!("Invalid hex alignment: {alignment_str}"))
+                } else {
+                    alignment_str
+                        .parse::<u64>()
+                        .with_context(|| format!("Invalid alignment: {alignment_str}"))
+                }
+            });
+            config.assertions.expected_load_alignments =
+                alignments.collect::<Result<Vec<u64>>>()?;
         }
         "ExpectProgramHeader" => {
             let header_type: ProgramHeaderType = arg
@@ -3491,7 +3494,7 @@ impl Assertions {
                 if !self.no_dynsym.is_empty() {
                     bail!("NoDynSym is not supported for MachO",);
                 }
-                if self.expected_load_alignment.is_some() {
+                if !self.expected_load_alignments.is_empty() {
                     bail!("ExpectLoadAlignment is not supported for MachO",);
                 }
                 if !self.expected_dynamic_entries.is_empty() {
@@ -3625,24 +3628,27 @@ impl Assertions {
         &self,
         obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
     ) -> Result {
-        let Some(expected) = self.expected_load_alignment else {
-            return Ok(());
-        };
-
+        let mut expected_load_alignments = self.expected_load_alignments.iter();
         let endian = obj.endian();
         let segments = obj.elf_program_headers();
         for segment in segments {
             if segment.p_type(endian) == object::elf::PT_LOAD {
                 let alignment = segment.p_align(endian);
-                if alignment != expected {
+                let Some(expected) = expected_load_alignments.next() else {
+                    return Ok(());
+                };
+
+                if alignment != *expected {
                     bail!("Expected LOAD segment alignment {expected:#x}, but got {alignment:#x}");
                 }
-
-                return Ok(());
             }
         }
 
-        bail!("No LOAD segment found");
+        if expected_load_alignments.count() > 0 {
+            bail!("No LOAD segment found");
+        }
+
+        Ok(())
     }
 
     fn verify_symbols_absent<'a, I>(

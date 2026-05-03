@@ -21,7 +21,6 @@ tests = [
   "init-in-dso.sh",
   "init.sh",
   "library.sh",
-  "nmagic.sh",
   "oformat-binary.sh",
   "omagic.sh",
   "package-metadata.sh",
@@ -166,6 +165,7 @@ tests = [
   "many-output-sections.sh",        # Different message formats
   "mold-wrapper.sh",
   "mold-wrapper2.sh",
+  "nmagic.sh",                      # end is only emitted if .bss section exists. LLD also fails.
   "no-allow-shlib-undefined.sh",    # Different message formats
   "no-allow-shlib-undefined3.sh",   # Different message formats
   "no-allow-shlib-undefined4.sh",   # GNU ld and LLD also fail

@@ -126,6 +126,8 @@ pub struct ElfArgs {
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
 
+    pub(crate) nmagic: bool,
+
     rpath_set: IndexSet<String>,
 
     pub experimental_sframe: bool,
@@ -313,6 +315,8 @@ impl Default for ElfArgs {
             pack_dyn_relocs: PackDynRelocs::None,
             use_android_relr_tags: false,
 
+            nmagic: false,
+
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
@@ -412,6 +416,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         || args.pack_dyn_relocs == PackDynRelocs::AndroidRelr
     {
         args.warn_unsupported("--pack-dyn-relocs=android")?;
+    }
+
+    if args.nmagic {
+        // GNU_RELRO requires segments to start on page boundaries and cover an entire page
+        args.relro = false;
+        if args.max_page_size.is_some() {
+            args.warning("-z max-page-size is incompatible with --nmagic");
+        }
+        args.common_mut()
+            .inputs
+            .iter_mut()
+            .for_each(|input| input.modifiers.allow_shared = false);
     }
 
     Ok(())
@@ -1795,6 +1811,25 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    parser
+        .declare()
+        .short("n")
+        .long("nmagic")
+        .help("Disable page alignment of sections and disable linking against shared libraries")
+        .execute(|args, _modifier_stack| {
+            args.nmagic = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-nmagic")
+        .help("Page align sections (default)")
+        .execute(|args, _modifier_stack| {
+            args.nmagic = false;
+            Ok(())
+        });
+
     add_silently_ignored_flags(&mut parser);
     add_default_flags(&mut parser);
 
@@ -1998,6 +2033,10 @@ impl platform::Args for ElfArgs {
     }
 
     fn loadable_segment_alignment(&self) -> Alignment {
+        if self.nmagic {
+            return Alignment { exponent: 0 };
+        }
+
         if let Some(max_page_size) = self.max_page_size {
             return max_page_size;
         }
