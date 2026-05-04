@@ -672,6 +672,24 @@ impl MachOSymbolTableWriter {
         offset
     }
 
+    #[inline(always)]
+    fn define_symbol(
+        &mut self,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        name: &[u8],
+        section: u8,
+        symbol_type: u8,
+        value: u64,
+    ) -> Result {
+        let entry = self.write_entry(name, buffers)?;
+        entry.n_sect = section;
+        entry.n_type = symbol_type;
+        entry.n_value.set(LE, value);
+        entry.n_desc.set(LE, 0);
+
+        Ok(())
+    }
+
     fn write_entry<'out>(
         &mut self,
         name: &[u8],
@@ -714,41 +732,39 @@ fn write_symbols<'data>(
             continue;
         };
 
-        let mut out = *sym;
-        if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-            let section_id = match &object.sections[section_index.0] {
-                SectionSlot::Loaded(_) => object
-                    .section_part_id(section_index, &layout.symbol_db.section_part_ids)
-                    .output_section_id(),
-                _ => bail!(
-                    "Tried to copy a symbol in a section we didn't load. {}",
-                    layout.symbol_debug(symbol_id)
-                ),
+        let mut value = 0;
+        let (section, symbol_type) =
+            if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+                let section_id = match &object.sections[section_index.0] {
+                    SectionSlot::Loaded(_) => object
+                        .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                        .output_section_id(),
+                    _ => bail!(
+                        "Tried to copy a symbol in a section we didn't load. {}",
+                        layout.symbol_debug(symbol_id)
+                    ),
+                };
+                let primary_id = layout.output_sections.primary_output_section(section_id);
+                let n_type = (sym.n_type & !object::macho::N_TYPE) | N_SECT;
+                let n_sect = macho_section_index(layout, primary_id).with_context(|| {
+                    format!(
+                        "No Mach-O section index for {} while writing {}",
+                        primary_id,
+                        layout.symbol_debug(symbol_id)
+                    )
+                })?;
+                (n_sect, n_type)
+            } else if sym.is_absolute() {
+                ((sym.n_type & !object::macho::N_TYPE) | N_ABS, 0)
+            } else {
+                bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };
-            let primary_id = layout.output_sections.primary_output_section(section_id);
-            out.n_type = (out.n_type & !object::macho::N_TYPE) | N_SECT;
-            out.n_sect = macho_section_index(layout, primary_id).with_context(|| {
-                format!(
-                    "No Mach-O section index for {} while writing {}",
-                    primary_id,
-                    layout.symbol_debug(symbol_id)
-                )
-            })?;
-        } else if sym.is_absolute() {
-            out.n_type = (out.n_type & !object::macho::N_TYPE) | N_ABS;
-            out.n_sect = 0;
-        } else {
-            bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
-        }
 
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
-            out.n_value.set(LE, res.value_for_symbol_table());
+            value = res.value_for_symbol_table();
         }
 
-        let entry = symbol_writer.write_entry(info.name, buffers)?;
-        let string_offset = entry.n_strx.get(LE);
-        *entry = out;
-        entry.n_strx.set(LE, string_offset);
+        symbol_writer.define_symbol(buffers, info.name, section, symbol_type, value)?;
     }
 
     Ok(())
