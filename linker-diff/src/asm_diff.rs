@@ -2933,7 +2933,7 @@ impl<'data> SectionVersions<'data> {
                     existing_sym = String::from_utf8_lossy(self.found_via_symbol),
                     new_sym = String::from_utf8_lossy(symbol_name),
                     section_name = layout.get_elf_section(self.input_section_id)?.name()?,
-                    name = &binaries[file_number],
+                    name = binaries[file_number],
                 );
             }
         }

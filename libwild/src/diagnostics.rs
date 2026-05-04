@@ -199,7 +199,7 @@ impl SymbolInfoPrinter {
         match self {
             SymbolInfoPrinter::Disabled => {}
             SymbolInfoPrinter::Enabled(state) => {
-                println!("{}", &state.output);
+                println!("{}", state.output);
             }
         }
     }
