@@ -74,6 +74,7 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use std::io::Write;
 use std::ops::BitAnd;
 use tracing::debug_span;
 use zerocopy::FromZeros;
@@ -660,6 +661,13 @@ struct MachOSymbolTableWriter {
 
 impl MachOSymbolTableWriter {
     fn write_str(&mut self, name: &[u8], buffers: &mut OutputSectionPartMap<&mut [u8]>) -> u32 {
+        // n_strx == 0 is treated as unnamed, so we need to start from 1.
+        if self.next_strtab_offset == 0 {
+            let mut out = buffers.get_mut(part_id::STRTAB).split_off_mut(..1).unwrap();
+            out.write_all(b"\0").unwrap();
+            self.next_strtab_offset = 1;
+        }
+
         let len_with_terminator = name.len() + 1;
         let offset = self.next_strtab_offset;
         let out = buffers
