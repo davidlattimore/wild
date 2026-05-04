@@ -57,6 +57,12 @@
 //! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
 //! the specified alignment.
 //!
+//! ExpectProgramHeader:{type} Checks that the output binary contains a program header of the
+//! specified type.
+//!
+//! NoProgramHeader:{type} Checks that the output binary contains no program headers of the
+//! specified type.
+//!
 //! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
@@ -814,6 +820,23 @@ enum DriverMode {
     SaveDirResponse,
 }
 
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, EnumString)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+#[repr(u32)]
+enum ProgramHeaderType {
+    Dynamic = object::elf::PT_DYNAMIC,
+    Interp = object::elf::PT_INTERP,
+    GnuEhFrame = object::elf::PT_GNU_EH_FRAME,
+    GnuProperty = object::elf::PT_GNU_PROPERTY,
+    GnuRelro = object::elf::PT_GNU_RELRO,
+    GnuStack = object::elf::PT_GNU_STACK,
+    Load = object::elf::PT_LOAD,
+    Note = object::elf::PT_NOTE,
+    Null = object::elf::PT_NULL,
+    Phdr = object::elf::PT_PHDR,
+    Tls = object::elf::PT_TLS,
+}
+
 #[derive(Debug, Clone)]
 struct ErrorMatcher {
     regex: regex::Regex,
@@ -1140,6 +1163,8 @@ struct Assertions {
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     output_file_matches: Vec<OutputFileMatch>,
     max_thunks: u64,
+    expected_program_headers: Vec<ProgramHeaderType>,
+    absent_program_headers: Vec<ProgramHeaderType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1497,6 +1522,18 @@ fn process_directive(
                     .with_context(|| format!("Invalid alignment: {alignment_str}"))?
             };
             config.assertions.expected_load_alignment = Some(alignment);
+        }
+        "ExpectProgramHeader" => {
+            let header_type: ProgramHeaderType = arg
+                .parse()
+                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            config.assertions.expected_program_headers.push(header_type);
+        }
+        "NoProgramHeader" => {
+            let header_type: ProgramHeaderType = arg
+                .parse()
+                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            config.assertions.absent_program_headers.push(header_type);
         }
         "Mode" => {
             let mode: Mode = arg
@@ -3430,6 +3467,7 @@ impl Assertions {
                 self.verify_dynamic_entries(&elf_obj)?;
                 self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
                 self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
+                self.verify_program_headers(&elf_obj)?;
             }
             object::File::MachO64(_) => {
                 if !self.expected_comments.is_empty() {
@@ -3446,6 +3484,12 @@ impl Assertions {
                 }
                 if !self.absent_dynamic_entries.is_empty() {
                     bail!("NoDynamic is not supported for MachO",);
+                }
+                if !self.expected_program_headers.is_empty() {
+                    bail!("ExpectProgramHeader is not supported for MachO",);
+                }
+                if !self.absent_program_headers.is_empty() {
+                    bail!("NoProgramHeader is not supported for MachO");
                 }
             }
             _ => bail!("Unsupported object file format"),
@@ -3670,6 +3714,36 @@ impl Assertions {
         for absent in &self.absent_dynamic_entries {
             if found_tags.contains(absent.as_str()) {
                 bail!("Dynamic entry `{absent}` should be absent but was found");
+            }
+        }
+
+        Ok(())
+    }
+
+    fn verify_program_headers<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
+        if self.expected_program_headers.is_empty() && self.absent_program_headers.is_empty() {
+            return Ok(());
+        }
+
+        let endian = obj.endian();
+        let mut header_types = HashSet::new();
+
+        for header in obj.elf_program_headers() {
+            header_types.insert(header.p_type(endian));
+        }
+
+        for header in &self.expected_program_headers {
+            if !header_types.contains(&(*header as u32)) {
+                bail!("Expected program header `{header}' not found.");
+            }
+        }
+
+        for header in &self.absent_program_headers {
+            if header_types.contains(&(*header as u32)) {
+                bail!("Program header `{header}' should be absent but was found.");
             }
         }
 

@@ -417,7 +417,6 @@ impl platform::Platform for Elf {
             output_section_id::PROGRAM_HEADERS,
             output_section_id::SECTION_HEADERS,
             output_section_id::SHSTRTAB,
-            output_section_id::RELRO_PADDING,
         ];
 
         for section_id in FORCE_KEEP_SECTIONS {
