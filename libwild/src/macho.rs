@@ -16,6 +16,7 @@ use crate::layout;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
+use crate::layout::SymbolCopyInfo;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SectionRule;
 use crate::macho_writer;
@@ -28,6 +29,7 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::platform::ObjectFile;
+use crate::platform::Symbol as _;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
 use gimli::LittleEndian;
@@ -86,6 +88,7 @@ pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
 pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
+pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 
 // TODO: move the following data types to object crate
 
@@ -188,12 +191,6 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
-        for s in self.symbols.iter() {
-            let name = s.name(LE, self.symbols.strings()).unwrap();
-            // TODO: remove
-            // dbg!(String::from_utf8_lossy(name));
-        }
-
         self.symbols.iter()
     }
 
@@ -770,10 +767,13 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::LINK_EDIT_SEGMENT
             | output_section_id::ENTRY_POINT
             | output_section_id::INTERP
-            | output_section_id::DYLD_CHAINED_FIXUPS => SegmentType::LoadCommands,
+            | output_section_id::DYLD_CHAINED_FIXUPS
+            | output_section_id::SYMTAB_COMMAND => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
-            output_section_id::CHAINED_FIXUP_TABLE => SegmentType::LinkeditSections,
+            output_section_id::CHAINED_FIXUP_TABLE
+            | output_section_id::SYMTAB_GLOBAL
+            | output_section_id::STRTAB => SegmentType::LinkeditSections,
             _ => SegmentType::Unused,
         };
 
@@ -901,6 +901,10 @@ impl platform::Platform for MachO {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
+
+    fn is_default_strippable_symbol(sym: &Self::SymtabEntry, name: &[u8]) -> bool {
+        sym.is_local() && name.starts_with(b"ltmp")
+    }
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -1222,6 +1226,7 @@ impl platform::Platform for MachO {
             part_id::DYLD_CHAINED_FIXUPS,
             size_of::<DyldChainedFixupsCommand>() as u64,
         );
+        sizes.increment(part_id::SYMTAB_COMMAND, size_of::<SymtabCommand>() as u64);
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1247,24 +1252,30 @@ impl platform::Platform for MachO {
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         per_symbol_flags: &crate::value_flags::AtomicPerSymbolFlags,
     ) -> Result {
-        for symbol in state.object.symbols_iter() {
-            // dbg!(String::from_utf8_lossy(
-            //     symbol.name(LE, state.object.symbols.strings()).unwrap()
-            // ));
+        let mut num_globals = 0;
+        let mut strings_size = 0;
+        for ((sym_index, sym), flags) in state
+            .object
+            .enumerate_symbols()
+            .zip(per_symbol_flags.range(state.symbol_id_range))
+        {
+            let symbol_id = state.symbol_id_range.input_to_id(sym_index);
+            if let Some(info) = SymbolCopyInfo::new(
+                state.object,
+                sym_index,
+                sym,
+                symbol_id,
+                symbol_db,
+                flags.get(),
+                &state.sections,
+            ) {
+                num_globals += 1;
+                strings_size += info.name.len() + 1;
+            }
         }
-
-        // TODO
-        // let mut num_globals = 0;
-        // let mut strings_size = 0;
-        // for symbol in state.object.symbols_iter() {
-        //     // TODO: very basic
-        //     num_globals += 1;
-        //     strings_size += state.object.symbol_name(symbol)?.len() + 1;
-        // }
-        // let entry_size = size_of::<SymtabEntry>() as u64;
-        //
-        // common.allocate(part_id::SYMTAB_GLOBAL, dbg!(num_globals * entry_size));
-        // common.allocate(part_id::STRTAB, dbg!(strings_size as u64));
+        let entry_size = size_of::<SymtabEntry>() as u64;
+        common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
+        common.allocate(part_id::STRTAB, strings_size as u64);
 
         Ok(())
     }
@@ -1282,6 +1293,7 @@ impl platform::Platform for MachO {
         common: &mut crate::layout::CommonGroupState<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
+        common.allocate(part_id::STRTAB, 1);
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
     }
 
@@ -1341,12 +1353,15 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::INTERP); // DYLINKER
         builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
+        builder.add_section(output_section_id::SYMTAB_COMMAND);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
+        builder.add_section(output_section_id::SYMTAB_GLOBAL);
+        builder.add_section(output_section_id::STRTAB);
 
         builder.build()
     }
@@ -1439,16 +1454,27 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::SYMTAB_COMMAND.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_SYMTAB")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
         target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
-    // Multi-part generated sections
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Secondary(output_section_id::SYMTAB_LOCAL),
+        kind: SectionKind::Primary(SectionName(b"SYMTAB")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"STRTAB")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
+        ..DEFAULT_DEFS
+    };
+    // Multi-part generated sections
     // Start of regular sections
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__text")),

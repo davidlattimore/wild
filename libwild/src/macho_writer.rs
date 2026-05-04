@@ -16,6 +16,7 @@ use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
+use crate::layout::SymbolCopyInfo;
 use crate::macho::ChainedFixupsHeader;
 use crate::macho::DEFAULT_SEGMENT_COUNT;
 use crate::macho::DYLINKER_PATH;
@@ -31,6 +32,7 @@ use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
 use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
+use crate::macho::SymtabCommand;
 use crate::macho::get_segment_sections;
 use crate::output_section_id;
 use crate::output_section_id::SectionName;
@@ -41,6 +43,7 @@ use crate::part_id;
 use crate::platform::Arch;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
+use crate::platform::Symbol;
 use crate::resolution::SectionSlot;
 use crate::symbol_db::SymbolId;
 use crate::timing_phase;
@@ -58,8 +61,11 @@ use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
+use object::macho::LC_SYMTAB;
 use object::macho::MH_CIGAM_64;
 use object::macho::MH_EXECUTE;
+use object::macho::N_ABS;
+use object::macho::N_SECT;
 use object::macho::RelocationInfo;
 use object::macho::SEG_DATA;
 use object::macho::SEG_LINKEDIT;
@@ -74,6 +80,7 @@ use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
 type MachOLayout<'data> = Layout<'data, MachO>;
+type SymtabEntry = object::macho::Nlist64<Endianness>;
 
 pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     sized_output: &mut SizedOutput,
@@ -89,9 +96,18 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
         .try_for_each(|(group, mut buffers)| -> Result {
             verbose_timing_phase!("Write group");
 
+            let mut symbol_writer = MachOSymbolTableWriter {
+                next_strtab_offset: group.strtab_start_offset,
+            };
             for file in &group.files {
-                write_file::<A>(file, &mut buffers, layout, &sized_output.trace)
-                    .with_context(|| format!("Failed copying from {file} to output file"))?;
+                write_file::<A>(
+                    file,
+                    &mut buffers,
+                    layout,
+                    &sized_output.trace,
+                    &mut symbol_writer,
+                )
+                .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
             Ok(())
         })?;
@@ -104,10 +120,11 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
     _trace: &TraceOutput,
+    symbol_writer: &mut MachOSymbolTableWriter,
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            write_object::<A>(s, buffers, layout)?;
+            write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
         _ => {
@@ -147,6 +164,10 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid DYLD_CHAINED_FIXUPS command allocation"))?
             .0;
     write_dyld_chained_fixups_command::<A>(layout, chained_fixups_command);
+
+    let (symtab_command, _) = from_bytes_mut(buffers.get_mut(part_id::SYMTAB_COMMAND))
+        .map_err(|_| error!("Invalid SYMTAB_COMMAND allocation"))?;
+    write_symtab_command::<A>(layout, symtab_command);
 
     let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
     chained_fixup_table.fill(0);
@@ -371,6 +392,7 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
     object: &ObjectLayout<'data, MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'data>,
+    symbol_writer: &mut MachOSymbolTableWriter,
 ) -> Result {
     verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
 
@@ -384,6 +406,8 @@ fn write_object<'data, A: Arch<Platform = MachO>>(
             _ => (),
         }
     }
+
+    write_symbols(object, buffers, layout, symbol_writer)?;
 
     Ok(())
 }
@@ -577,6 +601,23 @@ fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(
         .set(LE, chained_fixup_table.file_size as u32);
 }
 
+fn write_symtab_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut SymtabCommand,
+) {
+    let symtab = layout.section_layouts.get(output_section_id::SYMTAB_GLOBAL);
+    let strtab = layout.section_layouts.get(output_section_id::STRTAB);
+
+    command.cmd.set(LE, LC_SYMTAB);
+    command.cmdsize.set(LE, size_of::<SymtabCommand>() as u32);
+    command.symoff.set(LE, symtab.file_offset as u32);
+    command
+        .nsyms
+        .set(LE, (symtab.file_size / size_of::<SymtabEntry>()) as u32);
+    command.stroff.set(LE, strtab.file_offset as u32);
+    command.strsize.set(LE, strtab.file_size as u32);
+}
+
 fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     header: &mut ChainedFixupsHeader,
     starts_in_image: &mut [U32<Endianness>],
@@ -611,4 +652,134 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     starts_in_image[1..].fill(U32::new(LE, 0));
 
     Ok(())
+}
+
+struct MachOSymbolTableWriter {
+    next_strtab_offset: u32,
+}
+
+impl MachOSymbolTableWriter {
+    fn write_str(&mut self, name: &[u8], buffers: &mut OutputSectionPartMap<&mut [u8]>) -> u32 {
+        let len_with_terminator = name.len() + 1;
+        let offset = self.next_strtab_offset;
+        let out = buffers
+            .get_mut(part_id::STRTAB)
+            .split_off_mut(..len_with_terminator)
+            .unwrap();
+        out[..name.len()].copy_from_slice(name);
+        out[name.len()] = 0;
+        self.next_strtab_offset += len_with_terminator as u32;
+        offset
+    }
+
+    fn write_entry<'out>(
+        &mut self,
+        name: &[u8],
+        buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+    ) -> Result<&'out mut SymtabEntry> {
+        let string_offset = self.write_str(name, buffers);
+        let entry_bytes = buffers
+            .get_mut(part_id::SYMTAB_GLOBAL)
+            .split_off_mut(..size_of::<SymtabEntry>())
+            .unwrap();
+        let entry: &mut SymtabEntry = from_bytes_mut(entry_bytes)
+            .map_err(|_| error!("Invalid SYMTAB_GLOBAL entry allocation"))?
+            .0;
+        entry.n_strx.set(LE, string_offset);
+        Ok(entry)
+    }
+}
+
+fn write_symbols<'data>(
+    object: &ObjectLayout<'data, MachO>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &MachOLayout<'data>,
+    symbol_writer: &mut MachOSymbolTableWriter,
+) -> Result {
+    for ((sym_index, sym), flags) in object
+        .object
+        .enumerate_symbols()
+        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
+    {
+        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
+        let Some(info) = SymbolCopyInfo::new(
+            object.object,
+            sym_index,
+            sym,
+            symbol_id,
+            &layout.symbol_db,
+            flags.get(),
+            &object.sections,
+        ) else {
+            continue;
+        };
+
+        let mut out = *sym;
+        if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+            let section_id = match &object.sections[section_index.0] {
+                SectionSlot::Loaded(_) => object
+                    .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                    .output_section_id(),
+                _ => bail!(
+                    "Tried to copy a symbol in a section we didn't load. {}",
+                    layout.symbol_debug(symbol_id)
+                ),
+            };
+            let primary_id = layout.output_sections.primary_output_section(section_id);
+            out.n_type = (out.n_type & !object::macho::N_TYPE) | N_SECT;
+            out.n_sect = macho_section_index(layout, primary_id).with_context(|| {
+                format!(
+                    "No Mach-O section index for {} while writing {}",
+                    primary_id,
+                    layout.symbol_debug(symbol_id)
+                )
+            })?;
+        } else if sym.is_absolute() {
+            out.n_type = (out.n_type & !object::macho::N_TYPE) | N_ABS;
+            out.n_sect = 0;
+        } else {
+            bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
+        }
+
+        if let Some(res) = layout.local_symbol_resolution(symbol_id) {
+            out.n_value.set(LE, res.value_for_symbol_table());
+        }
+
+        let entry = symbol_writer.write_entry(info.name, buffers)?;
+        let string_offset = entry.n_strx.get(LE);
+        *entry = out;
+        entry.n_strx.set(LE, string_offset);
+    }
+
+    Ok(())
+}
+
+fn macho_section_index(
+    layout: &MachOLayout<'_>,
+    section_id: output_section_id::OutputSectionId,
+) -> Option<u8> {
+    let mut next = 1u8;
+    let mut in_section_segment = false;
+    for event in &layout.output_order {
+        match event {
+            output_section_id::OrderEvent::SegmentStart(segment_id) => {
+                let segment_type = layout.program_segments.segment_def(segment_id).segment_type;
+                in_section_segment = matches!(
+                    segment_type,
+                    SegmentType::TextSections | SegmentType::DataSections
+                );
+            }
+            output_section_id::OrderEvent::SegmentEnd(_) => {
+                in_section_segment = false;
+            }
+            output_section_id::OrderEvent::Section(current) if in_section_segment => {
+                if current == section_id {
+                    return Some(next);
+                }
+                next = next.checked_add(1)?;
+            }
+            _ => {}
+        }
+    }
+    None
 }

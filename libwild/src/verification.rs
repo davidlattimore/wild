@@ -119,6 +119,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::ENTRY_POINT,
         part_id::DYLD_CHAINED_FIXUPS,
         part_id::CHAINED_FIXUP_TABLE,
+        part_id::SYMTAB_COMMAND,
     ];
 
     for part_id in IGNORED {
