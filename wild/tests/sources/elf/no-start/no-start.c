@@ -1,5 +1,6 @@
 //#AbstractConfig:default
 //#Object:runtime.c
+//#ExpectWarning:cannot find entry symbol
 
 //#Config:no-gc:default
 //#LinkArgs:-z now --no-gc-sections

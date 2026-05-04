@@ -96,6 +96,8 @@
 //! ExpectWarning:{message regex} Verifies that the linker emits a warning matching the specified
 //! regex. Warning must be written to stderr. May be specified multiple times - all must match.
 //!
+//! ExpectWarningWild:{message regex} As for ExpectWarning, but only checks Wild's warning output.
+//!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
@@ -243,6 +245,7 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -810,6 +813,7 @@ enum DriverMode {
 #[derive(Debug, Clone)]
 struct ErrorMatcher {
     regex: regex::Regex,
+    wild_only: bool,
 }
 
 fn get_glibc_version() -> Option<Vec<u32>> {
@@ -1525,6 +1529,11 @@ fn process_directive(
         }
         "ExpectWarning" => {
             config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
+        }
+        "ExpectWarningWild" => {
+            config
+                .expect_stderr
+                .push(ErrorMatcher::wild_only(arg.trim())?);
         }
         "SecEquiv" => config.section_equiv.push(
             arg.trim()
@@ -3021,9 +3030,11 @@ impl LinkCommand {
             let get_args = || std::iter::once("wild").chain(args.iter().copied());
             let mut parsed_args = libwild::Args::new(get_args)?;
             parsed_args.set_version("integration-test");
-            // Tests that are checking for warnings use a subprocess to capture output. For now, we
-            // suppress warnings for tests that use libwild.
-            parsed_args.on_warning(Box::new(|_| {}));
+            let warnings = Arc::new(Mutex::new(String::new()));
+            parsed_args.on_warning({
+                let warnings = warnings.clone();
+                Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
+            });
             parsed_args.parse(get_args)?;
 
             // This call is expected to error for all but the first call.
@@ -3033,6 +3044,9 @@ impl LinkCommand {
             linker
                 .run(&parsed_args, &thread_pool)
                 .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
+
+            let warnings = warnings.lock().unwrap();
+            self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
 
             return Ok(());
         }
@@ -3212,6 +3226,10 @@ impl LinkCommand {
         stderr: &str,
     ) -> Result {
         for expected_error in expectations {
+            if expected_error.wild_only && !self.linker.is_wild() {
+                continue;
+            }
+
             if !expected_error.matches(output) {
                 eprintln!("-- stdout --\n{stdout}\n-- stderr --\n{stderr}\n-- end --");
                 bail!(
@@ -3219,6 +3237,10 @@ impl LinkCommand {
                          Command:\n{self}"
                 );
             }
+        }
+
+        if self.linker.is_wild() && expectations.is_empty() && !output.is_empty() {
+            bail!("Unexpected output on {output_name}:\n{output}");
         }
 
         Ok(())
@@ -4248,11 +4270,21 @@ impl LinkerInvocationMode {
 impl ErrorMatcher {
     fn new(pattern: &str) -> Result<Self> {
         let regex = regex::Regex::new(pattern)?;
-        Ok(Self { regex })
+        Ok(Self {
+            regex,
+            wild_only: false,
+        })
     }
 
     fn matches(&self, stderr: &str) -> bool {
         self.regex.is_match(stderr)
+    }
+
+    fn wild_only(pattern: &str) -> Result<Self> {
+        Ok(Self {
+            wild_only: true,
+            ..Self::new(pattern)?
+        })
     }
 }
 

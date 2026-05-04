@@ -29,6 +29,7 @@
 
 //#Config:warn-unresolved-symbols:default
 //#LinkArgs:--warn-unresolved-symbols
+//#ExpectWarningWild:Undefined symbol foo
 
 //#Config:error-unresolved-symbols:default
 //#LinkArgs:--error-unresolved-symbols

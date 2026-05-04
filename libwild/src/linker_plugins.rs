@@ -1016,7 +1016,7 @@ extern "C" fn wild_handle_plugin_message(level: libc::c_int, message: *const lib
 
     let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
 
-    println!("Linker plugin {level}: {text}");
+    eprintln!("Linker plugin {level}: {text}");
 
     if level == MessageLevel::Error || level == MessageLevel::Fatal {
         ERROR_MESSAGE.replace(Some(text.into_owned()));
