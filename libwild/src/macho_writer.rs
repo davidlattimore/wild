@@ -679,13 +679,14 @@ impl MachOSymbolTableWriter {
         name: &[u8],
         section: u8,
         symbol_type: u8,
+        desc: u16,
         value: u64,
     ) -> Result {
         let entry = self.write_entry(name, buffers)?;
         entry.n_sect = section;
         entry.n_type = symbol_type;
         entry.n_value.set(LE, value);
-        entry.n_desc.set(LE, 0);
+        entry.n_desc.set(LE, desc);
 
         Ok(())
     }
@@ -733,7 +734,7 @@ fn write_symbols<'data>(
         };
 
         let mut value = 0;
-        let (section, symbol_type) =
+        let (section, symbol_type, desc) =
             if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
                 let section_id = match &object.sections[section_index.0] {
                     SectionSlot::Loaded(_) => object
@@ -753,9 +754,11 @@ fn write_symbols<'data>(
                         layout.symbol_debug(symbol_id)
                     )
                 })?;
-                (n_sect, n_type)
+                let n_desc = sym.n_desc.get(LE);
+                (n_sect, n_type, n_desc)
             } else if sym.is_absolute() {
-                ((sym.n_type & !object::macho::N_TYPE) | N_ABS, 0)
+                let n_desc = sym.n_desc.get(LE);
+                (0, (sym.n_type & !object::macho::N_TYPE) | N_ABS, n_desc)
             } else {
                 bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };
@@ -764,7 +767,7 @@ fn write_symbols<'data>(
             value = res.value_for_symbol_table();
         }
 
-        symbol_writer.define_symbol(buffers, info.name, section, symbol_type, value)?;
+        symbol_writer.define_symbol(buffers, info.name, section, symbol_type, desc, value)?;
     }
 
     Ok(())
