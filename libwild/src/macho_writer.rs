@@ -188,6 +188,9 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
     write_chained_fixup_table::<A>(chained_fixups_header, starts_in_image)?;
 
+    // Fill up one extra character as n_strx == 0 is treated as unnamed.
+    buffers.get_mut(part_id::STRTAB).fill(0);
+
     Ok(())
 }
 

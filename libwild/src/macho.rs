@@ -1293,6 +1293,8 @@ impl platform::Platform for MachO {
         common: &mut crate::layout::CommonGroupState<Self>,
         symbol_db: &crate::symbol_db::SymbolDb<Self>,
     ) {
+        // Allocate one extra character as n_strx == 0 is treated as unnamed.
+        common.allocate(part_id::STRTAB, 1);
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
     }
 
