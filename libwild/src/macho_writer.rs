@@ -754,19 +754,26 @@ fn write_symbols<'data>(
     Ok(())
 }
 
+// TODO: This is inefficient; simplify it once load commands use a table allocator instead of
+// being modeled as a section.
 fn macho_section_index(
     layout: &MachOLayout<'_>,
     section_id: output_section_id::OutputSectionId,
-) -> Option<u8> {
-    let mut next = 1u8;
+) -> Result<u8> {
+    // The section index is one-based.
+    let mut section_idx = 1u8;
     let mut in_section_segment = false;
     for event in &layout.output_order {
         match event {
             output_section_id::OrderEvent::SegmentStart(segment_id) => {
                 let segment_type = layout.program_segments.segment_def(segment_id).segment_type;
+                // TODO: Right now, the various load commands are mapped as "sections", so we can't
+                // just take the mapped index of the output "section".
                 in_section_segment = matches!(
                     segment_type,
-                    SegmentType::TextSections | SegmentType::DataSections
+                    SegmentType::TextSections
+                        | SegmentType::DataSections
+                        | SegmentType::DataConstSections
                 );
             }
             output_section_id::OrderEvent::SegmentEnd(_) => {
@@ -774,12 +781,15 @@ fn macho_section_index(
             }
             output_section_id::OrderEvent::Section(current) if in_section_segment => {
                 if current == section_id {
-                    return Some(next);
+                    return Ok(section_idx);
                 }
-                next = next.checked_add(1)?;
+                section_idx = section_idx
+                    .checked_add(1)
+                    .ok_or(error!("Section index out of range (u8)"))?;
             }
             _ => {}
         }
     }
-    None
+
+    bail!("cannot find the output section")
 }
