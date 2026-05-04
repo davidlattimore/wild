@@ -1275,8 +1275,7 @@ impl platform::Platform for MachO {
         }
         let entry_size = size_of::<SymtabEntry>() as u64;
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
-        // n_strx == 0 is treated as unnamed, so we need to start from the index 1.
-        common.allocate(part_id::STRTAB, (strings_size + 1) as u64);
+        common.allocate(part_id::STRTAB, strings_size as u64);
 
         Ok(())
     }
