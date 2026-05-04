@@ -257,9 +257,6 @@ pub(crate) trait Platform:
     /// For platforms that don't support symbol versioning, this can just be the unit type.
     type VerneedTable<'data>: VerneedTable<'data>;
 
-    /// Returns whether a symbol should be omitted from the output symtab by default.
-    fn is_default_strippable_symbol(sym: &Self::SymtabEntry, name: &[u8]) -> bool;
-
     /// Invoke the linker for requested architecture.
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
@@ -972,6 +969,9 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
     fn size(&self) -> u64;
 
     fn has_name(&self) -> bool;
+
+    /// Returns whether this symbol should be omitted from the output symtab by default.
+    fn is_default_strippable(&self, name: &[u8]) -> bool;
 
     fn debug_string(&self) -> String;
 

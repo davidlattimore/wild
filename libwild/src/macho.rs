@@ -586,6 +586,10 @@ impl platform::Symbol for SymtabEntry {
         self.n_strx.get(LE) != 0
     }
 
+    fn is_default_strippable(&self, name: &[u8]) -> bool {
+        self.is_local() && name.starts_with(b"ltmp")
+    }
+
     fn debug_string(&self) -> String {
         // TODO
         String::new()
@@ -901,10 +905,6 @@ impl platform::Platform for MachO {
     type RawSymbolName<'data> = RawSymbolName<'data>;
     type VersionNames<'data> = ();
     type VerneedTable<'data> = VerneedTable<'data>;
-
-    fn is_default_strippable_symbol(sym: &Self::SymtabEntry, name: &[u8]) -> bool {
-        sym.is_local() && name.starts_with(b"ltmp")
-    }
 
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,

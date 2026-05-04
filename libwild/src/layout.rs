@@ -4231,8 +4231,7 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (!symbol_db.args.should_output_partial_object()
-                && P::is_default_strippable_symbol(sym, name))
+            || (!symbol_db.args.should_output_partial_object() && sym.is_default_strippable(name))
         {
             return None;
         }

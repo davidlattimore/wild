@@ -333,11 +333,6 @@ impl platform::Platform for Elf {
     type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = SymtabShndxEntry;
 
-    fn is_default_strippable_symbol(sym: &Self::SymtabEntry, name: &[u8]) -> bool {
-        (sym.is_local() && name.starts_with(b".L"))
-            || crate::symbol_db::is_mapping_symbol_name(name)
-    }
-
     fn link_for_arch<'data>(
         linker: &'data crate::Linker,
         args: &'data Self::Args,
@@ -2914,6 +2909,11 @@ impl platform::Symbol for SymtabEntry {
 
     fn has_name(&self) -> bool {
         object::read::elf::Sym::st_name(self, LittleEndian) != 0
+    }
+
+    fn is_default_strippable(&self, name: &[u8]) -> bool {
+        (self.is_local() && name.starts_with(b".L"))
+            || crate::symbol_db::is_mapping_symbol_name(name)
     }
 
     fn debug_string(&self) -> String {
