@@ -718,9 +718,16 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
             modifiers: input_ref.file.modifiers,
         };
 
-        let object = ParsedInputObject::new(&input_bytes, self.args);
+        let object = InputRecord::Object(ParsedInputObject::new(&input_bytes, self.args));
 
-        Ok(InputRecord::Object(object))
+        if object.is_dynamic_object() && !input_ref.file.modifiers.allow_shared {
+            bail!(
+                "Attempted static link of dynamic object {}",
+                input_ref.file.filename.display()
+            );
+        }
+
+        Ok(object)
     }
 }
 
