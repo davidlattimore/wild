@@ -1,0 +1,40 @@
+name: Promote Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Tap
+        uses: actions/checkout@v6
+        with:
+          repository: wild-linker/homebrew-wild
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update Formula
+        run: |
+          VERSION=${{ github.event.release.tag_name }}
+
+          gh release download $VERSION -R ${{ github.repository }} \
+            -p "wild-linker-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            -p "wild-linker-$VERSION-aarch64-unknown-linux-gnu.tar.gz"
+
+          X86_SHA=$(shasum -a 256 "wild-linker-$VERSION-x86_64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+          ARM_SHA=$(shasum -a 256 "wild-linker-$VERSION-aarch64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+
+          echo "Updating Homebrew formula for $VERSION"
+          echo "x86_64 hash: $X86_SHA"
+          echo "aarch64 hash: $ARM_SHA"
+
+          VERSION=$VERSION X86_SHA=$X86_SHA ARM_SHA=$ARM_SHA ./update.sh
+
+          git config user.name "Wild Release Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/wild.rb
+          git commit -m "Release $VERSION"
+          git push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
