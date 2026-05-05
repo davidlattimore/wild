@@ -32,6 +32,8 @@ use std::path::PathBuf;
 
 pub mod elf;
 pub mod macho;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
 use crate::error::Warning;
 use crate::platform;
@@ -132,6 +134,8 @@ impl Args {
         let mut args = match platform {
             PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
             PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
+            #[cfg(feature = "wasm")]
+            PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
         };
 
         // Store whether we got a flavor arg to make parsing simpler.
@@ -162,6 +166,8 @@ impl Args {
         match self {
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
+            #[cfg(feature = "wasm")]
+            Args::Wasm(args) => args.parse(input),
         }
     }
 
@@ -183,6 +189,8 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &elf_args.common,
             Args::MachO(macho_args) => &macho_args.common,
+            #[cfg(feature = "wasm")]
+            Args::Wasm(wasm_args) => &wasm_args.common,
         }
     }
 
@@ -190,6 +198,8 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
+            #[cfg(feature = "wasm")]
+            Args::Wasm(wasm_args) => &mut wasm_args.common,
         }
     }
 }
@@ -197,6 +207,8 @@ impl Args {
 enum PlatformKind {
     Elf,
     MachO,
+    #[cfg(feature = "wasm")]
+    Wasm,
 }
 
 impl PlatformKind {
@@ -213,7 +225,12 @@ impl PlatformKind {
             "gnu" | "ld" => Ok(PlatformKind::Elf),
             "darwin" | "ld64" => Ok(PlatformKind::MachO),
             "link" => bail!("Windows (link flavor) is not yet supported"),
-            "wasm" | "ld-wasm" => bail!("Wasm (link flavor) is not yet supported"),
+            #[cfg(feature = "wasm")]
+            "wasm" | "ld-wasm" => Ok(PlatformKind::Wasm),
+            #[cfg(not(feature = "wasm"))]
+            "wasm" | "ld-wasm" => {
+                bail!("Wasm (link flavor) requires the `wasm` feature to be enabled")
+            }
             _ => bail!(
                 "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
                 flavor
@@ -227,6 +244,8 @@ impl PlatformKind {
         match base_name {
             "ld" => Some(PlatformKind::Elf),
             "ld64" => Some(PlatformKind::MachO),
+            #[cfg(feature = "wasm")]
+            "ld-wasm" | "wasm-ld" => Some(PlatformKind::Wasm),
             _ => None,
         }
     }
@@ -478,6 +497,8 @@ pub struct ThreadPool {
 pub enum Args {
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
+    #[cfg(feature = "wasm")]
+    Wasm(wasm::WasmArgs),
 }
 
 impl std::fmt::Debug for Args {
@@ -485,6 +506,8 @@ impl std::fmt::Debug for Args {
         match self {
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
+            #[cfg(feature = "wasm")]
+            Args::Wasm(args) => args.fmt(f),
         }
     }
 }

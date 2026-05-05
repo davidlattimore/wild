@@ -214,6 +214,8 @@ impl Linker {
         match args {
             Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
             Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
+            #[cfg(feature = "wasm")]
+            Args::Wasm(_wasm_args) => todo!("wasm linking is not yet implemented"),
         }
     }
 

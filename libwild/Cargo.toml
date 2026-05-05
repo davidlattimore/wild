@@ -49,6 +49,7 @@ thread_local = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+wasmparser = { workspace = true, optional = true }
 winnow = { workspace = true }
 zerocopy = { workspace = true }
 zstd = { workspace = true }
@@ -75,6 +76,9 @@ perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]
 
 # Enable work-in-progress features
 wip = []
+
+# Experimental support for linking WebAssembly. Currently incomplete.
+wasm = ["dep:wasmparser"]
 
 [lints]
 workspace = true

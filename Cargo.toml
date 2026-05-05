@@ -28,7 +28,7 @@ edition = "2024"
 anyhow = "1.0.97"
 ar = "0.9.0"
 atomic-take = "1.0.0"
-bitflags = "2.4.0"
+bitflags = "2.4.1"
 blake3 = { version = "1.0.0", features = ["rayon"] }
 bumpalo-herd = "0.1.2"
 bytesize = "2.0.0"
@@ -50,7 +50,7 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
-indexmap = "2.11.4"
+indexmap = "2.14.0"
 indicatif = "0.18.3"
 itertools = "0.14.0"
 jobserver = "0.1.30"
@@ -101,6 +101,7 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
+wasmparser = "0.248.0"
 which = "8.0.0"
 winnow = { version = "1.0.0", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }

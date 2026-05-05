@@ -59,6 +59,8 @@ plugins = ["libwild/plugins"]
 
 perfetto = ["libwild/perfetto"]
 
+wasm = ["libwild/wasm"]
+
 # external tests
 external_tests = ["mold_tests"]
 mold_tests = []
