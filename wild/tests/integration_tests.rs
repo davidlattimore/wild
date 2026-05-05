@@ -283,80 +283,82 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
 
     let host_arch = get_host_architecture();
 
-    for platform in [PlatformKind::Elf, PlatformKind::MachO] {
-        let linkers = platform.available_linkers()?;
+    let Some(platform) = PlatformKind::host() else {
+        return Ok(());
+    };
 
-        let platform_name = platform.to_str();
+    let linkers = platform.available_linkers()?;
 
-        if filter.excludes(platform_name) {
+    let platform_name = platform.to_str();
+
+    if filter.excludes(platform_name) {
+        return Ok(());
+    }
+
+    let root = src_path(platform_name);
+    let dir = std::fs::read_dir(&root)
+        .with_context(|| format!("Failed to read directory {}", root.display()))?;
+
+    let is_nextest = std::env::var("NEXTEST").is_ok();
+
+    for entry in dir {
+        let entry = entry?;
+        let path = entry.path();
+        if path.ends_with("common") {
             continue;
         }
 
-        let root = src_path(platform_name);
-        let dir = std::fs::read_dir(&root)
-            .with_context(|| format!("Failed to read directory {}", root.display()))?;
+        let base_name = path
+            .file_name()
+            .context("Missing filename")?
+            .to_str()
+            .context("Non-UTF-8 path")?
+            .to_owned();
 
-        let is_nextest = std::env::var("NEXTEST").is_ok();
-
-        for entry in dir {
-            let entry = entry?;
-            let path = entry.path();
-            if path.ends_with("common") {
+        for &arch in platform.supported_architectures() {
+            let name_prefix = format!("{platform_name}/{arch}/{base_name}");
+            if filter.excludes(&name_prefix) {
                 continue;
             }
 
-            let base_name = path
-                .file_name()
-                .context("Missing filename")?
-                .to_str()
-                .context("Non-UTF-8 path")?
-                .to_owned();
+            let primary_source_file = identify_primary_source(&path, &base_name)?;
 
-            for &arch in platform.supported_architectures() {
-                let name_prefix = format!("{platform_name}/{arch}/{base_name}");
-                if filter.excludes(&name_prefix) {
+            let configs = parse_configs(
+                &primary_source_file,
+                &Config::new(
+                    base_name.clone(),
+                    platform,
+                    arch,
+                    path.clone(),
+                    &test_config,
+                    &linkers,
+                ),
+            )?;
+
+            let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+
+            for config in configs {
+                if config.should_skip(arch) {
                     continue;
                 }
 
-                let primary_source_file = identify_primary_source(&path, &base_name)?;
+                let full_name = format!("{name_prefix}/{}", config.config_name);
+                let test_config = test_config.clone();
+                let program_inputs = program_inputs.clone();
 
-                let configs = parse_configs(
-                    &primary_source_file,
-                    &Config::new(
-                        base_name.clone(),
-                        platform,
-                        arch,
-                        path.clone(),
-                        &test_config,
-                        &linkers,
-                    ),
-                )?;
-
-                let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
-
-                for config in configs {
-                    if config.should_skip(arch) {
-                        continue;
-                    }
-
-                    let full_name = format!("{name_prefix}/{}", config.config_name);
-                    let test_config = test_config.clone();
-                    let program_inputs = program_inputs.clone();
-
-                    // Nextest spawns a process for every test, so emitting a large number of tests
-                    // that we'll ignore at runtime is a bit wasteful. There are various different
-                    // criteria for ignoring tests, but the biggest one is that the architecture
-                    // isn't enabled. So we just filter for that and only when running under
-                    // nextest. For the normal test runner, it doesn't matter much.
-                    if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
-                        continue;
-                    }
-
-                    tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
-                        run_integration_test(arch, &program_inputs, config, &test_config)
-                            .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-                    }));
+                // Nextest spawns a process for every test, so emitting a large number of tests
+                // that we'll ignore at runtime is a bit wasteful. There are various different
+                // criteria for ignoring tests, but the biggest one is that the architecture
+                // isn't enabled. So we just filter for that and only when running under
+                // nextest. For the normal test runner, it doesn't matter much.
+                if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+                    continue;
                 }
+
+                tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
+                    run_integration_test(arch, &program_inputs, config, &test_config)
+                        .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+                }));
             }
         }
     }
@@ -1290,7 +1292,7 @@ impl Config {
             remove_sections: Vec::new(),
             compiler: platform.default_c_compiler().to_owned(),
             should_diff: platform.diff_supported(),
-            should_run: platform.can_execute_on_host(),
+            should_run: true,
             run_dyn_sym: None,
             should_error: false,
             expect_stderr: Default::default(),
@@ -2569,7 +2571,7 @@ fn add_cross_args(
         return;
     }
 
-    if !platform.is_host() || cross_arch.is_some() {
+    if cross_arch.is_some() {
         let arch = cross_arch.unwrap_or_else(get_host_architecture);
         let target = get_target(compiler_args)
             .cloned()
@@ -4585,11 +4587,6 @@ fn run_integration_test(
 
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
 
-    // For cross-platform tests (e.g., Mac binaries on Linux), link but don't execute
-    if !config.platform.can_execute_on_host() {
-        config.should_run = false;
-    }
-
     config.rustc_channel = test_config.rustc_channel;
 
     if !test_config.allow_rust_musl_target && config.requires_rust_musl {
@@ -4852,14 +4849,6 @@ impl PlatformKind {
             PlatformKind::Elf => "gnu",
             PlatformKind::MachO => "darwin",
         }
-    }
-
-    fn is_host(self) -> bool {
-        Some(self) == PlatformKind::host()
-    }
-
-    fn can_execute_on_host(self) -> bool {
-        self.is_host()
     }
 
     fn diff_supported(self) -> bool {
