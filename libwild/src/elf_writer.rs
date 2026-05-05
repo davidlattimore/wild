@@ -182,7 +182,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr {
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
@@ -214,7 +214,7 @@ fn write_gnu_build_id_note(
         BuildIdOption::None => return Ok(()),
     };
 
-    let mut buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let mut buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let e = LittleEndian;
     let (note_header, mut rest) =
         from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
@@ -243,7 +243,9 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     layout: &ElfLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let (mut section_buffers, mut padding) =
+        split_output_into_sections(layout, &mut sized_output.out);
+    padding.fill_zero();
 
     let sym_index_map = if layout.args().should_output_partial_object() {
         build_sym_index_map(layout)

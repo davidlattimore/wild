@@ -366,10 +366,25 @@ pub(crate) fn split_output_by_group<'layout, 'data, 'out, P: Platform>(
         .collect()
 }
 
+#[derive(Default)]
+pub(crate) struct PaddingSlices<'out> {
+    slices: Vec<&'out mut [u8]>,
+}
+
+impl PaddingSlices<'_> {
+    pub(crate) fn fill_zero(&mut self) {
+        verbose_timing_phase!("Fill padding bytes");
+
+        for slice in &mut self.slices {
+            slice.fill(0);
+        }
+    }
+}
+
 pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
     layout: &Layout<'data, P>,
     mut data: &'out mut [u8],
-) -> OutputSectionMap<&'out mut [u8]> {
+) -> (OutputSectionMap<&'out mut [u8]>, PaddingSlices<'out>) {
     verbose_timing_phase!("Split output by section");
 
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
@@ -381,6 +396,8 @@ pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
         });
     });
     section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
+
+    let mut padding_slices = PaddingSlices::default();
 
     // OutputSectionMap is ordered by section ID, which is not the same as output order. We
     // split the output file by output order, putting the relevant parts of the buffer into the
@@ -394,12 +411,13 @@ pub(crate) fn split_output_into_sections<'out, 'data, P: Platform>(
                 a.offset
             );
         };
-        let padding = data.split_off_mut(..padding_size).unwrap();
-        padding.fill(0);
+        padding_slices
+            .slices
+            .push(data.split_off_mut(..padding_size).unwrap());
         *section_data.get_mut(a.id) = data.split_off_mut(..a.size).unwrap();
         offset = a.offset + a.size;
     }
-    section_data
+    (section_data, padding_slices)
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.

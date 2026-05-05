@@ -80,7 +80,9 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let (mut section_buffers, mut padding) =
+        split_output_into_sections(layout, &mut sized_output.out);
+    padding.fill_zero();
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
