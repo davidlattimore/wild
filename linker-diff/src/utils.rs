@@ -53,6 +53,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn test_align_up() {
     // Some distributions don't enable the features in objdump required for disassembly of aarch64,
     // so we only check that we can disassemble if we're running on aarch64 or if test
