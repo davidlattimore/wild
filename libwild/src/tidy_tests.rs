@@ -6,11 +6,13 @@ use crate::error::Result;
 use std::env;
 use std::fs::read_dir;
 use std::path::Path;
-use std::process::Command;
-use std::process::Stdio;
 
 #[test]
+#[cfg(target_os = "linux")]
 fn check_sources_format() -> Result {
+    use std::process::Command;
+    use std::process::Stdio;
+
     if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
         return Ok(());
     }
