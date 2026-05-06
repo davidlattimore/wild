@@ -206,6 +206,8 @@
 //! offset-in-section=N: Type: Integer. Asserts the offset of the symbol within the section.
 //! Requires that section is also specified.
 //!
+//! alignment=N: Type: Integer. Asserts that the symbol's address is a multiple of N.
+//!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
 //!
 //! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
@@ -1193,6 +1195,8 @@ struct SymtabAssertions {
 
     #[serde(rename = "offset-in-section")]
     section_offset: Option<u64>,
+
+    alignment: Option<u64>,
 
     #[serde(rename = "address")]
     absolute_address: Option<u64>,
@@ -3933,6 +3937,17 @@ where
                      but it was {other:?}",
                     exp.name
                 ),
+            }
+        }
+
+        if let Some(expected_alignment) = exp.assertions.alignment {
+            let addr = sym.address();
+            if !addr.is_multiple_of(expected_alignment) {
+                bail!(
+                    "Expected symbol `{}` to have address aligned to {expected_alignment:#x}, \
+                     but its address was {addr:#x}",
+                    exp.name
+                );
             }
         }
 
