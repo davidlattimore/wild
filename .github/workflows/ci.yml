@@ -15,7 +15,7 @@ env:
 
 jobs:
   test-nightly:
-    name: Test (${{ contains(matrix.runs-on, 'arm') && 'AArch64' || 'x86_64'}}, ${{ matrix.container }}${{ matrix.test-qemu && ', QEMU' || ''}})
+    name: Test Linux (${{ contains(matrix.runs-on, 'arm') && 'AArch64' || 'x86_64'}}, ${{ matrix.container }}${{ matrix.test-qemu && ', QEMU' || ''}})
 
     strategy:
       matrix:
@@ -85,9 +85,10 @@ jobs:
       - run: cargo test --profile ci --features plugins
         if: ${{ matrix.test-plugins }}
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
-  windows-build:
-    name: Windows build
-    runs-on: windows-latest
+
+  riscv-build:
+    name: Build Linux (RISC-V)
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
@@ -95,11 +96,62 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
+        with:
+          targets: riscv64gc-unknown-linux-gnu
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --profile ci --workspace --no-default-features
+      - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+      - run: cp -f .cargo/config.toml.cross-riscv .cargo/config.toml
+      - run: cargo build --target riscv64gc-unknown-linux-gnu
 
-  macos-build:
-    name: macOS build
+  loongarch64-build:
+    name: Build Linux (LoongArch64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ubuntu:25.10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: loongarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: cp -f .cargo/config.toml.cross-loongarch64 .cargo/config.toml
+      - run: cargo build --target loongarch64-unknown-linux-gnu
+
+  wasip1-build:
+    name: Build wasip1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: ubuntu:25.10
+    steps:
+      - name: Install xz-utils
+        run: apt-get update && apt-get install -y xz-utils
+      - name: Setup Wasmtime
+        uses: bytecodealliance/actions/wasmtime/setup@v1
+        with:
+          version: '43.0.0'
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target wasm32-wasip1
+      - run: cp -f .cargo/config.toml.cross-wasm32p1 .cargo/config.toml
+      # -p libwild prevents integration tests from running. they depend on
+      # spawning processes, which isn't supported on wasi.
+      - run: cargo test --profile ci -p libwild --target wasm32-wasip1
+
+  macho-build:
+    name: Test Mach-O (AArch64)
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -111,6 +163,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace
+
+  windows-build:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --profile ci --workspace --no-default-features
 
   minimal-versions:
     runs-on: ubuntu-24.04
@@ -176,70 +241,6 @@ jobs:
       - run: go install github.com/google/yamlfmt/cmd/yamlfmt@v0.21.0
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: yamlfmt -lint .
-
-  riscv-build:
-    name: RISC-V build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-        with:
-          targets: riscv64gc-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
-      - run: cp -f .cargo/config.toml.cross-riscv .cargo/config.toml
-      - run: cargo build --target riscv64gc-unknown-linux-gnu
-
-  loongarch64-build:
-    name: LoongArch64 build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    container:
-      image: ubuntu:25.10
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - run: apt-get update && apt-get install -y build-essential lld gcc gcc-loongarch64-linux-gnu g++-loongarch64-linux-gnu curl
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-        with:
-          targets: loongarch64-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
-      - run: cp -f .cargo/config.toml.cross-loongarch64 .cargo/config.toml
-      - run: cargo build --target loongarch64-unknown-linux-gnu
-
-  wasip1-build:
-    name: wasip1 build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    container:
-      image: ubuntu:25.10
-    steps:
-      - name: Install xz-utils
-        run: apt-get update && apt-get install -y xz-utils
-      - name: Setup Wasmtime
-        uses: bytecodealliance/actions/wasmtime/setup@v1
-        with:
-          version: '43.0.0'
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - run: apt-get install --update -y build-essential gcc gcc-multilib clang curl
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
-        with:
-          targets: wasm32-wasip1
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-wasip1
-      - run: cp -f .cargo/config.toml.cross-wasm32p1 .cargo/config.toml
-      # -p libwild prevents integration tests from running. they depend on
-      # spawning processes, which isn't supported on wasi.
-      - run: cargo test --profile ci -p libwild --target wasm32-wasip1
 
   spelling:
     name: Spell Check with Typos
