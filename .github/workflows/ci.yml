@@ -110,6 +110,7 @@ jobs:
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --profile ci --workspace --no-default-features
+      - run: cargo test --profile ci --workspace
 
   minimal-versions:
     runs-on: ubuntu-24.04
