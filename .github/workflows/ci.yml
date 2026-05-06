@@ -65,7 +65,7 @@ jobs:
         if: ${{ matrix.test-qemu }}
       - run: zypper refresh && zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: apk add build-base lld clang clang-extra-tools bash curl
+      - run: apk add build-base lld clang clang-extra-tools bash curl tar
         if: ${{ contains(matrix.container, 'alpine') }}
       - uses: actions/checkout@v6
         with:
