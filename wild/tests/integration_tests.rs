@@ -284,6 +284,11 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
     let host_arch = get_host_architecture();
 
     for platform in [PlatformKind::Elf, PlatformKind::MachO] {
+        // Right now, the Mach-O provided Clang and the ld linker do not support the ELF format.
+        if platform == PlatformKind::Elf && cfg!(target_os = "macos") {
+            continue;
+        }
+
         let linkers = platform.available_linkers()?;
 
         let platform_name = platform.to_str();
