@@ -537,7 +537,7 @@ impl<'data> LtoInput<'data> {
     }
 
     pub(crate) fn is_optional(&self) -> bool {
-        self.input_ref.has_archive_semantics()
+        self.input_ref.has_archive_semantics() && !self.input_ref.file.modifiers.whole_archive
     }
 }
 
