@@ -4406,7 +4406,7 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
             // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         crate::grouping::SequencedInput::LtoInput(_) => {
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }

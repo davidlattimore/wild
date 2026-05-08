@@ -4712,7 +4712,7 @@ fn verify_linker_plugin_requirements(
     cross_arch: Option<Architecture>,
     src: &Path,
 ) -> Result {
-    if !cfg!(feature = "plugins") {
+    if !cfg!(all(feature = "plugins", unix)) {
         bail!("The `plugins` feature is disabled");
     }
 

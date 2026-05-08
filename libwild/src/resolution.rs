@@ -236,7 +236,7 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
         resolver.resolved_groups[file_id.group()].files[file_id.file()] = obj;
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     for obj in outputs.loaded_lto_objects {
         let file_id = obj.file_id;
         resolver.resolved_groups[file_id.group()].files[file_id.file()] =
@@ -343,7 +343,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                 })],
             }
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => ResolvedGroup {
             files: lto_objects
                 .iter()
@@ -562,7 +562,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
             // Push won't fail because we allocated enough space for all the objects.
             outputs.loaded.push(resolved_object).unwrap();
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => {
             let obj = &lto_objects[file_id.file()];
             // Push won't fail because we allocated enough space for all the LTO objects.
@@ -622,7 +622,7 @@ pub(crate) enum ResolvedFile<'data, P: Platform> {
     Dynamic(ResolvedDynamic<'data, P>),
     LinkerScript(ResolvedLinkerScript<'data, P>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data, P>),
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     LtoInput(ResolvedLtoInput),
 }
 
@@ -740,7 +740,7 @@ pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
-#[cfg(feature = "plugins")]
+#[cfg(all(feature = "plugins", unix))]
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLtoInput {
     pub(crate) file_id: FileId,
@@ -776,7 +776,7 @@ struct Outputs<'data, P: Platform> {
     /// Where we put objects once we've loaded them.
     loaded: ArrayQueue<ResolvedFile<'data, P>>,
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     loaded_lto_objects: ArrayQueue<ResolvedLtoInput>,
 
     /// Any errors that we encountered.
@@ -790,7 +790,7 @@ impl<'data, P: Platform> Outputs<'data, P> {
     fn new(num_regular_objects: usize, num_lto_objects: usize) -> Self {
         Self {
             loaded: ArrayQueue::new(num_regular_objects.max(1)),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             loaded_lto_objects: ArrayQueue::new(num_lto_objects.max(1)),
             errors: ArrayQueue::new(1),
             undefined_symbols: SegQueue::new(),
@@ -830,7 +830,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
         }
         Group::LinkerScripts(_) => {}
         Group::SyntheticSymbols(_) => {}
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(objects) => {
             let obj = &objects[file_id.file()];
             resources.handle_result(
@@ -1498,7 +1498,7 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
             ResolvedFile::Dynamic(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(_) => std::fmt::Display::fmt("<lto object>", f),
         }
     }
@@ -1526,7 +1526,7 @@ impl<'data, P: Platform> ResolvedFile<'data, P> {
             ResolvedFile::Dynamic(s) => s.common.symbol_id_range,
             ResolvedFile::LinkerScript(s) => s.symbol_id_range,
             ResolvedFile::SyntheticSymbols(s) => s.symbol_id_range(),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(s) => s.symbol_id_range,
         }
     }

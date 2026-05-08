@@ -99,7 +99,7 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader) -> Option<bool> 
     // If we don't have plugin support, then we skip checking if the file contains GCC IR. If it is,
     // then we'll figure that out later on and report an error. We do this because this code has a
     // measurable performance impact.
-    if !cfg!(feature = "plugins") {
+    if !cfg!(all(feature = "plugins", unix)) {
         return Some(false);
     }
     let e = LittleEndian;

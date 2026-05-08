@@ -1728,7 +1728,7 @@ impl platform::Platform for Elf {
 
     fn verify_allowed_input_section_name(name: &[u8]) -> Result {
         if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-            if cfg!(feature = "plugins") {
+            if cfg!(all(feature = "plugins", unix)) {
                 bail!("Found GCC LTO input that we didn't supply to linker plugin");
             }
             return Err(crate::symbol_db::linker_plugin_disabled_error());

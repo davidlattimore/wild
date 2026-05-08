@@ -28,7 +28,10 @@ pub(crate) mod input_data;
 pub(crate) mod input_section_id;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
-#[cfg_attr(not(feature = "plugins"), path = "linker_plugins_disabled.rs")]
+#[cfg_attr(
+    not(all(feature = "plugins", unix)),
+    path = "linker_plugins_disabled.rs"
+)]
 mod linker_plugins;
 pub(crate) mod linker_script;
 pub(crate) mod macho;
