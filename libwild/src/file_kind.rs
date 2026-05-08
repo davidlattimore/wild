@@ -18,6 +18,7 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    FatMachOObject,
     WasmObject,
     Archive,
     ThinArchive,
@@ -77,6 +78,10 @@ impl FileKind {
             // Wasm binary magic number is `\0asm` followed by a 4-byte version.
             ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
             Ok(FileKind::WasmObject)
+        } else if bytes.starts_with(macho::FAT_MAGIC.as_bytes())
+            || bytes.starts_with(macho::FAT_CIGAM.as_bytes())
+        {
+            Ok(FileKind::FatMachOObject)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
@@ -125,6 +130,7 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "MachO object",
             FileKind::WasmObject => "Wasm object",
+            FileKind::FatMachOObject => "Fat MachO",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",
