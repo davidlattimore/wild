@@ -1241,11 +1241,30 @@ impl<'data> Store<'data> {
                 let Store::Loaded(loaded) = self else {
                     unreachable!();
                 };
+
+                // When the linker plugin is active, we keep LTO inputs open since the plugin API
+                // needs them. This can cause us to hit our file descriptor limit. To avoid this, we
+                // attempt to increase the limit. Increasing the file limit is best-effort. If we
+                // can't increase the file limit for some reason, continue without warning and hope
+                // we don't need too many open files.
+                let _ = increase_file_limit();
+
                 Ok(*loaded)
             }
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
         }
     }
+}
+
+/// Increase the soft file limit to whatever the hard limit is set to.
+fn increase_file_limit() -> Result {
+    use nix::sys::resource::Resource::RLIMIT_NOFILE;
+
+    let (_, hard_limit) = nix::sys::resource::getrlimit(RLIMIT_NOFILE)?;
+
+    nix::sys::resource::setrlimit(RLIMIT_NOFILE, hard_limit, hard_limit)?;
+
+    Ok(())
 }
 
 pub(crate) fn resolve_lto_symbols<'data, 'scope>(

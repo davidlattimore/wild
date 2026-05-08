@@ -36,6 +36,7 @@ libc = { workspace = true }
 libloading = { workspace = true, optional = true }
 memchr = { workspace = true }
 memmap2 = { workspace = true }
+nix = { workspace = true, optional = true }
 object = { workspace = true }
 perfetto-recorder = { workspace = true }
 rayon = { workspace = true }
@@ -67,7 +68,7 @@ tempfile = { workspace = true }
 fork = []
 
 # Support for linker-plugins.
-plugins = ["libloading"]
+plugins = ["libloading", "nix"]
 
 # Enable support for emitting a perfetto trace.
 perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]

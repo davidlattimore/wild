@@ -61,6 +61,7 @@ libtest-mimic = "0.8.2"
 memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
+nix = { version = "0.30.1", default-features = false, features = ["resource"] }
 object = { version = "0.39.1", default-features = false, features = [
     # Note that compression is only actually needed for linker-diff
     "compression",

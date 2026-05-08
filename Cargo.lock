@@ -871,6 +871,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
+ "nix",
  "object 0.39.1",
  "perf-event",
  "perfetto-recorder",

@@ -3296,7 +3296,7 @@ impl LinkCommand {
         }
 
         if self.linker.is_wild() && expectations.is_empty() && !output.is_empty() {
-            bail!("Unexpected output on {output_name}:\n{output}");
+            bail!("Unexpected output on {output_name}:\n{output}\nCommand:\n{self}");
         }
 
         Ok(())
