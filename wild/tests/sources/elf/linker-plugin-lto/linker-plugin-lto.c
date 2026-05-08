@@ -22,6 +22,15 @@
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section.eh_frame.type
 
+//#Config:clang-thin:default
+//#Compiler:clang
+//#CompArgs:-flto=thin
+//#LinkerDriver:clang
+//#LinkArgs:-Wl,-znow -flto=thin -nostdlib -O0
+//#Object:runtime.c
+//#Object:linker-plugin-lto-2.c
+//#DiffIgnore:section.eh_frame.type
+
 //#Config:clang-link-gcc:error
 //#Compiler:clang
 //#CompArgs:-flto

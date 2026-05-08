@@ -124,6 +124,10 @@ struct FileHandle<'data> {
 
     /// This isn't known initially because we allocate file IDs later.
     file_id: AtomicCell<Option<FileId>>,
+
+    fd: RawFd,
+    offset: u64,
+    name: &'data CStr,
 }
 
 #[derive(Default)]
@@ -249,14 +253,22 @@ impl<'data> LinkerPlugin<'data> {
                 wrap_symbols: self.wrap_symbols,
             };
 
+            let name = CString::new(input_ref.file.filename.as_os_str().as_encoded_bytes())?;
+            let name = CStr::from_bytes_with_nul(
+                self.herd.get().alloc_slice_copy(name.as_bytes_with_nul()),
+            )
+            .unwrap();
+
             let handle = FileHandle {
                 data,
+                name,
+                fd,
+                offset,
                 file_id: AtomicCell::new(None),
             };
 
             let handle = self.herd.get().alloc(handle);
 
-            let name = CString::new(input_ref.file.filename.as_os_str().as_encoded_bytes())?;
             let file = LdPluginInputFile {
                 name: name.as_ptr(),
                 fd,
@@ -913,18 +925,26 @@ fn get_symbol_resolution<'data>(
     }
 }
 
-// We don't currently implement this. The LLVM plugin gives an error if we don't define it, but then
-// it doesn't appear to actually call it. Or maybe we just haven't found a test case that causes it
-// to be called.
-extern "C" fn get_input_file(
-    _handle: *const libc::c_void,
-    _file: *mut LdPluginInputFile,
-) -> Status {
-    Status::Err
+extern "C" fn get_input_file(handle: *const libc::c_void, file: *mut LdPluginInputFile) -> Status {
+    catch_panics(|| {
+        if handle.is_null() || file.is_null() {
+            return Status::Err;
+        }
+        let handle = unsafe { &*(handle as *const FileHandle) };
+        let file = unsafe { &mut *file };
+
+        file.fd = handle.fd;
+        file.offset = handle.offset as i64;
+        file.file_size = handle.data.len() as i64;
+        file.name = handle.name.as_ptr();
+
+        Status::Ok
+    })
 }
 
 extern "C" fn release_input_file(_handle: *const libc::c_void) -> Status {
-    Status::Err
+    // We don't allocate in `get_input_file`, so there's nothing to free here.
+    Status::Ok
 }
 
 extern "C" fn get_view(
