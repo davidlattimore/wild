@@ -139,17 +139,13 @@ The following is working with the caveat that there may be bugs:
 
 ### What isn't yet supported?
 
-Lots of stuff. Here are some of the larger things that aren't yet done, roughly sorted by current
-priority:
+Here are some of the larger things that aren't yet done, roughly sorted by current priority:
 
 * Incremental linking
-* Support for more architectures
-* Support for a wider range of linker flags
 * More complex linker scripts
-* Mac support
+* Mach-O support
 * Windows support
-* Linker plugin LTO (initial experimental support is behind `--features=plugins` but it doesn't yet
-  work very well).
+* Linker plugin LTO (initial support is behind `--features=plugins`).
 
 ### How can I verify that Wild was used to link a binary?
 
