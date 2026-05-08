@@ -327,15 +327,18 @@ impl CommonArgs {
                 }
                 tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
                 // Our parent "holds" one jobserver token, add it.
-                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+                NonZeroUsize::new(tokens.len() + 1).unwrap()
             } else {
                 std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
             }
         });
 
         // The pool might be already initialized, suppress the error intentionally.
-        if self.available_threads.get() <= 1 {
-            let _ = ThreadPoolBuilder::new().use_current_thread().build_global();
+        if self.available_threads.get() == 1 {
+            let _ = ThreadPoolBuilder::new()
+                .use_current_thread()
+                .num_threads(1)
+                .build_global();
         } else {
             let _ = ThreadPoolBuilder::new()
                 .num_threads(self.available_threads.get())
