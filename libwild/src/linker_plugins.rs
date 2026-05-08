@@ -145,6 +145,13 @@ impl<'data> LinkerPlugin<'data> {
             Some(path) => {
                 let wrap_symbols = WrapSymbols::new(&args.wrap, herd)?;
 
+                // When the linker plugin is active, we keep LTO inputs open since the plugin API
+                // needs them. This can cause us to hit our file descriptor limit. To avoid this, we
+                // attempt to increase the limit. Increasing the file limit is best-effort. If we
+                // can't increase the file limit for some reason, continue without warning and hope
+                // we don't need too many open files.
+                let _ = increase_file_limit();
+
                 Ok(Some(LinkerPlugin {
                     path: PathBuf::from(&path),
                     store: Store::Unloaded(LoadInfo { args, arena }),
@@ -1261,13 +1268,6 @@ impl<'data> Store<'data> {
                 let Store::Loaded(loaded) = self else {
                     unreachable!();
                 };
-
-                // When the linker plugin is active, we keep LTO inputs open since the plugin API
-                // needs them. This can cause us to hit our file descriptor limit. To avoid this, we
-                // attempt to increase the limit. Increasing the file limit is best-effort. If we
-                // can't increase the file limit for some reason, continue without warning and hope
-                // we don't need too many open files.
-                let _ = increase_file_limit();
 
                 Ok(*loaded)
             }
