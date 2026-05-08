@@ -142,6 +142,7 @@ The following is working with the caveat that there may be bugs:
 * Debug info
 * GNU jobserver support
 * Partial linker script support. See the [linker script support matrix](LINKER_SCRIPT_SUPPORT.md) for details.
+* Linker plugin LTO - [known issues](https://github.com/wild-linker/wild/issues?q=is%3Aissue%20state%3Aopen%20label%3ALTO)
 
 ### What isn't yet supported?
 
@@ -151,7 +152,6 @@ Here are some of the larger things that aren't yet done, roughly sorted by curre
 * More complex linker scripts
 * Mach-O support
 * Windows support
-* Linker plugin LTO (initial support is behind `--features=plugins`).
 
 ### How can I verify that Wild was used to link a binary?
 

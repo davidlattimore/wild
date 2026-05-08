@@ -92,7 +92,7 @@
 //#SkipLinker:ld
 //#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
 //#Archive:empty.c:-flto
-//#ExpectError:(Error from linker plugin: Invalid parallelism level: foo|Wild was compiled without linker-plugin support)
+//#ExpectError:Error from linker plugin: Invalid parallelism level: foo
 
 //#Config:plugin-not-found:error
 //#Compiler:clang

@@ -180,6 +180,18 @@ tests = [
   "z-defs.sh",                      # Different message formats
 ]
 
+[skipped_groups.lto]
+reason = "Failing LTO tests."
+tests = [
+  "lto-no-plugin.sh",       # We don't currently support LTO without an explicit plugin
+  "lto-gcc.sh",             # We don't currently support LTO without an explicit plugin
+  "lto-llvm2.sh",           # -m llvm is not yet supported
+  "duplicate-error-lto.sh", # Wild deduplicates inputs
+  "lto-comdat.sh",          # We don't support COMDAT
+  "wrap-lto.sh",            # We don't yet support --wrap with LTO
+  "defsym-lto.sh",
+]
+
 [skipped_groups.uncommon]
 reason = "These tests use uncommon features and are therefore likely not supported by Wild, at least for the time being."
 tests = [
