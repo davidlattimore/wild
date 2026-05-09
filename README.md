@@ -21,6 +21,12 @@ follows:
 cargo binstall wild-linker
 ```
 
+### Brew
+
+```sh
+brew install wild-linker/wild/wild
+```
+
 ### Build latest release from crates.io
 
 ```sh
