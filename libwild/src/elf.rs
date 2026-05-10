@@ -1527,7 +1527,7 @@ impl platform::Platform for Elf {
         };
         sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
         let symbol_name = symbol_db.symbol_name(symbol_id)?;
-        let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name();
+        let symbol_name = symtab_name_for_strtab(symbol_name.bytes());
         sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
 
         Ok(())
