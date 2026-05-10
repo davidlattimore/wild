@@ -77,6 +77,8 @@ pub(crate) mod validation;
 pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
+pub(crate) mod wasm;
+pub(crate) mod wasm_wasm32;
 
 use crate::elf::Elf;
 use crate::error::Context;
@@ -214,8 +216,7 @@ impl Linker {
         match args {
             Args::Elf(elf_args) => Elf::link_for_arch(self, elf_args),
             Args::MachO(macho_args) => MachO::link_for_arch(self, macho_args),
-            #[cfg(feature = "wasm")]
-            Args::Wasm(_wasm_args) => todo!("wasm linking is not yet implemented"),
+            Args::Wasm(wasm_args) => crate::wasm::Wasm::link_for_arch(self, wasm_args),
         }
     }
 
