@@ -263,6 +263,8 @@ pub(crate) const CS_PADDED_FILENAME_SIZE: u64 =
 pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDED_FILENAME_SIZE;
 pub(crate) const CS_BLOCK_SIZE_EXP: usize = 12;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
+// SHA-256 is being used
+pub(crate) const CS_HASH_SIZE: usize = 256 / 8;
 
 pub(crate) const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
 pub(crate) const CSSLOT_CODEDIRECTORY: u32 = 0;
@@ -1554,7 +1556,7 @@ impl platform::Platform for MachO {
             last_part_id == part_id::CODE_SIGNATURE,
             "code signature must be last part_id"
         );
-        Ok(file_size.div_ceil(CS_BLOCK_SIZE))
+        Ok(file_size.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE)
     }
 }
 
