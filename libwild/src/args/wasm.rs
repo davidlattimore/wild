@@ -16,13 +16,13 @@ use jobserver::Client;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Default page size (in bytes) for a wasm linear memory page.
-pub(crate) const WASM_PAGE_SIZE: u64 = 64 * 1024;
-
 /// Loadable segment alignment for wasm. Wasm doesn't really have program
 /// segments in the ELF sense, but we still need to provide a value for the
 /// `Args` trait.
 pub(crate) const WASM_PAGE_ALIGNMENT: Alignment = Alignment { exponent: 16 };
+
+/// Default page size (in bytes) for a wasm linear memory page.
+pub(crate) const WASM_PAGE_SIZE: u64 = WASM_PAGE_ALIGNMENT.value();
 
 #[derive(Debug)]
 pub struct WasmArgs {

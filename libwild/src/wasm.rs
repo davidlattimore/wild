@@ -5,6 +5,7 @@
 use crate::args::wasm::WasmArgs;
 use crate::ensure;
 use crate::platform;
+use linker_utils::utils::u32_from_slice;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
@@ -29,7 +30,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn parse_bytes(input: &'data [u8], _is_dynamic: bool) -> crate::error::Result<Self> {
         ensure!(input.len() >= 8, "Wasm module too short");
         ensure!(input[..4] == WASM_MAGIC, "missing Wasm magic header");
-        let version = u32::from_le_bytes([input[4], input[5], input[6], input[7]]);
+        let version = u32_from_slice(&input[4..8]);
         ensure!(
             version == WASM_VERSION,
             "unsupported Wasm version {version}"

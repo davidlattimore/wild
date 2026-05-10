@@ -79,7 +79,7 @@ impl Alignment {
         })
     }
 
-    pub(crate) fn value(self) -> u64 {
+    pub(crate) const fn value(self) -> u64 {
         1 << self.exponent
     }
 
