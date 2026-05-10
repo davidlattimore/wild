@@ -261,6 +261,8 @@ pub(crate) const CS_HEADERS_SIZE: u64 =
 pub(crate) const CS_PADDED_FILENAME_SIZE: u64 =
     (CS_IDENTIFIER_STRING.len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT);
 pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDED_FILENAME_SIZE;
+pub(crate) const CS_BLOCK_SIZE_EXP: usize = 12;
+pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 
 pub(crate) const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
 pub(crate) const CSSLOT_CODEDIRECTORY: u32 = 0;
@@ -1545,6 +1547,14 @@ impl platform::Platform for MachO {
             n_desc: Default::default(),
             n_value: Default::default(),
         }
+    }
+
+    fn extend_last_part_of_file(file_size: usize, last_part_id: part_id::PartId) -> Result<usize> {
+        ensure!(
+            last_part_id == part_id::CODE_SIGNATURE,
+            "code signature must be last part_id"
+        );
+        Ok(file_size.div_ceil(CS_BLOCK_SIZE))
     }
 }
 

@@ -253,6 +253,17 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         );
     }
 
+    if let Some((file_size, last_part_id)) = final_file_part(&section_part_layouts) {
+        let extra_file_size = A::Platform::extend_last_part_of_file(file_size, last_part_id)?;
+        if extra_file_size > 0 {
+            section_part_sizes.increment(last_part_id, extra_file_size as u64);
+
+            let rec = section_part_layouts.get_mut(last_part_id);
+            rec.file_size += extra_file_size;
+            rec.mem_size += extra_file_size as u64;
+        }
+    }
+
     let section_layouts = layout_sections(&output_sections, &section_part_layouts);
     let mut merged_section_layouts = section_layouts.clone();
     merge_secondary_parts(&output_sections, &mut merged_section_layouts);
@@ -379,6 +390,17 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     output.set_size(compute_total_file_size(&layout.section_layouts));
 
     Ok(layout)
+}
+
+fn final_file_part(
+    section_layouts: &OutputSectionPartMap<OutputRecordLayout>,
+) -> Option<(usize, PartId)> {
+    section_layouts
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(index, rec)| (rec.file_offset + rec.file_size, PartId::from_usize(index)))
+        .max_by_key(|(file_end, _)| *file_end)
 }
 
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
