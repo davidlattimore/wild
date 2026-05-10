@@ -264,10 +264,10 @@ impl Config {
                 // Wild does.
                 "segment.GNU_PROPERTY.alignment",
                 "segment.GNU_PROPERTY.flags",
-                // GNU ld and lld sometimes don’t generate .sframe sections in cases where we do.
-                // TODO: Figure out why this is happening.
+                // TODO: We consider SFrame sections experimental and disabled by default.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                "section.sframe",
                 // Different linkers put the PLT in different locations relative to .text, so
                 // whether range-extension thunks are needed varies.
                 "rel.plt.extra-thunk",
