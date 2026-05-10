@@ -2,6 +2,7 @@ use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
+use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -92,9 +93,8 @@ pub(crate) enum SymbolPlacement<'data> {
     /// A symbol defined via --defsym with an absolute address.
     DefsymAbsolute(u64),
 
-    /// A symbol defined via --defsym that references another symbol.
-    /// Stores the name of the target symbol and an optional offset to add to its value.
-    DefsymSymbol(&'data str, i64),
+    /// A symbol that redirects to some other symbol.
+    Redirect(Redirect<'data>),
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
@@ -103,6 +103,19 @@ pub(crate) enum SymbolPlacement<'data> {
     /// Resolves to the value of the corresponding `-Ttext`/`-Tdata`/`-Tbss` command-line
     /// override if provided, otherwise to `default`.
     SegmentStart(SegmentName, u64),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Redirect<'data> {
+    pub(crate) kind: RedirectKind,
+    pub(crate) target_name: &'data [u8],
+    pub(crate) offset: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RedirectKind {
+    DefSym,
+    Script,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +155,11 @@ impl<'a> ParsedSymbolExpression<'a> {
         match self {
             ParsedSymbolExpression::Absolute(value) => SymbolPlacement::DefsymAbsolute(value),
             ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
-                SymbolPlacement::DefsymSymbol(sym, offset)
+                SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    target_name: sym.as_bytes(),
+                    offset,
+                })
             }
         }
     }
@@ -268,7 +285,11 @@ impl<'data, P: Platform> Prelude<'data, P> {
             let placement = match value {
                 DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
                 DefsymValue::SymbolWithOffset(target, offset) => {
-                    SymbolPlacement::DefsymSymbol(target.as_str(), *offset)
+                    SymbolPlacement::Redirect(Redirect {
+                        kind: RedirectKind::DefSym,
+                        target_name: target.as_bytes(),
+                        offset: *offset,
+                    })
                 }
             };
             symbols.add_symbol(InternalSymDefInfo::new(placement, name.as_bytes()));
@@ -349,5 +370,24 @@ impl<'data, P: Platform> std::fmt::Display for ParsedInputObject<'data, P> {
 impl<'data, P: Platform> std::fmt::Display for ProcessedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
+impl Redirect<'_> {
+    pub(crate) fn missing_target(&self) -> Result {
+        match self.kind {
+            RedirectKind::DefSym => {
+                bail!(
+                    "Symbol '{}' referenced by --defsym does not exist",
+                    String::from_utf8_lossy(self.target_name)
+                )
+            }
+            RedirectKind::Script => {
+                bail!(
+                    "Undefined symbol '{}' referenced in expression",
+                    String::from_utf8_lossy(self.target_name)
+                )
+            }
+        }
     }
 }

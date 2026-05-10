@@ -330,7 +330,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &group_layouts,
         &mut symbol_resolutions.resolutions,
     );
-    update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
+    update_redirect_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
 
     // Evaluate ASSERT commands from all linker scripts now that layout is complete.
@@ -388,8 +388,8 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     format_specific: &'scope P::LayoutExt,
 }
 
-/// Update resolutions for defsym symbols that reference other symbols.
-fn update_defsym_symbol_resolutions<'data, P: Platform>(
+/// Update resolutions for symbol redirects.
+fn update_redirect_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
 ) -> Result {
@@ -433,7 +433,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
 ) -> Result {
-    let SymbolPlacement::DefsymSymbol(target_name, offset) = def_info.placement else {
+    let SymbolPlacement::Redirect(redirect) = def_info.placement else {
         return Ok(());
     };
 
@@ -441,10 +441,12 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
         return Ok(());
     }
 
-    let Some(target_symbol_id) =
-        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
-    else {
-        return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
+    let name = UnversionedSymbolName::prehashed(redirect.target_name);
+
+    let target_symbol_id = symbol_db.get_unversioned(&name);
+
+    let Some(target_symbol_id) = target_symbol_id else {
+        return redirect.missing_target();
     };
 
     let canonical_target_id = symbol_db.definition(target_symbol_id);
@@ -453,8 +455,7 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
         .map(|r| r.raw_value)
         && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
     {
-        // Apply the offset from the defsym expression.
-        resolution.raw_value = (target_value as i64).wrapping_add(offset) as u64;
+        resolution.raw_value = (target_value as i64).wrapping_add(redirect.offset) as u64;
     }
 
     Ok(())
@@ -531,7 +532,7 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
             .iter()
             .enumerate()
         {
-            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_, _)) {
+            if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
                 continue;
             }
 
@@ -2832,7 +2833,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
                 }
-                SymbolPlacement::DefsymSymbol(target_name, _offset) => {
+                SymbolPlacement::Redirect(redirect) => {
                     resources
                         .per_symbol_flags
                         .get_atomic(symbol_id)
@@ -2842,7 +2843,7 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                     // from being GC'd.
                     if let Some(target_symbol_id) = resources
                         .symbol_db
-                        .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+                        .get_unversioned(&UnversionedSymbolName::prehashed(redirect.target_name))
                     {
                         let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
                         let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
@@ -3301,7 +3302,7 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
 
             let resolution =
-                create_start_end_symbol_resolution(memory_offsets, resources, def_info, symbol_id);
+                create_internal_symbol_resolution(memory_offsets, resources, def_info, symbol_id);
 
             resolutions_out.write(resolution)?;
         }
@@ -3313,7 +3314,7 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
     }
 }
 
-fn create_start_end_symbol_resolution<'data, P: Platform>(
+fn create_internal_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
     def_info: InternalSymDefInfo<P>,
@@ -3364,10 +3365,10 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
 
         SymbolPlacement::DefsymAbsolute(value) => value,
 
-        SymbolPlacement::DefsymSymbol(_, _) => {
-            // For defsym symbols that reference another symbol, we defer resolution
-            // until later when all symbols have been resolved. This is handled by
-            // update_defsym_symbol_resolutions() which is called after layout is complete.
+        SymbolPlacement::Redirect(_) => {
+            // For redirects to other symbols, we defer resolution until later when all symbols have
+            // been resolved. This is handled by update_redirect_resolutions() which is called after
+            // layout is complete.
             0
         }
 
