@@ -706,14 +706,14 @@ fn write_code_signature<A: Arch<Platform = MachO>>(
     // TODO: write32be(&codeDirectory->length, signatureSize - blobHeadersSize);
     code_dir.version.set(BigEndian, CS_SUPPORTSEXECSEG);
     code_dir.flags.set(BigEndian, CS_ADHOC | CS_LINKER_SIGNED);
-    code_dir.hashOffset.set(
+    code_dir.hash_offset.set(
         BigEndian,
         size_of::<CodeSignatureCodeDirectory>() as u32 + CS_PADDED_FILENAME_SIZE as u32,
     );
     code_dir
-        .identOffset
+        .ident_offset
         .set(BigEndian, size_of::<CodeSignatureCodeDirectory>() as u32);
-    code_dir.nSpecialSlots.set(BigEndian, 0);
+    code_dir.n_special_slots.set(BigEndian, 0);
 
     Ok(())
 }

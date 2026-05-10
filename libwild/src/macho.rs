@@ -175,7 +175,6 @@ unsafe impl object::Pod for CodeSignatureBlobIndex {}
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-#[allow(non_snake_case)]
 pub(crate) struct CodeSignatureCodeDirectory {
     // magic number (CSMAGIC_CODEDIRECTORY)
     pub(crate) magic: U32<BigEndian>,
@@ -186,30 +185,30 @@ pub(crate) struct CodeSignatureCodeDirectory {
     // setup and mode flags
     pub(crate) flags: U32<BigEndian>,
     // offset of hash slot element at index zero
-    pub(crate) hashOffset: U32<BigEndian>,
+    pub(crate) hash_offset: U32<BigEndian>,
     // offset of identifier string
-    pub(crate) identOffset: U32<BigEndian>,
+    pub(crate) ident_offset: U32<BigEndian>,
     // number of special hash slots
-    pub(crate) nSpecialSlots: U32<BigEndian>,
+    pub(crate) n_special_slots: U32<BigEndian>,
     // number of ordinary (code) hash slots
-    pub(crate) nCodeSlots: U32<BigEndian>,
+    pub(crate) n_code_slots: U32<BigEndian>,
     // limit to main image signature range
-    pub(crate) codeLimit: U32<BigEndian>,
+    pub(crate) code_limit: U32<BigEndian>,
     // size of each hash in bytes
-    pub(crate) hashSize: u8,
+    pub(crate) hash_size: u8,
     // type of hash (cdHashType* constants)
-    pub(crate) hashType: u8,
+    pub(crate) hash_type: u8,
     // platform identifier; zero if not platform binary
     pub(crate) platform: u8,
     // log2(page size in bytes); 0 => infinite
-    pub(crate) pageSize: u8,
+    pub(crate) page_size: u8,
     // unused (must be zero)
     pub(crate) spare2: U32<BigEndian>,
 
     // Version 0x20100
     //
     // offset of optional scatter vector
-    pub(crate) scatterOffset: U32<BigEndian>,
+    pub(crate) scatter_offset: U32<BigEndian>,
 
     // Version 0x20200
     //
@@ -221,27 +220,27 @@ pub(crate) struct CodeSignatureCodeDirectory {
     // unused (must be zero)
     pub(crate) spare3: U32<BigEndian>,
     // limit to main image signature range, 64 bits
-    pub(crate) codeLimit64: U64<BigEndian>,
+    pub(crate) code_limit64: U64<BigEndian>,
 
     // Version 0x20400
     //
     // offset of executable segment
-    pub(crate) execSegBase: U64<BigEndian>,
+    pub(crate) exec_seg_base: U64<BigEndian>,
     // limit of executable segment
-    pub(crate) execSegLimit: U64<BigEndian>,
+    pub(crate) exec_seg_limit: U64<BigEndian>,
     // executable segment flags
-    pub(crate) execSegFlags: U64<BigEndian>,
+    pub(crate) exec_seg_flags: U64<BigEndian>,
 
     // Version 0x20500
     pub(crate) runtime: U32<BigEndian>,
-    pub(crate) preEncryptOffset: U32<BigEndian>,
+    pub(crate) pre_encrypt_offset: U32<BigEndian>,
 
     // Version 0x20600
-    pub(crate) linkageHashType: u8,
-    pub(crate) linkageApplicationType: u8,
-    pub(crate) linkageApplicationSubType: U16<BigEndian>,
-    pub(crate) linkageOffset: U32<BigEndian>,
-    pub(crate) linkageSize: U32<BigEndian>,
+    pub(crate) linkage_hash_type: u8,
+    pub(crate) linkage_application_type: u8,
+    pub(crate) linkage_application_sub_type: U16<BigEndian>,
+    pub(crate) linkage_offset: U32<BigEndian>,
+    pub(crate) linkage_size: U32<BigEndian>,
     // followed by dynamic content as located by offset fields above
 }
 
