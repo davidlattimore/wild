@@ -17,7 +17,19 @@ use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::macho::CS_ADHOC;
+use crate::macho::CS_BLOB_HEADERS_SIZE;
+use crate::macho::CS_HEADERS_WITH_FILENAME_SIZE;
+use crate::macho::CS_LINKER_SIGNED;
+use crate::macho::CS_PADDED_FILENAME_SIZE;
+use crate::macho::CS_SUPPORTSEXECSEG;
+use crate::macho::CSMAGIC_CODEDIRECTORY;
+use crate::macho::CSMAGIC_EMBEDDED_SIGNATURE;
+use crate::macho::CSSLOT_CODEDIRECTORY;
 use crate::macho::ChainedFixupsHeader;
+use crate::macho::CodeSignatureBlobIndex;
+use crate::macho::CodeSignatureCodeDirectory;
+use crate::macho::CodeSignatureSuperBlob;
 use crate::macho::DEFAULT_SEGMENT_COUNT;
 use crate::macho::DYLINKER_PATH;
 use crate::macho::DyldChainedFixupsCommand;
@@ -79,6 +91,7 @@ use tracing::debug_span;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
+
 type MachOLayout<'data> = Layout<'data, MachO>;
 type SymtabEntry = object::macho::Nlist64<Endianness>;
 
@@ -192,6 +205,8 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
 
     // Fill up one extra character as n_strx == 0 is treated as unnamed.
     buffers.get_mut(part_id::STRTAB).fill(0);
+
+    write_code_signature::<A>(layout, buffers)?;
 
     Ok(())
 }
@@ -655,6 +670,50 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
 
     starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
+
+    Ok(())
+}
+
+fn write_code_signature<A: Arch<Platform = MachO>>(
+    _layout: &MachOLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let code_signature = buffers.get_mut(part_id::CODE_SIGNATURE);
+    code_signature.fill(0);
+
+    let (super_blob, rest): (&mut CodeSignatureSuperBlob, &mut [u8]) =
+        from_bytes_mut(code_signature).map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
+    let (blob_indices, rest) = slice_from_bytes_mut::<CodeSignatureBlobIndex>(rest, 1)
+        .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
+    let blob_index = &mut blob_indices[0];
+    let (code_directories, _rest) = slice_from_bytes_mut::<CodeSignatureCodeDirectory>(rest, 1)
+        .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
+    let code_dir = &mut code_directories[0];
+
+    super_blob.magic.set(BigEndian, CSMAGIC_EMBEDDED_SIGNATURE);
+    super_blob
+        .length
+        .set(BigEndian, CS_HEADERS_WITH_FILENAME_SIZE as u32);
+    super_blob.count.set(BigEndian, 1);
+
+    blob_index.type_.set(BigEndian, CSSLOT_CODEDIRECTORY);
+    blob_index
+        .offset
+        .set(BigEndian, CS_BLOB_HEADERS_SIZE as u32);
+    blob_index.padding.set(BigEndian, 0);
+
+    code_dir.magic.set(BigEndian, CSMAGIC_CODEDIRECTORY);
+    // TODO: write32be(&codeDirectory->length, signatureSize - blobHeadersSize);
+    code_dir.version.set(BigEndian, CS_SUPPORTSEXECSEG);
+    code_dir.flags.set(BigEndian, CS_ADHOC | CS_LINKER_SIGNED);
+    code_dir.hashOffset.set(
+        BigEndian,
+        size_of::<CodeSignatureCodeDirectory>() as u32 + CS_PADDED_FILENAME_SIZE as u32,
+    );
+    code_dir
+        .identOffset
+        .set(BigEndian, size_of::<CodeSignatureCodeDirectory>() as u32);
+    code_dir.nSpecialSlots.set(BigEndian, 0);
 
     Ok(())
 }

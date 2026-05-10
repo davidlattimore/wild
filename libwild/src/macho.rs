@@ -33,10 +33,13 @@ use crate::platform::Symbol as _;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
 use gimli::LittleEndian;
+use object::BigEndian;
 use object::Endian;
 use object::Endianness;
 use object::SymbolIndex;
+use object::U16;
 use object::U32;
+use object::U64;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -132,6 +135,142 @@ unsafe impl<E: Endian + 'static> object::Pod for DyldChainedFixupsHeader<E> {}
 //     uint32_t    seg_info_offset[1];  // each entry is offset into this struct for that segment
 //     // followed by pool of dyld_chain_starts_in_segment data
 // };
+
+// Data structures mirroring the following URL:
+// https://github.com/apple-oss-distributions/xnu/blob/94d3b452840153a99b38a3a9659680b2a006908e/osfmk/kern/cs_blobs.h.
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct CodeSignatureSuperBlob {
+    // magic number
+    pub(crate) magic: U32<BigEndian>,
+    // total length of SuperBlob
+    pub(crate) length: U32<BigEndian>,
+    // number of index entries following
+    pub(crate) count: U32<BigEndian>,
+    // (count) entries
+    // CodeSignatureBlobIndex index[];
+    // followed by Blobs in no particular order as indicated by offsets in index
+}
+
+// Safety:
+// Is repr(C) and contains only `UX<E>` fields, and has no padding.
+unsafe impl object::Pod for CodeSignatureSuperBlob {}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct CodeSignatureBlobIndex {
+    // type of entry
+    pub(crate) type_: U32<BigEndian>,
+    // offset of entry
+    pub(crate) offset: U32<BigEndian>,
+    // an extra padding so that we have CodeSignatureSuperBlob + CodeSignatureBlobIndex aligned to
+    // 8 bytes!
+    pub(crate) padding: U32<BigEndian>,
+}
+
+// Safety:
+// Is repr(C) and contains only `UX<E>` fields, and has no padding.
+unsafe impl object::Pod for CodeSignatureBlobIndex {}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+#[allow(non_snake_case)]
+pub(crate) struct CodeSignatureCodeDirectory {
+    // magic number (CSMAGIC_CODEDIRECTORY)
+    pub(crate) magic: U32<BigEndian>,
+    // total length of CodeDirectory blob
+    pub(crate) length: U32<BigEndian>,
+    // compatibility version
+    pub(crate) version: U32<BigEndian>,
+    // setup and mode flags
+    pub(crate) flags: U32<BigEndian>,
+    // offset of hash slot element at index zero
+    pub(crate) hashOffset: U32<BigEndian>,
+    // offset of identifier string
+    pub(crate) identOffset: U32<BigEndian>,
+    // number of special hash slots
+    pub(crate) nSpecialSlots: U32<BigEndian>,
+    // number of ordinary (code) hash slots
+    pub(crate) nCodeSlots: U32<BigEndian>,
+    // limit to main image signature range
+    pub(crate) codeLimit: U32<BigEndian>,
+    // size of each hash in bytes
+    pub(crate) hashSize: u8,
+    // type of hash (cdHashType* constants)
+    pub(crate) hashType: u8,
+    // platform identifier; zero if not platform binary
+    pub(crate) platform: u8,
+    // log2(page size in bytes); 0 => infinite
+    pub(crate) pageSize: u8,
+    // unused (must be zero)
+    pub(crate) spare2: U32<BigEndian>,
+
+    // Version 0x20100
+    //
+    // offset of optional scatter vector
+    pub(crate) scatterOffset: U32<BigEndian>,
+
+    // Version 0x20200
+    //
+    // offset of optional team identifier
+    // teamOffset: U32<BigEndian>,;
+
+    // Version 0x20300
+    //
+    // unused (must be zero)
+    pub(crate) spare3: U32<BigEndian>,
+    // limit to main image signature range, 64 bits
+    pub(crate) codeLimit64: U64<BigEndian>,
+
+    // Version 0x20400
+    //
+    // offset of executable segment
+    pub(crate) execSegBase: U64<BigEndian>,
+    // limit of executable segment
+    pub(crate) execSegLimit: U64<BigEndian>,
+    // executable segment flags
+    pub(crate) execSegFlags: U64<BigEndian>,
+
+    // Version 0x20500
+    pub(crate) runtime: U32<BigEndian>,
+    pub(crate) preEncryptOffset: U32<BigEndian>,
+
+    // Version 0x20600
+    pub(crate) linkageHashType: u8,
+    pub(crate) linkageApplicationType: u8,
+    pub(crate) linkageApplicationSubType: U16<BigEndian>,
+    pub(crate) linkageOffset: U32<BigEndian>,
+    pub(crate) linkageSize: U32<BigEndian>,
+    // followed by dynamic content as located by offset fields above
+}
+
+// Safety:
+// Is repr(C) and contains only `UX<E>` fields, and has no padding.
+unsafe impl object::Pod for CodeSignatureCodeDirectory {}
+
+pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
+pub(crate) const CS_SECTION_ALIGNMENT: u64 = 2u64.pow(CS_SECTION_ALIGNMENT_EXP as u32);
+// TODO: properly implement
+pub(crate) const CS_IDENTIFIER_STRING: &[u8] = b"a.out";
+
+pub(crate) const CS_BLOB_HEADERS_SIZE: u64 =
+    (size_of::<CodeSignatureSuperBlob>() + size_of::<CodeSignatureBlobIndex>()) as u64;
+const _: () = assert!(CS_BLOB_HEADERS_SIZE.is_multiple_of(8));
+pub(crate) const CS_HEADERS_SIZE: u64 =
+    CS_BLOB_HEADERS_SIZE + size_of::<CodeSignatureCodeDirectory>() as u64;
+pub(crate) const CS_PADDED_FILENAME_SIZE: u64 =
+    (CS_IDENTIFIER_STRING.len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT);
+pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDED_FILENAME_SIZE;
+
+pub(crate) const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
+pub(crate) const CSSLOT_CODEDIRECTORY: u32 = 0;
+pub(crate) const CSMAGIC_CODEDIRECTORY: u32 = 0xfade0c02;
+pub(crate) const CS_SUPPORTSEXECSEG: u32 = 0x20400;
+// Ad hoc signed
+pub(crate) const CS_ADHOC: u32 = 0x00000002;
+// Automatically signed by the linker
+pub(crate) const CS_LINKER_SIGNED: u32 = 0x00020000;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -777,7 +916,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             output_section_id::DATA => SegmentType::DataSections,
             output_section_id::CHAINED_FIXUP_TABLE
             | output_section_id::SYMTAB_GLOBAL
-            | output_section_id::STRTAB => SegmentType::LinkeditSections,
+            | output_section_id::STRTAB
+            | output_section_id::CODE_SIGNATURE => SegmentType::LinkeditSections,
             _ => SegmentType::Unused,
         };
 
@@ -1296,6 +1436,7 @@ impl platform::Platform for MachO {
         // Allocate one extra character as n_strx == 0 is treated as unnamed.
         common.allocate(part_id::STRTAB, 1);
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
+        common.allocate(part_id::CODE_SIGNATURE, CS_HEADERS_WITH_FILENAME_SIZE);
     }
 
     fn finalise_prelude_layout<'data>(
@@ -1363,6 +1504,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
         builder.add_section(output_section_id::SYMTAB_GLOBAL);
         builder.add_section(output_section_id::STRTAB);
+        builder.add_section(output_section_id::CODE_SIGNATURE);
 
         builder.build()
     }
@@ -1473,6 +1615,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"STRTAB")),
         target_segment_type: Some(SegmentType::LinkeditSections),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CODE_SIGNATURE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"CODE_SIGNATURE")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
+        min_alignment: Alignment {
+            exponent: CS_SECTION_ALIGNMENT_EXP,
+        },
         ..DEFAULT_DEFS
     };
     // Multi-part generated sections
