@@ -2,10 +2,21 @@
 #![allow(unused_variables)]
 #![allow(unused)]
 
+use crate::alignment::Alignment;
 use crate::args::wasm::WasmArgs;
 use crate::ensure;
+use crate::error::Context as _;
+use crate::error::Result;
 use crate::platform;
 use linker_utils::utils::u32_from_slice;
+use std::ops::Range;
+use wasmparser::KnownCustom;
+use wasmparser::Linking;
+use wasmparser::Parser;
+use wasmparser::Payload;
+use wasmparser::RelocationEntry;
+use wasmparser::SegmentFlags;
+use wasmparser::SymbolInfo;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
@@ -16,32 +27,135 @@ pub(crate) const WASM_MAGIC: [u8; 4] = [0x00, b'a', b's', b'm'];
 /// Supported Wasm binary format version.
 pub(crate) const WASM_VERSION: u32 = 1;
 
+/// The custom-section name used for the linker metadata.
+pub(crate) const LINKING_SECTION_NAME: &str = "linking";
+
+/// The prefix of every `reloc.*` custom section.
+pub(crate) const RELOC_SECTION_PREFIX: &str = "reloc.";
+
+/// The custom-section name used for the WebAssembly target features.
+pub(crate) const TARGET_FEATURES_SECTION_NAME: &str = "target_features";
+
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) data: &'data [u8],
 
     pub(crate) version: u32,
+
+    #[debug(skip)]
+    pub(crate) sections: Vec<WasmSection<'data>>,
+
+    #[debug(skip)]
+    pub(crate) symbols: Vec<WasmSymbol<'data>>,
+
+    #[debug(skip)]
+    pub(crate) segments: Vec<WasmSegmentInfo<'data>>,
+
+    #[debug(skip)]
+    pub(crate) reloc_sections: Vec<WasmRelocSection>,
+
+    pub(crate) linking_version: Option<u32>,
+
+    /// Raw payload of the `target_features` custom section, if present.
+    #[debug(skip)]
+    pub(crate) target_features_raw: Option<&'data [u8]>,
+}
+
+/// A single section of a Wasm module, as it appears in the binary.
+#[derive(Debug, Clone)]
+pub(crate) struct WasmSection<'data> {
+    /// The wasm section id.
+    pub(crate) id: u8,
+
+    /// Name of a custom section, or `None` for standard sections.
+    pub(crate) name: Option<&'data str>,
+
+    /// Byte range of the section (id + size + payload) within the original Wasm binary.
+    pub(crate) range: Range<usize>,
+
+    /// The payload bytes of the section.
+    pub(crate) payload: &'data [u8],
+}
+
+impl<'data> WasmSection<'data> {
+    pub(crate) fn is_custom(&self) -> bool {
+        self.id == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmSymbol<'data> {
+    pub(crate) info: SymbolInfo<'data>,
+}
+
+impl<'data> WasmSymbol<'data> {
+    pub(crate) fn flags(&self) -> wasmparser::SymbolFlags {
+        match self.info {
+            SymbolInfo::Func { flags, .. }
+            | SymbolInfo::Data { flags, .. }
+            | SymbolInfo::Global { flags, .. }
+            | SymbolInfo::Section { flags, .. }
+            | SymbolInfo::Event { flags, .. }
+            | SymbolInfo::Table { flags, .. } => flags,
+        }
+    }
+
+    pub(crate) fn name(&self) -> Option<&'data str> {
+        match self.info {
+            SymbolInfo::Func { name, .. }
+            | SymbolInfo::Global { name, .. }
+            | SymbolInfo::Event { name, .. }
+            | SymbolInfo::Table { name, .. } => name,
+            SymbolInfo::Data { name, .. } => Some(name),
+            SymbolInfo::Section { .. } => None,
+        }
+    }
+
+    pub(crate) fn is_undefined(&self) -> bool {
+        self.flags().contains(wasmparser::SymbolFlags::UNDEFINED)
+    }
+
+    pub(crate) fn is_weak(&self) -> bool {
+        self.flags().contains(wasmparser::SymbolFlags::BINDING_WEAK)
+    }
+
+    pub(crate) fn is_local(&self) -> bool {
+        self.flags()
+            .contains(wasmparser::SymbolFlags::BINDING_LOCAL)
+    }
+
+    pub(crate) fn is_hidden(&self) -> bool {
+        self.flags()
+            .contains(wasmparser::SymbolFlags::VISIBILITY_HIDDEN)
+    }
+
+    pub(crate) fn is_exported(&self) -> bool {
+        self.flags().contains(wasmparser::SymbolFlags::EXPORTED)
+    }
+}
+
+/// Per-data-segment metadata from the `linking` section.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WasmSegmentInfo<'data> {
+    pub(crate) name: &'data str,
+    pub(crate) alignment: Alignment,
+    pub(crate) flags: SegmentFlags,
+}
+
+/// All relocations read from a single `reloc.*` custom section.
+#[derive(Debug, Clone)]
+pub(crate) struct WasmRelocSection {
+    /// Index (into [`File::sections`]) of the section that the relocations apply to.
+    pub(crate) target_section_index: u32,
+    pub(crate) entries: Vec<RelocationEntry>,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
     type Platform = Wasm;
 
     fn parse_bytes(input: &'data [u8], _is_dynamic: bool) -> crate::error::Result<Self> {
-        ensure!(input.len() >= 8, "Wasm module too short");
-        ensure!(input[..4] == WASM_MAGIC, "missing Wasm magic header");
-        let version = u32_from_slice(&input[4..8]);
-        ensure!(
-            version == WASM_VERSION,
-            "unsupported Wasm version {version}"
-        );
-
-        // TODO: parse the `linking` and `reloc.*` custom sections.
-
-        Ok(File {
-            data: input,
-            version,
-        })
+        parse_wasm_module(input).context("failed to parse Wasm object file")
     }
 
     fn parse(
@@ -57,8 +171,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_symbols(&self) -> usize {
-        // TODO: read from `linking` section's `WASM_SYMBOL_TABLE` subsection.
-        0
+        self.symbols.len()
     }
 
     fn symbols_iter(&self) -> impl Iterator<Item = &'data ()> {
@@ -1067,4 +1180,112 @@ impl platform::Platform for Wasm {
         // Wasm uses linear memory; the linker just lays out at offset 0.
         0
     }
+}
+
+fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
+    ensure!(input.len() >= 8, "Wasm module too short");
+    ensure!(input[..4] == WASM_MAGIC, "missing Wasm magic header");
+    let version = u32_from_slice(&input[4..8]);
+    ensure!(
+        version == WASM_VERSION,
+        "unsupported Wasm version {version}"
+    );
+
+    let mut sections: Vec<WasmSection<'data>> = Vec::new();
+    let mut symbols: Vec<WasmSymbol<'data>> = Vec::new();
+    let mut segments: Vec<WasmSegmentInfo<'data>> = Vec::new();
+    let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
+    let mut linking_version: Option<u32> = None;
+    let mut target_features_raw: Option<&'data [u8]> = None;
+
+    for payload in Parser::new(0).parse_all(input) {
+        let payload = payload?;
+        let Some((id, range)) = payload.as_section() else {
+            continue;
+        };
+
+        let mut name = None;
+        let payload_bytes: &'data [u8];
+
+        match payload {
+            Payload::CustomSection(reader) => {
+                let section_name = reader.name();
+                name = Some(section_name);
+                payload_bytes = &input[range.clone()];
+
+                if section_name == LINKING_SECTION_NAME {
+                    if let KnownCustom::Linking(linking) = reader.as_known() {
+                        linking_version = Some(linking.version());
+                        parse_linking_subsections(&linking, &mut symbols, &mut segments)?;
+                    }
+                } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
+                    if let KnownCustom::Reloc(reloc) = reader.as_known() {
+                        let target_section_index = reloc.section_index();
+                        let mut entries = Vec::new();
+                        for entry in reloc.entries() {
+                            entries.push(entry?);
+                        }
+                        reloc_sections.push(WasmRelocSection {
+                            target_section_index,
+                            entries,
+                        });
+                    }
+                } else if section_name == TARGET_FEATURES_SECTION_NAME {
+                    target_features_raw = Some(reader.data());
+                }
+            }
+            _ => {
+                payload_bytes = &input[range.clone()];
+            }
+        }
+
+        sections.push(WasmSection {
+            id,
+            name,
+            range,
+            payload: payload_bytes,
+        });
+    }
+
+    Ok(File {
+        data: input,
+        version,
+        sections,
+        symbols,
+        segments,
+        reloc_sections,
+        linking_version,
+        target_features_raw,
+    })
+}
+
+fn parse_linking_subsections<'data>(
+    linking: &wasmparser::LinkingSectionReader<'data>,
+    symbols: &mut Vec<WasmSymbol<'data>>,
+    segments: &mut Vec<WasmSegmentInfo<'data>>,
+) -> Result {
+    for sub in linking.subsections() {
+        let sub = sub?;
+        match sub {
+            Linking::SymbolTable(map) => {
+                for sym in map {
+                    symbols.push(WasmSymbol { info: sym? });
+                }
+            }
+            Linking::SegmentInfo(map) => {
+                for seg in map {
+                    let seg = seg?;
+                    segments.push(WasmSegmentInfo {
+                        name: seg.name,
+                        alignment: Alignment::from_exponent(seg.alignment)?,
+                        flags: seg.flags,
+                    });
+                }
+            }
+            // `InitFuncs`, `ComdatInfo`, and `Unknown` subsections are not consumed.
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
