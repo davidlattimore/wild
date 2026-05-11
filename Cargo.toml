@@ -43,7 +43,7 @@ flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 foldhash = "0.2.0"
 gimli = "0.33.0"
 glob = "0.3.2"
-hashbrown = "0.16.0"
+hashbrown = "0.17.1"
 hex = "0.4.0"
 iced-x86 = { version = "1.17.0", default-features = false, features = [
     "std",
@@ -61,7 +61,7 @@ libtest-mimic = "0.8.2"
 memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-nix = { version = "0.30.1", default-features = false, features = ["resource"] }
+nix = { version = "0.31.3", default-features = false, features = ["resource"] }
 object = { version = "0.39.1", default-features = false, features = [
     # Note that compression is only actually needed for linker-diff
     "compression",
@@ -86,8 +86,8 @@ sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
 strum = { version = "0.28.0", features = ["derive"] }
-symbolic-common = "12.0.0"
-symbolic-demangle = { version = "12.0.0", default-features = false, features = ["cpp", "rust"] }
+symbolic-common = "13.0.0"
+symbolic-demangle = { version = "13.0.0", default-features = false, features = ["cpp", "rust"] }
 tabled = "0.20.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
