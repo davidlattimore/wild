@@ -34,6 +34,7 @@ use crate::macho::CSSLOT_CODEDIRECTORY;
 use crate::macho::ChainedFixupsHeader;
 use crate::macho::CodeSignatureBlobIndex;
 use crate::macho::CodeSignatureCodeDirectory;
+use crate::macho::CodeSignatureCommand;
 use crate::macho::CodeSignatureSuperBlob;
 use crate::macho::DEFAULT_SEGMENT_COUNT;
 use crate::macho::DYLINKER_PATH;
@@ -75,6 +76,7 @@ use object::U32;
 use object::from_bytes_mut;
 use object::macho;
 use object::macho::CPU_TYPE_ARM64;
+use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
@@ -193,6 +195,12 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     let (symtab_command, _) = from_bytes_mut(buffers.get_mut(part_id::SYMTAB_COMMAND))
         .map_err(|_| error!("Invalid SYMTAB_COMMAND allocation"))?;
     write_symtab_command::<A>(layout, symtab_command);
+
+    let code_signature_command: &mut CodeSignatureCommand =
+        from_bytes_mut(buffers.get_mut(part_id::CODE_SIGNATURE_COMMAND))
+            .map_err(|_| error!("Invalid CODE_SIGNATURE_COMMAND allocation"))?
+            .0;
+    write_code_signature_command::<A>(layout, code_signature_command);
 
     let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
     chained_fixup_table.fill(0);
@@ -644,6 +652,22 @@ fn write_symtab_command<A: Arch<Platform = MachO>>(
         .set(LE, (symtab.file_size / size_of::<SymtabEntry>()) as u32);
     command.stroff.set(LE, strtab.file_offset as u32);
     command.strsize.set(LE, strtab.file_size as u32);
+}
+
+fn write_code_signature_command<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout,
+    command: &mut CodeSignatureCommand,
+) {
+    let code_signature = layout
+        .section_layouts
+        .get(output_section_id::CODE_SIGNATURE);
+
+    command.cmd.set(LE, LC_CODE_SIGNATURE);
+    command
+        .cmdsize
+        .set(LE, size_of::<CodeSignatureCommand>() as u32);
+    command.dataoff.set(LE, code_signature.file_offset as u32);
+    command.datasize.set(LE, code_signature.file_size as u32);
 }
 
 fn write_chained_fixup_table<A: Arch<Platform = MachO>>(

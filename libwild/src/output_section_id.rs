@@ -111,6 +111,8 @@ pub(crate) const DYLD_CHAINED_FIXUPS: OutputSectionId =
 pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
     part_id::CHAINED_FIXUP_TABLE.output_section_id();
 pub(crate) const SYMTAB_COMMAND: OutputSectionId = part_id::SYMTAB_COMMAND.output_section_id();
+pub(crate) const CODE_SIGNATURE_COMMAND: OutputSectionId =
+    part_id::CODE_SIGNATURE_COMMAND.output_section_id();
 pub(crate) const CODE_SIGNATURE: OutputSectionId = part_id::CODE_SIGNATURE.output_section_id();
 
 // Regular sections copied from the input objects.

@@ -916,7 +916,8 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::ENTRY_POINT
             | output_section_id::INTERP
             | output_section_id::DYLD_CHAINED_FIXUPS
-            | output_section_id::SYMTAB_COMMAND => SegmentType::LoadCommands,
+            | output_section_id::SYMTAB_COMMAND
+            | output_section_id::CODE_SIGNATURE_COMMAND => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
             output_section_id::CHAINED_FIXUP_TABLE
@@ -1372,6 +1373,10 @@ impl platform::Platform for MachO {
             size_of::<DyldChainedFixupsCommand>() as u64,
         );
         sizes.increment(part_id::SYMTAB_COMMAND, size_of::<SymtabCommand>() as u64);
+        sizes.increment(
+            part_id::CODE_SIGNATURE_COMMAND,
+            size_of::<CodeSignatureCommand>() as u64,
+        );
     }
 
     fn finalise_sizes_for_symbol<'data>(
@@ -1501,6 +1506,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::INTERP); // DYLINKER
         builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
         builder.add_section(output_section_id::SYMTAB_COMMAND);
+        builder.add_section(output_section_id::CODE_SIGNATURE_COMMAND);
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
@@ -1531,13 +1537,6 @@ impl platform::Platform for MachO {
             | SegmentType::LinkeditSections => {
                 *file_offset = segment_alignment.align_up(*file_offset as u64) as usize;
                 *mem_offset = segment_alignment.align_up(*mem_offset);
-            }
-            SegmentType::TextSections => {
-                // TODO: A placeholder space for the LinkeditDataCommand command is allocated
-                // (added by codesign tool) in order to preserve the offsets into __text and
-                // other sections in the __TEXT segment.
-                *file_offset += size_of::<CodeSignatureCommand>();
-                *mem_offset += size_of::<CodeSignatureCommand>() as u64;
             }
             _ => {}
         }
@@ -1612,6 +1611,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::SYMTAB_COMMAND.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_SYMTAB")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::CODE_SIGNATURE_COMMAND.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_CODE_SIGNATURE")),
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };

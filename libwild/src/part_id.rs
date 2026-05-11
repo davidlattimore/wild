@@ -60,9 +60,10 @@ pub(crate) const ENTRY_POINT: PartId = PartId(36);
 pub(crate) const DYLD_CHAINED_FIXUPS: PartId = PartId(37);
 pub(crate) const CHAINED_FIXUP_TABLE: PartId = PartId(38);
 pub(crate) const SYMTAB_COMMAND: PartId = PartId(39);
-pub(crate) const CODE_SIGNATURE: PartId = PartId(40);
+pub(crate) const CODE_SIGNATURE_COMMAND: PartId = PartId(40);
+pub(crate) const CODE_SIGNATURE: PartId = PartId(41);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 41;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 42;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize
