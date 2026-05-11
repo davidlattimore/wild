@@ -4,6 +4,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context;
 use crate::error::Result;
+use crate::file_writer::OutputBuffer;
 use crate::file_writer::SizedOutput;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
@@ -789,6 +790,22 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     identifier[..CS_IDENTIFIER_STRING.len()].copy_from_slice(CS_IDENTIFIER_STRING);
     identifier[CS_IDENTIFIER_STRING.len()..].fill(0);
     hashes.copy_from_slice(&calculated_hashes);
+
+    if cfg!(target_os = "macos")
+        && let OutputBuffer::Mmap(output) = &mut sized_output.out
+    {
+        // Match lld's workaround for the macOS kernel caching signature-verification
+        // data before the final code signature has been written:
+        //
+        // https://openradar.appspot.com/FB8914231
+        unsafe {
+            libc::msync(
+                output.as_mut_ptr().cast(),
+                code_signature_section.file_offset + code_signature_section.file_size,
+                libc::MS_INVALIDATE,
+            );
+        }
+    }
 
     Ok(())
 }
