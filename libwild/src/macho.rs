@@ -275,6 +275,7 @@ pub(crate) const CS_ADHOC: u32 = 0x00000002;
 // Automatically signed by the linker
 pub(crate) const CS_LINKER_SIGNED: u32 = 0x00020000;
 pub(crate) const CS_HASHTYPE_SHA256: u8 = 2;
+pub(crate) const CS_EXECSEG_MAIN_BINARY: u64 = 0x1;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {

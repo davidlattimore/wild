@@ -21,8 +21,10 @@ use crate::macho::CS_ADHOC;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
 use crate::macho::CS_BLOCK_SIZE;
 use crate::macho::CS_BLOCK_SIZE_EXP;
+use crate::macho::CS_EXECSEG_MAIN_BINARY;
 use crate::macho::CS_HASH_SIZE;
 use crate::macho::CS_HASHTYPE_SHA256;
+use crate::macho::CS_IDENTIFIER_STRING;
 use crate::macho::CS_LINKER_SIGNED;
 use crate::macho::CS_PADDED_FILENAME_SIZE;
 use crate::macho::CS_SUPPORTSEXECSEG;
@@ -687,9 +689,10 @@ fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Resu
     let (blob_indices, rest) = slice_from_bytes_mut::<CodeSignatureBlobIndex>(rest, 1)
         .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let blob_index = &mut blob_indices[0];
-    let (code_directories, _rest) = slice_from_bytes_mut::<CodeSignatureCodeDirectory>(rest, 1)
+    let (code_directories, rest) = slice_from_bytes_mut::<CodeSignatureCodeDirectory>(rest, 1)
         .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let code_dir = &mut code_directories[0];
+    let (identifier, hashes) = rest.split_at_mut(CS_PADDED_FILENAME_SIZE as usize);
 
     let code_signature_section = layout
         .section_layouts
@@ -738,6 +741,23 @@ fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Resu
     code_dir.team_offset.set(BigEndian, 0);
     code_dir.spare3.set(BigEndian, 0);
     code_dir.code_limit64.set(BigEndian, 0);
+
+    let text_segment_size = get_segment_sections(layout, SegmentType::Text)
+        .ok_or_else(|| error!("Text segment is mandatory"))?
+        .segment_size;
+    code_dir
+        .exec_seg_base
+        .set(BigEndian, text_segment_size.file_offset as u64);
+    code_dir
+        .exec_seg_limit
+        .set(BigEndian, text_segment_size.file_size as u64);
+    // TODO: change once shared libraries are supported
+    code_dir
+        .exec_seg_flags
+        .set(BigEndian, CS_EXECSEG_MAIN_BINARY);
+
+    identifier[..CS_IDENTIFIER_STRING.len()].copy_from_slice(CS_IDENTIFIER_STRING);
+    identifier[CS_IDENTIFIER_STRING.len()..].fill(0);
 
     Ok(())
 }
