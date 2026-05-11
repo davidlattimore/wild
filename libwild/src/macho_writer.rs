@@ -775,11 +775,12 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     code_dir.spare3.set(BigEndian, 0);
     code_dir.code_limit64.set(BigEndian, 0);
 
-    let text_segment_size = get_segment_sections(layout, SegmentType::TextSections)
+    let text_segment_size = get_segment_sections(layout, SegmentType::Text)
         .ok_or_else(|| error!("Text segment is mandatory"))?
         .segment_size;
-    // The __TEXT section is at the start of the __text segments, thus the offset zero.
-    code_dir.exec_seg_base.set(BigEndian, 0);
+    code_dir
+        .exec_seg_base
+        .set(BigEndian, text_segment_size.file_offset as u64);
     code_dir
         .exec_seg_limit
         .set(BigEndian, text_segment_size.file_size as u64);
