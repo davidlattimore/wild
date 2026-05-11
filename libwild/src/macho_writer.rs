@@ -19,7 +19,10 @@ use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::macho::CS_ADHOC;
 use crate::macho::CS_BLOB_HEADERS_SIZE;
-use crate::macho::CS_HEADERS_WITH_FILENAME_SIZE;
+use crate::macho::CS_BLOCK_SIZE;
+use crate::macho::CS_BLOCK_SIZE_EXP;
+use crate::macho::CS_HASH_SIZE;
+use crate::macho::CS_HASHTYPE_SHA256;
 use crate::macho::CS_LINKER_SIGNED;
 use crate::macho::CS_PADDED_FILENAME_SIZE;
 use crate::macho::CS_SUPPORTSEXECSEG;
@@ -127,6 +130,12 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
             Ok(())
         })?;
 
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
+    write_code_signature(
+        layout,
+        section_buffers.get_mut(output_section_id::CODE_SIGNATURE),
+    )?;
+
     Ok(())
 }
 
@@ -205,8 +214,6 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
 
     // Fill up one extra character as n_strx == 0 is treated as unnamed.
     buffers.get_mut(part_id::STRTAB).fill(0);
-
-    write_code_signature::<A>(layout, buffers)?;
 
     Ok(())
 }
@@ -674,13 +681,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_code_signature<A: Arch<Platform = MachO>>(
-    _layout: &MachOLayout,
-    buffers: &mut OutputSectionPartMap<&mut [u8]>,
-) -> Result {
-    let code_signature = buffers.get_mut(part_id::CODE_SIGNATURE);
-    code_signature.fill(0);
-
+fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Result {
     let (super_blob, rest): (&mut CodeSignatureSuperBlob, &mut [u8]) =
         from_bytes_mut(code_signature).map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let (blob_indices, rest) = slice_from_bytes_mut::<CodeSignatureBlobIndex>(rest, 1)
@@ -690,10 +691,14 @@ fn write_code_signature<A: Arch<Platform = MachO>>(
         .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let code_dir = &mut code_directories[0];
 
+    let code_signature_section = layout
+        .section_layouts
+        .get(output_section_id::CODE_SIGNATURE);
+
     super_blob.magic.set(BigEndian, CSMAGIC_EMBEDDED_SIGNATURE);
     super_blob
         .length
-        .set(BigEndian, CS_HEADERS_WITH_FILENAME_SIZE as u32);
+        .set(BigEndian, code_signature_section.file_size as u32);
     super_blob.count.set(BigEndian, 1);
 
     blob_index.type_.set(BigEndian, CSSLOT_CODEDIRECTORY);
@@ -703,7 +708,10 @@ fn write_code_signature<A: Arch<Platform = MachO>>(
     blob_index.padding.set(BigEndian, 0);
 
     code_dir.magic.set(BigEndian, CSMAGIC_CODEDIRECTORY);
-    // TODO: write32be(&codeDirectory->length, signatureSize - blobHeadersSize);
+    code_dir.length.set(
+        BigEndian,
+        (code_signature_section.file_size as u64 - CS_BLOB_HEADERS_SIZE) as u32,
+    );
     code_dir.version.set(BigEndian, CS_SUPPORTSEXECSEG);
     code_dir.flags.set(BigEndian, CS_ADHOC | CS_LINKER_SIGNED);
     code_dir.hash_offset.set(
@@ -714,6 +722,22 @@ fn write_code_signature<A: Arch<Platform = MachO>>(
         .ident_offset
         .set(BigEndian, size_of::<CodeSignatureCodeDirectory>() as u32);
     code_dir.n_special_slots.set(BigEndian, 0);
+    code_dir.n_code_slots.set(
+        BigEndian,
+        code_signature_section.file_offset.div_ceil(CS_BLOCK_SIZE) as u32,
+    );
+    code_dir
+        .code_limit
+        .set(BigEndian, code_signature_section.file_offset as u32);
+    code_dir.hash_size = CS_HASH_SIZE;
+    code_dir.hash_type = CS_HASHTYPE_SHA256;
+    code_dir.platform = 0;
+    code_dir.page_size = CS_BLOCK_SIZE_EXP;
+    code_dir.spare2.set(BigEndian, 0);
+    code_dir.scatter_offset.set(BigEndian, 0);
+    code_dir.team_offset.set(BigEndian, 0);
+    code_dir.spare3.set(BigEndian, 0);
+    code_dir.code_limit64.set(BigEndian, 0);
 
     Ok(())
 }

@@ -88,7 +88,13 @@ impl OffsetVerifier {
 
 fn should_ignore_alignment(part_id: PartId) -> bool {
     part_id.should_pack()
-        || [part_id::GNU_HASH, part_id::EH_FRAME, part_id::GNU_VERSION_D].contains(&part_id)
+        || [
+            part_id::GNU_HASH,
+            part_id::EH_FRAME,
+            part_id::GNU_VERSION_D,
+            part_id::CODE_SIGNATURE,
+        ]
+        .contains(&part_id)
 }
 
 /// Clear offsets for sections where we never take the address of a section offset during

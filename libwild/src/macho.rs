@@ -213,7 +213,7 @@ pub(crate) struct CodeSignatureCodeDirectory {
     // Version 0x20200
     //
     // offset of optional team identifier
-    // teamOffset: U32<BigEndian>,;
+    pub(crate) team_offset: U32<BigEndian>,
 
     // Version 0x20300
     //
@@ -261,10 +261,10 @@ pub(crate) const CS_HEADERS_SIZE: u64 =
 pub(crate) const CS_PADDED_FILENAME_SIZE: u64 =
     (CS_IDENTIFIER_STRING.len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT);
 pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDED_FILENAME_SIZE;
-pub(crate) const CS_BLOCK_SIZE_EXP: usize = 12;
+pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 12;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 // SHA-256 is being used
-pub(crate) const CS_HASH_SIZE: usize = 256 / 8;
+pub(crate) const CS_HASH_SIZE: u8 = 16;
 
 pub(crate) const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
 pub(crate) const CSSLOT_CODEDIRECTORY: u32 = 0;
@@ -274,6 +274,7 @@ pub(crate) const CS_SUPPORTSEXECSEG: u32 = 0x20400;
 pub(crate) const CS_ADHOC: u32 = 0x00000002;
 // Automatically signed by the linker
 pub(crate) const CS_LINKER_SIGNED: u32 = 0x00020000;
+pub(crate) const CS_HASHTYPE_SHA256: u8 = 2;
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -1556,7 +1557,7 @@ impl platform::Platform for MachO {
             last_part_id == part_id::CODE_SIGNATURE,
             "code signature must be last part_id"
         );
-        Ok(file_size.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE)
+        Ok(file_size.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
     }
 }
 
