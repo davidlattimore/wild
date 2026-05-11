@@ -230,17 +230,7 @@ pub(crate) struct CodeSignatureCodeDirectory {
     pub(crate) exec_seg_limit: U64<BigEndian>,
     // executable segment flags
     pub(crate) exec_seg_flags: U64<BigEndian>,
-
-    // Version 0x20500
-    pub(crate) runtime: U32<BigEndian>,
-    pub(crate) pre_encrypt_offset: U32<BigEndian>,
-
-    // Version 0x20600
-    pub(crate) linkage_hash_type: u8,
-    pub(crate) linkage_application_type: u8,
-    pub(crate) linkage_application_sub_type: U16<BigEndian>,
-    pub(crate) linkage_offset: U32<BigEndian>,
-    pub(crate) linkage_size: U32<BigEndian>,
+    // Version 0x20500 and 0x20600 are unused!
     // followed by dynamic content as located by offset fields above
 }
 
