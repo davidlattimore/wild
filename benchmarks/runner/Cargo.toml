@@ -5,10 +5,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-clap = { workspace = true }
-indicatif = { workspace = true }
-postcard = { workspace = true }
-serde = { workspace = true }
-toml = { workspace = true }
-wait4 = { workspace = true }
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+postcard.workspace = true
+serde.workspace = true
+toml.workspace = true
+wait4.workspace = true

@@ -28,27 +28,27 @@ mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
-ar = { workspace = true }
-itertools = { workspace = true }
-foldhash = { workspace = true }
-gimli = { workspace = true }
-hex = { workspace = true }
-linker-diff = { path = "../linker-diff" }
-linker-layout = { path = "../linker-layout" }
-libloading = { workspace = true }
+ar.workspace = true
+itertools.workspace = true
+foldhash.workspace = true
+gimli.workspace = true
+hex.workspace = true
+linker-diff.path = "../linker-diff"
+linker-layout.path = "../linker-layout"
+libloading.workspace = true
 libtest-mimic =  { workspace = true }
-object = { workspace = true }
-os_info = { workspace = true }
-regex = { workspace = true }
-serde = { workspace = true }
+object.workspace = true
+os_info.workspace = true
+regex.workspace = true
+serde.workspace = true
 serde-keyvalue = { workspace =  true }
-strum = { workspace = true }
-tempfile = { workspace = true }
-toml = { workspace = true }
-which = { workspace = true }
+strum.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+which.workspace = true
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
-wait-timeout = { workspace = true }
+wait-timeout.workspace = true
 
 [features]
 default = ["fork"]

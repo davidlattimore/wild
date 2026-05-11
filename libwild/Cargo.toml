@@ -11,58 +11,58 @@ edition.workspace = true
 linker-layout = { path = "../linker-layout", version = "0.8.0" }
 linker-trace = { path = "../linker-trace", version = "0.8.0" }
 linker-utils = { path = "../linker-utils", version = "0.8.0" }
-anyhow = { workspace = true }
-atomic-take = { workspace = true }
-bitflags = { workspace = true }
-blake3 = { workspace = true }
-bumpalo-herd = { workspace = true }
-bytesize = { workspace = true }
-colored = { workspace = true }
-colosseum = { workspace = true }
-crossbeam-queue = { workspace = true }
-crossbeam-utils = { workspace = true }
-derive_more = { workspace = true }
-flate2 = { workspace = true }
-foldhash = { workspace = true }
-gimli = { workspace = true }
-glob = { workspace = true }
-hashbrown = { workspace = true }
-hex = { workspace = true }
-indexmap = { workspace = true }
-itertools = { workspace = true }
-jobserver = { workspace = true }
-leb128 = { workspace = true }
-libc = { workspace = true }
+anyhow.workspace = true
+atomic-take.workspace = true
+bitflags.workspace = true
+blake3.workspace = true
+bumpalo-herd.workspace = true
+bytesize.workspace = true
+colored.workspace = true
+colosseum.workspace = true
+crossbeam-queue.workspace = true
+crossbeam-utils.workspace = true
+derive_more.workspace = true
+flate2.workspace = true
+foldhash.workspace = true
+gimli.workspace = true
+glob.workspace = true
+hashbrown.workspace = true
+hex.workspace = true
+indexmap.workspace = true
+itertools.workspace = true
+jobserver.workspace = true
+leb128.workspace = true
+libc.workspace = true
 libloading = { workspace = true, optional = true }
-memchr = { workspace = true }
-memmap2 = { workspace = true }
+memchr.workspace = true
+memmap2.workspace = true
 nix = { workspace = true, optional = true }
-object = { workspace = true }
-perfetto-recorder = { workspace = true }
-rayon = { workspace = true }
-sharded-offset-map = { workspace = true }
-sharded-vec-writer = { workspace = true }
-smallvec = { workspace = true }
-symbolic-common = { workspace = true }
-symbolic-demangle = { workspace = true }
-thread_local = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-uuid = { workspace = true }
-wasmparser = { workspace = true }
-winnow = { workspace = true }
-zerocopy = { workspace = true }
-zstd = { workspace = true }
+object.workspace = true
+perfetto-recorder.workspace = true
+rayon.workspace = true
+sharded-offset-map.workspace = true
+sharded-vec-writer.workspace = true
+smallvec.workspace = true
+symbolic-common.workspace = true
+symbolic-demangle.workspace = true
+thread_local.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+wasmparser.workspace = true
+winnow.workspace = true
+zerocopy.workspace = true
+zstd.workspace = true
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
-perf-event = { workspace = true }
+perf-event.workspace = true
 
 [build-dependencies]
 cc = "1.1.12"
 
 [dev-dependencies]
-ar = { workspace = true }
-tempfile = { workspace = true }
+ar.workspace = true
+tempfile.workspace = true
 
 [features]
 # Support for running the linker as a subprocess.
