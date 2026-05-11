@@ -1542,12 +1542,15 @@ impl platform::Platform for MachO {
         }
     }
 
-    fn extend_last_part_of_file(file_size: usize, last_part_id: part_id::PartId) -> Result<usize> {
+    fn extend_last_part_of_file(
+        record: &OutputRecordLayout,
+        last_part_id: part_id::PartId,
+    ) -> Result<usize> {
         ensure!(
             last_part_id == part_id::CODE_SIGNATURE,
             "code signature must be last part_id"
         );
-        Ok(file_size.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
+        Ok(record.file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
     }
 }
 

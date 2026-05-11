@@ -1980,7 +1980,7 @@ impl platform::Platform for Elf {
     }
 
     fn extend_last_part_of_file(
-        _file_size: usize,
+        _record: &OutputRecordLayout,
         _last_part_id: part_id::PartId,
     ) -> Result<usize> {
         Ok(0)
