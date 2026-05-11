@@ -66,6 +66,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use object::BigEndian;
 use object::Endianness;
@@ -91,6 +92,8 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use sha2::Digest;
+use sha2::Sha256;
 use std::ops::BitAnd;
 use tracing::debug_span;
 use zerocopy::FromZeros;
@@ -132,11 +135,7 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
             Ok(())
         })?;
 
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
-    write_code_signature(
-        layout,
-        section_buffers.get_mut(output_section_id::CODE_SIGNATURE),
-    )?;
+    write_code_signature(layout, sized_output)?;
 
     Ok(())
 }
@@ -683,7 +682,19 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     Ok(())
 }
 
-fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Result {
+fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+    let code_signature_section = layout
+        .section_layouts
+        .get(output_section_id::CODE_SIGNATURE);
+    // TODO: parallel execution
+    let calculated_hashes = sized_output.out[..code_signature_section.file_offset]
+        .chunks(CS_BLOCK_SIZE)
+        .flat_map(Sha256::digest)
+        .collect_vec();
+
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
+    let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
+
     let (super_blob, rest): (&mut CodeSignatureSuperBlob, &mut [u8]) =
         from_bytes_mut(code_signature).map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let (blob_indices, rest) = slice_from_bytes_mut::<CodeSignatureBlobIndex>(rest, 1)
@@ -693,10 +704,6 @@ fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Resu
         .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let code_dir = &mut code_directories[0];
     let (identifier, hashes) = rest.split_at_mut(CS_PADDED_FILENAME_SIZE as usize);
-
-    let code_signature_section = layout
-        .section_layouts
-        .get(output_section_id::CODE_SIGNATURE);
 
     super_blob.magic.set(BigEndian, CSMAGIC_EMBEDDED_SIGNATURE);
     super_blob
@@ -758,6 +765,7 @@ fn write_code_signature(layout: &MachOLayout, code_signature: &mut [u8]) -> Resu
 
     identifier[..CS_IDENTIFIER_STRING.len()].copy_from_slice(CS_IDENTIFIER_STRING);
     identifier[CS_IDENTIFIER_STRING.len()..].fill(0);
+    hashes.copy_from_slice(&calculated_hashes);
 
     Ok(())
 }

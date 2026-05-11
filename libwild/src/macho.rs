@@ -264,7 +264,7 @@ pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDE
 pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 12;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 // SHA-256 is being used
-pub(crate) const CS_HASH_SIZE: u8 = 16;
+pub(crate) const CS_HASH_SIZE: u8 = 32;
 
 pub(crate) const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
 pub(crate) const CSSLOT_CODEDIRECTORY: u32 = 0;

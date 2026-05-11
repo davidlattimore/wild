@@ -40,6 +40,7 @@ nix = { workspace = true, optional = true }
 object = { workspace = true }
 perfetto-recorder = { workspace = true }
 rayon = { workspace = true }
+sha2 = { workspace = true }
 sharded-offset-map = { workspace = true }
 sharded-vec-writer = { workspace = true }
 smallvec = { workspace = true }
