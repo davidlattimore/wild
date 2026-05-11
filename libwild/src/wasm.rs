@@ -1180,6 +1180,13 @@ impl platform::Platform for Wasm {
         // Wasm uses linear memory; the linker just lays out at offset 0.
         0
     }
+
+    fn extend_last_part_of_file(
+        record: &crate::layout::OutputRecordLayout,
+        last_part_id: crate::part_id::PartId,
+    ) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
