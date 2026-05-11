@@ -261,6 +261,8 @@ fn test_merge_parts() {
         output_section_id::DYLD_CHAINED_FIXUPS,
         output_section_id::CHAINED_FIXUP_TABLE,
         output_section_id::SYMTAB_COMMAND,
+        output_section_id::CODE_SIGNATURE,
+        output_section_id::CODE_SIGNATURE_COMMAND,
     ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
