@@ -95,6 +95,7 @@ use object::macho::SEG_TEXT;
 use object::slice_from_bytes_mut;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSlice;
 use sha2::Digest;
 use sha2::Sha256;
 use std::ops::BitAnd;
@@ -711,11 +712,11 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     let code_signature_section = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);
-    // TODO: parallel execution
-    let calculated_hashes = sized_output.out[..code_signature_section.file_offset]
-        .chunks(CS_BLOCK_SIZE)
-        .flat_map(Sha256::digest)
-        .collect_vec();
+    let calculated_hashes: Vec<_> = sized_output.out[..code_signature_section.file_offset]
+        .par_chunks(CS_BLOCK_SIZE)
+        .map(Sha256::digest)
+        .collect();
+    let calculated_hashes = calculated_hashes.into_iter().flatten().collect_vec();
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
