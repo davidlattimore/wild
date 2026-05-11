@@ -350,9 +350,9 @@ impl<'data> LayoutRulesBuilder<'data> {
         })
     }
 
-    pub(crate) fn build<P: Platform>(mut self) -> LayoutRules<'data> {
+    pub(crate) fn build<P: Platform>(mut self, args: &P::Args) -> LayoutRules<'data> {
         let section_rules = if self.rules.is_empty() {
-            SectionRules::from_rules(P::default_layout_rules())
+            SectionRules::from_rules(&P::default_layout_rules(args))
         } else {
             P::linker_script_rules_pre_build(&mut self);
             SectionRules::from_rules(&self.rules)
@@ -580,7 +580,9 @@ pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> Sec
 
 #[test]
 fn test_section_mapping() {
-    let rules = SectionRules::from_rules(crate::elf::Elf::default_layout_rules());
+    let rules = SectionRules::from_rules(&crate::elf::Elf::default_layout_rules(
+        &crate::args::elf::ElfArgs::new().unwrap(),
+    ));
     let header = crate::elf::SectionHeader {
         sh_name: Default::default(),
         sh_type: Default::default(),

@@ -1328,8 +1328,8 @@ impl platform::Platform for MachO {
         RawSymbolName { name: name_bytes }
     }
 
-    fn default_layout_rules() -> &'static [crate::layout_rules::SectionRule<'static>] {
-        DEFAULT_SECTION_RULES
+    fn default_layout_rules(args: &Self::Args) -> Vec<crate::layout_rules::SectionRule<'static>> {
+        DEFAULT_SECTION_RULES.to_vec()
     }
 
     fn build_output_order_and_program_segments<'data>(

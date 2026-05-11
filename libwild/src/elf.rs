@@ -1694,8 +1694,8 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn default_layout_rules() -> &'static [SectionRule<'static>] {
-        DEFAULT_SECTION_RULES
+    fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
+        DEFAULT_SECTION_RULES.to_vec()
     }
 
     fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {

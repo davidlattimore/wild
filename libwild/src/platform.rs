@@ -652,7 +652,7 @@ pub(crate) trait Platform:
         <Self::RawSymbolName<'data> as RawSymbolName>::parse(name_bytes)
     }
 
-    fn default_layout_rules() -> &'static [SectionRule<'static>];
+    fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>>;
 
     /// Only called if a linker script that provides custom sections and layout rules is present.
     /// Gives the platform a chance to add extra built-in rules that need to be present even when a
