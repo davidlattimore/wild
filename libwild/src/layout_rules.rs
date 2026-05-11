@@ -166,7 +166,6 @@ pub(crate) enum SectionRuleOutcome {
     Debug,
     RiscVAttribute,
     SortedSection(SectionOutputInfo),
-    SFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

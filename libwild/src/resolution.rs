@@ -1279,15 +1279,6 @@ fn resolve_section<'data, P: Platform>(
                 part_id::UNMAPPED,
             ));
         }
-        SectionRuleOutcome::SFrame => {
-            if !args.should_output_sframe() {
-                return Ok((SectionSlot::Discard, part_id::UNMAPPED));
-            }
-
-            part_id = part_id::SFRAME;
-            must_load |= true;
-            unloaded_section = UnloadedSection::new();
-        }
     };
 
     if part_id == part_id::CUSTOM_PLACEHOLDER {

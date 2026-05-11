@@ -1319,8 +1319,4 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn should_output_partial_object(&self) -> bool {
         false
     }
-
-    fn should_output_sframe(&self) -> bool {
-        false
-    }
 }
