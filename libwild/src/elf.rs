@@ -1694,8 +1694,21 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
-        DEFAULT_SECTION_RULES.to_vec()
+    fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>> {
+        let sframe_outcome = if args.experimental_sframe {
+            SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                output_section_id::SFRAME,
+            ))
+        } else {
+            SectionRuleOutcome::Discard
+        };
+        let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
+        rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+        rules.push(SectionRule::exact(
+            secnames::SFRAME_SECTION_NAME,
+            sframe_outcome,
+        ));
+        rules
     }
 
     fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {
@@ -5132,12 +5145,6 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
-    SectionRule::exact(
-        secnames::SFRAME_SECTION_NAME,
-        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
-            output_section_id::SFRAME,
-        )),
-    ),
     SectionRule::exact(
         secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
         SectionRuleOutcome::NoteGnuProperty,
