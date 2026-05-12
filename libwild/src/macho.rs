@@ -1537,7 +1537,9 @@ impl platform::Platform for MachO {
             last_part_id == part_id::CODE_SIGNATURE,
             "code signature must be last part_id"
         );
-        // The SHA hashes encompass the entire file excluding the CODE_SIGNATURE part ID.
+        // The CODE_SIGNATURE size depends on the final file size, excluding the
+        // signature itself. Compute it after layout because there is one SHA hash
+        // per file block (4 KiB) covered by the signature.
         Ok(record.file_offset.div_ceil(CS_BLOCK_SIZE) * CS_HASH_SIZE as usize)
     }
 }
