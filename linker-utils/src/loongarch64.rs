@@ -69,7 +69,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_LARCH_64 => (
             RelocationKind::Absolute,
-            RelocationSize::ByteSize(4),
+            RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
             1,
