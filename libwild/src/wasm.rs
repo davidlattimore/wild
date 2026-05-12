@@ -7,6 +7,8 @@ use crate::args::wasm::WasmArgs;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::layout_rules::SectionKind;
+use crate::output_section_id::SectionName;
 use crate::platform;
 use linker_utils::utils::u32_from_slice;
 use std::ops::Range;
@@ -628,17 +630,29 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SegmentType {}
+/// Segment kinds used purely to drive output ordering. Wasm has no loadable program segments. These
+/// variants are just a way to group the output sections in the canonical module layout.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub(crate) enum SegmentType {
+    /// Holds the 8-byte module preamble.
+    Header,
+    /// Holds all standard wasm sections in canonical order.
+    Module,
+    /// Anything not explicitly placed.
+    #[default]
+    Unused,
+}
 
 impl platform::SegmentType for SegmentType {}
 
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct ProgramSegmentDef {}
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProgramSegmentDef {
+    pub(crate) segment_type: SegmentType,
+}
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("WasmProgramSegment")
+        write!(f, "{:?}", self.segment_type)
     }
 }
 
@@ -646,19 +660,19 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     type Platform = Wasm;
 
     fn is_writable(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_executable(self) -> bool {
-        todo!()
+        false
     }
 
     fn always_keep(self) -> bool {
-        todo!()
+        true
     }
 
     fn is_loadable(self) -> bool {
-        todo!()
+        false
     }
 
     fn is_stack(self) -> bool {
@@ -670,21 +684,128 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn order_key(self) -> usize {
-        0
+        self.segment_type as usize
     }
 
     fn should_include_section(
         self,
-        section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
+        _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        todo!()
+        use crate::output_section_id as osid;
+
+        let section_segment_type = match section_id {
+            osid::FILE_HEADER => SegmentType::Header,
+            osid::WASM_TYPE
+            | osid::WASM_IMPORT
+            | osid::WASM_FUNCTION
+            | osid::WASM_TABLE
+            | osid::WASM_MEMORY
+            | osid::WASM_GLOBAL
+            | osid::WASM_EXPORT
+            | osid::WASM_START
+            | osid::WASM_ELEMENT
+            | osid::WASM_DATA_COUNT
+            | osid::WASM_CODE
+            | osid::WASM_DATA => SegmentType::Module,
+            _ => SegmentType::Unused,
+        };
+
+        self.segment_type == section_segment_type
     }
 }
 
-pub(crate) struct BuiltInSectionDetails {}
+pub(crate) struct BuiltInSectionDetails {
+    pub(crate) kind: SectionKind<'static>,
+    pub(crate) target_segment_type: Option<SegmentType>,
+}
 
 impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
+
+const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
+    kind: SectionKind::Primary(SectionName(&[])),
+    target_segment_type: None,
+};
+
+const SECTION_DEFINITIONS: [BuiltInSectionDetails;
+    crate::output_section_id::NUM_BUILT_IN_SECTIONS] = {
+    use crate::layout_rules::SectionKind;
+    use crate::output_section_id as osid;
+    use crate::output_section_id::SectionName;
+
+    let mut defs: [BuiltInSectionDetails; osid::NUM_BUILT_IN_SECTIONS] =
+        [DEFAULT_DEFS; osid::NUM_BUILT_IN_SECTIONS];
+
+    // The module preamble.
+    defs[osid::FILE_HEADER.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"WASM_HEADER")),
+        target_segment_type: Some(SegmentType::Header),
+    };
+
+    // Standard wasm sections.
+    defs[osid::WASM_TYPE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"type")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_IMPORT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"import")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_FUNCTION.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"function")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_TABLE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"table")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_MEMORY.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"memory")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_GLOBAL.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"global")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_EXPORT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"export")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_START.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"start")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_ELEMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"element")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_DATA_COUNT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"data_count")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_CODE.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"code")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+    defs[osid::WASM_DATA.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"data")),
+        target_segment_type: Some(SegmentType::Module),
+    };
+
+    defs
+};
+
+const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+    ProgramSegmentDef {
+        segment_type: SegmentType::Header,
+    },
+    ProgramSegmentDef {
+        segment_type: SegmentType::Module,
+    },
+    ProgramSegmentDef {
+        segment_type: SegmentType::Unused,
+    },
+];
 
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
@@ -824,7 +945,7 @@ impl platform::Platform for Wasm {
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
-        &[]
+        &SECTION_DEFINITIONS
     }
 
     fn finalise_group_layout(
@@ -939,7 +1060,7 @@ impl platform::Platform for Wasm {
     }
 
     fn program_segment_defs() -> &'static [Self::ProgramSegmentDef] {
-        &[]
+        PROGRAM_SEGMENT_DEFS
     }
 
     fn unconditional_segment_defs() -> &'static [Self::ProgramSegmentDef] {
@@ -956,8 +1077,16 @@ impl platform::Platform for Wasm {
 
     fn built_in_section_infos<'data>()
     -> Vec<crate::output_section_id::SectionOutputInfo<'data, Self>> {
-        // TODO
-        Vec::new()
+        SECTION_DEFINITIONS
+            .iter()
+            .map(|d| crate::output_section_id::SectionOutputInfo {
+                section_attributes: SectionAttributes::default(),
+                kind: d.kind,
+                min_alignment: crate::alignment::MIN,
+                location: None,
+                secondary_order: None,
+            })
+            .collect()
     }
 
     fn create_layout_properties<'data, 'states, 'files, A: platform::Arch<Platform = Self>>(
@@ -1161,7 +1290,7 @@ impl platform::Platform for Wasm {
     }
 
     fn build_output_order_and_program_segments<'data>(
-        custom: &crate::output_section_id::CustomSectionIds,
+        _custom: &crate::output_section_id::CustomSectionIds,
         output_kind: crate::output_kind::OutputKind,
         output_sections: &crate::output_section_id::OutputSections<'data, Self>,
         secondary: &crate::output_section_map::OutputSectionMap<
@@ -1171,7 +1300,29 @@ impl platform::Platform for Wasm {
         crate::output_section_id::OutputOrder,
         crate::program_segments::ProgramSegments<Self::ProgramSegmentDef>,
     ) {
-        todo!()
+        use crate::output_section_id as osid;
+
+        let mut builder = crate::output_section_id::OutputOrderBuilder::<Self>::new(
+            output_kind,
+            output_sections,
+            secondary,
+        );
+
+        builder.add_section(osid::FILE_HEADER);
+        builder.add_section(osid::WASM_TYPE);
+        builder.add_section(osid::WASM_IMPORT);
+        builder.add_section(osid::WASM_FUNCTION);
+        builder.add_section(osid::WASM_TABLE);
+        builder.add_section(osid::WASM_MEMORY);
+        builder.add_section(osid::WASM_GLOBAL);
+        builder.add_section(osid::WASM_EXPORT);
+        builder.add_section(osid::WASM_START);
+        builder.add_section(osid::WASM_ELEMENT);
+        builder.add_section(osid::WASM_DATA_COUNT);
+        builder.add_section(osid::WASM_CODE);
+        builder.add_section(osid::WASM_DATA);
+
+        builder.build()
     }
 
     fn default_symtab_entry() -> Self::SymtabEntry {}
