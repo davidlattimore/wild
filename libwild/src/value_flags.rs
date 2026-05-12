@@ -104,6 +104,9 @@ bitflags! {
         /// is the target of a range-limited relocation in a primary-part section that may need a
         /// range-extension thunk.
         const HAS_RANGE_LIMITED_REL = 1 << 15;
+
+        /// Whether the symbol has a reference from non-IR code.
+        const HAS_NON_IR_REF = 1 << 16;
     }
 }
 

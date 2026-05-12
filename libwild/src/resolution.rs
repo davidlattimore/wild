@@ -858,12 +858,19 @@ fn load_prelude<'scope, 'data, P: Platform>(
     // The start symbol could be defined within an archive entry. If it is, then we need to load
     // it. We don't currently store the resulting SymbolId, but instead look it up again during
     // layout.
-    load_symbol_named(
+    let symbol_id = load_symbol_named(
         resources,
         &mut SymbolId::undefined(),
         resources.symbol_db.entry_symbol_name(),
         scope,
     );
+
+    if let Some(symbol_id) = symbol_id {
+        resources
+            .per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::HAS_NON_IR_REF);
+    }
 
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
@@ -883,16 +890,19 @@ fn load_symbol_named<'scope, 'data, P: Platform>(
     definition_out: &mut SymbolId,
     name: &[u8],
     scope: &Scope<'scope>,
-) {
-    if let Some(symbol_id) = resources
+) -> Option<SymbolId> {
+    let symbol_id = resources
         .symbol_db
-        .get_unversioned(&UnversionedSymbolName::prehashed(name))
-    {
+        .get_unversioned(&UnversionedSymbolName::prehashed(name));
+
+    if let Some(symbol_id) = symbol_id {
         *definition_out = symbol_id;
 
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         resources.try_request_file_id(symbol_file_id, scope);
     }
+
+    symbol_id
 }
 
 /// Where there are multiple references to undefined symbols with the same name, pick one reference
@@ -1371,6 +1381,7 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
                     obj.is_dynamic(),
                     obj.file_id,
                     scope,
+                    false,
                 )
             },
         )
@@ -1393,6 +1404,7 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
     is_dynamic: bool,
     file_id: FileId,
     scope: &Scope<'scope>,
+    from_ir: bool,
 ) -> Result {
     debug_assert_bail!(
         !local_symbol_attributes.is_local,
@@ -1434,6 +1446,14 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
                     Visibility::Default => {}
                 }
             }
+
+            if !from_ir {
+                resources
+                    .per_symbol_flags
+                    .get_atomic(symbol_id)
+                    .or_assign(ValueFlags::HAS_NON_IR_REF);
+            }
+
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
 
             if symbol_file_id != file_id && !local_symbol_attributes.is_weak {

@@ -38,7 +38,9 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
@@ -212,6 +214,7 @@ impl<'data> LinkerPlugin<'data> {
                 let ctx = AllSymbolsReadContext {
                     symbol_db,
                     resolved_groups: &resolver.resolved_groups,
+                    per_symbol_flags,
                 };
 
                 ctx.set_current_while(|| cb().to_result("all_symbols_read"))?;
@@ -881,7 +884,13 @@ extern "C" fn get_symbols_v3(
             let symbol_id_range = file.symbol_id_range;
 
             for sym in symbols.iter_mut() {
-                let resolution = get_symbol_resolution(sym, ctx.symbol_db, symbol_id_range);
+                let resolution = get_symbol_resolution(
+                    sym,
+                    ctx.symbol_db,
+                    symbol_id_range,
+                    ctx.per_symbol_flags,
+                );
+
                 sym.resolution = resolution as i32;
             }
 
@@ -894,6 +903,7 @@ fn get_symbol_resolution<'data>(
     sym: &mut RawPluginSymbol,
     symbol_db: &SymbolDb<'data, Elf>,
     symbol_id_range: SymbolIdRange,
+    per_symbol_flags: &PerSymbolFlags,
 ) -> PluginSymbolResolution {
     // It'd be nice if we didn't have to do hashmap lookups for all the symbols again, since we
     // effectively did that when the symbols were added. We could do that if the plugin provided us
@@ -929,8 +939,18 @@ fn get_symbol_resolution<'data>(
             _ => PluginSymbolResolution::ResolvedExec,
         }
     } else if symbol_id_range.contains(symbol_id) {
-        // TODO: Distinguish based on kinds of references.
-        PluginSymbolResolution::PrevailingDef
+        if per_symbol_flags
+            .flags_for_symbol(symbol_id)
+            .contains(ValueFlags::HAS_NON_IR_REF)
+        {
+            PluginSymbolResolution::PrevailingDef
+        } else if symbol_db.output_kind.is_shared_object() {
+            // TODO: Actually determine if the symbol is to be exported rather than just assuming
+            // everything is exported when output is a shared object.
+            PluginSymbolResolution::PrevailingDefIronlyExp
+        } else {
+            PluginSymbolResolution::PrevailingDefIronly
+        }
     } else {
         let defining_file = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
         match defining_file {
@@ -1097,6 +1117,7 @@ impl ClaimContext<'_> {
 struct AllSymbolsReadContext<'scope, 'data, P: Platform> {
     symbol_db: &'scope SymbolDb<'data, P>,
     resolved_groups: &'scope [ResolvedGroup<'data, P>],
+    per_symbol_flags: &'scope PerSymbolFlags,
 }
 
 impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
@@ -1379,6 +1400,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                         false,
                         obj.file_id,
                         scope,
+                        true,
                     )?;
                 }
 
