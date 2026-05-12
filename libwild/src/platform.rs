@@ -536,8 +536,12 @@ pub(crate) trait Platform:
 
     /// Gives the platform a chance to append data to the last part_id given
     /// the layout knowledge of the last part.
-    fn extend_last_part_of_file(record: &OutputRecordLayout, last_part_id: PartId)
-    -> Result<usize>;
+    fn extend_last_part_of_file(
+        _record: &OutputRecordLayout,
+        _last_part_id: PartId,
+    ) -> Result<usize> {
+        Ok(0)
+    }
 
     fn finalise_layout_epilogue<'data>(
         epilogue_state: &mut Self::EpilogueLayoutExt,

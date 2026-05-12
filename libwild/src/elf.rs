@@ -1978,13 +1978,6 @@ impl platform::Platform for Elf {
     fn default_symtab_entry() -> Self::SymtabEntry {
         Default::default()
     }
-
-    fn extend_last_part_of_file(
-        _record: &OutputRecordLayout,
-        _last_part_id: part_id::PartId,
-    ) -> Result<usize> {
-        Ok(0)
-    }
 }
 
 /// Marks the symbol version associated with the dynamic symbol `GLIBC_ABI_DT_RELR` as needed.
