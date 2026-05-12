@@ -20,6 +20,8 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
+use crate::parsing::Redirect;
+use crate::parsing::RedirectKind;
 use crate::parsing::SymbolPlacement;
 use crate::platform::Platform;
 use crate::platform::SectionHeader;
@@ -43,17 +45,19 @@ fn placement_from_symbol_definition_value<'data>(
             SymbolPlacement::SegmentStart(*seg_name, default)
         }
         Expression::Number(n) => SymbolPlacement::DefsymAbsolute(*n),
-        Expression::Symbol(sym) => {
-            let sym_str = std::str::from_utf8(sym)
-                .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
-            SymbolPlacement::DefsymSymbol(sym_str, 0)
-        }
+        Expression::Symbol(sym) => SymbolPlacement::Redirect(Redirect {
+            kind: RedirectKind::Script,
+            target_name: sym,
+            offset: 0,
+        }),
         Expression::Add(l, r) => {
             if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
             {
-                let sym_str = std::str::from_utf8(sym)
-                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
-                SymbolPlacement::DefsymSymbol(sym_str, *offset as i64)
+                SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    target_name: sym,
+                    offset: *offset as i64,
+                })
             } else {
                 return Err(crate::error!(
                     "Unsupported expression in symbol definition for '{}'",
@@ -64,9 +68,11 @@ fn placement_from_symbol_definition_value<'data>(
         Expression::Subtract(l, r) => {
             if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
             {
-                let sym_str = std::str::from_utf8(sym)
-                    .map_err(|_| crate::error!("Symbol name is not valid UTF-8"))?;
-                SymbolPlacement::DefsymSymbol(sym_str, -(*offset as i64))
+                SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    target_name: sym,
+                    offset: -(*offset as i64),
+                })
             } else {
                 return Err(crate::error!(
                     "Unsupported expression in symbol definition for '{}'",
@@ -350,9 +356,9 @@ impl<'data> LayoutRulesBuilder<'data> {
         })
     }
 
-    pub(crate) fn build<P: Platform>(mut self) -> LayoutRules<'data> {
+    pub(crate) fn build<P: Platform>(mut self, args: &P::Args) -> LayoutRules<'data> {
         let section_rules = if self.rules.is_empty() {
-            SectionRules::from_rules(P::default_layout_rules())
+            SectionRules::from_rules(&P::default_layout_rules(args))
         } else {
             P::linker_script_rules_pre_build(&mut self);
             SectionRules::from_rules(&self.rules)
@@ -580,7 +586,9 @@ pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> Sec
 
 #[test]
 fn test_section_mapping() {
-    let rules = SectionRules::from_rules(crate::elf::Elf::default_layout_rules());
+    let rules = SectionRules::from_rules(&crate::elf::Elf::default_layout_rules(
+        &crate::args::elf::ElfArgs::new().unwrap(),
+    ));
     let header = crate::elf::SectionHeader {
         sh_name: Default::default(),
         sh_type: Default::default(),

@@ -4434,7 +4434,7 @@ fn write_internal_dynsym(
 ) -> Result {
     if matches!(
         def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
+        crate::parsing::SymbolPlacement::Redirect(_)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ) {
         return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
@@ -4479,7 +4479,7 @@ fn write_defsym_dynsym(
 ) -> Result {
     debug_assert!(matches!(
         def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
+        crate::parsing::SymbolPlacement::Redirect(_)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ));
 
@@ -4491,22 +4491,18 @@ fn write_defsym_dynsym(
 
     // For DefsymSymbol, try to get the attributes (section, type) from the target symbol
     let (shndx, st_type) =
-        if let crate::parsing::SymbolPlacement::DefsymSymbol(target_name, _offset) =
-            def_info.placement
-        {
+        if let crate::parsing::SymbolPlacement::Redirect(redirect) = def_info.placement {
             let target_symbol_id =
                 layout
                     .symbol_db
                     .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        target_name.as_bytes(),
+                        redirect.target_name,
                     ));
 
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                return Err(layout
-                    .symbol_db
-                    .missing_defsym_target_error(def_info.name, target_name));
+                return redirect.missing_target();
             }
         } else {
             (object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)
@@ -4700,24 +4696,20 @@ fn write_internal_symbols(
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
         // For DefsymSymbol, get attributes from the target symbol
-        let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(
-            target_name,
-            _offset,
-        ) = def_info.placement
+        let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
+            def_info.placement
         {
             let target_symbol_id =
                 layout
                     .symbol_db
                     .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        target_name.as_bytes(),
+                        redirect.target_name,
                     ));
 
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                return Err(layout
-                    .symbol_db
-                    .missing_defsym_target_error(def_info.name, target_name));
+                return redirect.missing_target();
             }
         } else {
             let shndx = def_info

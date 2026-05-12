@@ -915,31 +915,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.args.entry_symbol_name(self.entry)
     }
 
-    pub(crate) fn defsym_defined_via_cli_option(&self, symbol_name: &[u8]) -> bool {
-        self.args
-            .defsym()
-            .iter()
-            .any(|(name, _)| name.as_bytes() == symbol_name)
-    }
-
-    pub(crate) fn missing_defsym_target_error(
-        &self,
-        symbol_name: &[u8],
-        target_name: &str,
-    ) -> Error {
-        if self.defsym_defined_via_cli_option(symbol_name) {
-            crate::error!(
-                "Symbol '{}' referenced by --defsym does not exist",
-                target_name
-            )
-        } else {
-            crate::error!(
-                "Undefined symbol '{}' referenced in expression",
-                target_name
-            )
-        }
-    }
-
     fn apply_linker_script(&mut self, script: &InputLinkerScript<'data>) {
         for cmd in &script.script.commands {
             if let crate::linker_script::Command::Entry(symbol_name) = cmd {
@@ -2041,7 +2016,7 @@ impl<'data, P: Platform> Prelude<'data, P> {
                 SymbolPlacement::SectionStart(_)
                 | SymbolPlacement::SectionEnd(_)
                 | SymbolPlacement::SectionGroupEnd(_)
-                | SymbolPlacement::DefsymSymbol(_, _)
+                | SymbolPlacement::Redirect(_)
                 | SymbolPlacement::LoadBaseAddress
                 | SymbolPlacement::SegmentStart(_, _) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
@@ -2068,7 +2043,7 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::DefsymAbsolute(_)
-            | SymbolPlacement::DefsymSymbol(_, _) => None,
+            | SymbolPlacement::Redirect(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),

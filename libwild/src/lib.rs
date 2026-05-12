@@ -325,7 +325,7 @@ impl Linker {
             symbol_db.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
         }
 
-        let layout_rules = layout_rules_builder.build::<P>();
+        let layout_rules = layout_rules_builder.build::<P>(args);
 
         let resolved = resolver.resolve_sections_and_canonicalise_undefined(
             &mut symbol_db,

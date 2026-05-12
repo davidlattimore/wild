@@ -1147,8 +1147,8 @@ impl platform::Platform for Wasm {
         RawSymbolName { name: name_bytes }
     }
 
-    fn default_layout_rules() -> &'static [crate::layout_rules::SectionRule<'static>] {
-        &[]
+    fn default_layout_rules(_args: &Self::Args) -> Vec<crate::layout_rules::SectionRule<'static>> {
+        Vec::new()
     }
 
     fn align_load_segment_start(
