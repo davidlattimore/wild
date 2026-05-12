@@ -99,6 +99,7 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::ops::BitAnd;
 use tracing::debug_span;
+use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 
 const LE: Endianness = Endianness::Little;
@@ -215,7 +216,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         );
     }
     let (chained_fixups_header, rest): (&mut ChainedFixupsHeader, &mut [u8]) =
-        from_bytes_mut(chained_fixup_table)
+        ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
             .map_err(|_| error!("Invalid chained fixups header allocation"))?;
     let (starts_in_image, _) =
         slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
@@ -684,22 +685,21 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
         );
     }
 
-    header.fixups_version.set(LE, 0);
+    header.fixups_version.set(0);
     header
         .starts_offset
-        .set(LE, size_of::<ChainedFixupsHeader>() as u32);
+        .set(size_of::<ChainedFixupsHeader>() as u32);
     header
         .imports_offset
-        .set(LE, (size_of::<ChainedFixupsHeader>() + starts_len) as u32);
+        .set((size_of::<ChainedFixupsHeader>() + starts_len) as u32);
     header
         .symbols_offset
-        .set(LE, (size_of::<ChainedFixupsHeader>() + starts_len) as u32);
-    header.imports_count.set(LE, 0);
-    header.imports_format.set(
-        LE,
-        DyldChainedFixupsImporstFormat::DYLD_CHAINED_IMPORT as u32,
-    );
-    header.symbols_format.set(LE, 0);
+        .set((size_of::<ChainedFixupsHeader>() + starts_len) as u32);
+    header.imports_count.set(0);
+    header
+        .imports_format
+        .set(DyldChainedFixupsImporstFormat::DYLD_CHAINED_IMPORT as u32);
+    header.symbols_format.set(0);
 
     starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
@@ -721,72 +721,67 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     let code_signature = section_buffers.get_mut(output_section_id::CODE_SIGNATURE);
 
     let (super_blob, rest): (&mut CodeSignatureSuperBlob, &mut [u8]) =
-        from_bytes_mut(code_signature).map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
-    let (blob_indices, rest) = slice_from_bytes_mut::<CodeSignatureBlobIndex>(rest, 1)
+        CodeSignatureSuperBlob::mut_from_prefix(code_signature)
+            .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
+    let (blob_indices, rest) = <[CodeSignatureBlobIndex]>::mut_from_prefix_with_elems(rest, 1)
         .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let blob_index = &mut blob_indices[0];
-    let (code_directories, rest) = slice_from_bytes_mut::<CodeSignatureCodeDirectory>(rest, 1)
-        .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
+    let (code_directories, rest) =
+        <[CodeSignatureCodeDirectory]>::mut_from_prefix_with_elems(rest, 1)
+            .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let code_dir = &mut code_directories[0];
     let (identifier, hashes) = rest.split_at_mut(CS_PADDED_FILENAME_SIZE as usize);
 
-    super_blob.magic.set(BigEndian, CSMAGIC_EMBEDDED_SIGNATURE);
+    super_blob.magic.set(CSMAGIC_EMBEDDED_SIGNATURE);
     super_blob
         .length
-        .set(BigEndian, code_signature_section.file_size as u32);
-    super_blob.count.set(BigEndian, 1);
+        .set(code_signature_section.file_size as u32);
+    super_blob.count.set(1);
 
-    blob_index.type_.set(BigEndian, CSSLOT_CODEDIRECTORY);
-    blob_index
-        .offset
-        .set(BigEndian, CS_BLOB_HEADERS_SIZE as u32);
-    blob_index.padding.set(BigEndian, 0);
+    blob_index.type_.set(CSSLOT_CODEDIRECTORY);
+    blob_index.offset.set(CS_BLOB_HEADERS_SIZE as u32);
+    blob_index.padding.set(0);
 
-    code_dir.magic.set(BigEndian, CSMAGIC_CODEDIRECTORY);
-    code_dir.length.set(
-        BigEndian,
-        (code_signature_section.file_size as u64 - CS_BLOB_HEADERS_SIZE) as u32,
-    );
-    code_dir.version.set(BigEndian, CS_SUPPORTSEXECSEG);
-    code_dir.flags.set(BigEndian, CS_ADHOC | CS_LINKER_SIGNED);
-    code_dir.hash_offset.set(
-        BigEndian,
-        size_of::<CodeSignatureCodeDirectory>() as u32 + CS_PADDED_FILENAME_SIZE as u32,
-    );
+    code_dir.magic.set(CSMAGIC_CODEDIRECTORY);
+    code_dir
+        .length
+        .set((code_signature_section.file_size as u64 - CS_BLOB_HEADERS_SIZE) as u32);
+    code_dir.version.set(CS_SUPPORTSEXECSEG);
+    code_dir.flags.set(CS_ADHOC | CS_LINKER_SIGNED);
+    code_dir
+        .hash_offset
+        .set(size_of::<CodeSignatureCodeDirectory>() as u32 + CS_PADDED_FILENAME_SIZE as u32);
     code_dir
         .ident_offset
-        .set(BigEndian, size_of::<CodeSignatureCodeDirectory>() as u32);
-    code_dir.n_special_slots.set(BigEndian, 0);
-    code_dir.n_code_slots.set(
-        BigEndian,
-        code_signature_section.file_offset.div_ceil(CS_BLOCK_SIZE) as u32,
-    );
+        .set(size_of::<CodeSignatureCodeDirectory>() as u32);
+    code_dir.n_special_slots.set(0);
+    code_dir
+        .n_code_slots
+        .set(code_signature_section.file_offset.div_ceil(CS_BLOCK_SIZE) as u32);
     code_dir
         .code_limit
-        .set(BigEndian, code_signature_section.file_offset as u32);
+        .set(code_signature_section.file_offset as u32);
     code_dir.hash_size = CS_HASH_SIZE;
     code_dir.hash_type = CS_HASHTYPE_SHA256;
     code_dir.platform = 0;
     code_dir.page_size = CS_BLOCK_SIZE_EXP;
-    code_dir.spare2.set(BigEndian, 0);
-    code_dir.scatter_offset.set(BigEndian, 0);
-    code_dir.team_offset.set(BigEndian, 0);
-    code_dir.spare3.set(BigEndian, 0);
-    code_dir.code_limit64.set(BigEndian, 0);
+    code_dir.spare2.set(0);
+    code_dir.scatter_offset.set(0);
+    code_dir.team_offset.set(0);
+    code_dir.spare3.set(0);
+    code_dir.code_limit64.set(0);
 
     let text_segment_size = get_segment_sections(layout, SegmentType::Text)
         .ok_or_else(|| error!("Text segment is mandatory"))?
         .segment_size;
     code_dir
         .exec_seg_base
-        .set(BigEndian, text_segment_size.file_offset as u64);
+        .set(text_segment_size.file_offset as u64);
     code_dir
         .exec_seg_limit
-        .set(BigEndian, text_segment_size.file_size as u64);
+        .set(text_segment_size.file_size as u64);
     // TODO: change once shared libraries are supported
-    code_dir
-        .exec_seg_flags
-        .set(BigEndian, CS_EXECSEG_MAIN_BINARY);
+    code_dir.exec_seg_flags.set(CS_EXECSEG_MAIN_BINARY);
 
     identifier[..CS_IDENTIFIER_STRING.len()].copy_from_slice(CS_IDENTIFIER_STRING);
     identifier[CS_IDENTIFIER_STRING.len()..].fill(0);

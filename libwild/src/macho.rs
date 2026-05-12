@@ -33,13 +33,9 @@ use crate::platform::Symbol as _;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
 use gimli::LittleEndian;
-use object::BigEndian;
 use object::Endian;
 use object::Endianness;
 use object::SymbolIndex;
-use object::U16;
-use object::U32;
-use object::U64;
 use object::macho;
 use object::macho::N_ABS;
 use object::macho::N_EXT;
@@ -57,6 +53,13 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use zerocopy::BigEndian;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
+use zerocopy::U32;
+use zerocopy::U64;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
@@ -90,7 +93,7 @@ pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>
 pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
 pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
-pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader<Endianness>;
+pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader;
 pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 
 // TODO: move the following data types to object crate
@@ -105,28 +108,24 @@ pub(crate) enum DyldChainedFixupsImporstFormat {
 }
 
 // header of the LC_DYLD_CHAINED_FIXUPS payload
-#[derive(Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
-pub(crate) struct DyldChainedFixupsHeader<E: Endian> {
+pub(crate) struct DyldChainedFixupsHeader {
     // 0
-    pub(crate) fixups_version: U32<E>,
+    pub(crate) fixups_version: U32<zerocopy::LittleEndian>,
     // offset of dyld_chained_starts_in_image in chain_data
-    pub(crate) starts_offset: U32<E>,
+    pub(crate) starts_offset: U32<zerocopy::LittleEndian>,
     // offset of imports table in chain_data
-    pub(crate) imports_offset: U32<E>,
+    pub(crate) imports_offset: U32<zerocopy::LittleEndian>,
     // offset of symbol strings in chain_data
-    pub(crate) symbols_offset: U32<E>,
+    pub(crate) symbols_offset: U32<zerocopy::LittleEndian>,
     // number of imported symbol names
-    pub(crate) imports_count: U32<E>,
+    pub(crate) imports_count: U32<zerocopy::LittleEndian>,
     // DYLD_CHAINED_IMPORT*
-    pub(crate) imports_format: U32<E>,
+    pub(crate) imports_format: U32<zerocopy::LittleEndian>,
     // 0 => uncompressed, 1 => zlib compressed
-    pub(crate) symbols_format: U32<E>,
+    pub(crate) symbols_format: U32<zerocopy::LittleEndian>,
 }
-
-// Safety:
-// `DyldChainedFixupsHeader` is repr(C), contains only `U32<E>` fields, and has no padding.
-unsafe impl<E: Endian + 'static> object::Pod for DyldChainedFixupsHeader<E> {}
 
 // This struct is embedded in LC_DYLD_CHAINED_FIXUPS payload
 // struct dyld_chained_starts_in_image
@@ -139,7 +138,7 @@ unsafe impl<E: Endian + 'static> object::Pod for DyldChainedFixupsHeader<E> {}
 // Data structures mirroring the following URL:
 // https://github.com/apple-oss-distributions/xnu/blob/94d3b452840153a99b38a3a9659680b2a006908e/osfmk/kern/cs_blobs.h.
 
-#[derive(Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct CodeSignatureSuperBlob {
     // magic number
@@ -153,11 +152,7 @@ pub(crate) struct CodeSignatureSuperBlob {
     // followed by Blobs in no particular order as indicated by offsets in index
 }
 
-// Safety:
-// Is repr(C) and contains only `UX<E>` fields, and has no padding.
-unsafe impl object::Pod for CodeSignatureSuperBlob {}
-
-#[derive(Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct CodeSignatureBlobIndex {
     // type of entry
@@ -169,11 +164,7 @@ pub(crate) struct CodeSignatureBlobIndex {
     pub(crate) padding: U32<BigEndian>,
 }
 
-// Safety:
-// Is repr(C) and contains only `UX<E>` fields, and has no padding.
-unsafe impl object::Pod for CodeSignatureBlobIndex {}
-
-#[derive(Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct CodeSignatureCodeDirectory {
     // magic number (CSMAGIC_CODEDIRECTORY)
@@ -233,10 +224,6 @@ pub(crate) struct CodeSignatureCodeDirectory {
     // Version 0x20500 and 0x20600 are unused!
     // followed by dynamic content as located by offset fields above
 }
-
-// Safety:
-// Is repr(C) and contains only `UX<E>` fields, and has no padding.
-unsafe impl object::Pod for CodeSignatureCodeDirectory {}
 
 pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
 pub(crate) const CS_SECTION_ALIGNMENT: u64 = 2u64.pow(CS_SECTION_ALIGNMENT_EXP as u32);
