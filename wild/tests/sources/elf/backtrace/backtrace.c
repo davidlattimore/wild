@@ -21,6 +21,15 @@
 //#RequiresSFrameBacktrace:true
 //#SkipLinker:ld
 
+// Without `--wild-experimental-sframe` we should discard `.sframe` section.
+//#Config:discard-sframe:default
+//#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
+//#RequiresGlibcVersion:2.42
+//#RequiresSFrameBacktrace:true
+//#SkipLinker:ld
+//#RunEnabled:false
+//#DoesNotContain:.sframe
+
 #define _GNU_SOURCE
 #include <execinfo.h>
 #include <stdio.h>
