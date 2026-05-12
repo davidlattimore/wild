@@ -534,9 +534,9 @@ pub(crate) trait Platform:
         args: &Self::Args,
     ) -> Result;
 
-    /// Gives the platform a chance to append data to the last part_id given
-    /// the layout knowledge of the last part.
-    fn extend_last_part_of_file(
+    /// Returns any extra size needed for the part that currently ends last in
+    /// the output file, once its file offset and provisional size are known.
+    fn last_part_size_to_extend(
         _record: &OutputRecordLayout,
         _last_part_id: PartId,
     ) -> Result<usize> {

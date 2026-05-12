@@ -260,7 +260,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .map(|(index, rec)| (rec, PartId::from_usize(index)))
         .max_by_key(|(record, _)| record.file_offset + record.file_size)
     {
-        let extra_file_size = A::Platform::extend_last_part_of_file(record, last_part_id)?;
+        let extra_file_size = A::Platform::last_part_size_to_extend(record, last_part_id)?;
         if extra_file_size > 0 {
             section_part_sizes.increment(last_part_id, extra_file_size as u64);
 

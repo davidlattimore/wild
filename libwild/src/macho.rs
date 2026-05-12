@@ -1529,7 +1529,7 @@ impl platform::Platform for MachO {
         }
     }
 
-    fn extend_last_part_of_file(
+    fn last_part_size_to_extend(
         record: &OutputRecordLayout,
         last_part_id: part_id::PartId,
     ) -> Result<usize> {
