@@ -27,7 +27,6 @@ static int val_a __attribute__((used, section(".mydata.a"))) = 11;
 static int val_underscore __attribute__((used, section(".mydata._"))) = 12;
 
 static int val_hello_world __attribute__((used, section("hello_world"))) = 100;
-static int val_hello_dash_world __attribute__((used, section("hello-world"))) =
-    101;
+static int val_hello_dash_world __attribute__((used, section("hello-world"))) = 101;
 
 static int val_hello_baz __attribute__((used, section("hello_baz"))) = 102;

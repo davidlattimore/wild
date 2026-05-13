@@ -91,8 +91,7 @@ void _start(void) {
   // Default variant / Variant 0 checks
 #if !defined(VARIANT) || VARIANT == 0
   // Just take addresses to ensure symbols are referenced
-  volatile long addr =
-      (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
+  volatile long addr = (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
 
   // Check that _end address is non-zero (it should be our variable)
   if (&_end == 0) {

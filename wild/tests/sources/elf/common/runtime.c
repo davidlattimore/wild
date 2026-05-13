@@ -28,10 +28,7 @@ void runtime_init(void) {}
 void exit_syscall(int exit_code) {
   register int64_t rax __asm__("rax") = EXIT_SYSCALL;
   register int rdi __asm__("rdi") = exit_code;
-  __asm__ __volatile__("syscall"
-                       : "+r"(rax)
-                       : "r"(rdi)
-                       : "rcx", "r11", "memory");
+  __asm__ __volatile__("syscall" : "+r"(rax) : "r"(rdi) : "rcx", "r11", "memory");
 }
 #elif defined(__aarch64__)
 void exit_syscall(int exit_code) {

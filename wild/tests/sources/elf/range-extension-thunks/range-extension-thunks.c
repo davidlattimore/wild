@@ -55,9 +55,7 @@ int call_ifunc1_from_far2(void);
 int call_ifunc2_from_far2(void);
 int call_get_3(void);
 
-__attribute__((section("foo_calls"))) int call_foo3_custom0(void) {
-  return foo3();
-}
+__attribute__((section("foo_calls"))) int call_foo3_custom0(void) { return foo3(); }
 
 int main() {
   if (foo1() != 1) {

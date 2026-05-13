@@ -229,8 +229,7 @@ int main() {
     return 102;
   }
   tvar1 = 20;
-  int ret =
-      pthread_create(&thread1, NULL, thread_function, (void*)&thread1_out);
+  int ret = pthread_create(&thread1, NULL, thread_function, (void*)&thread1_out);
 
   int* data = (int*)malloc(100);
   memset(data, 0, 100);

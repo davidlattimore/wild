@@ -55,6 +55,4 @@ int black_box(int v) { return v; }
 // should be used.
 int __attribute__((weak)) weak_fn3(void) { return 15; }
 
-__attribute__((weak, visibility(("hidden")))) int atoi(const char* bytes) {
-  return 77;
-}
+__attribute__((weak, visibility(("hidden")))) int atoi(const char* bytes) { return 77; }
