@@ -81,5 +81,8 @@ wip = []
 # Experimental support for linking WebAssembly. Currently incomplete.
 wasm = []
 
+# Experimental support for linking Mach-O. Currently incomplete.
+macho = []
+
 [lints]
 workspace = true

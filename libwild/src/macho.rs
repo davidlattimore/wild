@@ -135,6 +135,9 @@ pub(crate) struct DyldChainedFixupsHeader {
 //     // followed by pool of dyld_chain_starts_in_segment data
 // };
 
+// Code signature data structures are always stored big-endian, regardless of
+// the target architecture's byte order.
+//
 // Data structures mirroring the following URL:
 // https://github.com/apple-oss-distributions/xnu/blob/94d3b452840153a99b38a3a9659680b2a006908e/osfmk/kern/cs_blobs.h.
 
@@ -1033,6 +1036,12 @@ impl platform::Platform for MachO {
         linker: &'data crate::Linker,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
+        if !cfg!(feature = "macho") {
+            crate::bail!(
+                "Mach-O support is still experimental. Rebuild with `--features macho` to enable it."
+            );
+        }
+
         linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
     }
 
