@@ -59,6 +59,10 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
 
+/// Set this environment variable to a directory and we'll write output files produced by the linker
+/// plugin to it. Old outputs will be deleted, but only if the directory looks like one we produced.
+const SAVE_VAR_NAME: &str = "WILD_SAVE_PLUGIN_OUTPUTS";
+
 pub(crate) struct LinkerPlugin<'data> {
     store: Store<'data>,
     herd: &'data Herd,
@@ -214,6 +218,10 @@ impl<'data> LinkerPlugin<'data> {
             }
             Ok(PLUGIN_OUTPUTS.take())
         })?;
+
+        if let Ok(dir_name) = std::env::var(SAVE_VAR_NAME) {
+            plugin_outputs.save_to(Path::new(&dir_name))?;
+        }
 
         let plugin_loaded =
             file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
@@ -1195,6 +1203,56 @@ impl PluginOutputs {
         Self {
             generated_inputs: Vec::new(),
         }
+    }
+
+    fn save_to(&self, dir_path: &Path) -> Result {
+        let args_path = dir_path.join("linker-plugin-extra-args");
+
+        if args_path.exists() {
+            std::fs::remove_dir_all(dir_path)
+                .with_context(|| format!("Failed to delete `{}`", dir_path.display()))?;
+        } else if dir_path.exists() {
+            bail!(
+                "`{}` exists, but doesn't look like the right directory structure",
+                dir_path.display()
+            );
+        }
+
+        std::fs::create_dir_all(dir_path)
+            .with_context(|| format!("Failed to create dir `{}`", dir_path.display()))?;
+
+        let mut args = String::new();
+
+        for input in &self.generated_inputs {
+            match &input.spec {
+                crate::args::InputSpec::File(path) => {
+                    let dest = dir_path.join(path.file_name().context("Missing filename")?);
+
+                    std::fs::copy(path, &dest).with_context(|| {
+                        format!(
+                            "Failed to copy `{}` to `{}`",
+                            path.display(),
+                            dest.display()
+                        )
+                    })?;
+                }
+                crate::args::InputSpec::Lib(lib_name) => {
+                    args.push_str("-l");
+                    args.push_str(lib_name);
+                    args.push('\n');
+                }
+                crate::args::InputSpec::Search(search) => {
+                    args.push_str("-L");
+                    args.push_str(search);
+                    args.push('\n');
+                }
+            }
+        }
+
+        std::fs::write(&args_path, args)
+            .with_context(|| format!("Failed to write `{}`", args_path.display()))?;
+
+        Ok(())
     }
 }
 
