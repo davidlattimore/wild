@@ -46,7 +46,7 @@ pub(crate) struct File<'data> {
     pub(crate) version: u32,
 
     #[debug(skip)]
-    pub(crate) sections: Vec<WasmSection<'data>>,
+    pub(crate) sections: Vec<SectionHeader>,
 
     #[debug(skip)]
     pub(crate) symbols: Vec<WasmSymbol<'data>>,
@@ -64,26 +64,46 @@ pub(crate) struct File<'data> {
     pub(crate) target_features_raw: Option<&'data [u8]>,
 }
 
-/// A single section of a Wasm module, as it appears in the binary.
-#[derive(Debug, Clone)]
-pub(crate) struct WasmSection<'data> {
+/// A single section of a Wasm module.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SectionHeader {
     /// The wasm section id.
     pub(crate) id: u8,
 
-    /// Name of a custom section, or `None` for standard sections.
-    pub(crate) name: Option<&'data str>,
-
     /// Byte range of the section (id + size + payload) within the original Wasm binary.
-    pub(crate) range: Range<usize>,
+    pub(crate) payload_range: Range<u32>,
 
-    /// The payload bytes of the section.
-    pub(crate) payload: &'data [u8],
+    /// For custom sections, the byte range within the input data of the section's name string.
+    /// `None` for standard sections, whose canonical name is derived from `id`.
+    pub(crate) name_range: Option<Range<u32>>,
 }
 
-impl<'data> WasmSection<'data> {
+impl SectionHeader {
     pub(crate) fn is_custom(&self) -> bool {
         self.id == 0
     }
+
+    pub(crate) fn payload_range_usize(&self) -> Range<usize> {
+        self.payload_range.start as usize..self.payload_range.end as usize
+    }
+}
+
+fn standard_section_name(id: u8) -> Option<&'static [u8]> {
+    Some(match id {
+        1 => b"type",
+        2 => b"import",
+        3 => b"function",
+        4 => b"table",
+        5 => b"memory",
+        6 => b"global",
+        7 => b"export",
+        8 => b"start",
+        9 => b"element",
+        10 => b"code",
+        11 => b"data",
+        12 => b"data_count",
+        _ => return None,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,7 +211,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         header: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<u64> {
-        todo!()
+        Ok(header.payload_range.len() as u64)
     }
 
     fn symbol_name(
@@ -210,12 +230,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn num_sections(&self) -> usize {
-        // TODO
-        0
+        self.sections.len()
     }
 
     fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
-        [].iter()
+        self.sections.iter()
     }
 
     fn enumerate_sections(
@@ -226,7 +245,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             &<Self::Platform as platform::Platform>::SectionHeader,
         ),
     > {
-        [].iter()
+        self.sections
+            .iter()
             .enumerate()
             .map(|(i, section)| (object::SectionIndex(i), section))
     }
@@ -235,7 +255,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         index: object::SectionIndex,
     ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
-        todo!()
+        self.sections
+            .get(index.0)
+            .ok_or_else(|| crate::error!("wasm section index {} out of range", index.0))
     }
 
     fn section_by_name(
@@ -245,7 +267,20 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         object::SectionIndex,
         &<Self::Platform as platform::Platform>::SectionHeader,
     )> {
-        todo!()
+        let needle = name.as_bytes();
+        self.sections
+            .iter()
+            .enumerate()
+            .find(|(_, header)| {
+                if let Some(name_range) = &header.name_range {
+                    self.data
+                        .get(name_range.start as usize..name_range.end as usize)
+                        == Some(needle)
+                } else {
+                    standard_section_name(header.id) == Some(needle)
+                }
+            })
+            .map(|(i, header)| (object::SectionIndex(i), header))
     }
 
     fn symbol_section(
@@ -288,23 +323,33 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
-        todo!()
+        let header = self
+            .sections
+            .get(index.0)
+            .ok_or_else(|| crate::error!("wasm section index {} out of range", index.0))?;
+        if let Some(name_range) = &header.name_range {
+            Ok(&self.data[name_range.start as usize..name_range.end as usize])
+        } else {
+            standard_section_name(header.id)
+                .ok_or_else(|| crate::error!("unknown wasm section id {}", header.id))
+        }
     }
 
     fn raw_section_data(
         &self,
         section: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<&'data [u8]> {
-        todo!()
+        Ok(&self.data[section.payload_range_usize()])
     }
 
     fn section_data(
         &self,
         section: &<Self::Platform as platform::Platform>::SectionHeader,
-        member: &bumpalo_herd::Member<'data>,
-        loaded_metrics: &crate::resolution::LoadedMetrics,
+        _member: &bumpalo_herd::Member<'data>,
+        _loaded_metrics: &crate::resolution::LoadedMetrics,
     ) -> crate::error::Result<&'data [u8]> {
-        todo!()
+        // Wasm sections are never compressed.
+        self.raw_section_data(section)
     }
 
     fn copy_section_data(
@@ -312,21 +357,30 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         section: &<Self::Platform as platform::Platform>::SectionHeader,
         out: &mut [u8],
     ) -> crate::error::Result {
-        todo!()
+        let bytes = self.raw_section_data(section)?;
+        ensure!(
+            out.len() == bytes.len(),
+            "copy_section_data: output buffer size {} does not match section size {}",
+            out.len(),
+            bytes.len()
+        );
+        out.copy_from_slice(bytes);
+        Ok(())
     }
 
     fn section_data_cow(
         &self,
         section: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<std::borrow::Cow<'data, [u8]>> {
-        todo!()
+        Ok(std::borrow::Cow::Borrowed(self.raw_section_data(section)?))
     }
 
     fn section_alignment(
         &self,
-        section: &<Self::Platform as platform::Platform>::SectionHeader,
+        _section: &<Self::Platform as platform::Platform>::SectionHeader,
     ) -> crate::error::Result<u64> {
-        todo!()
+        // Wasm sections themselves don't carry an alignment requirement.
+        Ok(1)
     }
 
     fn relocations(
@@ -349,7 +403,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> std::borrow::Cow<'data, str> {
-        todo!()
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn dynamic_tag_values(
@@ -402,20 +459,19 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct SectionHeader {}
-
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        todo!()
+        true
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        // Wasm sections are not classified into RW vs RO at the section level.
+        false
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        // Code lives in the dedicated CODE section.
+        false
     }
 
     fn is_tls(&self) -> bool {
@@ -448,11 +504,11 @@ impl platform::SectionHeader for SectionHeader {
     }
 
     fn is_prog_bits(&self) -> bool {
-        todo!()
+        true
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        false
     }
 }
 
@@ -582,15 +638,15 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_null(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_alloc(&self) -> bool {
-        todo!()
+        true
     }
 
     fn is_executable(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_tls(&self) -> bool {
@@ -598,11 +654,11 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn is_writable(&self) -> bool {
-        todo!()
+        false
     }
 
     fn is_no_bits(&self) -> bool {
-        todo!()
+        false
     }
 
     fn flags(&self) -> <Self::Platform as platform::Platform>::SectionFlags {
@@ -614,7 +670,7 @@ impl platform::SectionAttributes for SectionAttributes {
     }
 
     fn set_to_default_type(&mut self) {
-        todo!()
+        // Wasm has no per-section type to reset.
     }
 }
 
@@ -1339,7 +1395,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         "unsupported Wasm version {version}"
     );
 
-    let mut sections: Vec<WasmSection<'data>> = Vec::new();
+    let mut sections: Vec<SectionHeader> = Vec::new();
     let mut symbols: Vec<WasmSymbol<'data>> = Vec::new();
     let mut segments: Vec<WasmSegmentInfo<'data>> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
@@ -1352,46 +1408,40 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
             continue;
         };
 
-        let mut name = None;
-        let payload_bytes: &'data [u8];
+        let mut name_range: Option<Range<u32>> = None;
 
-        match payload {
-            Payload::CustomSection(reader) => {
-                let section_name = reader.name();
-                name = Some(section_name);
-                payload_bytes = &input[range.clone()];
+        if let Payload::CustomSection(reader) = &payload {
+            let section_name = reader.name();
+            let name_end = reader.data_offset();
+            let name_start = name_end - section_name.len();
+            name_range = Some(name_start as u32..name_end as u32);
 
-                if section_name == LINKING_SECTION_NAME {
-                    if let KnownCustom::Linking(linking) = reader.as_known() {
-                        linking_version = Some(linking.version());
-                        parse_linking_subsections(&linking, &mut symbols, &mut segments)?;
-                    }
-                } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
-                    if let KnownCustom::Reloc(reloc) = reader.as_known() {
-                        let target_section_index = reloc.section_index();
-                        let mut entries = Vec::new();
-                        for entry in reloc.entries() {
-                            entries.push(entry?);
-                        }
-                        reloc_sections.push(WasmRelocSection {
-                            target_section_index,
-                            entries,
-                        });
-                    }
-                } else if section_name == TARGET_FEATURES_SECTION_NAME {
-                    target_features_raw = Some(reader.data());
+            if section_name == LINKING_SECTION_NAME {
+                if let KnownCustom::Linking(linking) = reader.as_known() {
+                    linking_version = Some(linking.version());
+                    parse_linking_subsections(&linking, &mut symbols, &mut segments)?;
                 }
-            }
-            _ => {
-                payload_bytes = &input[range.clone()];
+            } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
+                if let KnownCustom::Reloc(reloc) = reader.as_known() {
+                    let target_section_index = reloc.section_index();
+                    let mut entries = Vec::new();
+                    for entry in reloc.entries() {
+                        entries.push(entry?);
+                    }
+                    reloc_sections.push(WasmRelocSection {
+                        target_section_index,
+                        entries,
+                    });
+                }
+            } else if section_name == TARGET_FEATURES_SECTION_NAME {
+                target_features_raw = Some(reader.data());
             }
         }
 
-        sections.push(WasmSection {
+        sections.push(SectionHeader {
             id,
-            name,
-            range,
-            payload: payload_bytes,
+            payload_range: range.start as u32..range.end as u32,
+            name_range,
         });
     }
 
