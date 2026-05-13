@@ -1,4 +1,4 @@
 [formatting]
-align_entries       = true
+align_entries = true
 allowed_blank_lines = 1
-reorder_arrays      = true
+reorder_arrays = true

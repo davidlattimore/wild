@@ -64,4 +64,3 @@ skip_linkers = ["bfd"]
 
 [bench.clang-debug-strip]
 skip_linkers = ["bfd"]
-

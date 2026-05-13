@@ -1,10 +1,6 @@
 [common]
 version = 2
-import_std = [
-    "fs",
-    "net",
-    "process",
-]
+import_std = ["fs", "net", "process"]
 
 [sandbox]
 kind = "Bubblewrap"
@@ -16,10 +12,7 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.proc-macro2]
-build.allow_apis = [
-    "fs",
-    "process",
-]
+build.allow_apis = ["fs", "process"]
 allow_unsafe = true
 
 [pkg.byteorder]
@@ -29,19 +22,14 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.libc]
-build.allow_apis = [
-    "process",
-]
+build.allow_apis = ["process"]
 allow_unsafe = true
 
 [pkg.crossbeam-utils]
 allow_unsafe = true
 
 [pkg.anyhow]
-build.allow_apis = [
-    "fs",
-    "process",
-]
+build.allow_apis = ["fs", "process"]
 allow_unsafe = true
 
 [pkg.memchr]
@@ -61,15 +49,11 @@ allow_unsafe = true
 
 [pkg.memmap2]
 allow_unsafe = true
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.wait-timeout]
 allow_unsafe = true
-from.test.allow_apis = [
-    "process",
-]
+from.test.allow_apis = ["process"]
 
 [pkg.crossbeam-deque]
 allow_unsafe = true
@@ -85,10 +69,7 @@ allow_unsafe = true
 
 [pkg.wild]
 allow_unsafe = true
-allow_apis = [
-    "fs",
-    "process",
-]
+allow_apis = ["fs", "process"]
 
 [pkg.zerocopy-derive]
 allow_proc_macro = true
@@ -97,9 +78,7 @@ allow_proc_macro = true
 allow_unsafe = true
 
 [pkg.version_check]
-from.build.allow_apis = [
-    "process",
-]
+from.build.allow_apis = ["process"]
 
 [pkg.zerocopy]
 allow_unsafe = true
@@ -137,10 +116,7 @@ allow_unsafe = true
 [pkg.libwild]
 allow_unsafe = true
 test.allow_unsafe = true
-allow_apis = [
-    "fs",
-    "process",
-]
+allow_apis = ["fs", "process"]
 
 [pkg.futures-macro]
 allow_proc_macro = true
@@ -159,33 +135,21 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.semver]
-build.allow_apis = [
-    "process",
-]
+build.allow_apis = ["process"]
 allow_unsafe = true
 
 [pkg.serde]
-build.allow_apis = [
-    "process",
-]
+build.allow_apis = ["process"]
 allow_unsafe = true
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.autocfg]
-from.build.allow_apis = [
-    "process",
-]
-allow_apis = [
-    "fs",
-]
+from.build.allow_apis = ["process"]
+allow_apis = ["fs"]
 
 [pkg.jobserver]
 allow_unsafe = true
-from.build.allow_apis = [
-    "fs",
-]
+from.build.allow_apis = ["fs"]
 
 [pkg.hash32]
 allow_unsafe = true
@@ -198,19 +162,14 @@ allow_unsafe = true
 
 [pkg.itertools]
 allow_unsafe = true
-from.test.allow_apis = [
-    "fs",
-]
+from.test.allow_apis = ["fs"]
 
 [pkg.lock_api]
 allow_unsafe = true
 
 [pkg.cc]
 allow_unsafe = true
-from.build.allow_apis = [
-    "fs",
-    "process",
-]
+from.build.allow_apis = ["fs", "process"]
 
 [pkg.anstyle]
 allow_unsafe = true
@@ -225,34 +184,25 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.rustc_version]
-from.build.allow_apis = [
-    "process",
-]
+from.build.allow_apis = ["process"]
 
 [pkg.cpp_demangle]
-build.allow_apis = [
-    "fs",
-]
+build.allow_apis = ["fs"]
 allow_unsafe = true
 
 [pkg.spin]
 allow_unsafe = true
 
 [pkg.pkg-config]
-from.build.allow_apis = [
-    "fs",
-    "process",
-]
+from.build.allow_apis = ["fs", "process"]
 
 [pkg.zstd-sys]
-build.allow_apis = [
-    "fs",
-]
+build.allow_apis = ["fs"]
 build.allow_build_instructions = [
-    "cargo:include=*",
-    "cargo:root=*",
-    "cargo:rustc-link-lib=static=zstd",
-    "cargo:rustc-link-search=native=*",
+  "cargo:include=*",
+  "cargo:root=*",
+  "cargo:rustc-link-lib=static=zstd",
+  "cargo:rustc-link-search=native=*",
 ]
 
 [pkg.anstream]
@@ -290,9 +240,7 @@ allow_unsafe = true
 
 [pkg.postcard]
 allow_unsafe = true
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.zstd-safe]
 allow_unsafe = true
@@ -337,17 +285,12 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.rustix]
-build.allow_apis = [
-    "fs",
-    "process",
-]
+build.allow_apis = ["fs", "process"]
 allow_unsafe = true
 
 [pkg.relative-path]
 allow_unsafe = true
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.futures-util]
 allow_unsafe = true
@@ -365,46 +308,26 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.linker-layout]
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.linker-trace]
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.clap_builder]
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.linker-diff]
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.glob]
-allow_apis = [
-    "fs",
-]
+allow_apis = ["fs"]
 
 [pkg.proc-macro-crate]
-allow_apis = [
-    "fs",
-    "process",
-]
+allow_apis = ["fs", "process"]
 
 [pkg.which]
-from.test.allow_apis = [
-    "fs",
-]
+from.test.allow_apis = ["fs"]
 
 [api.fs]
-no_auto_detect = [
-    "wild",
-]
-include = [
-    "rustix::fs",
-    "libwild::fs",
-]
+no_auto_detect = ["wild"]
+include = ["rustix::fs", "libwild::fs"]

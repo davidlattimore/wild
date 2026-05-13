@@ -12,11 +12,11 @@ tests = [
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
   "execute-only.sh",
-  "fatal-warnings.sh",                 # `-warn-common` and `-fatal-warnings`
+  "fatal-warnings.sh",                # `-warn-common` and `-fatal-warnings`
   "filter.sh",
-  "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
-  "icf-gcc-except-table.sh",           # `--icf`
-  "icf.sh",                            # `--icf`
+  "global-offset-table.sh",           # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
+  "icf-gcc-except-table.sh",          # `--icf`
+  "icf.sh",                           # `--icf`
   "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
@@ -26,20 +26,20 @@ tests = [
   "omagic.sh",
   "package-metadata.sh",
   "relocatable-merge-sections.sh",
-  "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
+  "repro.sh",                         # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "require-defined.sh",
   "response-file-quoting.sh",
   "retain-symbols-file.sh",
   "rosegment.sh",
   "run.sh",
-  "section-align.sh",                  # `--section-alignment`
-  "sort-debug-info-compressed.sh",     # `-Map`
-  "sort-debug-info-merged.sh",         # `-Map`
-  "sort-debug-info.sh",                # `-Map`
+  "section-align.sh",                 # `--section-alignment`
+  "sort-debug-info-compressed.sh",    # `-Map`
+  "sort-debug-info-merged.sh",        # `-Map`
+  "sort-debug-info.sh",               # `-Map`
   "spare-program-headers.sh",
-  "static-archive.sh",                 # error: Undefined symbol main, passes with GNU ld
-  "synthetic-symbols.sh",              # `--image-base`
-  "thin-archive.sh",                   # error: Undefined symbol main, passes with GNU ld
+  "static-archive.sh",                # error: Undefined symbol main, passes with GNU ld
+  "synthetic-symbols.sh",             # `--image-base`
+  "thin-archive.sh",                  # error: Undefined symbol main, passes with GNU ld
   "trace-symbol-symver.sh",
   "trace-symbol.sh",
   "undefined-glob-gc-sections.sh",
@@ -63,7 +63,7 @@ tests = [
 
 [skipped_groups.version_script]
 reason = "Version script support"
-tests  = ["version-script15.sh"]
+tests = ["version-script15.sh"]
 
 [skipped_groups.z_options]
 reason = "Related to -z"
@@ -113,10 +113,7 @@ tests = [
 
 [skipped_groups.arch_riscv64]
 reason = "RISC-V specific tests"
-tests = [
-  "arch-riscv64-relax-got.sh",
-  "arch-riscv64-reloc-overflow.sh",
-]
+tests = ["arch-riscv64-relax-got.sh", "arch-riscv64-reloc-overflow.sh"]
 
 [skipped_groups.arch_loongarch64]
 reason = "LoongArch64 specific tests"
@@ -129,7 +126,7 @@ tests = [
 
 [skipped_groups.tls]
 reason = "Related to TLS"
-tests  = ["tls-common.sh", "tls-le-error.sh"]
+tests = ["tls-common.sh", "tls-le-error.sh"]
 
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"

@@ -25,8 +25,8 @@ trim = true
 render_always = true
 # An array of regex based postprocessors to modify the changelog.
 postprocessors = [
-    # Replace the placeholder <REPO> with a URL.
-    #{ pattern = '<REPO>', replace = "https://github.com/orhun/git-cliff" },
+  # Replace the placeholder <REPO> with a URL.
+  #{ pattern = '<REPO>', replace = "https://github.com/orhun/git-cliff" },
 ]
 # render body even when there are no releases to process
 # render_always = true
@@ -46,11 +46,11 @@ require_conventional = false
 split_commits = false
 # An array of regex based parsers to modify commit messages prior to further processing.
 commit_preprocessors = [
-    # Replace issue numbers with link templates to be updated in `changelog.postprocessors`.
-    #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))"},
-    # Check spelling of the commit message using https://github.com/crate-ci/typos.
-    # If the spelling is incorrect, it will be fixed automatically.
-    #{ pattern = '.*', replace_command = 'typos --write-changes -' },
+  # Replace issue numbers with link templates to be updated in `changelog.postprocessors`.
+  #{ pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](<REPO>/issues/${2}))"},
+  # Check spelling of the commit message using https://github.com/crate-ci/typos.
+  # If the spelling is incorrect, it will be fixed automatically.
+  #{ pattern = '.*', replace_command = 'typos --write-changes -' },
 ]
 # Prevent commits that are breaking from being excluded by commit parsers.
 protect_breaking_commits = false
@@ -58,25 +58,25 @@ protect_breaking_commits = false
 # Assigns commits to groups.
 # Optionally sets the commit's scope and can decide to exclude commits from further processing.
 commit_parsers = [
-    { message = "^feat", group = "<!-- 00 -->🚀 Features" },
-    { message = "^perf", group = "<!-- 01 -->⚡ Performance" },
-    # For now, we put stuff to ignore into its own group, which makes it easier to see what we're
-    # ignoring.
-    { message = "^chore|cargo update", group = "<!-- 50 -->Ignored" },
-    { message = "^fix", group = "<!-- 02 -->🪲 Bug Fixes" },
-    { message = "^build", group = "<! -- 03 -->🏗️ Builds"},
-    { message = "^doc", group = "<!-- 04 -->📚 Documentation" },
-    { message = "^port", group = "<!-- 05 -->🕹️ Porting" },
-    { message = "^style", group = "<!-- 06 -->🎨 Styling" },
-    { message = "^packaging", group = "<!-- 07 -->📦 Packaging" },
-    { message = "^tools", group = "<!-- 08 -->🛠️ Dev tooling" },
-    { message = "^linker-diff", group = "<!-- 09 -->⚖️ Linker Diff" },
-    { message = "^test|^ci", group = "<!-- 10 -->🧪 Testing" },
-    { message = "^refactor", group = "<!-- 11 -->🔨 Refactor" },
-    { body = ".*security", group = "<!-- 12 -->🛡️ Security" },
-    { message = "^revert", group = "<!-- 13 -->◀️ Revert" },
-    { message = "^*\\(deps", group = "<!-- 50 -->Ignored" },
-    { message = ".*", group = "<!-- 11 -->💼 Other" },
+  { message = "^feat", group = "<!-- 00 -->🚀 Features" },
+  { message = "^perf", group = "<!-- 01 -->⚡ Performance" },
+  # For now, we put stuff to ignore into its own group, which makes it easier to see what we're
+  # ignoring.
+  { message = "^chore|cargo update", group = "<!-- 50 -->Ignored" },
+  { message = "^fix", group = "<!-- 02 -->🪲 Bug Fixes" },
+  { message = "^build", group = "<! -- 03 -->🏗️ Builds" },
+  { message = "^doc", group = "<!-- 04 -->📚 Documentation" },
+  { message = "^port", group = "<!-- 05 -->🕹️ Porting" },
+  { message = "^style", group = "<!-- 06 -->🎨 Styling" },
+  { message = "^packaging", group = "<!-- 07 -->📦 Packaging" },
+  { message = "^tools", group = "<!-- 08 -->🛠️ Dev tooling" },
+  { message = "^linker-diff", group = "<!-- 09 -->⚖️ Linker Diff" },
+  { message = "^test|^ci", group = "<!-- 10 -->🧪 Testing" },
+  { message = "^refactor", group = "<!-- 11 -->🔨 Refactor" },
+  { body = ".*security", group = "<!-- 12 -->🛡️ Security" },
+  { message = "^revert", group = "<!-- 13 -->◀️ Revert" },
+  { message = "^*\\(deps", group = "<!-- 50 -->Ignored" },
+  { message = ".*", group = "<!-- 11 -->💼 Other" },
 ]
 # Exclude commits that are not matched by any commit parser.
 filter_commits = false
