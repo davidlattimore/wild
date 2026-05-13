@@ -1,21 +1,11 @@
-// TODO
-#![allow(unused_variables)]
-#![allow(unused)]
-
-use crate::alignment::Alignment;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
-use crate::args::FILES_PER_GROUP_ENV;
 use crate::args::Modifiers;
-use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
 use crate::bail;
-use crate::ensure;
 use crate::error::Result;
 use crate::platform;
-use crate::save_dir::SaveDir;
-use jobserver::Client;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -65,7 +55,7 @@ impl platform::Args for MachOArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
         // TODO: probably add option
         b"_main"
     }
@@ -90,7 +80,7 @@ impl platform::Args for MachOArgs {
         todo!()
     }
 
-    fn should_export_dynamic(&self, lib_name: &[u8]) -> bool {
+    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
         todo!()
     }
 
