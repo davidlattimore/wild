@@ -10,6 +10,7 @@ use crate::args::FILES_PER_GROUP_ENV;
 use crate::args::Modifiers;
 use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
+use crate::bail;
 use crate::ensure;
 use crate::error::Result;
 use crate::platform;
@@ -124,6 +125,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         let arg = arg.as_ref();
 
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
+    }
+
+    if !args.common.unrecognized_options.is_empty() {
+        let options_list = args.common.unrecognized_options.join(", ");
+        bail!("unrecognized option(s): {}", options_list);
     }
 
     Ok(())
