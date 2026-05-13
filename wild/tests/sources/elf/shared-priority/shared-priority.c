@@ -1,5 +1,5 @@
-// Tests related to how we handle symbols that are defined in shared objects and
-// also in other places like archives.
+// Tests related to how we handle symbols that are defined in shared objects and also in other
+// places like archives.
 
 //#AbstractConfig:default
 //#CompArgs:-fPIC

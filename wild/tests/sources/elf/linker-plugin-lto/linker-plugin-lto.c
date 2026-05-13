@@ -52,8 +52,8 @@
 //#ExpectError:(contains GCC-IR, but the linker plugin|Wild was compiled without linker-plugin support)
 //#Cross:false
 
-// LTO, but no linker plugin was supplied by the compiler. We could try to find
-// the plugin ourselves, but we don't currently support that.
+// LTO, but no linker plugin was supplied by the compiler. We could try to find the plugin
+// ourselves, but we don't currently support that.
 //#Config:clang-no-plugin:error
 //#Compiler:clang
 //#CompArgs:-flto

@@ -9,8 +9,7 @@
 #define EXIT_SYSCALL 60
 #endif
 
-// On RISC-V, the GP register needs to point to the symbol `__global_pointer$`.
-// See
+// On RISC-V, the GP register needs to point to the symbol `__global_pointer$`. See
 // https://www.sifive.com/blog/all-aboard-part-3-linker-relaxation-in-riscv-toolchain
 #if defined(__riscv)
 void runtime_init(void) {

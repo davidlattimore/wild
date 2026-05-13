@@ -13,9 +13,8 @@
 
 #include "../common/runtime.h"
 
-// These two symbols are at the same address in the shared object, so references
-// to both should point to the same copy relocation and that location should be
-// what `get_w` returns.
+// These two symbols are at the same address in the shared object, so references to both should
+// point to the same copy relocation and that location should be what `get_w` returns.
 extern int w1;
 extern int s1;
 int get_w1(void);
@@ -71,8 +70,8 @@ void _start(void) {
     exit_syscall(32);
   }
 
-  // Strong only. Note, we don't check get_w2 since linker behaviour differs in
-  // this case. GNU ld doesn't export the weak alias, lld and Wild do.
+  // Strong only. Note, we don't check get_w2 since linker behaviour differs in this case. GNU ld
+  // doesn't export the weak alias, lld and Wild do.
   s2 = 12;
   if (get_s2() != 12) {
     exit_syscall(40);

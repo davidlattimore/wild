@@ -1,6 +1,5 @@
-// Verify that we correctly handle RELR relocations in a few edge cases.
-// Note that while `-z pack-relative-relocs` and `--pack-dyn-relocs=relr` are
-// similar, they don't override each other.
+// Verify that we correctly handle RELR relocations in a few edge cases. Note that while `-z
+// pack-relative-relocs` and `--pack-dyn-relocs=relr` are similar, they don't override each other.
 
 //#AbstractConfig:default
 //#Object:init.c:-fPIC
@@ -64,8 +63,8 @@ struct __attribute__((packed)) {
     .foo = &target,
 };
 
-// Unaligned pointer with even address; will result in RELR for .data that is
-// not multiple 8 and cannot be packed.
+// Unaligned pointer with even address; will result in RELR for .data that is not multiple 8 and
+// cannot be packed.
 struct __attribute__((packed)) {
   short padding;
   int* foo;
@@ -82,10 +81,9 @@ char baz = 0;
 __attribute__((constructor)) static void ctor_foo(void) { foo = 1; }
 __attribute__((constructor)) static void ctor_bar(void) { bar = 2; }
 __attribute__((constructor)) static void ctor_baz(void) { baz = 3; }
-// Due to how we process inputs at the time of writing this test, single
-// destructor goes through the layout phase before the constructors, but is
-// written after them. This nicely captures mismatches in RELR handling between
-// stages.
+// Due to how we process inputs at the time of writing this test, single destructor goes through the
+// layout phase before the constructors, but is written after them. This nicely captures mismatches
+// in RELR handling between stages.
 __attribute__((destructor)) static void dtor_foo(void) { foo = 0; }
 
 void _start(void) {

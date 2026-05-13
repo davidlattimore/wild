@@ -1,5 +1,5 @@
-// Verifies that we error when there's a strong reference to an undefined symbol
-// even if we previously encountered a weak reference.
+// Verifies that we error when there's a strong reference to an undefined symbol even if we
+// previously encountered a weak reference.
 
 //#CompArgs:-ffunction-sections
 //#LinkArgs:--gc-sections

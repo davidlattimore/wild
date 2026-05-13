@@ -1,6 +1,5 @@
 //#AbstractConfig:default
-// Create a .got.plt section to force ld to include a PT_GNU_RELRO program
-// header
+// Create a .got.plt section to force ld to include a PT_GNU_RELRO program header
 //#Shared:runtime.c
 //#Mode:dynamic
 //#DiffIgnore:section.got

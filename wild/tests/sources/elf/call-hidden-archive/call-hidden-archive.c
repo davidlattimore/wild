@@ -1,8 +1,7 @@
-// An archive and a shared object both define `foo`. The archive entry is never
-// loaded, so the definition from the shared object is the one that's used. The
-// symbol in the archive is hidden. Makes sure we don't incorrectly allow the
-// hidden attribute from the archive to affect the reference to the dynamic
-// symbol.
+// An archive and a shared object both define `foo`. The archive entry is never loaded, so the
+// definition from the shared object is the one that's used. The symbol in the archive is hidden.
+// Makes sure we don't incorrectly allow the hidden attribute from the archive to affect the
+// reference to the dynamic symbol.
 
 //#Object:runtime.c
 //#Mode:dynamic
