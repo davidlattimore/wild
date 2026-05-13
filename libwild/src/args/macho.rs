@@ -1,11 +1,13 @@
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
+use crate::args::FileWriteMode;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
 use crate::bail;
 use crate::error::Result;
 use crate::platform;
+use crate::platform::Args;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -146,6 +148,21 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
                 Some(v) => Some(super::parse_time_phase_options(v)?),
                 None => Some(Vec::new()),
             };
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("validate-output")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().validate_output = true;
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("update-in-place")
+        .help("Update file in place")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
             Ok(())
         });
 
