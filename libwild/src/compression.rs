@@ -23,6 +23,7 @@ use itertools::Itertools;
 use object::LittleEndian;
 use object::bytes_of;
 use object::elf::CompressionHeader64;
+use object::elf::CompressionType;
 use object::read::elf::Crel;
 use rayon::iter::IntoParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator as _;
@@ -87,7 +88,7 @@ pub(crate) fn maybe_compress_debug_sections_elf<A: Arch<Platform = Elf>>(
 trait Compressor {
     fn compress(chunk: &[u8]) -> Result<Vec<u8>>;
 
-    fn kind() -> u32;
+    fn kind() -> CompressionType;
 }
 
 struct ZlibCompressor;
@@ -100,7 +101,7 @@ impl Compressor for ZlibCompressor {
         Ok(encoder.finish()?)
     }
 
-    fn kind() -> u32 {
+    fn kind() -> CompressionType {
         object::elf::ELFCOMPRESS_ZLIB
     }
 }
@@ -114,7 +115,7 @@ impl Compressor for ZstdCompressor {
         Ok(output)
     }
 
-    fn kind() -> u32 {
+    fn kind() -> CompressionType {
         object::elf::ELFCOMPRESS_ZSTD
     }
 }

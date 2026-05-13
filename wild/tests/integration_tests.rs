@@ -233,7 +233,6 @@ use libwild::bail;
 use libwild::ensure;
 use libwild::error;
 use libwild::error::Context as _;
-use object::Endian as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
@@ -841,17 +840,17 @@ enum DriverMode {
 #[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
 #[repr(u32)]
 enum ProgramHeaderType {
-    Dynamic = object::elf::PT_DYNAMIC,
-    Interp = object::elf::PT_INTERP,
-    GnuEhFrame = object::elf::PT_GNU_EH_FRAME,
-    GnuProperty = object::elf::PT_GNU_PROPERTY,
-    GnuRelro = object::elf::PT_GNU_RELRO,
-    GnuStack = object::elf::PT_GNU_STACK,
-    Load = object::elf::PT_LOAD,
-    Note = object::elf::PT_NOTE,
-    Null = object::elf::PT_NULL,
-    Phdr = object::elf::PT_PHDR,
-    Tls = object::elf::PT_TLS,
+    Dynamic = object::elf::PT_DYNAMIC.0,
+    Interp = object::elf::PT_INTERP.0,
+    GnuEhFrame = object::elf::PT_GNU_EH_FRAME.0,
+    GnuProperty = object::elf::PT_GNU_PROPERTY.0,
+    GnuRelro = object::elf::PT_GNU_RELRO.0,
+    GnuStack = object::elf::PT_GNU_STACK.0,
+    Load = object::elf::PT_LOAD.0,
+    Note = object::elf::PT_NOTE.0,
+    Null = object::elf::PT_NULL.0,
+    Phdr = object::elf::PT_PHDR.0,
+    Tls = object::elf::PT_TLS.0,
 }
 
 #[derive(Debug, Clone)]
@@ -3727,11 +3726,13 @@ impl Assertions {
 
         let data = dynamic_section.data()?;
         let endian = obj.endian();
-        let entry_size = std::mem::size_of::<object::elf::Dyn64<object::Endianness>>();
+        let Ok(entries) = object::pod::slice_from_all_bytes::<object::elf::Dyn64<_>>(data) else {
+            bail!("Unexpected .dynamic section length {:#x}", data.len());
+        };
         let mut found_tags: HashSet<String> = HashSet::new();
 
-        for chunk in data.chunks_exact(entry_size) {
-            let tag = endian.read_i64(chunk[0..8].try_into().unwrap());
+        for entry in entries {
+            let tag = entry.d_tag.get(endian);
             if let Some(name) = dynamic_tag_name(tag) {
                 found_tags.insert(name.to_string());
             }
@@ -3771,7 +3772,7 @@ impl Assertions {
         let mut header_types = HashSet::new();
 
         for header in obj.elf_program_headers() {
-            header_types.insert(header.p_type(endian));
+            header_types.insert(header.p_type(endian).0);
         }
 
         for header in &self.expected_program_headers {
@@ -3853,7 +3854,7 @@ fn verify_no_overlapping_segments(obj: &object::File) -> Result {
     Ok(())
 }
 
-fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
+fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
     use object::elf::*;
     Some(match tag {
         DT_NULL => "DT_NULL",

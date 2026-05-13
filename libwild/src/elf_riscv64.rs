@@ -24,7 +24,6 @@ use linker_utils::riscv64::JAL_RANGE;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::distance_fits_jal;
 use linker_utils::riscv64::relocation_type_from_raw;
-use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
 
@@ -107,12 +106,14 @@ impl crate::platform::Arch for ElfRiscV64 {
     // Tracking issue available at: https://github.com/rust-lang/rust/issues/149266
     #[allow(unstable_name_collisions)]
     fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32> {
-        let eflags = eflags.collect_vec();
-        let or_eflags = eflags.iter().fold(0, |acc, x| acc | x);
+        let eflags = eflags.map(object::elf::FileFlags).collect_vec();
+        let or_eflags = eflags
+            .iter()
+            .fold(object::elf::FileFlags(0), |acc, x| acc | *x);
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_FLOAT_ABI)
+                .map(|flag| flag.riscv_float_abi())
                 .unique()
                 .exactly_one()
                 .is_ok(),
@@ -121,7 +122,7 @@ impl crate::platform::Arch for ElfRiscV64 {
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_RVE)
+                .map(|flag| flag.contains(EF_RISCV_RVE))
                 .unique()
                 .exactly_one()
                 .is_ok(),
@@ -130,14 +131,14 @@ impl crate::platform::Arch for ElfRiscV64 {
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & EF_RISCV_RV64ILP32)
+                .map(|flag| flag.contains(EF_RISCV_RV64ILP32))
                 .unique()
                 .exactly_one()
                 .is_ok(),
             "RV64ILP32 flag mismatch"
         );
 
-        Ok(or_eflags)
+        Ok(or_eflags.0)
     }
 
     fn high_part_relocations() -> &'static [u32] {
@@ -172,7 +173,7 @@ impl crate::platform::Arch for ElfRiscV64 {
     ) -> bool {
         object
             .symbol(symbol_index)
-            .is_ok_and(|sym| (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0)
+            .is_ok_and(|sym| sym.st_other.contains(object::elf::STO_RISCV_VARIANT_CC))
     }
 
     #[allow(unused_variables)]

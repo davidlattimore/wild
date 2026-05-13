@@ -425,7 +425,7 @@ impl<'data> VersionScript<'data> {
         &self,
         name: &PreHashed<UnversionedSymbolName>,
         version_name: Option<&[u8]>,
-    ) -> Result<Option<u16>> {
+    ) -> Result<Option<object::elf::VersionIndex>> {
         match self {
             VersionScript::Regular(script) => script.version_for_symbol(name, version_name),
             VersionScript::Rust(_) => Ok(None),
@@ -474,7 +474,7 @@ impl<'data> RegularVersionScript<'data> {
         &self,
         name: &PreHashed<UnversionedSymbolName>,
         version_name: Option<&[u8]>,
-    ) -> Result<Option<u16>> {
+    ) -> Result<Option<object::elf::VersionIndex>> {
         let name_bytes = name.bytes();
         if let Some(version_name) = version_name {
             // There is a quirk that I couldn't find docs for. When a symbol has an empty version
@@ -484,7 +484,7 @@ impl<'data> RegularVersionScript<'data> {
             if version_name.is_empty() {
                 return Ok(Some(object::elf::VER_NDX_GLOBAL));
             } else if let Some(&number) = self.version_name_mapping.get(version_name) {
-                return Ok(Some(number as u16 + object::elf::VER_NDX_GLOBAL));
+                return Ok(Some(object::elf::VER_NDX_GLOBAL + number as u16));
             }
             bail!(
                 "Symbol {} has undefined version {}",
@@ -498,7 +498,7 @@ impl<'data> RegularVersionScript<'data> {
                 // Ignore the implicit version!
                 None
             } else {
-                Some(number as u16 + object::elf::VER_NDX_GLOBAL)
+                Some(object::elf::VER_NDX_GLOBAL + number as u16)
             }
         }))
     }

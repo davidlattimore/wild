@@ -554,7 +554,9 @@ impl<'data> LtoInput<'data> {
         symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::symbol_db::Visibility {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        crate::elf::convert_elf_visibility(self.symbols[local_index].visibility)
+        crate::elf::convert_elf_visibility(object::elf::SymbolVisibility(
+            self.symbols[local_index].visibility,
+        ))
     }
 
     pub(crate) fn symbols_iter(&self) -> impl Iterator<Item = (SymbolId, &PluginSymbol<'data>)> {
@@ -1389,7 +1391,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                     let symbol_attributes = SymbolAttributes {
                         name_info,
                         is_local: false,
-                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT,
+                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT.0,
                         is_weak: local_symbol.kind
                             == Some(crate::linker_plugins::SymbolKind::WeakUndef),
                     };

@@ -112,7 +112,7 @@ impl crate::platform::Arch for ElfAArch64 {
     }
 
     fn get_property_class(property_type: u32) -> Option<PropertyClass> {
-        match property_type {
+        match object::elf::GnuPropertyType(property_type) {
             GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
             _ => None,
         }
@@ -292,7 +292,7 @@ impl crate::platform::Arch for ElfAArch64 {
     ) -> bool {
         object
             .symbol(symbol_index)
-            .is_ok_and(|sym| (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0)
+            .is_ok_and(|sym| sym.st_other.contains(object::elf::STO_AARCH64_VARIANT_PCS))
     }
 
     fn get_source_info<'data>(

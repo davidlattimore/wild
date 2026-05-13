@@ -62,7 +62,7 @@ memchr = "2.7.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
 nix = { version = "0.30.1", default-features = false, features = ["resource"] }
-object = { version = "0.39.1", default-features = false, features = [
+object = { git = "https://github.com/gimli-rs/object", rev = "a0bfa322", default-features = false, features = [
   # Note that compression is only actually needed for linker-diff
   "compression",
   "elf",
@@ -71,6 +71,7 @@ object = { version = "0.39.1", default-features = false, features = [
   "std",
   "unaligned",
   "archive",
+  "names",
 ] }
 os_info = { version = "3.1.0", default-features = false }
 paste = "1.0.15"

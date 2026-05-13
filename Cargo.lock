@@ -1286,8 +1286,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.39.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+source = "git+https://github.com/gimli-rs/object?rev=a0bfa322#a0bfa322b6b01bcd4dc8c24eacaac1e8fad80d1d"
 dependencies = [
  "flate2",
  "memchr",

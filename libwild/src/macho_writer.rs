@@ -75,6 +75,7 @@ use object::SymbolIndex;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho;
+use object::macho::CPU_SUBTYPE_ARM64_ALL;
 use object::macho::CPU_TYPE_ARM64;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
@@ -240,7 +241,7 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
 
     header.magic.set(BigEndian, MH_CIGAM_64);
     header.cputype.set(LE, CPU_TYPE_ARM64);
-    header.cpusubtype.set(LE, 0);
+    header.cpusubtype.set(LE, CPU_SUBTYPE_ARM64_ALL.into());
     header.filetype.set(LE, MH_EXECUTE);
     // TODO: a cleaner way how to filter out sections being part of the final output?
     header.ncmds.set(
@@ -284,9 +285,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     let pagezero_segment =
         split_segment_command_buffer(buffers.get_mut(part_id::PAGEZERO_SEGMENT), 0)?.0;
     write_segment(
-        layout,
-        part_id::PAGEZERO_SEGMENT,
         SEG_PAGEZERO,
+        macho::VmProt(0),
         pagezero_segment,
         0,
         0,
@@ -307,9 +307,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         text_segment_sections.len(),
     )?;
     write_segment(
-        layout,
-        part_id::TEXT_SEGMENT,
         SEG_TEXT,
+        macho::VM_PROT_READ | macho::VM_PROT_EXECUTE,
         text_segment,
         text_segment_size.file_offset as u64,
         text_segment_size.file_size as u64,
@@ -327,9 +326,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             data_segment_sections.len(),
         )?;
         write_segment(
-            layout,
-            part_id::DATA_SEGMENT,
             SEG_DATA,
+            macho::VM_PROT_READ | macho::VM_PROT_WRITE,
             data_segment,
             data_segment_size.file_offset as u64,
             data_segment_size.file_size as u64,
@@ -346,9 +344,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
     let linkedit_segment =
         split_segment_command_buffer(buffers.get_mut(part_id::LINK_EDIT_SEGMENT), 0)?.0;
     write_segment(
-        layout,
-        part_id::LINK_EDIT_SEGMENT,
         SEG_LINKEDIT,
+        macho::VM_PROT_READ,
         linkedit_segment,
         linkedit_segment_size.file_offset as u64,
         linkedit_segment_size.file_size as u64,
@@ -362,9 +359,8 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
 }
 
 fn write_segment(
-    layout: &MachOLayout,
-    part_id: part_id::PartId,
     seg_name: &str,
+    prot_flags: object::macho::VmProt,
     segment_cmd: &mut SegmentCommand,
     file_offset: u64,
     file_size: u64,
@@ -372,11 +368,6 @@ fn write_segment(
     mem_size: u64,
     section_count: usize,
 ) {
-    let prot_flags = layout
-        .output_sections
-        .section_flags(part_id.output_section_id())
-        .raw();
-
     segment_cmd.cmd.set(LE, LC_SEGMENT_64);
     segment_cmd.cmdsize.set(
         LE,
@@ -391,7 +382,7 @@ fn write_segment(
     segment_cmd.maxprot.set(LE, prot_flags);
     segment_cmd.initprot.set(LE, prot_flags);
     segment_cmd.nsects.set(LE, section_count as u32);
-    segment_cmd.flags.set(LE, 0);
+    segment_cmd.flags.set(LE, macho::SegmentFlags(0));
 }
 
 fn write_sections(
@@ -420,7 +411,7 @@ fn write_sections(
         section.align.set(LE, 0);
         section.reloff.set(LE, 0);
         section.nreloc.set(LE, 0);
-        section.flags.set(LE, section_flags.raw());
+        section.flags.set(LE, *section_flags);
         section.reserved1.set(LE, 0);
         section.reserved2.set(LE, 0);
         section.reserved3.set(LE, 0);
@@ -834,8 +825,8 @@ impl MachOSymbolTableWriter {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         name: &[u8],
         section: u8,
-        symbol_type: u8,
-        desc: u16,
+        symbol_type: object::macho::SymbolFlags,
+        desc: object::macho::SymbolDesc,
         value: u64,
     ) -> Result {
         let entry = self.write_entry(name, buffers)?;
@@ -902,7 +893,7 @@ fn write_symbols<'data>(
                     ),
                 };
                 let primary_id = layout.output_sections.primary_output_section(section_id);
-                let n_type = (sym.n_type & !object::macho::N_TYPE) | N_SECT;
+                let n_type = sym.n_type.with_type(N_SECT);
                 let n_sect = macho_section_index(layout, primary_id).with_context(|| {
                     format!(
                         "No Mach-O section index for {} while writing {}",
@@ -914,7 +905,7 @@ fn write_symbols<'data>(
                 (n_sect, n_type, n_desc)
             } else if sym.is_absolute() {
                 let n_desc = sym.n_desc.get(LE);
-                (0, (sym.n_type & !object::macho::N_TYPE) | N_ABS, n_desc)
+                (0, sym.n_type.with_type(N_ABS), n_desc)
             } else {
                 bail!("Attempted to output a Mach-O symtab entry with an unexpected section type")
             };

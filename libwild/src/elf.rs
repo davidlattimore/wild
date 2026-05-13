@@ -193,7 +193,7 @@ pub(crate) struct File<'data> {
     pub(crate) verneed: Option<(VerneedIterator<'data>, object::SectionIndex)>,
 
     /// e_flags from the header.
-    pub(crate) eflags: u32,
+    pub(crate) eflags: object::elf::FileFlags,
 
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
@@ -321,7 +321,7 @@ impl platform::Platform for Elf {
     type CommonGroupStateExt = CommonGroupStateExt;
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
-    type ArchIdentifier = u16;
+    type ArchIdentifier = object::elf::Machine;
     type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
@@ -446,8 +446,8 @@ impl platform::Platform for Elf {
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes {
-            flags: SectionFlags::from_header(header),
-            ty: SectionType::from_header(header),
+            flags: header.sh_flags(LittleEndian),
+            ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize.get(LittleEndian),
         }
     }
@@ -734,16 +734,13 @@ impl platform::Platform for Elf {
             is_default,
         } = RawSymbolName::parse(symbol_name.bytes());
 
-        let mut version = object::elf::VER_NDX_GLOBAL;
+        let mut version = object::elf::VER_NDX_GLOBAL.into();
         if (symbol_db.version_script.version_count() > 0 || version_name.is_some())
             && let Some(v) = symbol_db
                 .version_script
                 .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
         {
-            version = v;
-            if !is_default {
-                version |= object::elf::VERSYM_HIDDEN;
-            }
+            version = object::elf::VersymIndex::new(v, !is_default);
         }
         Ok(layout::DynamicSymbolDefinition {
             symbol_id,
@@ -2072,7 +2069,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         // Find all the sections that we're interested in a single scan of the section table so
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
-            match SectionType::from_header(section) {
+            match section.sh_type(endian) {
                 sht::DYNSYM if is_dynamic => {
                     symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
                 }
@@ -2267,8 +2264,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let endian = LittleEndian;
         let versym = self.versym.get(symbol_index.0)?;
         let versym = versym.0.get(endian);
-        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+        let is_default = !versym.is_hidden();
+        let symbol_version_index = versym.index();
         if let Some((verdefs, string_table_index)) = self.verdef.clone() {
             let strings = self
                 .sections
@@ -2366,8 +2363,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         if let Some(versym) = self.versym.get(local_index) {
             let versym = versym.0.get(LittleEndian);
-            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-            let version_index = versym & object::elf::VERSYM_VERSION;
+            is_default = !versym.is_hidden();
+            let version_index = versym.index();
             version_name = version_names
                 .names
                 .get(usize::from(version_index))
@@ -2466,18 +2463,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
                 let version_index = verdef.vd_ndx.get(e);
 
-                if version_index == 0 {
+                if version_index == object::elf::VER_NDX_LOCAL {
                     bail!("Invalid version index");
                 }
 
                 let flags = verdef.vd_flags.get(e);
-                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+                let is_base = flags.contains(object::elf::VER_FLG_BASE);
 
                 // Keep the base version and any versions that are referenced.
                 let needed = is_base
                     || *state
                         .symbol_versions_needed
-                        .get(usize::from(version_index - 1))
+                        .get(usize::from(version_index - object::elf::VER_NDX_GLOBAL))
                         .context("Invalid version index")?;
 
                 if needed {
@@ -2539,7 +2536,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             counts.verneed_count += 1;
             indexes.next_gnu_version_r_index = indexes
                 .next_gnu_version_r_index
-                .checked_add(info.version_count)
+                .checked_offset(info.version_count)
                 .context("Symbol versions overflowed 2**16")?;
         }
         Ok(())
@@ -2569,13 +2566,13 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 impl DynamicLayoutStateExt<'_> {
     /// Marks the specified version as needed, provided it's not a local or global version.
     fn mark_version_as_needed(&mut self, version_index: Versym) -> Result {
-        let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+        let version_index = version_index.0.get(LittleEndian).index();
 
         // Versions 0 and 1 are local and global. We care about the versions after that.
-        if version_index > object::elf::VER_NDX_GLOBAL {
+        if !version_index.is_special() {
             *self
                 .symbol_versions_needed
-                .get_mut(version_index as usize - 1)
+                .get_mut(usize::from(version_index - object::elf::VER_NDX_GLOBAL))
                 .with_context(|| format!("Invalid symbol version index {version_index}"))? = true;
         }
         Ok(())
@@ -2794,7 +2791,7 @@ fn allocate_sysv_hash(
 fn compute_version_mapping(
     symbol_versions_needed: &[bool],
     non_addressable_indexes: NonAddressableIndexes,
-) -> Vec<u16> {
+) -> Vec<object::elf::VersionIndex> {
     let mut out = vec![object::elf::VER_NDX_GLOBAL; symbol_versions_needed.len()];
     let mut next_output_version = non_addressable_indexes.next_gnu_version_r_index;
     for (input_version, needed) in symbol_versions_needed.iter().enumerate() {
@@ -2808,51 +2805,51 @@ fn compute_version_mapping(
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        SectionFlags::from_header(self).is_alloc()
+        self.sh_flags(LittleEndian).is_alloc()
     }
 
     fn is_writable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::WRITE)
+        self.sh_flags(LittleEndian).contains(shf::WRITE)
     }
 
     fn is_executable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::EXECINSTR)
+        self.sh_flags(LittleEndian).contains(shf::EXECINSTR)
     }
 
     fn is_tls(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::TLS)
+        self.sh_flags(LittleEndian).contains(shf::TLS)
     }
 
     fn is_merge_section(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::MERGE)
+        self.sh_flags(LittleEndian).contains(shf::MERGE)
     }
 
     fn is_strings(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::STRINGS)
+        self.sh_flags(LittleEndian).contains(shf::STRINGS)
     }
 
     fn should_retain(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GNU_RETAIN)
+        self.sh_flags(LittleEndian).contains(shf::GNU_RETAIN)
     }
 
     fn should_exclude(&self) -> bool {
-        SectionFlags::from_header(self).should_exclude()
+        self.sh_flags(LittleEndian).contains(shf::EXCLUDE)
     }
 
     fn is_group(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GROUP)
+        self.sh_flags(LittleEndian).contains(shf::GROUP)
     }
 
     fn is_note(&self) -> bool {
-        SectionType::from_header(self) == sht::NOTE
+        self.sh_type(LittleEndian) == sht::NOTE
     }
 
     fn is_prog_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::PROGBITS
+        self.sh_type(LittleEndian) == sht::PROGBITS
     }
 
     fn is_no_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::NOBITS
+        self.sh_type(LittleEndian) == sht::NOBITS
     }
 }
 
@@ -2971,17 +2968,16 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
-        self.st_other &= !0x3;
-        self.st_other |= if hidden {
+        self.st_other = self.st_other.with_visibility(if hidden {
             object::elf::STV_HIDDEN
         } else {
             object::elf::STV_DEFAULT
-        };
+        });
         self
     }
 }
 
-pub(crate) fn convert_elf_visibility(st_visibility: u8) -> Visibility {
+pub(crate) fn convert_elf_visibility(st_visibility: object::elf::SymbolVisibility) -> Visibility {
     match st_visibility {
         object::elf::STV_PROTECTED => Visibility::Protected,
         object::elf::STV_HIDDEN => Visibility::Hidden,
@@ -3256,7 +3252,7 @@ pub(crate) enum PropertyClass {
 
 #[derive(Debug)]
 pub(crate) struct GnuProperty {
-    pub(crate) ptype: u32,
+    pub(crate) ptype: object::elf::GnuPropertyType,
     pub(crate) data: u32,
 }
 
@@ -3274,9 +3270,6 @@ impl RiscVArch {
             .clone()
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Eflags(pub(crate) u32);
 
 #[derive(Debug)]
 pub(crate) struct RiscVAttributes {
@@ -3317,7 +3310,7 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 pub(crate) struct LayoutExt {
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: RiscVAttributes,
-    pub(crate) eflags: Eflags,
+    pub(crate) eflags: object::elf::FileFlags,
 }
 
 impl LayoutExt {
@@ -3351,7 +3344,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
 
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype.0)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -3404,11 +3397,11 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
 
 fn merge_eflags<'files, 'data: 'files, A: Arch>(
     objects: impl Iterator<Item = &'files File<'data>>,
-) -> Result<Eflags> {
+) -> Result<object::elf::FileFlags> {
     timing_phase!("Merge e_flags");
 
-    Ok(Eflags(A::merge_eflags(
-        objects.map(|object| object.eflags),
+    Ok(object::elf::FileFlags(A::merge_eflags(
+        objects.map(|object| object.eflags.0),
     )?))
 }
 
@@ -3717,10 +3710,10 @@ pub(crate) struct SectionAttributes {
     pub(crate) entsize: u64,
 }
 
-/// Section flags that should be propagated from input sections to the output section in which they
-/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+/// Section flags that should not be propagated from input sections to the output section in which
+/// they are placed. This is passed to `without`, so we keep all flags other than the one listed
+/// here.
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Elf;
@@ -3742,7 +3735,7 @@ impl platform::SectionAttributes for SectionAttributes {
     fn apply(&self, output_sections: &mut OutputSections<Elf>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
-        info.section_attributes.flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+        info.section_attributes.flags |= self.flags.without(SECTION_FLAGS_PROPAGATION_MASK);
 
         info.section_attributes.entsize = self.entsize;
 
@@ -3872,7 +3865,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
     fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
         let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
         self.version_names_by_index
-            .get(usize::from(version_index))
+            .get(usize::from(version_index.index()))
             .copied()
             .flatten()
     }
@@ -3932,7 +3925,7 @@ pub(crate) struct DynamicLayoutStateExt<'data> {
 #[derive(Debug)]
 pub(crate) struct DynamicLayoutExt<'data> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
-    pub(crate) version_mapping: Vec<u16>,
+    pub(crate) version_mapping: Vec<object::elf::VersionIndex>,
 
     pub(crate) verneed_info: Option<VerneedInfo<'data>>,
 
@@ -3945,7 +3938,7 @@ pub(crate) struct DynamicLayoutExt<'data> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NonAddressableIndexes {
     /// The version index that will be used for the next `.gnu.version_r` entry that we define.
-    next_gnu_version_r_index: u16,
+    next_gnu_version_r_index: object::elf::VersionIndex,
 }
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
@@ -4352,7 +4345,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         TYPE_ORDER
             .iter()
             .position(|t| *t == self.segment_type)
-            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.0 as usize)
     }
 
     fn should_include_section(
@@ -4389,7 +4382,12 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}, {}", self.segment_type, self.segment_flags)
+        write!(
+            f,
+            "{}, {}",
+            pt::Display(self.segment_type),
+            pf::Display(self.segment_flags),
+        )
     }
 }
 
@@ -4408,7 +4406,7 @@ pub(crate) struct BuiltInSectionDetails {
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
-    section_flags: SectionFlags::empty(),
+    section_flags: SectionFlags(0),
     link: &[],
     min_alignment: alignment::MIN,
     element_size: 0,
@@ -4756,7 +4754,7 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DynamicSymbolDefinitionExt {
     pub(crate) hash: u32,
-    pub(crate) version: u16,
+    pub(crate) version: object::elf::VersymIndex,
 }
 
 fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>(
@@ -4821,7 +4819,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = SectionFlags::from_header(section);
+        let section_flags = section.sh_flags(LittleEndian);
 
         let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,

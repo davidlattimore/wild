@@ -265,7 +265,7 @@ pub(crate) struct File<'data> {
     pub(crate) sections: SectionTable<'data>,
     #[debug(skip)]
     pub(crate) symbols: SymbolTable<'data>,
-    pub(crate) flags: u32,
+    pub(crate) flags: object::macho::FileFlags,
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -400,7 +400,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
         _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
-        if symbol.n_type & N_TYPE == N_SECT && symbol.n_sect != 0 {
+        if symbol.n_type.typ() == N_SECT && symbol.n_sect != 0 {
             // The index is one-based, NO_SECT == 0, marks a missing section for the symbol.
             Ok(Some(object::SectionIndex(usize::from(symbol.n_sect - 1))))
         } else {
@@ -639,25 +639,7 @@ impl platform::SectionType for SectionType {
     }
 }
 
-#[derive(Debug, Copy, Clone, Default)]
-pub(crate) struct SectionFlags(u32);
-
-impl SectionFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> SectionFlags {
-        SectionFlags(raw)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
+pub use object::macho::SectionFlags;
 
 impl platform::SectionFlags for SectionFlags {
     fn is_alloc(self) -> bool {
@@ -677,19 +659,19 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_local(&self) -> bool {
-        self.n_type & N_EXT == 0
+        !self.n_type.contains(N_EXT)
     }
 
     fn is_absolute(&self) -> bool {
-        self.n_type & N_TYPE == N_ABS
+        self.n_type.typ() == N_ABS
     }
 
     fn is_weak(&self) -> bool {
-        self.n_desc.get(LE) & N_WEAK_DEF != 0
+        self.n_desc.get(LE).contains(N_WEAK_DEF)
     }
 
     fn visibility(&self) -> crate::symbol_db::Visibility {
-        if self.n_type & N_PEXT != 0 {
+        if self.n_type.contains(N_PEXT) {
             Visibility::Hidden
         } else {
             Visibility::Default
@@ -746,9 +728,9 @@ impl platform::Symbol for SymtabEntry {
 
     fn with_hidden(mut self, hidden: bool) -> Self {
         if hidden {
-            self.n_type |= N_PEXT;
+            self.n_type.insert(N_PEXT);
         } else {
-            self.n_type &= !N_PEXT;
+            self.n_type.remove(N_PEXT);
         }
         self
     }
@@ -763,7 +745,7 @@ impl platform::SectionAttributes for SectionAttributes {
     type Platform = MachO;
 
     fn merge(&mut self, rhs: Self) {
-        self.flags = SectionFlags::from_u32(self.flags.raw() | rhs.flags.raw());
+        self.flags |= rhs.flags;
     }
 
     fn apply(
@@ -924,7 +906,7 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
-    section_flags: SectionFlags::empty(),
+    section_flags: SectionFlags(0),
     min_alignment: alignment::MIN,
     target_segment_type: None,
 };
@@ -1573,19 +1555,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     defs[output_section_id::TEXT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_TEXT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
-        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_EXECUTE),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_DATA.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
-        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ | macho::VM_PROT_WRITE),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
-        section_flags: SectionFlags::from_u32(macho::VM_PROT_READ),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::ENTRY_POINT.as_usize()] = BuiltInSectionDetails {
@@ -1640,19 +1619,20 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     // Start of regular sections
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__text")),
-        section_flags: SectionFlags::from_u32(
-            macho::S_REGULAR | macho::S_ATTR_PURE_INSTRUCTIONS | macho::S_ATTR_SOME_INSTRUCTIONS,
-        ),
+        section_flags: macho::S_REGULAR
+            .to_flags()
+            .with(macho::S_ATTR_PURE_INSTRUCTIONS)
+            .with(macho::S_ATTR_SOME_INSTRUCTIONS),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::CSTRING.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__cstring")),
-        section_flags: SectionFlags::from_u32(macho::S_CSTRING_LITERALS),
+        section_flags: macho::S_CSTRING_LITERALS.to_flags(),
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"__data")),
-        section_flags: SectionFlags::from_u32(macho::S_REGULAR),
+        section_flags: macho::S_REGULAR.to_flags(),
         ..DEFAULT_DEFS
     };
 
