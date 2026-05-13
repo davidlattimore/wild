@@ -1,13 +1,10 @@
 // TODO
-#![allow(unused_variables)]
 #![allow(unused)]
 
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
-use crate::elf::ResolutionExt;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
@@ -29,11 +26,7 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::platform::ObjectFile;
-use crate::platform::Symbol as _;
 use crate::symbol_db::Visibility;
-use crate::value_flags::ValueFlags;
-use gimli::LittleEndian;
-use object::Endian;
 use object::Endianness;
 use object::SymbolIndex;
 use object::macho;
