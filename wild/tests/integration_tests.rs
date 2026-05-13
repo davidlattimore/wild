@@ -291,6 +291,10 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
             continue;
         }
 
+        if platform == PlatformKind::MachO && !cfg!(feature = "macho") {
+            continue;
+        }
+
         let linkers = platform.available_linkers()?;
 
         let platform_name = platform.to_str();
