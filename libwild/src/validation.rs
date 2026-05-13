@@ -49,12 +49,12 @@ fn validate_object(object: &crate::elf::File, layout: &ElfLayout) -> Result {
         for file in &group.files {
             match file {
                 crate::layout::FileLayout::Object(obj) => {
-                    for (sec_index, sec) in obj.object.sections.enumerate() {
+                    for (sec_index, _sec) in obj.object.sections.enumerate() {
                         if let Some(resolution) =
                             obj.section_resolutions[sec_index.0].full_resolution()
                         {
                             <Elf as Platform>::validate_resolution(
-                                obj.object.section_name(sec)?,
+                                obj.object.section_name(sec_index)?,
                                 &resolution,
                                 got,
                                 got_data,

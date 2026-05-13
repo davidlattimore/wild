@@ -355,7 +355,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections.len()
     }
 
-    fn section_iter(&self) -> <Self::Platform as platform::Platform>::SectionIterator<'data> {
+    fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
         self.sections.iter()
     }
 
@@ -364,7 +364,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> impl Iterator<
         Item = (
             object::SectionIndex,
-            &'data <Self::Platform as platform::Platform>::SectionHeader,
+            &<Self::Platform as platform::Platform>::SectionHeader,
         ),
     > {
         self.sections
@@ -376,7 +376,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn section(
         &self,
         index: object::SectionIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SectionHeader> {
+    ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
         self.sections
             .get(index.0)
             .ok_or(error!("section index out of range"))
@@ -387,7 +387,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         name: &str,
     ) -> Option<(
         object::SectionIndex,
-        &'data <Self::Platform as platform::Platform>::SectionHeader,
+        &<Self::Platform as platform::Platform>::SectionHeader,
     )> {
         todo!()
     }
@@ -435,11 +435,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
-        Ok(section_header.name())
+    fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
+        let section = self
+            .sections
+            .get(index.0)
+            .ok_or(error!("section index out of range"))?;
+        Ok(section.name())
     }
 
     fn raw_section_data(
@@ -506,12 +507,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn dynamic_tag_values(
@@ -1016,7 +1015,7 @@ impl platform::Platform for MachO {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();

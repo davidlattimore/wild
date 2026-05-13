@@ -5139,13 +5139,10 @@ pub(crate) fn section_debug<P: Platform>(
     object: &P::File<'_>,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
-    let name = object
-        .section(section_index)
-        .and_then(|section| object.section_name(section))
-        .map_or_else(
-            |_| "??".to_owned(),
-            |name| String::from_utf8_lossy(name).into_owned(),
-        );
+    let name = object.section_name(section_index).map_or_else(
+        |_| "??".to_owned(),
+        |name| String::from_utf8_lossy(name).into_owned(),
+    );
     std::fmt::from_fn(move |f| write!(f, "`{name}`"))
 }
 

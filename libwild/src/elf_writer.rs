@@ -1748,7 +1748,7 @@ fn write_rela_sections<'data>(
     let e = LittleEndian;
 
     for (sec_idx, header) in object.object.enumerate_sections() {
-        let section_name = object.object.section_name(header).unwrap_or_default();
+        let section_name = object.object.section_name(sec_idx).unwrap_or_default();
         if !section_name.starts_with(b".rela") && !section_name.starts_with(b".crel") {
             continue;
         }
@@ -2317,8 +2317,7 @@ pub(crate) fn apply_debug_relocations<
     relocations: I,
     layout: &ElfLayout<'data>,
 ) -> Result {
-    let object_section = object.object.section(section_index)?;
-    let section_name = object.object.section_name(object_section)?;
+    let section_name = object.object.section_name(section_index)?;
 
     // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
     // However, the change is premature as consumers of the DWARF format don't fully support
@@ -5792,14 +5791,12 @@ fn should_reverse_contents(
         return false;
     }
 
-    file.section(section_index)
-        .and_then(|header| file.section_name(header))
-        .is_ok_and(|section_name| {
-            // .ctors and .dtors sections need their contents reversed when merged into
-            // .init_array/.fini_array
-            section_name.starts_with(secnames::CTORS_SECTION_NAME)
-                || section_name.starts_with(secnames::DTORS_SECTION_NAME)
-        })
+    file.section_name(section_index).is_ok_and(|section_name| {
+        // .ctors and .dtors sections need their contents reversed when merged into
+        // .init_array/.fini_array
+        section_name.starts_with(secnames::CTORS_SECTION_NAME)
+            || section_name.starts_with(secnames::DTORS_SECTION_NAME)
+    })
 }
 
 fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {

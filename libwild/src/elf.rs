@@ -319,7 +319,7 @@ impl platform::Platform for Elf {
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = u16;
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type VersionNames<'data> = VersionNames<'data>;
@@ -2093,25 +2093,24 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
-    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    fn section_name(&self, section: &'data SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]> {
+        let section = self.sections.section(index)?;
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
@@ -2296,13 +2295,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         None
     }
 
-    fn section_iter(&self) -> core::slice::Iter<'data, SectionHeader> {
+    fn section_iter<'a>(&'a self) -> core::slice::Iter<'a, SectionHeader> {
         self.sections.iter()
     }
 
-    fn enumerate_sections(
-        &self,
-    ) -> impl Iterator<Item = (object::SectionIndex, &'data SectionHeader)> {
+    fn enumerate_sections(&self) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader)> {
         self.sections.enumerate()
     }
 

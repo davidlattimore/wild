@@ -1177,7 +1177,7 @@ fn resolve_section<'data, P: Platform>(
     let section_name = obj
         .common
         .object
-        .section_name(input_section)
+        .section_name(input_section_index)
         .unwrap_or_default();
 
     P::verify_allowed_input_section_name(section_name)?;

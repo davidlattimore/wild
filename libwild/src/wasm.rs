@@ -214,7 +214,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         0
     }
 
-    fn section_iter(&self) -> <Self::Platform as platform::Platform>::SectionIterator<'data> {
+    fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
         [].iter()
     }
 
@@ -223,7 +223,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> impl Iterator<
         Item = (
             object::SectionIndex,
-            &'data <Self::Platform as platform::Platform>::SectionHeader,
+            &<Self::Platform as platform::Platform>::SectionHeader,
         ),
     > {
         [].iter()
@@ -234,7 +234,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn section(
         &self,
         index: object::SectionIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SectionHeader> {
+    ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
         todo!()
     }
 
@@ -243,7 +243,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         name: &str,
     ) -> Option<(
         object::SectionIndex,
-        &'data <Self::Platform as platform::Platform>::SectionHeader,
+        &<Self::Platform as platform::Platform>::SectionHeader,
     )> {
         todo!()
     }
@@ -287,10 +287,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
+    fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
         todo!()
     }
 
@@ -894,7 +891,7 @@ impl platform::Platform for Wasm {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
