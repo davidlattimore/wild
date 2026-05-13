@@ -161,8 +161,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --profile ci --workspace --no-default-features --features macho
-      - run: cargo test --profile ci --workspace
+      - run: cargo build --profile ci --workspace --no-default-features
+      - run: cargo test --profile ci --workspace --features macho
 
   windows-build:
     name: Build Windows (x86_64)
