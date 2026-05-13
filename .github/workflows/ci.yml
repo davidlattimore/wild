@@ -242,6 +242,17 @@ jobs:
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: yamlfmt -lint .
 
+  taplo:
+    name: TOML format
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
+      - run: taplo format --check --diff
+
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
