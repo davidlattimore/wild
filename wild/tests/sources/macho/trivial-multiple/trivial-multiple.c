@@ -8,10 +8,6 @@
 int value = 42;
 
 int foo();
-long baz() {
-  return value;
-}
+long baz() { return value; }
 
-int main() {
-  exit_syscall(foo());
-}
+int main() { exit_syscall(foo()); }
