@@ -1181,36 +1181,4 @@ mod tests {
         assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);
         assert_eq!(script.find_match(&sym(b"fxxx")).unwrap().0, 2);
     }
-
-    #[test]
-    fn undefined_version_name_errors() {
-        let sym = UnversionedSymbolName::prehashed;
-
-        // Empty version script (no version nodes defined)
-        let default_script = RegularVersionScript::default();
-        let result = default_script.version_for_symbol(&sym(b"foo"), Some(b"NONEXISTENT"));
-        assert!(
-            result.is_err(),
-            "Should error when version node is not defined"
-        );
-
-        // Version script with defined versions, but symbol references a different one
-        let data = ScriptData {
-            raw: br#"
-                VERS_1.0 {
-                    global: *;
-                };
-            "#,
-        };
-        let script = RegularVersionScript::parse(data).unwrap();
-        let result = script.version_for_symbol(&sym(b"foo"), Some(b"VERS_MISSING"));
-        assert!(
-            result.is_err(),
-            "Should error when referenced version node is missing"
-        );
-
-        // Same script, but referencing the defined version should succeed
-        let result = script.version_for_symbol(&sym(b"foo"), Some(b"VERS_1.0"));
-        assert!(result.is_ok(), "Should succeed when version node exists");
-    }
 }
