@@ -2005,9 +2005,9 @@ impl Program<'_> {
             )
         })?;
 
-        // We need to drop command here since it holds a copy or two of our send pipe. While they
-        // are open, our `recv_to_end` call below can't finish.
-        drop(command);
+        // Drop pipes from command. While they are open, our `recv_to_end` call below can't finish.
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
 
         let mut output = Vec::new();
 
@@ -2028,7 +2028,7 @@ impl Program<'_> {
         let output = String::from_utf8_lossy(&output);
 
         if status.code() != Some(EXIT_SUCCESS) {
-            bail!("Binary exited with unexpected {status}: {output}");
+            bail!("Binary exited with unexpected {status}: {output}\nCommand:\n  {command:?}");
         }
 
         Ok(())
