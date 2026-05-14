@@ -2039,12 +2039,14 @@ impl Program<'_> {
         // In particular: All initialization, termination and entry routines of the shared library
         // need to be safe and entry_sym has to be of type `extern "C" fn() -> i32`.
         let exit_code = unsafe {
-            let lib = Library::new(&self.link_output.binary).with_context(|| {
-                format!(
-                    "Cannot load shared library {}",
-                    self.link_output.binary.to_string_lossy()
-                )
-            })?;
+            let lib = Library::new(&self.link_output.binary)
+                .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+                .with_context(|| {
+                    format!(
+                        "Cannot load shared library {}",
+                        self.link_output.binary.to_string_lossy()
+                    )
+                })?;
             let entry = lib
                 .get::<unsafe extern "C" fn() -> i32>(entry_sym)
                 .with_context(|| format!("Cannot find entry point symbol {entry_sym}"))?;
