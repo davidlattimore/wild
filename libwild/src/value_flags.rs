@@ -3,7 +3,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use bitflags::bitflags;
 use std::sync::atomic;
-use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -13,7 +13,7 @@ use zerocopy::transmute_mut;
 /// `FromBytes` and `IntoBytes`.
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, Hash, FromBytes, IntoBytes)]
 #[debug("{}", ValueFlags::from_bits_retain(*_0))]
-pub(crate) struct RawFlags(u16);
+pub(crate) struct RawFlags(u32);
 
 /// Flags for each symbol.
 #[derive(Debug)]
@@ -31,7 +31,7 @@ bitflags! {
     /// that defined the symbol or section and some is computed based on what kinds of references we
     /// encounter to it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub(crate) struct ValueFlags: u16 {
+    pub(crate) struct ValueFlags: u32 {
         /// An absolute value that won't change depending on load address. This could be a symbol
         /// with an absolute value or an undefined symbol, which needs to always resolve to 0
         /// regardless of load address.
@@ -108,7 +108,7 @@ bitflags! {
 }
 
 #[derive(FromBytes, IntoBytes)]
-pub(crate) struct AtomicValueFlags(AtomicU16);
+pub(crate) struct AtomicValueFlags(AtomicU32);
 
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
