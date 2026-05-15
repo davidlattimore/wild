@@ -3293,10 +3293,12 @@ impl LinkCommand {
             }
 
             if !expected_error.matches(output) {
-                eprintln!("-- stdout --\n{stdout}\n-- stderr --\n{stderr}\n-- end --");
                 bail!(
                     "Linker expected to report `{expected_error}` on {output_name}, but didn't. \
-                         Command:\n{self}"
+                    Command:\n{self}\n\
+                    -- stdout --\n{stdout}\n\
+                    -- stderr --\n{stderr}\n\
+                    -- end --"
                 );
             }
         }
