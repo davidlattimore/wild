@@ -1314,6 +1314,11 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
+    fn undefined_symbol(&mut self, is_local: bool, name: &[u8]) -> Result<&mut SymtabEntry> {
+        self.define_symbol(is_local, object::elf::SHN_UNDEF.into(), 0, 0, name)
+    }
+
+    #[inline(always)]
     fn define_symbol(
         &mut self,
         is_local: bool,
@@ -2202,7 +2207,7 @@ fn write_symbols<'data>(
             }
             let name = RawSymbolName::parse(name).name;
             let entry = symbol_writer
-                .define_symbol(false, object::elf::SHN_UNDEF.into(), 0, 0, name)
+                .undefined_symbol(false, name)
                 .with_context(|| {
                     format!(
                         "Failed to write undefined symbol `{}` for partial link",
@@ -3590,13 +3595,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
 
     // Define the null dynamic symbol.
     if layout.symbol_db.output_kind.needs_dynsym() {
-        table_writer.dynsym_writer.define_symbol(
-            false,
-            object::elf::SHN_UNDEF.into(),
-            0,
-            0,
-            &[],
-        )?;
+        table_writer.dynsym_writer.undefined_symbol(false, &[])?;
     }
 
     Ok(())
@@ -3708,7 +3707,7 @@ fn write_symbol_table_entries(
     layout: &ElfLayout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    symbol_writer.define_symbol(true, object::elf::SHN_UNDEF.into(), 0, 0, &[])?;
+    symbol_writer.undefined_symbol(true, &[])?;
 
     if layout.args().should_output_partial_object() {
         write_section_symbols(symbol_writer, layout)?;
@@ -5478,13 +5477,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     ValueFlags::empty(),
                 )?;
             } else {
-                let entry = table_writer.dynsym_writer.define_symbol(
-                    false,
-                    object::elf::SHN_UNDEF.into(),
-                    0,
-                    0,
-                    name,
-                )?;
+                let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
 
                 // Note, we copy st_info, but not st_other since we don't want to copy the
                 // visibility. We want to emit the symbol with default visibility, otherwise the
