@@ -59,8 +59,10 @@ impl crate::platform::Arch for ElfPpc64 {
         None
     }
 
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32> {
-        Ok(eflags.fold(0, |merged, flags| merged | flags))
+    fn merge_eflags(
+        eflags: impl Iterator<Item = object::elf::FileFlags>,
+    ) -> Result<object::elf::FileFlags> {
+        Ok(eflags.fold(object::elf::FileFlags(0), |merged, flags| merged | flags))
     }
 
     fn high_part_relocations() -> &'static [u32] {

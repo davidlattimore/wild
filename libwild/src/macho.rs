@@ -977,6 +977,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
 
 impl platform::Platform for MachO {
     type File<'data> = File<'data>;
+    type FileFlags = u32;
     type SymtabEntry = SymtabEntry;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;

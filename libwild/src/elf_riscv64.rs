@@ -105,8 +105,10 @@ impl crate::platform::Arch for ElfRiscV64 {
     // Allow the lint for `exactly_one`.
     // Tracking issue available at: https://github.com/rust-lang/rust/issues/149266
     #[allow(unstable_name_collisions)]
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32> {
-        let eflags = eflags.map(object::elf::FileFlags).collect_vec();
+    fn merge_eflags(
+        eflags: impl Iterator<Item = object::elf::FileFlags>,
+    ) -> Result<object::elf::FileFlags> {
+        let eflags = eflags.collect_vec();
         let or_eflags = eflags
             .iter()
             .fold(object::elf::FileFlags(0), |acc, x| acc | *x);
@@ -138,7 +140,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             "RV64ILP32 flag mismatch"
         );
 
-        Ok(or_eflags.0)
+        Ok(or_eflags)
     }
 
     fn high_part_relocations() -> &'static [u32] {

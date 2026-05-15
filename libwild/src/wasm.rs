@@ -1146,6 +1146,7 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 
 impl platform::Platform for Wasm {
     type File<'data> = File<'data>;
+    type FileFlags = u32;
     type SymtabEntry = WasmSymbol;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;

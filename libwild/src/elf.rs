@@ -300,6 +300,7 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
 
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
+    type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
@@ -3314,7 +3315,7 @@ pub(crate) struct LayoutExt {
 }
 
 impl LayoutExt {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch<Platform = Elf>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
         args: &ElfArgs,
@@ -3395,14 +3396,12 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, A: Arch>(
+fn merge_eflags<'files, 'data: 'files, A: Arch<Platform = Elf>>(
     objects: impl Iterator<Item = &'files File<'data>>,
 ) -> Result<object::elf::FileFlags> {
     timing_phase!("Merge e_flags");
 
-    Ok(object::elf::FileFlags(A::merge_eflags(
-        objects.map(|object| object.eflags.0),
-    )?))
+    A::merge_eflags(objects.map(|object| object.eflags))
 }
 
 fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(

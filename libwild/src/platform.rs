@@ -105,7 +105,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Merge e_flags of the input files and provide an error
     /// if the flags are not compatible.
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32>;
+    fn merge_eflags(
+        eflags: impl Iterator<Item = <Self::Platform as Platform>::FileFlags>,
+    ) -> Result<<Self::Platform as Platform>::FileFlags>;
 
     /// A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];
@@ -207,6 +209,7 @@ pub(crate) trait Platform:
     Copy + Send + Sync + Sized + Default + std::fmt::Debug + 'static
 {
     type File<'data>: ObjectFile<'data, Platform = Self>;
+    type FileFlags;
     type SymtabEntry: Symbol;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
