@@ -666,8 +666,8 @@ mod tests {
                 evaluate_expression::<Elf>(
                     expr,
                     SymbolLoc::None,
-                    &layouts,
-                    &sections,
+                    layouts,
+                    sections,
                     &regions,
                     &|_| Ok(0),
                 )

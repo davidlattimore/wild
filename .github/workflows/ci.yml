@@ -211,7 +211,7 @@ jobs:
         with:
           wild-version: "0.8.0"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
+      - run: cargo clippy --all-targets --workspace --target x86_64-unknown-linux-gnu
 
   rustfmt:
     name: Check formatting
