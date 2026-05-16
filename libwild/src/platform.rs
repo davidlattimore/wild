@@ -743,7 +743,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     ) -> impl Iterator<
         Item = (
             object::SymbolIndex,
-            &'data <Self::Platform as Platform>::SymtabEntry,
+            &<Self::Platform as Platform>::SymtabEntry,
         ),
     > {
         self.symbols_iter()
@@ -751,14 +751,12 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
             .map(|(i, sym)| (object::SymbolIndex(i), sym))
     }
 
-    fn symbols_iter(
-        &self,
-    ) -> impl Iterator<Item = &'data <Self::Platform as Platform>::SymtabEntry>;
+    fn symbols_iter(&self) -> impl Iterator<Item = &<Self::Platform as Platform>::SymtabEntry>;
 
     fn symbol(
         &self,
         index: object::SymbolIndex,
-    ) -> Result<&'data <Self::Platform as Platform>::SymtabEntry>;
+    ) -> Result<&<Self::Platform as Platform>::SymtabEntry>;
 
     fn section_size(&self, header: &<Self::Platform as Platform>::SectionHeader) -> Result<u64>;
 

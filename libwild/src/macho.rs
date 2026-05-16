@@ -307,14 +307,14 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.symbols.len()
     }
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
+    fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry> {
         self.symbols.iter()
     }
 
     fn symbol(
         &self,
         index: object::SymbolIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SymtabEntry> {
+    ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SymtabEntry> {
         Ok(self.symbols.symbol(index)?)
     }
 
