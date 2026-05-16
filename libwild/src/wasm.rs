@@ -18,6 +18,7 @@ use wasmparser::Parser;
 use wasmparser::Payload;
 use wasmparser::RelocationEntry;
 use wasmparser::SegmentFlags;
+use wasmparser::SymbolFlags;
 use wasmparser::SymbolInfo;
 
 #[derive(Debug, Copy, Clone, Default)]
@@ -28,6 +29,29 @@ pub(crate) const WASM_MAGIC: [u8; 4] = [0x00, b'a', b's', b'm'];
 
 /// Supported Wasm binary format version.
 pub(crate) const WASM_VERSION: u32 = 1;
+
+pub(crate) mod section_id {
+    pub(crate) const TYPE: u8 = 1;
+    pub(crate) const IMPORT: u8 = 2;
+    pub(crate) const FUNCTION: u8 = 3;
+    pub(crate) const TABLE: u8 = 4;
+    pub(crate) const MEMORY: u8 = 5;
+    pub(crate) const GLOBAL: u8 = 6;
+    pub(crate) const EXPORT: u8 = 7;
+    pub(crate) const START: u8 = 8;
+    pub(crate) const ELEMENT: u8 = 9;
+    pub(crate) const CODE: u8 = 10;
+    pub(crate) const DATA: u8 = 11;
+    pub(crate) const DATA_COUNT: u8 = 12;
+    pub(crate) const MAX: u8 = DATA_COUNT;
+}
+
+/// Size of a `[Option<u32>; _]` lookup that can be indexed by any standard section id.
+pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = section_id::MAX as usize + 1;
+
+/// `R_WASM_TYPE_INDEX_LEB` from the Wasm Tool Conventions. The only reloc whose `index` field
+/// refers to a type index rather than a symbol index.
+pub(crate) const R_WASM_TYPE_INDEX_LEB: u8 = 6;
 
 /// The custom-section name used for the linker metadata.
 pub(crate) const LINKING_SECTION_NAME: &str = "linking";
@@ -48,8 +72,12 @@ pub(crate) struct File<'data> {
     #[debug(skip)]
     pub(crate) sections: Vec<SectionHeader>,
 
+    /// For each standard Wasm section id, the index into `sections`, if present.
     #[debug(skip)]
-    pub(crate) symbols: Vec<WasmSymbol<'data>>,
+    pub(crate) standard_section_index: [Option<u32>; STANDARD_SECTION_LOOKUP_LEN],
+
+    #[debug(skip)]
+    pub(crate) symbols: Vec<WasmSymbol>,
 
     #[debug(skip)]
     pub(crate) segments: Vec<WasmSegmentInfo<'data>>,
@@ -90,70 +118,80 @@ impl SectionHeader {
 
 fn standard_section_name(id: u8) -> Option<&'static [u8]> {
     Some(match id {
-        1 => b"type",
-        2 => b"import",
-        3 => b"function",
-        4 => b"table",
-        5 => b"memory",
-        6 => b"global",
-        7 => b"export",
-        8 => b"start",
-        9 => b"element",
-        10 => b"code",
-        11 => b"data",
-        12 => b"data_count",
+        section_id::TYPE => b"type",
+        section_id::IMPORT => b"import",
+        section_id::FUNCTION => b"function",
+        section_id::TABLE => b"table",
+        section_id::MEMORY => b"memory",
+        section_id::GLOBAL => b"global",
+        section_id::EXPORT => b"export",
+        section_id::START => b"start",
+        section_id::ELEMENT => b"element",
+        section_id::CODE => b"code",
+        section_id::DATA => b"data",
+        section_id::DATA_COUNT => b"data_count",
         _ => return None,
     })
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WasmSymbol<'data> {
-    pub(crate) info: SymbolInfo<'data>,
+// NOTE: We deliberately don't reuse `wasmparser::SymbolInfo<'data>` here. It carries `&'data str`
+// names, but `Platform::SymtabEntry` requires `Symbol: 'static + Copy`, so a wrapper around
+// `SymbolInfo` would have to drop the borrowed strings anyway.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct WasmSymbol {
+    pub(crate) kind: WasmSymbolKind,
+    pub(crate) flags: u32,
+    pub(crate) index: u32,
+    pub(crate) offset: u32,
+    pub(crate) size: u32,
+    pub(crate) name_start: u32,
+    pub(crate) name_len: u32,
 }
 
-impl<'data> WasmSymbol<'data> {
-    pub(crate) fn flags(&self) -> wasmparser::SymbolFlags {
-        match self.info {
-            SymbolInfo::Func { flags, .. }
-            | SymbolInfo::Data { flags, .. }
-            | SymbolInfo::Global { flags, .. }
-            | SymbolInfo::Section { flags, .. }
-            | SymbolInfo::Event { flags, .. }
-            | SymbolInfo::Table { flags, .. } => flags,
-        }
-    }
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub(crate) enum WasmSymbolKind {
+    #[default]
+    Null, // Doesn't correspond to any real wasm symbol kind.
+    Func,
+    Data,
+    Global,
+    Section,
+    Event,
+    Table,
+}
 
-    pub(crate) fn name(&self) -> Option<&'data str> {
-        match self.info {
-            SymbolInfo::Func { name, .. }
-            | SymbolInfo::Global { name, .. }
-            | SymbolInfo::Event { name, .. }
-            | SymbolInfo::Table { name, .. } => name,
-            SymbolInfo::Data { name, .. } => Some(name),
-            SymbolInfo::Section { .. } => None,
-        }
+impl WasmSymbol {
+    fn raw_flags(&self) -> SymbolFlags {
+        SymbolFlags::from_bits_truncate(self.flags)
     }
 
     pub(crate) fn is_undefined(&self) -> bool {
-        self.flags().contains(wasmparser::SymbolFlags::UNDEFINED)
+        self.raw_flags().contains(SymbolFlags::UNDEFINED)
     }
 
     pub(crate) fn is_weak(&self) -> bool {
-        self.flags().contains(wasmparser::SymbolFlags::BINDING_WEAK)
+        self.raw_flags().contains(SymbolFlags::BINDING_WEAK)
     }
 
     pub(crate) fn is_local(&self) -> bool {
-        self.flags()
-            .contains(wasmparser::SymbolFlags::BINDING_LOCAL)
+        self.raw_flags().contains(SymbolFlags::BINDING_LOCAL)
     }
 
     pub(crate) fn is_hidden(&self) -> bool {
-        self.flags()
-            .contains(wasmparser::SymbolFlags::VISIBILITY_HIDDEN)
+        self.raw_flags().contains(SymbolFlags::VISIBILITY_HIDDEN)
     }
 
     pub(crate) fn is_exported(&self) -> bool {
-        self.flags().contains(wasmparser::SymbolFlags::EXPORTED)
+        self.raw_flags().contains(SymbolFlags::EXPORTED)
+    }
+
+    fn has_name(&self) -> bool {
+        self.name_len != 0
+    }
+
+    fn name_range(&self) -> Range<usize> {
+        let s = self.name_start as usize;
+        s..s + self.name_len as usize
     }
 }
 
@@ -170,7 +208,35 @@ pub(crate) struct WasmSegmentInfo<'data> {
 pub(crate) struct WasmRelocSection {
     /// Index (into [`File::sections`]) of the section that the relocations apply to.
     pub(crate) target_section_index: u32,
-    pub(crate) entries: Vec<RelocationEntry>,
+    pub(crate) entries: Vec<WasmRelocation>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmRelocation {
+    /// Wasm relocation type code.
+    pub(crate) ty: u8,
+    /// Byte offset within the target section's payload.
+    pub(crate) offset: u32,
+    /// Symbol or type index.
+    pub(crate) index: u32,
+    pub(crate) addend: i64,
+}
+
+impl WasmRelocation {
+    fn from_entry(entry: RelocationEntry) -> Self {
+        Self {
+            ty: entry.ty as u8,
+            offset: entry.offset,
+            index: entry.index,
+            addend: entry.addend,
+        }
+    }
+
+    /// Whether `index` refers to a symbol rather than a type index.
+    #[expect(dead_code)] // Will be used once relocation application lands.
+    fn refers_to_symbol(&self) -> bool {
+        self.ty != R_WASM_TYPE_INDEX_LEB
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -196,15 +262,17 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.symbols.len()
     }
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data ()> {
-        [].iter()
+    fn symbols_iter(&self) -> impl Iterator<Item = &WasmSymbol> {
+        self.symbols.iter()
     }
 
     fn symbol(
         &self,
         index: object::SymbolIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SymtabEntry> {
-        todo!()
+    ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SymtabEntry> {
+        self.symbols
+            .get(index.0)
+            .ok_or_else(|| crate::error!("wasm symbol index {} out of range", index.0))
     }
 
     fn section_size(
@@ -218,15 +286,23 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
     ) -> crate::error::Result<&'data [u8]> {
-        todo!()
+        if !symbol.has_name() {
+            return Ok(&[]);
+        }
+        self.data
+            .get(symbol.name_range())
+            .ok_or_else(|| crate::error!("wasm symbol name range out of bounds"))
     }
 
     fn symbol_offset_in_section(
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        section_index: object::SectionIndex,
+        _section_index: object::SectionIndex,
     ) -> crate::error::Result<u64> {
-        todo!()
+        Ok(match symbol.kind {
+            WasmSymbolKind::Data => u64::from(symbol.offset),
+            _ => 0,
+        })
     }
 
     fn num_sections(&self) -> usize {
@@ -286,9 +362,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn symbol_section(
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        index: object::SymbolIndex,
+        _index: object::SymbolIndex,
     ) -> crate::error::Result<Option<object::SectionIndex>> {
-        todo!()
+        if symbol.is_undefined() {
+            return Ok(None);
+        }
+        // Map each symbol kind to the wasm section that holds its definition.
+        let std_id: u8 = match symbol.kind {
+            WasmSymbolKind::Func => section_id::CODE,
+            WasmSymbolKind::Data => section_id::DATA,
+            WasmSymbolKind::Global => section_id::GLOBAL,
+            WasmSymbolKind::Table => section_id::TABLE,
+            WasmSymbolKind::Event | WasmSymbolKind::Null => return Ok(None),
+            WasmSymbolKind::Section => {
+                return Ok(self
+                    .sections
+                    .get(symbol.index as usize)
+                    .map(|_| object::SectionIndex(symbol.index as usize)));
+            }
+        };
+        Ok(self.standard_section_index[std_id as usize].map(|i| object::SectionIndex(i as usize)))
     }
 
     fn symbol_versions(&self) -> &[<Self::Platform as platform::Platform>::SymbolVersionIndex] {
@@ -298,28 +391,29 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn dynamic_symbol_used(
         &self,
-        symbol_index: object::SymbolIndex,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _symbol_index: object::SymbolIndex,
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
     ) -> crate::error::Result {
-        todo!()
+        // Wasm has no dynamic objects yet.
+        Ok(())
     }
 
     fn finalise_sizes_dynamic(
         &self,
-        lib_name: &[u8],
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
-        mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
+        _lib_name: &[u8],
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn apply_non_addressable_indexes_dynamic(
         &self,
-        indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
-        counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
-        state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
+        _indexes: &mut <Self::Platform as platform::Platform>::NonAddressableIndexes,
+        _counts: &mut <Self::Platform as platform::Platform>::NonAddressableCounts,
+        _state: &mut <Self::Platform as platform::Platform>::DynamicLayoutStateExt<'data>,
     ) -> crate::error::Result {
-        todo!()
+        Ok(())
     }
 
     fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
@@ -385,16 +479,20 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn relocations(
         &self,
-        index: object::SectionIndex,
-        relocations: &<Self::Platform as platform::Platform>::RelocationSections,
+        _index: object::SectionIndex,
+        _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
-        todo!()
+        // Relocation entries are parsed and stored on `File::reloc_sections` but not yet plumbed
+        // through the layout pipeline.
+        Ok(RelocationList {
+            _phantom: std::marker::PhantomData,
+        })
     }
 
     fn parse_relocations(
         &self,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationSections> {
-        todo!()
+        Ok(())
     }
 
     fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
@@ -424,17 +522,20 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn get_symbol_name_and_version(
         &self,
         symbol: &<Self::Platform as platform::Platform>::SymtabEntry,
-        local_index: usize,
-        version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
+        _local_index: usize,
+        _version_names: &<Self::Platform as platform::Platform>::VersionNames<'data>,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RawSymbolName<'data>> {
-        todo!()
+        Ok(RawSymbolName {
+            name: self.symbol_name(symbol)?,
+        })
     }
 
     fn should_enforce_undefined(
         &self,
-        resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
+        _resources: &crate::layout::GraphResources<'data, '_, Self::Platform>,
     ) -> bool {
-        todo!()
+        // Wasm has no dynamic objects yet, so this is never reached in practice.
+        false
     }
 
     fn verneed_table(
@@ -543,62 +644,71 @@ impl platform::SectionFlags for SectionFlags {
     }
 }
 
-impl platform::Symbol for () {
+impl platform::Symbol for WasmSymbol {
     fn as_common(&self) -> Option<platform::CommonSymbol> {
-        // Wasm doesn't really have COMMON symbols in the ELF sense.
+        // Wasm has no COMMON symbols.
         None
     }
 
     fn is_undefined(&self) -> bool {
-        todo!()
+        WasmSymbol::is_undefined(self)
     }
 
     fn is_local(&self) -> bool {
-        todo!()
+        WasmSymbol::is_local(self)
     }
 
     fn is_absolute(&self) -> bool {
-        todo!()
+        self.raw_flags().contains(SymbolFlags::ABSOLUTE)
     }
 
     fn is_weak(&self) -> bool {
-        todo!()
+        WasmSymbol::is_weak(self)
     }
 
     fn visibility(&self) -> crate::symbol_db::Visibility {
-        todo!()
+        if self.is_hidden() {
+            crate::symbol_db::Visibility::Hidden
+        } else {
+            crate::symbol_db::Visibility::Default
+        }
     }
 
     fn value(&self) -> u64 {
-        todo!()
+        match self.kind {
+            WasmSymbolKind::Data => u64::from(self.offset),
+            _ => u64::from(self.index),
+        }
     }
 
     fn size(&self) -> u64 {
-        todo!()
+        u64::from(self.size)
     }
 
     fn has_name(&self) -> bool {
-        todo!()
+        WasmSymbol::has_name(self)
     }
 
-    fn is_default_strippable(&self, name: &[u8]) -> bool {
-        todo!()
-    }
-
-    fn debug_string(&self) -> String {
-        String::from("WasmSymbol")
-    }
-
-    fn is_tls(&self) -> bool {
+    fn is_default_strippable(&self, _name: &[u8]) -> bool {
+        // No equivalent of ELF's `.L` local symbol convention.
         false
     }
 
+    fn debug_string(&self) -> String {
+        format!("<Wasm symbol kind={:?} index={}>", self.kind, self.index)
+    }
+
+    fn is_tls(&self) -> bool {
+        self.raw_flags().contains(SymbolFlags::TLS)
+    }
+
     fn is_interposable(&self) -> bool {
-        todo!()
+        // No dynamic linking yet; symbols can't be interposed at runtime.
+        false
     }
 
     fn is_func(&self) -> bool {
-        todo!()
+        self.kind == WasmSymbolKind::Func
     }
 
     fn is_ifunc(&self) -> bool {
@@ -606,16 +716,21 @@ impl platform::Symbol for () {
     }
 
     fn is_hidden(&self) -> bool {
-        todo!()
+        WasmSymbol::is_hidden(self)
     }
 
     fn is_gnu_unique(&self) -> bool {
         false
     }
 
-    fn with_hidden(self, hidden: bool) -> Self {
-        // TODO: track hidden visibility on the Wasm symbol once linking-section
-        // flags are wired up.
+    fn with_hidden(mut self, hidden: bool) -> Self {
+        let bit = SymbolFlags::VISIBILITY_HIDDEN.bits();
+        if hidden {
+            self.flags |= bit;
+        } else {
+            self.flags &= !bit;
+        }
+        self
     }
 }
 
@@ -625,16 +740,16 @@ pub(crate) struct SectionAttributes {}
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Wasm;
 
-    fn merge(&mut self, rhs: Self) {
-        todo!()
+    fn merge(&mut self, _rhs: Self) {
+        // No per-section attributes to merge yet.
     }
 
     fn apply(
         &self,
-        output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
-        section_id: crate::output_section_id::OutputSectionId,
+        _output_sections: &mut crate::output_section_id::OutputSections<Self::Platform>,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) {
-        todo!()
+        // No-op: Wasm output sections inherit their attributes from `SECTION_DEFINITIONS`.
     }
 
     fn is_null(&self) -> bool {
@@ -689,7 +804,7 @@ impl platform::NonAddressableIndexes for NonAddressableIndexes {
 pub(crate) enum SegmentType {
     /// Holds the 8-byte module preamble.
     Header,
-    /// Holds all standard wasm sections in canonical order.
+    /// Holds all standard Wasm sections in canonical order.
     Module,
     /// Anything not explicitly placed.
     #[default]
@@ -795,7 +910,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails;
         target_segment_type: Some(SegmentType::Header),
     };
 
-    // Standard wasm sections.
+    // Standard Wasm sections.
     defs[osid::WASM_TYPE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"type")),
         target_segment_type: Some(SegmentType::Module),
@@ -924,7 +1039,7 @@ impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
 
 impl platform::Platform for Wasm {
     type File<'data> = File<'data>;
-    type SymtabEntry = ();
+    type SymtabEntry = WasmSymbol;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
     type SectionAttributes = SectionAttributes;
@@ -985,16 +1100,16 @@ impl platform::Platform for Wasm {
     }
 
     fn apply_force_keep_sections(
-        keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
-        args: &Self::Args,
+        _keep_sections: &mut crate::output_section_map::OutputSectionMap<bool>,
+        _args: &Self::Args,
     ) {
-        todo!()
+        // No `-u` / `--require-defined` analogue is wired through for Wasm yet.
     }
 
     fn is_zero_sized_section_content(
-        section_id: crate::output_section_id::OutputSectionId,
+        _section_id: crate::output_section_id::OutputSectionId,
     ) -> bool {
-        todo!()
+        false
     }
 
     fn built_in_section_details() -> &'static [Self::BuiltInSectionDetails] {
@@ -1240,16 +1355,17 @@ impl platform::Platform for Wasm {
     }
 
     fn is_symbol_non_interposable<'data>(
-        object: &Self::File<'data>,
-        args: &Self::Args,
-        sym: &Self::SymtabEntry,
-        output_kind: crate::output_kind::OutputKind,
-        export_list: Option<&crate::export_list::ExportList>,
-        lib_name: &[u8],
-        archive_semantics: bool,
-        is_undefined: bool,
+        _object: &Self::File<'data>,
+        _args: &Self::Args,
+        _sym: &Self::SymtabEntry,
+        _output_kind: crate::output_kind::OutputKind,
+        _export_list: Option<&crate::export_list::ExportList>,
+        _lib_name: &[u8],
+        _archive_semantics: bool,
+        _is_undefined: bool,
     ) -> bool {
-        todo!()
+        // No dynamic linking yet, so nothing can be interposed.
+        true
     }
 
     fn allocate_header_sizes(
@@ -1378,7 +1494,9 @@ impl platform::Platform for Wasm {
         builder.build()
     }
 
-    fn default_symtab_entry() -> Self::SymtabEntry {}
+    fn default_symtab_entry() -> Self::SymtabEntry {
+        WasmSymbol::default()
+    }
 
     fn start_memory_address(_output_kind: crate::output_kind::OutputKind) -> u64 {
         // Wasm uses linear memory; the linker just lays out at offset 0.
@@ -1396,11 +1514,12 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
     );
 
     let mut sections: Vec<SectionHeader> = Vec::new();
-    let mut symbols: Vec<WasmSymbol<'data>> = Vec::new();
+    let mut symbols: Vec<WasmSymbol> = Vec::new();
     let mut segments: Vec<WasmSegmentInfo<'data>> = Vec::new();
     let mut reloc_sections: Vec<WasmRelocSection> = Vec::new();
     let mut linking_version: Option<u32> = None;
     let mut target_features_raw: Option<&'data [u8]> = None;
+    let mut standard_section_index = [None; STANDARD_SECTION_LOOKUP_LEN];
 
     for payload in Parser::new(0).parse_all(input) {
         let payload = payload?;
@@ -1419,14 +1538,14 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
             if section_name == LINKING_SECTION_NAME {
                 if let KnownCustom::Linking(linking) = reader.as_known() {
                     linking_version = Some(linking.version());
-                    parse_linking_subsections(&linking, &mut symbols, &mut segments)?;
+                    parse_linking_subsections(input, &linking, &mut symbols, &mut segments)?;
                 }
             } else if section_name.starts_with(RELOC_SECTION_PREFIX) {
                 if let KnownCustom::Reloc(reloc) = reader.as_known() {
                     let target_section_index = reloc.section_index();
                     let mut entries = Vec::new();
                     for entry in reloc.entries() {
-                        entries.push(entry?);
+                        entries.push(WasmRelocation::from_entry(entry?));
                     }
                     reloc_sections.push(WasmRelocSection {
                         target_section_index,
@@ -1436,6 +1555,8 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
             } else if section_name == TARGET_FEATURES_SECTION_NAME {
                 target_features_raw = Some(reader.data());
             }
+        } else if (section_id::TYPE..=section_id::MAX).contains(&id) {
+            standard_section_index[id as usize] = Some(sections.len() as u32);
         }
 
         sections.push(SectionHeader {
@@ -1449,6 +1570,7 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
         data: input,
         version,
         sections,
+        standard_section_index,
         symbols,
         segments,
         reloc_sections,
@@ -1458,16 +1580,22 @@ fn parse_wasm_module<'data>(input: &'data [u8]) -> Result<File<'data>> {
 }
 
 fn parse_linking_subsections<'data>(
+    data: &'data [u8],
     linking: &wasmparser::LinkingSectionReader<'data>,
-    symbols: &mut Vec<WasmSymbol<'data>>,
+    symbols: &mut Vec<WasmSymbol>,
     segments: &mut Vec<WasmSegmentInfo<'data>>,
 ) -> Result {
+    let data_start = data.as_ptr() as usize;
+    let to_name_range = |s: &str| -> (u32, u32) {
+        let start = s.as_ptr() as usize - data_start;
+        (start as u32, s.len() as u32)
+    };
     for sub in linking.subsections() {
         let sub = sub?;
         match sub {
             Linking::SymbolTable(map) => {
                 for sym in map {
-                    symbols.push(WasmSymbol { info: sym? });
+                    symbols.push(wasm_symbol_from_info(sym?, to_name_range));
                 }
             }
             Linking::SegmentInfo(map) => {
@@ -1486,4 +1614,67 @@ fn parse_linking_subsections<'data>(
     }
 
     Ok(())
+}
+
+fn wasm_symbol_from_info(
+    info: SymbolInfo<'_>,
+    to_name_range: impl Fn(&str) -> (u32, u32),
+) -> WasmSymbol {
+    let mut sym = WasmSymbol::default();
+    let mut set_name = |name: Option<&str>| {
+        if let Some(n) = name {
+            let (start, len) = to_name_range(n);
+            sym.name_start = start;
+            sym.name_len = len;
+        }
+    };
+    match info {
+        SymbolInfo::Func { flags, index, name } => {
+            sym.kind = WasmSymbolKind::Func;
+            sym.flags = flags.bits();
+            sym.index = index;
+            set_name(name);
+        }
+        SymbolInfo::Data {
+            flags,
+            name,
+            symbol,
+        } => {
+            sym.kind = WasmSymbolKind::Data;
+            sym.flags = flags.bits();
+            let (start, len) = to_name_range(name);
+            sym.name_start = start;
+            sym.name_len = len;
+            if let Some(def) = symbol {
+                sym.index = def.index;
+                sym.offset = def.offset;
+                sym.size = def.size;
+            }
+        }
+        SymbolInfo::Global { flags, index, name } => {
+            sym.kind = WasmSymbolKind::Global;
+            sym.flags = flags.bits();
+            sym.index = index;
+            set_name(name);
+        }
+        SymbolInfo::Section { flags, section } => {
+            sym.kind = WasmSymbolKind::Section;
+            sym.flags = flags.bits();
+            sym.index = section;
+        }
+        SymbolInfo::Event { flags, index, name } => {
+            sym.kind = WasmSymbolKind::Event;
+            sym.flags = flags.bits();
+            sym.index = index;
+            set_name(name);
+        }
+        SymbolInfo::Table { flags, index, name } => {
+            sym.kind = WasmSymbolKind::Table;
+            sym.flags = flags.bits();
+            sym.index = index;
+            set_name(name);
+        }
+    }
+
+    sym
 }
