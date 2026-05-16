@@ -41,8 +41,8 @@ extern __thread int tvar1;
 __thread long long int tvar2 = 20;
 __thread char tvar3 = 12;
 
-// Make sure we have a couple of zero-initialised variables, since they go into
-// TBSS rather than TDATA.
+// Make sure we have a couple of zero-initialised variables, since they go into TBSS rather than
+// TDATA.
 __thread int tvar4 = 0;
 static __thread int tvar5 = 0;
 __thread char tvar6 = 0;
@@ -59,8 +59,8 @@ void _start(void) {
 
 u8*** get_tcb(void);
 
-// When statically linking, glibc doesn't provide __tls_get_addr, however musl
-// does. So we need to make sure we work in either case.
+// When statically linking, glibc doesn't provide __tls_get_addr, however musl does. So we need to
+// make sure we work in either case.
 
 #if VARIANT == 1
 void* __tls_get_addr(size_t* mod_and_offset) {

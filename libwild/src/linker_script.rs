@@ -127,7 +127,7 @@ pub(crate) struct SymbolAssignment<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ProvideSymbolDefinition<'a> {
     pub(crate) name: &'a [u8],
-    pub(crate) value: &'a [u8],
+    pub(crate) value: Expression<'a>,
     pub(crate) hidden: bool,
 }
 
@@ -222,6 +222,52 @@ pub(crate) struct Matcher<'a> {
     pub(crate) input_file_pattern: Option<&'a [u8]>,
 
     pub(crate) input_section_name_patterns: Vec<&'a [u8]>,
+}
+
+impl<'a> Expression<'a> {
+    pub(crate) fn visit_expressions(&self, cb: &mut impl FnMut(&Self) -> bool) {
+        if !cb(self) {
+            return;
+        };
+        match self {
+            Expression::Number(_)
+            | Expression::LocationCounter
+            | Expression::Sizeof(_)
+            | Expression::Alignof(_)
+            | Expression::Origin(_)
+            | Expression::Length(_)
+            | Expression::Addr(_)
+            | Expression::Loadaddr(_)
+            | Expression::Symbol(_) => {}
+            Expression::Add(l, r)
+            | Expression::Subtract(l, r)
+            | Expression::Multiply(l, r)
+            | Expression::Divide(l, r)
+            | Expression::LessThan(l, r)
+            | Expression::GreaterThan(l, r)
+            | Expression::LessEqual(l, r)
+            | Expression::GreaterEqual(l, r)
+            | Expression::Equal(l, r)
+            | Expression::NotEqual(l, r)
+            | Expression::Min(l, r)
+            | Expression::Max(l, r)
+            | Expression::BitwiseAnd(l, r)
+            | Expression::BitwiseOr(l, r)
+            | Expression::BitwiseXor(l, r)
+            | Expression::LeftShift(l, r)
+            | Expression::RightShift(l, r)
+            | Expression::LogicalAnd(l, r)
+            | Expression::LogicalOr(l, r) => {
+                l.visit_expressions(cb);
+                r.visit_expressions(cb);
+            }
+            Expression::Align(e)
+            | Expression::LogicalNot(e)
+            | Expression::BitwiseNot(e)
+            | Expression::Negate(e) => e.visit_expressions(cb),
+            Expression::SegmentStart(_, default_expr) => default_expr.visit_expressions(cb),
+        }
+    }
 }
 
 impl<'data> LinkerScript<'data> {
@@ -340,8 +386,7 @@ fn parse_provide<'input>(
     skip_comments_and_whitespace(input)?;
     '='.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
-    let value = take_while(1.., |b| b != b')' && b != b';').parse_next(input)?;
-    let value = value.trim_ascii_end();
+    let value = parse_expression.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     ')'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
@@ -427,7 +472,7 @@ fn parse_memory<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<MemoryRe
 }
 
 /// Parse an expression - entry point for expression parsing
-fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
+pub(crate) fn parse_expression<'a>(input: &mut &'a BStr) -> winnow::Result<Expression<'a>> {
     parse_logical_or.parse_next(input)
 }
 

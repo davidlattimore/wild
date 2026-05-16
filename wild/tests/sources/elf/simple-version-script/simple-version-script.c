@@ -1,6 +1,5 @@
-// Tests operation with a simple version script. One where we don't define any
-// versions and only use the script to control which symbols get exportedd and
-// which don't.
+// Tests operation with a simple version script. One where we don't define any versions and only use
+// the script to control which symbols get exportedd and which don't.
 
 //#Object:simple-version-script-1.c
 //#CompArgs:-fPIC
@@ -20,7 +19,7 @@ void WEAK foo(void) {}
 // This symbol is the only definition.
 void WEAK bar(void) {}
 
-// These two symbols aren't listed in the version script, so should be matched
-// by the local wildcard and downgraded to non-exported.
+// These two symbols aren't listed in the version script, so should be matched by the local wildcard
+// and downgraded to non-exported.
 void WEAK aaa1(void) {}
 void aaa2(void) {}

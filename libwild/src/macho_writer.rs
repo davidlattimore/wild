@@ -205,6 +205,7 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
     write_code_signature_command::<A>(layout, code_signature_command);
 
     let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
+    // TODO: remove in the future once we handle a dynamic number of segments
     chained_fixup_table.fill(0);
     let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
     let min_len = size_of::<ChainedFixupsHeader>() + starts_len;
@@ -237,12 +238,12 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
     let load_commands_info = get_segment_sections(layout, SegmentType::LoadCommands)
         .ok_or_else(|| error!("LoadCommands segment is mandatory"))?;
 
-    header.magic = U32::new(BigEndian, MH_CIGAM_64);
-    header.cputype = U32::new(LE, CPU_TYPE_ARM64);
-    header.cpusubtype = U32::new(LE, 0);
-    header.filetype = U32::new(LE, MH_EXECUTE);
+    header.magic.set(BigEndian, MH_CIGAM_64);
+    header.cputype.set(LE, CPU_TYPE_ARM64);
+    header.cpusubtype.set(LE, 0);
+    header.filetype.set(LE, MH_EXECUTE);
     // TODO: a cleaner way how to filter out sections being part of the final output?
-    header.ncmds = U32::new(
+    header.ncmds.set(
         LE,
         load_commands_info
             .segment_sections
@@ -250,12 +251,14 @@ fn populate_file_header<A: Arch<Platform = MachO>>(
             .filter(|s| s.0.mem_size > 0)
             .count() as u32,
     );
-    header.sizeofcmds = U32::new(LE, load_commands_info.segment_size.file_size as u32);
-    header.flags = U32::new(
+    header
+        .sizeofcmds
+        .set(LE, load_commands_info.segment_size.file_size as u32);
+    header.flags.set(
         LE,
         macho::MH_PIE | macho::MH_DYLDLINK | macho::MH_NOUNDEFS | macho::MH_TWOLEVEL,
     );
-    header.reserved = U32::new(LE, 0);
+    header.reserved.set(LE, 0);
     Ok(())
 }
 

@@ -9,21 +9,20 @@ pub(crate) struct WasmWasm32;
 pub(crate) struct Relaxation {}
 
 impl crate::platform::Relaxation for Relaxation {
-    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
-        todo!()
+    fn apply(&self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
+        unreachable!()
     }
 
     fn rel_info(&self) -> linker_utils::elf::RelocationKindInfo {
-        todo!()
+        unreachable!()
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
-        // Placeholder so the trait method type-checks.
-        "WasmRelaxation"
+        unreachable!()
     }
 
     fn next_modifier(&self) -> linker_utils::relaxation::RelocationModifier {
-        todo!()
+        unreachable!()
     }
 
     fn is_mandatory(&self) -> bool {

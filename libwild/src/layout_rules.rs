@@ -22,6 +22,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::Redirect;
 use crate::parsing::RedirectKind;
+use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
 use crate::platform::Platform;
 use crate::platform::SectionHeader;
@@ -29,67 +30,6 @@ use glob::Pattern;
 use hashbrown::HashTable;
 use std::borrow::Cow;
 use std::mem::replace;
-
-/// Determine the `SymbolPlacement` for a top-level symbol definition (`name = value;`).
-///
-/// Maps a parsed linker script expression to a `SymbolPlacement`.
-fn placement_from_symbol_definition_value<'data>(
-    name: &[u8],
-    value: &crate::linker_script::Expression<'data>,
-) -> crate::error::Result<SymbolPlacement<'data>> {
-    use crate::linker_script::Expression;
-
-    let placement = match value {
-        Expression::SegmentStart(seg_name, default_expr) => {
-            let default = crate::expression_eval::eval_constant_expr(default_expr).unwrap_or(0);
-            SymbolPlacement::SegmentStart(*seg_name, default)
-        }
-        Expression::Number(n) => SymbolPlacement::DefsymAbsolute(*n),
-        Expression::Symbol(sym) => SymbolPlacement::Redirect(Redirect {
-            kind: RedirectKind::Script,
-            target_name: sym,
-            offset: 0,
-        }),
-        Expression::Add(l, r) => {
-            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
-            {
-                SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    target_name: sym,
-                    offset: *offset as i64,
-                })
-            } else {
-                return Err(crate::error!(
-                    "Unsupported expression in symbol definition for '{}'",
-                    String::from_utf8_lossy(name)
-                ));
-            }
-        }
-        Expression::Subtract(l, r) => {
-            if let (Expression::Symbol(sym), Expression::Number(offset)) = (l.as_ref(), r.as_ref())
-            {
-                SymbolPlacement::Redirect(Redirect {
-                    kind: RedirectKind::Script,
-                    target_name: sym,
-                    offset: -(*offset as i64),
-                })
-            } else {
-                return Err(crate::error!(
-                    "Unsupported expression in symbol definition for '{}'",
-                    String::from_utf8_lossy(name)
-                ));
-            }
-        }
-        _ => {
-            return Err(crate::error!(
-                "Unsupported expression in symbol definition for '{}'",
-                String::from_utf8_lossy(name)
-            ));
-        }
-    };
-
-    Ok(placement)
-}
 
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
@@ -203,16 +143,26 @@ impl<'data> LayoutRulesBuilder<'data> {
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
-                let value_str = std::str::from_utf8(provide.value)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in PROVIDE symbol value"))?;
-
-                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: provide.value.clone(),
+                    loc: SymbolLoc::None,
+                });
                 symbol_defs.push(
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let placement = placement_from_symbol_definition_value(name, value)?;
+                let placement = if let Expression::SegmentStart(name, expr) = value {
+                    let default = crate::expression_eval::eval_constant_expr(expr).unwrap_or(0);
+                    SymbolPlacement::SegmentStart(*name, default)
+                } else {
+                    SymbolPlacement::Redirect(Redirect {
+                        kind: RedirectKind::Script,
+                        expression: value.to_owned(),
+                        loc: SymbolLoc::None,
+                    })
+                };
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
@@ -317,11 +267,15 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
                                         let placement = if let Some(id) = last_section_id {
-                                            SymbolPlacement::SectionEnd(id)
+                                            SymbolLoc::SectionEnd(id)
                                         } else {
-                                            SymbolPlacement::SectionStart(primary_section_id)
+                                            SymbolLoc::SectionStart(primary_section_id)
                                         };
-
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: provide.value.clone(),
+                                            loc: placement,
+                                        });
                                         symbol_defs.push(
                                             InternalSymDefInfo::new(placement, provide.name)
                                                 .with_hidden(provide.hidden),

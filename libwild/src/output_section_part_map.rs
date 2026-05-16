@@ -263,6 +263,19 @@ fn test_merge_parts() {
         output_section_id::SYMTAB_COMMAND,
         output_section_id::CODE_SIGNATURE,
         output_section_id::CODE_SIGNATURE_COMMAND,
+        // Wasm specific sections.
+        output_section_id::WASM_TYPE,
+        output_section_id::WASM_IMPORT,
+        output_section_id::WASM_FUNCTION,
+        output_section_id::WASM_TABLE,
+        output_section_id::WASM_MEMORY,
+        output_section_id::WASM_GLOBAL,
+        output_section_id::WASM_EXPORT,
+        output_section_id::WASM_START,
+        output_section_id::WASM_ELEMENT,
+        output_section_id::WASM_DATA_COUNT,
+        output_section_id::WASM_CODE,
+        output_section_id::WASM_DATA,
     ];
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {

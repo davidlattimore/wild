@@ -5,6 +5,9 @@
 //#ExpectSym:provided_absolute address=0x1000
 //#ExpectDynSym:provided_absolute address=0x1000
 //#ExpectSym:provided_hidden_absolute address=0x2000
+//#ExpectSym:provided_symbol address=0x1000
+//#ExpectSym:provided_expr1 address=0x3000
+//#ExpectSym:provided_expr2 address=0xffffffff81000000
 //#NoDynSym:provided_hidden_absolute
 //#ExpectSym:__text_start
 //#ExpectSym:__text_end
@@ -24,21 +27,24 @@
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 // GNU ld emits `.riscv.attributes`, but Wild does not
 //#DiffIgnore:riscv_attributes.*
-// GNU ld behaves strangely when a symbol referenced in a linker script is
-// empty. See this:
+// GNU ld behaves strangely when a symbol referenced in a linker script is empty. See this:
 // https://github.com/wild-linker/wild/pull/1525#discussion_r2785478582
 //#DiffIgnore:dynsym.__data_start.section
 //#DiffIgnore:dynsym.__data_end.section
 
 extern char provided_absolute __attribute__((weak));
 extern char provided_hidden_absolute __attribute__((weak));
+extern char provided_symbol __attribute__((weak));
+extern char provided_expr1 __attribute__((weak));
+extern char provided_expr2 __attribute__((weak));
 extern char __text_start __attribute__((weak));
 extern char __text_end __attribute__((weak));
 extern char __data_start __attribute__((weak));
 extern char __data_end __attribute__((weak));
 
 void* get_provided(void) {
-  return &provided_absolute + (long)&provided_hidden_absolute;
+  return &provided_absolute + (long)&provided_hidden_absolute + (long)&provided_symbol +
+         (long)&provided_expr1 + (long)&provided_expr2;
 }
 
 unsigned long get_text_size(void) {

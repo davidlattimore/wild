@@ -5,8 +5,7 @@
 //#EnableLinker:lld
 //#LinkArgs:-Wl,--gc-sections
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
-// At least some versions of GNU ld for risc-v export these symbols for some
-// reason.
+// At least some versions of GNU ld for risc-v export these symbols for some reason.
 //#DiffIgnore:dynsym.tbss_a.section
 //#DiffIgnore:dynsym.tcustom_a.section
 

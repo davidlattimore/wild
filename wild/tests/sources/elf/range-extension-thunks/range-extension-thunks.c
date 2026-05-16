@@ -1,14 +1,12 @@
-// Note, this is a pretty expensive test, since we create several 64 MiB input
-// files. The output file includes all of this, so is also large. For that
-// reason, we try to do as much as we can in this one test. We avoid unnecessary
-// configs and only enable for architectures where we support range-extension
-// thunks.
+// Note, this is a pretty expensive test, since we create several 64 MiB input files. The output
+// file includes all of this, so is also large. For that reason, we try to do as much as we can in
+// this one test. We avoid unnecessary configs and only enable for architectures where we support
+// range-extension thunks.
 //
-// On aarch64, thunks may be needed in order to branch more than 128 MiB. LLD
-// places the PLT after .text, while GNU ld and Wild places it before. For this
-// reason, we put stuff in middle.c with 128 MiB of padding on either side. That
-// way it doesn't matter which side the PLT is placed on, we'll need a thunk to
-// branch to it.
+// On aarch64, thunks may be needed in order to branch more than 128 MiB. LLD places the PLT after
+// .text, while GNU ld and Wild places it before. For this reason, we put stuff in middle.c with 128
+// MiB of padding on either side. That way it doesn't matter which side the PLT is placed on, we'll
+// need a thunk to branch to it.
 
 //#LinkerDriver:gcc
 //#Object:ifunc1.c
@@ -23,8 +21,7 @@
 //#SoSingleLinker:lld
 //#MaxThunks:20
 //#Arch:aarch64
-// We only test with lld, since GNU ld doesn't seem to be able to create thunks
-// for ifuncs.
+// We only test with lld, since GNU ld doesn't seem to be able to create thunks for ifuncs.
 //#SkipLinker:ld
 //#EnableLinker:lld
 //#DiffIgnore:section.rodata
@@ -55,9 +52,7 @@ int call_ifunc1_from_far2(void);
 int call_ifunc2_from_far2(void);
 int call_get_3(void);
 
-__attribute__((section("foo_calls"))) int call_foo3_custom0(void) {
-  return foo3();
-}
+__attribute__((section("foo_calls"))) int call_foo3_custom0(void) { return foo3(); }
 
 int main() {
   if (foo1() != 1) {

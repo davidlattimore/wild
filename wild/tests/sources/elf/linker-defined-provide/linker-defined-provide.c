@@ -1,5 +1,4 @@
-// Test that linker-defined symbols with PROVIDE semantics don't conflict with
-// user-defined symbols
+// Test that linker-defined symbols with PROVIDE semantics don't conflict with user-defined symbols
 //#Object:runtime.c
 //#DiffIgnore:section.data
 //#DiffIgnore:section-diff-failed..data
@@ -61,15 +60,15 @@ extern char __init_array_start __attribute__((weak));
 extern char __init_array_end __attribute__((weak));
 extern char __executable_start[] __attribute__((weak));
 
-// Variant 1: Reference linker provided symbols, but don't define.
-// Linker should provide them and hide them.
+// Variant 1: Reference linker provided symbols, but don't define. Linker should provide them and
+// hide them.
 #if defined(VARIANT) && VARIANT == 1
 extern char __rela_iplt_start[];
 extern char __rela_iplt_end[];
 #endif
 
-// Variant 2: Define symbols strongly. Linker definitions should be overridden.
-// Symbols should be exported if we don't hide them.
+// Variant 2: Define symbols strongly. Linker definitions should be overridden. Symbols should be
+// exported if we don't hide them.
 #if defined(VARIANT) && VARIANT == 2
 char __rela_iplt_start[1] = {0};
 char __rela_iplt_end[1] = {0};
@@ -91,8 +90,7 @@ void _start(void) {
   // Default variant / Variant 0 checks
 #if !defined(VARIANT) || VARIANT == 0
   // Just take addresses to ensure symbols are referenced
-  volatile long addr =
-      (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
+  volatile long addr = (long)&_end + (long)&__init_array_start + (long)&__init_array_end;
 
   // Check that _end address is non-zero (it should be our variable)
   if (&_end == 0) {

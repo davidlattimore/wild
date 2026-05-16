@@ -45,10 +45,7 @@ static void set_fs_register(void* address) {
   register int64_t rax __asm__("rax") = 158;     // arch_prctl
   register int64_t rdi __asm__("rdi") = 0x1002;  // ARCH_SET_FS
   register int64_t rsi __asm__("rsi") = (int64_t)address;
-  __asm__ __volatile__("syscall"
-                       : "+r"(rax)
-                       : "r"(rdi), "r"(rsi)
-                       : "rcx", "r11", "memory");
+  __asm__ __volatile__("syscall" : "+r"(rax) : "r"(rdi), "r"(rsi) : "rcx", "r11", "memory");
 }
 
 static u8*** tcb;
@@ -64,8 +61,7 @@ int init_tls(uint64_t base_address) {
   u8* t_out = tls_area;
   int num_headers = __ehdr_start.program_header_num;
   struct ProgramHeader* headers =
-      (struct ProgramHeader*)((void*)(&__ehdr_start) +
-                              __ehdr_start.program_header_offset);
+      (struct ProgramHeader*)((void*)(&__ehdr_start) + __ehdr_start.program_header_offset);
   for (int i; i < num_headers; i++) {
     struct ProgramHeader* h = &headers[i];
     if (h->segment_type == SHT_TLS) {

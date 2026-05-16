@@ -1,13 +1,10 @@
 // TODO
-#![allow(unused_variables)]
 #![allow(unused)]
 
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
-use crate::elf::ResolutionExt;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
@@ -29,11 +26,7 @@ use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
 use crate::platform::ObjectFile;
-use crate::platform::Symbol as _;
 use crate::symbol_db::Visibility;
-use crate::value_flags::ValueFlags;
-use gimli::LittleEndian;
-use object::Endian;
 use object::Endianness;
 use object::SymbolIndex;
 use object::macho;
@@ -135,6 +128,9 @@ pub(crate) struct DyldChainedFixupsHeader {
 //     // followed by pool of dyld_chain_starts_in_segment data
 // };
 
+// Code signature data structures are always stored big-endian, regardless of
+// the target architecture's byte order.
+//
 // Data structures mirroring the following URL:
 // https://github.com/apple-oss-distributions/xnu/blob/94d3b452840153a99b38a3a9659680b2a006908e/osfmk/kern/cs_blobs.h.
 
@@ -355,7 +351,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         self.sections.len()
     }
 
-    fn section_iter(&self) -> <Self::Platform as platform::Platform>::SectionIterator<'data> {
+    fn section_iter<'a>(&'a self) -> <Self::Platform as platform::Platform>::SectionIterator<'a> {
         self.sections.iter()
     }
 
@@ -364,7 +360,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     ) -> impl Iterator<
         Item = (
             object::SectionIndex,
-            &'data <Self::Platform as platform::Platform>::SectionHeader,
+            &<Self::Platform as platform::Platform>::SectionHeader,
         ),
     > {
         self.sections
@@ -376,7 +372,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     fn section(
         &self,
         index: object::SectionIndex,
-    ) -> crate::error::Result<&'data <Self::Platform as platform::Platform>::SectionHeader> {
+    ) -> crate::error::Result<&<Self::Platform as platform::Platform>::SectionHeader> {
         self.sections
             .get(index.0)
             .ok_or(error!("section index out of range"))
@@ -387,7 +383,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         name: &str,
     ) -> Option<(
         object::SectionIndex,
-        &'data <Self::Platform as platform::Platform>::SectionHeader,
+        &<Self::Platform as platform::Platform>::SectionHeader,
     )> {
         todo!()
     }
@@ -435,11 +431,12 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         todo!()
     }
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as platform::Platform>::SectionHeader,
-    ) -> crate::error::Result<&'data [u8]> {
-        Ok(section_header.name())
+    fn section_name(&self, index: object::SectionIndex) -> crate::error::Result<&'data [u8]> {
+        let section = self
+            .sections
+            .get(index.0)
+            .ok_or(error!("section index out of range"))?;
+        Ok(section.name())
     }
 
     fn raw_section_data(
@@ -506,12 +503,10 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn dynamic_tag_values(
@@ -1016,7 +1011,7 @@ impl platform::Platform for MachO {
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type DynamicLayoutStateExt<'data> = ();
@@ -1033,6 +1028,12 @@ impl platform::Platform for MachO {
         linker: &'data crate::Linker,
         args: &'data Self::Args,
     ) -> crate::error::Result<crate::LinkerOutput<'data>> {
+        if !cfg!(feature = "macho") {
+            crate::bail!(
+                "Mach-O support is still experimental. Rebuild with `--features macho` to enable it."
+            );
+        }
+
         linker.link_for_arch::<MachO, crate::macho_aarch64::MachOAArch64>(args)
     }
 

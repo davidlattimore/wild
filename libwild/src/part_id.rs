@@ -51,6 +51,7 @@ pub(crate) const RELRO_PADDING: PartId = PartId(28);
 pub(crate) const RELR_DYN: PartId = PartId(29);
 pub(crate) const SYMTAB_SHNDX_LOCAL: PartId = PartId(30);
 pub(crate) const SYMTAB_SHNDX_GLOBAL: PartId = PartId(31);
+
 // Mach-O specific sections
 pub(crate) const PAGEZERO_SEGMENT: PartId = PartId(32);
 pub(crate) const TEXT_SEGMENT: PartId = PartId(33);
@@ -63,7 +64,21 @@ pub(crate) const SYMTAB_COMMAND: PartId = PartId(39);
 pub(crate) const CODE_SIGNATURE_COMMAND: PartId = PartId(40);
 pub(crate) const CODE_SIGNATURE: PartId = PartId(41);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 42;
+// Wasm specific sections. Each one corresponds to a single standard Wasm section.
+pub(crate) const WASM_TYPE: PartId = PartId(42);
+pub(crate) const WASM_IMPORT: PartId = PartId(43);
+pub(crate) const WASM_FUNCTION: PartId = PartId(44);
+pub(crate) const WASM_TABLE: PartId = PartId(45);
+pub(crate) const WASM_MEMORY: PartId = PartId(46);
+pub(crate) const WASM_GLOBAL: PartId = PartId(47);
+pub(crate) const WASM_EXPORT: PartId = PartId(48);
+pub(crate) const WASM_START: PartId = PartId(49);
+pub(crate) const WASM_ELEMENT: PartId = PartId(50);
+pub(crate) const WASM_DATA_COUNT: PartId = PartId(51);
+pub(crate) const WASM_CODE: PartId = PartId(52);
+pub(crate) const WASM_DATA: PartId = PartId(53);
+
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 54;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

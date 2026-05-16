@@ -1,20 +1,13 @@
-// TODO
-#![allow(unused_variables)]
-#![allow(unused)]
-
-use crate::alignment::Alignment;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
-use crate::args::FILES_PER_GROUP_ENV;
+use crate::args::FileWriteMode;
 use crate::args::Modifiers;
-use crate::args::REFERENCE_LINKER_ENV;
 use crate::args::RelocationModel;
-use crate::ensure;
+use crate::bail;
 use crate::error::Result;
 use crate::platform;
-use crate::save_dir::SaveDir;
-use jobserver::Client;
+use crate::platform::Args;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -64,7 +57,7 @@ impl platform::Args for MachOArgs {
         false
     }
 
-    fn entry_symbol_name<'a>(&'a self, linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
+    fn entry_symbol_name<'a>(&'a self, _linker_script_entry: Option<&'a [u8]>) -> &'a [u8] {
         // TODO: probably add option
         b"_main"
     }
@@ -89,7 +82,7 @@ impl platform::Args for MachOArgs {
         todo!()
     }
 
-    fn should_export_dynamic(&self, lib_name: &[u8]) -> bool {
+    fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
         todo!()
     }
 
@@ -126,6 +119,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
         arg_parser.handle_argument(args, &mut modifier_stack, arg, &mut input)?;
     }
 
+    if !args.common.unrecognized_options.is_empty() {
+        let options_list = args.common.unrecognized_options.join(", ");
+        bail!("unrecognized option(s): {}", options_list);
+    }
+
     Ok(())
 }
 
@@ -150,6 +148,21 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
                 Some(v) => Some(super::parse_time_phase_options(v)?),
                 None => Some(Vec::new()),
             };
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("validate-output")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().validate_output = true;
+            Ok(())
+        });
+    parser
+        .declare()
+        .long("update-in-place")
+        .help("Update file in place")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
             Ok(())
         });
 

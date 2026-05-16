@@ -16,8 +16,8 @@
 
 #include "../common/runtime.h"
 
-// We need to have enough debug info that's sufficiently compressible for
-// certain kinds of bugs to show up.
+// We need to have enough debug info that's sufficiently compressible for certain kinds of bugs to
+// show up.
 #define GENERATE_DEBUG_STUFF(id)                          \
   struct data_blob_##id {                                 \
     int field_a;                                          \

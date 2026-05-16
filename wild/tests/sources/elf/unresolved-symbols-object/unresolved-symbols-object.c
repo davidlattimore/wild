@@ -39,9 +39,9 @@
 
 int foo();
 
-// This weak function is just here to give us a way to avoid calling foo without
-// the compiler knowing that we'll never call foo. It also helps us verify that
-// we do the right thing with weak symbols, since they should be interposable.
+// This weak function is just here to give us a way to avoid calling foo without the compiler
+// knowing that we'll never call foo. It also helps us verify that we do the right thing with weak
+// symbols, since they should be interposable.
 int __attribute__((weak)) weak_fn1(void);
 
 int __attribute__((weak, visibility(("protected")))) weak_protected(void);

@@ -55,6 +55,7 @@ use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::compute_allocations;
+use crate::linker_script::Expression;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -64,6 +65,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
+use crate::parsing::SymbolLoc;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
@@ -1746,7 +1748,7 @@ fn write_rela_sections<'data>(
     let e = LittleEndian;
 
     for (sec_idx, header) in object.object.enumerate_sections() {
-        let section_name = object.object.section_name(header).unwrap_or_default();
+        let section_name = object.object.section_name(sec_idx).unwrap_or_default();
         if !section_name.starts_with(b".rela") && !section_name.starts_with(b".crel") {
             continue;
         }
@@ -2315,8 +2317,7 @@ pub(crate) fn apply_debug_relocations<
     relocations: I,
     layout: &ElfLayout<'data>,
 ) -> Result {
-    let object_section = object.object.section(section_index)?;
-    let section_name = object.object.section_name(object_section)?;
+    let section_name = object.object.section_name(section_index)?;
 
     // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
     // However, the change is premature as consumers of the DWARF format don't fully support
@@ -4404,10 +4405,47 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
             // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         crate::grouping::SequencedInput::LtoInput(_) => {
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
+    }
+}
+
+fn get_defsym_attributes(
+    layout: &ElfLayout,
+    def_info: &crate::parsing::InternalSymDefInfo<Elf>,
+) -> Result<(SymbolSection, u8), error::Error> {
+    let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement else {
+        unreachable!()
+    };
+    if let Expression::Symbol(target_name) = redirect.expression {
+        let target_symbol_id =
+            layout
+                .symbol_db
+                .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
+                    target_name,
+                ));
+
+        if let Some(target_id) = target_symbol_id {
+            get_symbol_attributes(layout, target_id)
+        } else {
+            Err(redirect.missing_target(target_name))
+        }
+    } else if let SymbolLoc::SectionStart(os) = redirect.loc {
+        let shndx = layout
+            .output_sections
+            .output_index_of_section(os)
+            .unwrap_or(0);
+        Ok((SymbolSection::Index(shndx), object::elf::STT_NOTYPE))
+    } else if let SymbolLoc::SectionEnd(os) = redirect.loc {
+        let shndx = layout
+            .output_sections
+            .output_index_of_section(os)
+            .unwrap_or(0);
+        Ok((SymbolSection::Index(shndx), object::elf::STT_NOTYPE))
+    } else {
+        Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
     }
 }
 
@@ -4435,7 +4473,6 @@ fn write_internal_dynsym(
     if matches!(
         def_info.placement,
         crate::parsing::SymbolPlacement::Redirect(_)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ) {
         return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
     }
@@ -4477,36 +4514,13 @@ fn write_defsym_dynsym(
     symbol_id: SymbolId,
     def_info: &crate::parsing::InternalSymDefInfo<Elf>,
 ) -> Result {
-    debug_assert!(matches!(
-        def_info.placement,
-        crate::parsing::SymbolPlacement::Redirect(_)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ));
+    let (shndx, st_type) = get_defsym_attributes(layout, def_info)?;
 
     let resolution = layout
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
     let address = resolution.raw_value;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
-
-    // For DefsymSymbol, try to get the attributes (section, type) from the target symbol
-    let (shndx, st_type) =
-        if let crate::parsing::SymbolPlacement::Redirect(redirect) = def_info.placement {
-            let target_symbol_id =
-                layout
-                    .symbol_db
-                    .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        redirect.target_name,
-                    ));
-
-            if let Some(target_id) = target_symbol_id {
-                get_symbol_attributes(layout, target_id)?
-            } else {
-                return redirect.missing_target();
-            }
-        } else {
-            (object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)
-        };
 
     let entry = dynsym_writer
         .define_symbol(false, shndx, address, 0, name.bytes())
@@ -4695,22 +4709,12 @@ fn write_internal_symbols(
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
-        // For DefsymSymbol, get attributes from the target symbol
-        let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::Redirect(redirect) =
-            def_info.placement
-        {
-            let target_symbol_id =
-                layout
-                    .symbol_db
-                    .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        redirect.target_name,
-                    ));
-
-            if let Some(target_id) = target_symbol_id {
-                get_symbol_attributes(layout, target_id)?
-            } else {
-                return redirect.missing_target();
-            }
+        // For Redirect, get attributes from the target symbol
+        let (mut shndx, st_type) = if matches!(
+            def_info.placement,
+            crate::parsing::SymbolPlacement::Redirect(_)
+        ) {
+            get_defsym_attributes(layout, def_info)?
         } else {
             let shndx = def_info
                 .section_id()
@@ -5787,14 +5791,12 @@ fn should_reverse_contents(
         return false;
     }
 
-    file.section(section_index)
-        .and_then(|header| file.section_name(header))
-        .is_ok_and(|section_name| {
-            // .ctors and .dtors sections need their contents reversed when merged into
-            // .init_array/.fini_array
-            section_name.starts_with(secnames::CTORS_SECTION_NAME)
-                || section_name.starts_with(secnames::DTORS_SECTION_NAME)
-        })
+    file.section_name(section_index).is_ok_and(|section_name| {
+        // .ctors and .dtors sections need their contents reversed when merged into
+        // .init_array/.fini_array
+        section_name.starts_with(secnames::CTORS_SECTION_NAME)
+            || section_name.starts_with(secnames::DTORS_SECTION_NAME)
+    })
 }
 
 fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {

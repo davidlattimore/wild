@@ -99,6 +99,7 @@ pub(crate) const SYMTAB_SHNDX_LOCAL: OutputSectionId =
     part_id::SYMTAB_SHNDX_LOCAL.output_section_id();
 pub(crate) const SYMTAB_SHNDX_GLOBAL: OutputSectionId =
     part_id::SYMTAB_SHNDX_GLOBAL.output_section_id();
+
 // Mach-O specific sections
 pub(crate) const PAGEZERO_SEGMENT: OutputSectionId = part_id::PAGEZERO_SEGMENT.output_section_id();
 pub(crate) const TEXT_SEGMENT: OutputSectionId = part_id::TEXT_SEGMENT.output_section_id();
@@ -114,6 +115,20 @@ pub(crate) const SYMTAB_COMMAND: OutputSectionId = part_id::SYMTAB_COMMAND.outpu
 pub(crate) const CODE_SIGNATURE_COMMAND: OutputSectionId =
     part_id::CODE_SIGNATURE_COMMAND.output_section_id();
 pub(crate) const CODE_SIGNATURE: OutputSectionId = part_id::CODE_SIGNATURE.output_section_id();
+
+// Wasm specific sections.
+pub(crate) const WASM_TYPE: OutputSectionId = part_id::WASM_TYPE.output_section_id();
+pub(crate) const WASM_IMPORT: OutputSectionId = part_id::WASM_IMPORT.output_section_id();
+pub(crate) const WASM_FUNCTION: OutputSectionId = part_id::WASM_FUNCTION.output_section_id();
+pub(crate) const WASM_TABLE: OutputSectionId = part_id::WASM_TABLE.output_section_id();
+pub(crate) const WASM_MEMORY: OutputSectionId = part_id::WASM_MEMORY.output_section_id();
+pub(crate) const WASM_GLOBAL: OutputSectionId = part_id::WASM_GLOBAL.output_section_id();
+pub(crate) const WASM_EXPORT: OutputSectionId = part_id::WASM_EXPORT.output_section_id();
+pub(crate) const WASM_START: OutputSectionId = part_id::WASM_START.output_section_id();
+pub(crate) const WASM_ELEMENT: OutputSectionId = part_id::WASM_ELEMENT.output_section_id();
+pub(crate) const WASM_DATA_COUNT: OutputSectionId = part_id::WASM_DATA_COUNT.output_section_id();
+pub(crate) const WASM_CODE: OutputSectionId = part_id::WASM_CODE.output_section_id();
+pub(crate) const WASM_DATA: OutputSectionId = part_id::WASM_DATA.output_section_id();
 
 // Regular sections copied from the input objects.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);

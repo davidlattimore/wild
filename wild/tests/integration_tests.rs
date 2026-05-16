@@ -291,6 +291,10 @@ fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
             continue;
         }
 
+        if platform == PlatformKind::MachO && !cfg!(feature = "macho") {
+            continue;
+        }
+
         let linkers = platform.available_linkers()?;
 
         let platform_name = platform.to_str();
@@ -2005,9 +2009,9 @@ impl Program<'_> {
             )
         })?;
 
-        // We need to drop command here since it holds a copy or two of our send pipe. While they
-        // are open, our `recv_to_end` call below can't finish.
-        drop(command);
+        // Drop pipes from command. While they are open, our `recv_to_end` call below can't finish.
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
 
         let mut output = Vec::new();
 
@@ -2028,7 +2032,7 @@ impl Program<'_> {
         let output = String::from_utf8_lossy(&output);
 
         if status.code() != Some(EXIT_SUCCESS) {
-            bail!("Binary exited with unexpected {status}: {output}");
+            bail!("Binary exited with unexpected {status}: {output}\nCommand:\n  {command:?}");
         }
 
         Ok(())
@@ -2039,12 +2043,14 @@ impl Program<'_> {
         // In particular: All initialization, termination and entry routines of the shared library
         // need to be safe and entry_sym has to be of type `extern "C" fn() -> i32`.
         let exit_code = unsafe {
-            let lib = Library::new(&self.link_output.binary).with_context(|| {
-                format!(
-                    "Cannot load shared library {}",
-                    self.link_output.binary.to_string_lossy()
-                )
-            })?;
+            let lib = Library::new(&self.link_output.binary)
+                .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+                .with_context(|| {
+                    format!(
+                        "Cannot load shared library {}",
+                        self.link_output.binary.to_string_lossy()
+                    )
+                })?;
             let entry = lib
                 .get::<unsafe extern "C" fn() -> i32>(entry_sym)
                 .with_context(|| format!("Cannot find entry point symbol {entry_sym}"))?;
@@ -4706,7 +4712,7 @@ fn verify_linker_plugin_requirements(
     cross_arch: Option<Architecture>,
     src: &Path,
 ) -> Result {
-    if !cfg!(feature = "plugins") {
+    if !cfg!(all(feature = "plugins", unix)) {
         bail!("The `plugins` feature is disabled");
     }
 

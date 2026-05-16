@@ -1,5 +1,5 @@
-// Disallow linking against shared object that doesn't provide our required
-// symbol by itself, but depends on another shared object providing that symbol.
+// Disallow linking against shared object that doesn't provide our required symbol by itself, but
+// depends on another shared object providing that symbol.
 
 //#AbstractConfig:default
 //#Object:runtime.c

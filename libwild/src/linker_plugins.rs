@@ -38,7 +38,9 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
@@ -58,6 +60,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Set this environment variable to a directory and we'll write output files produced by the linker
+/// plugin to it. Old outputs will be deleted, but only if the directory looks like one we produced.
+const SAVE_VAR_NAME: &str = "WILD_SAVE_PLUGIN_OUTPUTS";
 
 pub(crate) struct LinkerPlugin<'data> {
     store: Store<'data>,
@@ -208,12 +214,17 @@ impl<'data> LinkerPlugin<'data> {
                 let ctx = AllSymbolsReadContext {
                     symbol_db,
                     resolved_groups: &resolver.resolved_groups,
+                    per_symbol_flags,
                 };
 
                 ctx.set_current_while(|| cb().to_result("all_symbols_read"))?;
             }
             Ok(PLUGIN_OUTPUTS.take())
         })?;
+
+        if let Ok(dir_name) = std::env::var(SAVE_VAR_NAME) {
+            plugin_outputs.save_to(Path::new(&dir_name))?;
+        }
 
         let plugin_loaded =
             file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
@@ -873,7 +884,13 @@ extern "C" fn get_symbols_v3(
             let symbol_id_range = file.symbol_id_range;
 
             for sym in symbols.iter_mut() {
-                let resolution = get_symbol_resolution(sym, ctx.symbol_db, symbol_id_range);
+                let resolution = get_symbol_resolution(
+                    sym,
+                    ctx.symbol_db,
+                    symbol_id_range,
+                    ctx.per_symbol_flags,
+                );
+
                 sym.resolution = resolution as i32;
             }
 
@@ -886,6 +903,7 @@ fn get_symbol_resolution<'data>(
     sym: &mut RawPluginSymbol,
     symbol_db: &SymbolDb<'data, Elf>,
     symbol_id_range: SymbolIdRange,
+    per_symbol_flags: &PerSymbolFlags,
 ) -> PluginSymbolResolution {
     // It'd be nice if we didn't have to do hashmap lookups for all the symbols again, since we
     // effectively did that when the symbols were added. We could do that if the plugin provided us
@@ -921,8 +939,18 @@ fn get_symbol_resolution<'data>(
             _ => PluginSymbolResolution::ResolvedExec,
         }
     } else if symbol_id_range.contains(symbol_id) {
-        // TODO: Distinguish based on kinds of references.
-        PluginSymbolResolution::PrevailingDef
+        if per_symbol_flags
+            .flags_for_symbol(symbol_id)
+            .contains(ValueFlags::HAS_NON_IR_REF)
+        {
+            PluginSymbolResolution::PrevailingDef
+        } else if symbol_db.output_kind.is_shared_object() {
+            // TODO: Actually determine if the symbol is to be exported rather than just assuming
+            // everything is exported when output is a shared object.
+            PluginSymbolResolution::PrevailingDefIronlyExp
+        } else {
+            PluginSymbolResolution::PrevailingDefIronly
+        }
     } else {
         let defining_file = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
         match defining_file {
@@ -1089,6 +1117,7 @@ impl ClaimContext<'_> {
 struct AllSymbolsReadContext<'scope, 'data, P: Platform> {
     symbol_db: &'scope SymbolDb<'data, P>,
     resolved_groups: &'scope [ResolvedGroup<'data, P>],
+    per_symbol_flags: &'scope PerSymbolFlags,
 }
 
 impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
@@ -1195,6 +1224,56 @@ impl PluginOutputs {
         Self {
             generated_inputs: Vec::new(),
         }
+    }
+
+    fn save_to(&self, dir_path: &Path) -> Result {
+        let args_path = dir_path.join("linker-plugin-extra-args");
+
+        if args_path.exists() {
+            std::fs::remove_dir_all(dir_path)
+                .with_context(|| format!("Failed to delete `{}`", dir_path.display()))?;
+        } else if dir_path.exists() {
+            bail!(
+                "`{}` exists, but doesn't look like the right directory structure",
+                dir_path.display()
+            );
+        }
+
+        std::fs::create_dir_all(dir_path)
+            .with_context(|| format!("Failed to create dir `{}`", dir_path.display()))?;
+
+        let mut args = String::new();
+
+        for input in &self.generated_inputs {
+            match &input.spec {
+                crate::args::InputSpec::File(path) => {
+                    let dest = dir_path.join(path.file_name().context("Missing filename")?);
+
+                    std::fs::copy(path, &dest).with_context(|| {
+                        format!(
+                            "Failed to copy `{}` to `{}`",
+                            path.display(),
+                            dest.display()
+                        )
+                    })?;
+                }
+                crate::args::InputSpec::Lib(lib_name) => {
+                    args.push_str("-l");
+                    args.push_str(lib_name);
+                    args.push('\n');
+                }
+                crate::args::InputSpec::Search(search) => {
+                    args.push_str("-L");
+                    args.push_str(search);
+                    args.push('\n');
+                }
+            }
+        }
+
+        std::fs::write(&args_path, args)
+            .with_context(|| format!("Failed to write `{}`", args_path.display()))?;
+
+        Ok(())
     }
 }
 
@@ -1321,6 +1400,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                         false,
                         obj.file_id,
                         scope,
+                        true,
                     )?;
                 }
 

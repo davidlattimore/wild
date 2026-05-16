@@ -8,8 +8,7 @@
 //#ExpectSym:baz
 //#TestUpdateInPlace:true
 
-// Verify that we can activate an archive entry by listing a symbol it defines
-// as undefined.
+// Verify that we can activate an archive entry by listing a symbol it defines as undefined.
 //#Config:archive-activation:default
 //#Archive:archive_activation0.c
 //#CompArgs:-DEXPECT_ARCH0

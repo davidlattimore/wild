@@ -1,6 +1,5 @@
-// Checks that we work correctly when there's a GOT reference to a local. I'm
-// not entirely sure why you'd have a GOT reference to a local, but it is
-// something I've observed.
+// Checks that we work correctly when there's a GOT reference to a local. I'm not entirely sure why
+// you'd have a GOT reference to a local, but it is something I've observed.
 
 //#Object:got_ref_to_local-1.s
 //#LinkArgs:-z noexecstack

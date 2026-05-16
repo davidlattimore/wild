@@ -77,11 +77,10 @@
 //#Cross: false
 //#DiffIgnore:section.relro_padding
 
-// In addition to testing gcc-dynamic-pie, this also checks -L with a path that
-// does not exist. It's necessary to test this on a test with a linker driver,
-// so that we test that the savedir mechanism works with a non-existent path.
-// Linker-driver tests are more expensive, so we double-up with testing other
-// stuff.
+// In addition to testing gcc-dynamic-pie, this also checks -L with a path that does not exist. It's
+// necessary to test this on a test with a linker driver, so that we test that the savedir mechanism
+// works with a non-existent path. Linker-driver tests are more expensive, so we double-up with
+// testing other stuff.
 //#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
@@ -94,9 +93,10 @@
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-// On nixos, with this configuration, GNU ld seems to only optimise TLSGD to
-// initial-exec rather than local exec. lld does however still optimise to local
-// exec, so we enable it as an additional reference point.
+
+// On nixos, with this configuration, GNU ld seems to only optimise TLSGD to initial-exec rather
+// than local exec. lld does however still optimise to local exec, so we enable it as an additional
+// reference point.
 //#EnableLinker:lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
 // Fails under QEMU for some reason for both RISC-V and LoongArch64.
@@ -146,8 +146,7 @@ __thread int tvar1 = 0;
 __thread int tvar2 = 70;
 extern __thread int tvar3;
 
-// These are defined both here and in the second file, but with different
-// values.
+// These are defined both here and in the second file, but with different values.
 __attribute__((weak)) int weak_var = 30;
 __attribute__((weak)) __thread int weak_tvar = 31;
 
@@ -196,8 +195,8 @@ __asm__(".symver some_old_fn_version, cfgetispeed@GLIBC_2.36");
 #error "Missing some_old_fn_version definition for this arch"
 #endif
 
-// The signature here doesn't actually matter since we don't call it. Symbol is
-// weak to prevent the compiler from assuming that it can never be null.
+// The signature here doesn't actually matter since we don't call it. Symbol is weak to prevent the
+// compiler from assuming that it can never be null.
 int __attribute__((weak)) some_old_fn_version();
 
 void* thread_function(void* data) {
@@ -229,8 +228,7 @@ int main() {
     return 102;
   }
   tvar1 = 20;
-  int ret =
-      pthread_create(&thread1, NULL, thread_function, (void*)&thread1_out);
+  int ret = pthread_create(&thread1, NULL, thread_function, (void*)&thread1_out);
 
   int* data = (int*)malloc(100);
   memset(data, 0, 100);
@@ -288,9 +286,8 @@ int main() {
     return 115;
   }
 
-  // If our dependency is a shared object, then its strong definition won't
-  // override ours. However if we're statically linking our dependency then its
-  // strong definition will override ours.
+  // If our dependency is a shared object, then its strong definition won't override ours. However
+  // if we're statically linking our dependency then its strong definition will override ours.
 #ifdef DYNAMIC_DEP
   int expected = 7;
 #else
@@ -338,10 +335,9 @@ int main() {
   }
 #endif
 
-  // We have a weak, hidden definition of atoi in libc-integration-0.c. Provided
-  // we're dynamically linking, that definition shouldn't be exported from the
-  // shared object on account if it being hidden. That means that we should get
-  // the proper definition from libc.
+  // We have a weak, hidden definition of atoi in libc-integration-0.c. Provided we're dynamically
+  // linking, that definition shouldn't be exported from the shared object on account if it being
+  // hidden. That means that we should get the proper definition from libc.
 #ifdef DYNAMIC_DEP
   if (atoi("1000") != 1000) {
     return 126;

@@ -319,7 +319,7 @@ impl platform::Platform for Elf {
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
     type ArchIdentifier = u16;
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type VersionNames<'data> = VersionNames<'data>;
@@ -1695,8 +1695,21 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn default_layout_rules(_args: &Self::Args) -> Vec<SectionRule<'static>> {
-        DEFAULT_SECTION_RULES.to_vec()
+    fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>> {
+        let sframe_outcome = if args.experimental_sframe {
+            SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                output_section_id::SFRAME,
+            ))
+        } else {
+            SectionRuleOutcome::Discard
+        };
+        let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
+        rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+        rules.push(SectionRule::exact(
+            secnames::SFRAME_SECTION_NAME,
+            sframe_outcome,
+        ));
+        rules
     }
 
     fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {
@@ -1716,7 +1729,7 @@ impl platform::Platform for Elf {
 
     fn verify_allowed_input_section_name(name: &[u8]) -> Result {
         if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-            if cfg!(feature = "plugins") {
+            if cfg!(all(feature = "plugins", unix)) {
                 bail!("Found GCC LTO input that we didn't supply to linker plugin");
             }
             return Err(crate::symbol_db::linker_plugin_disabled_error());
@@ -2081,25 +2094,24 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
-    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    fn section_name(&self, section: &'data SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]> {
+        let section = self.sections.section(index)?;
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
@@ -2284,13 +2296,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         None
     }
 
-    fn section_iter(&self) -> core::slice::Iter<'data, SectionHeader> {
+    fn section_iter<'a>(&'a self) -> core::slice::Iter<'a, SectionHeader> {
         self.sections.iter()
     }
 
-    fn enumerate_sections(
-        &self,
-    ) -> impl Iterator<Item = (object::SectionIndex, &'data SectionHeader)> {
+    fn enumerate_sections(&self) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader)> {
         self.sections.enumerate()
     }
 
@@ -5133,12 +5143,6 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
-    SectionRule::exact(
-        secnames::SFRAME_SECTION_NAME,
-        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
-            output_section_id::SFRAME,
-        )),
-    ),
     SectionRule::exact(
         secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
         SectionRuleOutcome::NoteGnuProperty,

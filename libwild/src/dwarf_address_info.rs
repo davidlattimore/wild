@@ -12,6 +12,7 @@ use crate::platform::RelocationSequence as _;
 use crate::platform::SourceInfo;
 use crate::platform::SourceInfoDetails;
 use anyhow::Context;
+use linker_utils::elf::RelocationKind;
 use object::LittleEndian;
 use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
@@ -144,18 +145,13 @@ fn apply_section_relocations<A: Arch<Platform = crate::elf::Elf>, R: Relocation>
             .get(LittleEndian)
             .wrapping_add(rel.addend() as u64);
 
-        let section_index = object
-            .symbol_section(symbol, sym_index)?
-            .context("Relocation for undefined symbol")?;
+        let Some(section_index) = object.symbol_section(symbol, sym_index)? else {
+            // Ignore undefined symbols.
+            continue;
+        };
         let symbol_section = object.section(section_index)?;
 
         let data_offset = rel.offset() as usize;
-
-        if symbol_section.sh_offset.get(LittleEndian)
-            == section_of_interest.sh_offset.get(LittleEndian)
-        {
-            value += SECTION_LOAD_ADDRESS;
-        }
 
         let r_type = A::relocation_from_raw(rel.raw_type())?;
 
@@ -163,11 +159,25 @@ fn apply_section_relocations<A: Arch<Platform = crate::elf::Elf>, R: Relocation>
             continue;
         };
 
-        if r_type.kind == linker_utils::elf::RelocationKind::Absolute {
-            section_data
-                .get_mut(data_offset..data_offset + num_bytes)
-                .context("Invalid relocation offset")?
-                .copy_from_slice(&value.to_le_bytes()[..num_bytes]);
+        let rel_out = section_data
+            .get_mut(data_offset..data_offset + num_bytes)
+            .context("Invalid relocation offset")?;
+
+        match r_type.kind {
+            RelocationKind::Absolute => {
+                let in_section_of_interest = symbol_section.sh_offset.get(LittleEndian)
+                    == section_of_interest.sh_offset.get(LittleEndian);
+
+                if in_section_of_interest {
+                    value += SECTION_LOAD_ADDRESS;
+                }
+
+                r_type.write_to_buffer(value, rel_out)?;
+            }
+            RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteSubtraction => {
+                r_type.write_to_buffer(value, rel_out)?;
+            }
+            _ => {}
         }
     }
     Ok(())

@@ -347,15 +347,20 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &group_layouts,
         &mut symbol_resolutions.resolutions,
     );
-    update_redirect_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
+    update_redirect_resolutions(
+        &symbol_db,
+        &mut symbol_resolutions.resolutions,
+        &output_sections,
+        &section_layouts,
+    )?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
 
     // Evaluate ASSERT commands from all linker scripts now that layout is complete.
     crate::expression_eval::evaluate_assertions(
-        &symbol_db.groups,
+        &symbol_db,
         &section_layouts,
         &output_sections,
-        &resources.symbol_db.args.common().warning_callback,
+        &symbol_resolutions.resolutions,
     )?;
 
     let thunk_block_addresses = thunk_block_addresses_out
@@ -409,6 +414,8 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
 fn update_redirect_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
+    output_sections: &OutputSections<P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
@@ -418,7 +425,14 @@ fn update_redirect_resolutions<'data, P: Platform>(
         match group {
             Group::Prelude(prelude) => {
                 for def_info in &prelude.symbol_definitions {
-                    update_defsym_symbol_resolution(symbol_id, def_info, symbol_db, resolutions)?;
+                    update_defsym_symbol_resolution(
+                        symbol_id,
+                        def_info,
+                        symbol_db,
+                        resolutions,
+                        output_sections,
+                        section_layouts,
+                    )?;
                     symbol_id = symbol_id.next();
                 }
             }
@@ -430,13 +444,15 @@ fn update_redirect_resolutions<'data, P: Platform>(
                             def_info,
                             symbol_db,
                             resolutions,
+                            output_sections,
+                            section_layouts,
                         )?;
                         symbol_id = symbol_id.next();
                     }
                 }
             }
             Group::Objects(_) | Group::SyntheticSymbols(_) => {}
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(_) => {}
         }
     }
@@ -449,31 +465,36 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
     def_info: &InternalSymDefInfo<P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
+    output_sections: &OutputSections<P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result {
-    let SymbolPlacement::Redirect(redirect) = def_info.placement else {
-        return Ok(());
+    if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+        let value = crate::expression_eval::evaluate_expression(
+            &redirect.expression,
+            redirect.loc,
+            section_layouts,
+            output_sections,
+            &[],
+            &|name| {
+                let Some(target_symbol_id) =
+                    symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+                else {
+                    return Err(redirect.missing_target(name));
+                };
+
+                let canonical_target_id = symbol_db.definition(target_symbol_id);
+                Ok(resolutions[canonical_target_id.as_usize()]
+                    .as_ref()
+                    .map_or(0, |r| r.raw_value))
+            },
+        )?;
+
+        let Some(resolution) = &mut resolutions[symbol_id.as_usize()] else {
+            return Ok(());
+        };
+
+        resolution.raw_value = value;
     };
-
-    if !symbol_db.is_canonical(symbol_id) {
-        return Ok(());
-    }
-
-    let name = UnversionedSymbolName::prehashed(redirect.target_name);
-
-    let target_symbol_id = symbol_db.get_unversioned(&name);
-
-    let Some(target_symbol_id) = target_symbol_id else {
-        return redirect.missing_target();
-    };
-
-    let canonical_target_id = symbol_db.definition(target_symbol_id);
-    if let Some(target_value) = resolutions[canonical_target_id.as_usize()]
-        .as_ref()
-        .map(|r| r.raw_value)
-        && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
-    {
-        resolution.raw_value = (target_value as i64).wrapping_add(redirect.offset) as u64;
-    }
 
     Ok(())
 }
@@ -2843,41 +2864,41 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 continue;
             }
 
-            match def_info.placement {
-                SymbolPlacement::DefsymAbsolute(_) => {
-                    resources
-                        .per_symbol_flags
-                        .get_atomic(symbol_id)
-                        .or_assign(ValueFlags::DIRECT);
-                }
+            match &def_info.placement {
                 SymbolPlacement::Redirect(redirect) => {
                     resources
                         .per_symbol_flags
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
 
-                    // Also mark the target symbol as used and queue it for loading to prevent it
-                    // from being GC'd.
-                    if let Some(target_symbol_id) = resources
-                        .symbol_db
-                        .get_unversioned(&UnversionedSymbolName::prehashed(redirect.target_name))
-                    {
-                        let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
-                        let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
-                        let old_flags = resources
-                            .per_symbol_flags
-                            .get_atomic(canonical_target_id)
-                            .fetch_or(ValueFlags::DIRECT);
+                    // Also mark any symbols in the expression as used and queue it for loading to
+                    // prevent it from being GC'd.
+                    redirect.expression.visit_expressions(&mut |e| {
+                        if let crate::linker_script::Expression::Symbol(target_name) = e
+                            && let Some(target_symbol_id) = resources
+                                .symbol_db
+                                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+                        {
+                            let canonical_target_id =
+                                resources.symbol_db.definition(target_symbol_id);
+                            let file_id =
+                                resources.symbol_db.file_id_for_symbol(canonical_target_id);
+                            let old_flags = resources
+                                .per_symbol_flags
+                                .get_atomic(canonical_target_id)
+                                .fetch_or(ValueFlags::DIRECT);
 
-                        if !old_flags.has_resolution() {
-                            queue.send_work::<A>(
-                                resources,
-                                file_id,
-                                WorkItem::LoadGlobalSymbol(canonical_target_id),
-                                scope,
-                            );
+                            if !old_flags.has_resolution() {
+                                queue.send_work::<A>(
+                                    resources,
+                                    file_id,
+                                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                                    scope,
+                                );
+                            }
                         }
-                    }
+                        true
+                    });
                 }
                 _ => {}
             }
@@ -3315,7 +3336,7 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        for (local_index, &def_info) in self.symbol_definitions.iter().enumerate() {
+        for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
 
             let resolution =
@@ -3334,7 +3355,7 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
 fn create_internal_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
-    def_info: InternalSymDefInfo<P>,
+    def_info: &InternalSymDefInfo<P>,
     symbol_id: SymbolId,
 ) -> Option<Resolution<P>> {
     if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3354,12 +3375,10 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
-
         SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
         }
-
         SymbolPlacement::SectionGroupEnd(section_id) => {
             let mut end = {
                 let sec = resources.section_layouts.get(section_id);
@@ -3379,16 +3398,12 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
             }
             end
         }
-
-        SymbolPlacement::DefsymAbsolute(value) => value,
-
         SymbolPlacement::Redirect(_) => {
             // For redirects to other symbols, we defer resolution until later when all symbols have
             // been resolved. This is handled by update_redirect_resolutions() which is called after
             // layout is complete.
             0
         }
-
         SymbolPlacement::LoadBaseAddress => resources
             .segment_layouts
             .segments
@@ -4326,7 +4341,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
                 section_id_range: s.section_id_range,
@@ -5124,13 +5139,10 @@ pub(crate) fn section_debug<P: Platform>(
     object: &P::File<'_>,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
-    let name = object
-        .section(section_index)
-        .and_then(|section| object.section_name(section))
-        .map_or_else(
-            |_| "??".to_owned(),
-            |name| String::from_utf8_lossy(name).into_owned(),
-        );
+    let name = object.section_name(section_index).map_or_else(
+        |_| "??".to_owned(),
+        |name| String::from_utf8_lossy(name).into_owned(),
+    );
     std::fmt::from_fn(move |f| write!(f, "`{name}`"))
 }
 

@@ -1,7 +1,6 @@
 use crate::OutputKind;
 use crate::Result;
 use crate::alignment::Alignment;
-use crate::args::DefsymValue;
 use crate::bail;
 use crate::error::Warning;
 use crate::grouping::Group;
@@ -236,7 +235,9 @@ pub(crate) trait Platform:
     /// Format-specific properties produced by the layout phase.
     type LayoutExt: Send + Sync + 'static;
 
-    type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
+    type SectionIterator<'a>: Iterator<Item = &'a Self::SectionHeader>
+    where
+        Self: 'a;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: RelocationList<'data>;
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
@@ -775,28 +776,28 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
 
     fn num_sections(&self) -> usize;
 
-    fn section_iter(&self) -> <Self::Platform as Platform>::SectionIterator<'data>;
+    fn section_iter<'a>(&'a self) -> <Self::Platform as Platform>::SectionIterator<'a>;
 
     fn enumerate_sections(
         &self,
     ) -> impl Iterator<
         Item = (
             object::SectionIndex,
-            &'data <Self::Platform as Platform>::SectionHeader,
+            &<Self::Platform as Platform>::SectionHeader,
         ),
     >;
 
     fn section(
         &self,
         index: object::SectionIndex,
-    ) -> Result<&'data <Self::Platform as Platform>::SectionHeader>;
+    ) -> Result<&<Self::Platform as Platform>::SectionHeader>;
 
     fn section_by_name(
         &self,
         name: &str,
     ) -> Option<(
         object::SectionIndex,
-        &'data <Self::Platform as Platform>::SectionHeader,
+        &<Self::Platform as Platform>::SectionHeader,
     )>;
 
     fn symbol_section(
@@ -827,10 +828,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as Platform>::SectionHeader,
-    ) -> Result<&'data [u8]>;
+    fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.
     fn raw_section_data(
@@ -1239,7 +1237,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         crate::args::UnresolvedSymbols::ReportAll
     }
 
-    fn defsym(&self) -> &[(String, DefsymValue)] {
+    fn defsym(&self) -> &[(String, String)] {
         &[]
     }
 

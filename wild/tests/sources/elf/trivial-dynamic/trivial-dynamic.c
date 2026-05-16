@@ -10,8 +10,7 @@
 // We put a GLOB_DAT in .rela.dyn, other linkers use a JUMP_SLOT in .rela.plt.
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
-// On aarch64, GNU ld seems to emit a GOT in the shared object even though it
-// isn't needed.
+// On aarch64, GNU ld seems to emit a GOT in the shared object even though it isn't needed.
 //#DiffIgnore:section.got
 //#ExpectSym:_start section=".text"
 //#ExpectSym:foo_ptr section=".data"

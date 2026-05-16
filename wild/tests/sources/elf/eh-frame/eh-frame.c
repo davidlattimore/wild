@@ -34,8 +34,7 @@ void _start(void) {
     exit_syscall(102);
   }
 
-  const struct EhFrameEntry* frame2 =
-      (struct EhFrameEntry*)(EH_FRAME_START + frame1->length + 4);
+  const struct EhFrameEntry* frame2 = (struct EhFrameEntry*)(EH_FRAME_START + frame1->length + 4);
   // The second entry should be an FDE. Its length should be non-zero.
   if (frame2->length == 0) {
     exit_syscall(103);

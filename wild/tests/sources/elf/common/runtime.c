@@ -9,8 +9,7 @@
 #define EXIT_SYSCALL 60
 #endif
 
-// On RISC-V, the GP register needs to point to the symbol `__global_pointer$`.
-// See
+// On RISC-V, the GP register needs to point to the symbol `__global_pointer$`. See
 // https://www.sifive.com/blog/all-aboard-part-3-linker-relaxation-in-riscv-toolchain
 #if defined(__riscv)
 void runtime_init(void) {
@@ -28,16 +27,13 @@ void runtime_init(void) {}
 void exit_syscall(int exit_code) {
   register int64_t rax __asm__("rax") = EXIT_SYSCALL;
   register int rdi __asm__("rdi") = exit_code;
-  __asm__ __volatile__("syscall"
-                       : "+r"(rax)
-                       : "r"(rdi)
-                       : "rcx", "r11", "memory");
+  __asm__ __volatile__("syscall" : "+r"(rax) : "r"(rdi) : "rcx", "r11", "memory");
 }
 #elif defined(__aarch64__)
 void exit_syscall(int exit_code) {
   register long w8 __asm__("w8") = 93;
   register long x0 __asm__("x0") = exit_code;
-  __asm__ __volatile__("svc 0" : "=r"(x0) : "r"(w8) : "cc", "memory");
+  __asm__ __volatile__("svc 0" : "+r"(x0) : "r"(w8) : "cc", "memory");
 }
 #elif defined(__riscv)
 void exit_syscall(int exit_code) {

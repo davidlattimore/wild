@@ -10,7 +10,6 @@ use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
-use crate::args::DefsymValue;
 use crate::args::FileWriteMode;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
@@ -84,7 +83,7 @@ pub struct ElfArgs {
     pub(crate) plugin_args: Vec<CString>,
 
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
-    pub(crate) defsym: Vec<(String, DefsymValue)>,
+    pub(crate) defsym: Vec<(String, String)>,
 
     /// Section start addresses from `--section-start` options. Maps section name to address.
     pub(crate) section_start: HashMap<Vec<u8>, u64>,
@@ -374,18 +373,6 @@ impl ElfArgs {
 
 fn parse_number(s: &str) -> Result<u64> {
     crate::parsing::parse_number(s).map_err(|_| crate::error!("Invalid number: {}", s))
-}
-
-fn parse_defsym_expression(s: &str) -> DefsymValue {
-    use crate::parsing::ParsedSymbolExpression;
-    use crate::parsing::parse_symbol_expression;
-
-    match parse_symbol_expression(s) {
-        ParsedSymbolExpression::Absolute(value) => DefsymValue::Value(value),
-        ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
-            DefsymValue::SymbolWithOffset(sym.to_owned(), offset)
-        }
-    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
@@ -1459,11 +1446,9 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
             }
             let symbol_name = parts[0].to_owned();
-            let value_str = parts[1];
+            let value_str = parts[1].to_owned();
 
-            let defsym_value = parse_defsym_expression(value_str);
-
-            args.defsym.push((symbol_name, defsym_value));
+            args.defsym.push((symbol_name, value_str));
             Ok(())
         });
 
@@ -1960,7 +1945,7 @@ impl platform::Args for ElfArgs {
         self.export_list_path.as_deref()
     }
 
-    fn defsym(&self) -> &[(String, DefsymValue)] {
+    fn defsym(&self) -> &[(String, String)] {
         &self.defsym
     }
 

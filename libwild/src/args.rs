@@ -588,14 +588,6 @@ pub(crate) enum BSymbolicKind {
     NonWeak,
 }
 
-#[derive(Debug)]
-pub(crate) enum DefsymValue {
-    /// A numeric value (address)
-    Value(u64),
-    /// Reference to another symbol with an optional offset
-    SymbolWithOffset(String, i64),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnresolvedSymbols {
     /// Report all unresolved symbols.

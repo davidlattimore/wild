@@ -11,8 +11,7 @@
 
 #include "../common/runtime.h"
 
-// Defined weakly in wrap-1, but that gets overridden by the strong definition
-// in wrap-2.
+// Defined weakly in wrap-1, but that gets overridden by the strong definition in wrap-2.
 int foo(void);
 int __real_foo(void);
 
@@ -20,8 +19,8 @@ int __real_foo(void);
 int bar(void);
 int __real_bar(void);
 
-// Note, we don't define `baz` despite passing `--wrap=baz`. We shouldn't error,
-// since we also don't have any references to `baz`.
+// Note, we don't define `baz` despite passing `--wrap=baz`. We shouldn't error, since we also don't
+// have any references to `baz`.
 
 int __wrap_foo(void) { return __real_foo() + 2; }
 
