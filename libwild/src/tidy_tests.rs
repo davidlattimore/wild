@@ -114,7 +114,7 @@ fn check_toml_format() -> Result {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("Failed to spawn `taplo`");
+        .expect("Failed to spawn `taplo`, is it installed?");
 
     if !taplo_out.status.success() {
         let stdout = String::from_utf8_lossy(&taplo_out.stdout);
