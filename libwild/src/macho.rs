@@ -47,7 +47,6 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
-use std::os::unix::ffi::OsStrExt;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -251,7 +250,7 @@ pub(crate) fn code_signature_identifier(args: &MachOArgs) -> &[u8] {
     args.output()
         .file_name()
         .expect("File name should be present at this point")
-        .as_bytes()
+        .as_encoded_bytes()
 }
 
 pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
