@@ -24,9 +24,7 @@ use crate::macho::CS_BLOCK_SIZE_EXP;
 use crate::macho::CS_EXECSEG_MAIN_BINARY;
 use crate::macho::CS_HASH_SIZE;
 use crate::macho::CS_HASHTYPE_SHA256;
-use crate::macho::CS_IDENTIFIER_STRING;
 use crate::macho::CS_LINKER_SIGNED;
-use crate::macho::CS_PADDED_FILENAME_SIZE;
 use crate::macho::CS_SUPPORTSEXECSEG;
 use crate::macho::CSMAGIC_CODEDIRECTORY;
 use crate::macho::CSMAGIC_EMBEDDED_SIGNATURE;
@@ -51,6 +49,8 @@ use crate::macho::SegmentCommand;
 use crate::macho::SegmentSectionsInfo;
 use crate::macho::SegmentType;
 use crate::macho::SymtabCommand;
+use crate::macho::code_signature_identifier;
+use crate::macho::code_signature_padded_identifier_size;
 use crate::macho::get_segment_sections;
 use crate::output_section_id;
 use crate::output_section_id::SectionName;
@@ -714,6 +714,8 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     let code_signature_section = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);
+    let code_signature_identifier = code_signature_identifier(layout.args());
+    let padded_identifier_size = code_signature_padded_identifier_size(layout.args()) as usize;
     let calculated_hashes: Vec<_> = sized_output.out[..code_signature_section.file_offset]
         .par_chunks(CS_BLOCK_SIZE)
         .map(Sha256::digest)
@@ -733,7 +735,7 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
         <[CodeSignatureCodeDirectory]>::mut_from_prefix_with_elems(rest, 1)
             .map_err(|_| error!("Invalid CODE_SIGNATURE allocation"))?;
     let code_dir = &mut code_directories[0];
-    let (identifier, hashes) = rest.split_at_mut(CS_PADDED_FILENAME_SIZE as usize);
+    let (identifier, hashes) = rest.split_at_mut(padded_identifier_size);
 
     super_blob.magic.set(CSMAGIC_EMBEDDED_SIGNATURE);
     super_blob
@@ -753,7 +755,7 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     code_dir.flags.set(CS_ADHOC | CS_LINKER_SIGNED);
     code_dir
         .hash_offset
-        .set(size_of::<CodeSignatureCodeDirectory>() as u32 + CS_PADDED_FILENAME_SIZE as u32);
+        .set(size_of::<CodeSignatureCodeDirectory>() as u32 + padded_identifier_size as u32);
     code_dir
         .ident_offset
         .set(size_of::<CodeSignatureCodeDirectory>() as u32);
@@ -786,8 +788,8 @@ fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) ->
     // TODO: change once shared libraries are supported
     code_dir.exec_seg_flags.set(CS_EXECSEG_MAIN_BINARY);
 
-    identifier[..CS_IDENTIFIER_STRING.len()].copy_from_slice(CS_IDENTIFIER_STRING);
-    identifier[CS_IDENTIFIER_STRING.len()..].fill(0);
+    identifier[..code_signature_identifier.len()].copy_from_slice(code_signature_identifier);
+    identifier[code_signature_identifier.len()..].fill(0);
     hashes.copy_from_slice(&calculated_hashes);
 
     #[cfg(target_os = "macos")]

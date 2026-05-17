@@ -25,6 +25,7 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
 use crate::part_id;
 use crate::platform;
+use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
 use object::Endianness;
@@ -46,6 +47,7 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use std::os::unix::ffi::OsStrExt;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -223,17 +225,12 @@ pub(crate) struct CodeSignatureCodeDirectory {
 
 pub(crate) const CS_SECTION_ALIGNMENT_EXP: u8 = 4;
 pub(crate) const CS_SECTION_ALIGNMENT: u64 = 2u64.pow(CS_SECTION_ALIGNMENT_EXP as u32);
-// TODO: properly implement
-pub(crate) const CS_IDENTIFIER_STRING: &[u8] = b"a.out";
 
 pub(crate) const CS_BLOB_HEADERS_SIZE: u64 =
     (size_of::<CodeSignatureSuperBlob>() + size_of::<CodeSignatureBlobIndex>()) as u64;
 const _: () = assert!(CS_BLOB_HEADERS_SIZE.is_multiple_of(8));
 pub(crate) const CS_HEADERS_SIZE: u64 =
     CS_BLOB_HEADERS_SIZE + size_of::<CodeSignatureCodeDirectory>() as u64;
-pub(crate) const CS_PADDED_FILENAME_SIZE: u64 =
-    (CS_IDENTIFIER_STRING.len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT);
-pub(crate) const CS_HEADERS_WITH_FILENAME_SIZE: u64 = CS_HEADERS_SIZE + CS_PADDED_FILENAME_SIZE;
 pub(crate) const CS_BLOCK_SIZE_EXP: u8 = 12;
 pub(crate) const CS_BLOCK_SIZE: usize = 2usize.pow(CS_BLOCK_SIZE_EXP as u32);
 // SHA-256 is being used
@@ -249,6 +246,17 @@ pub(crate) const CS_ADHOC: u32 = 0x00000002;
 pub(crate) const CS_LINKER_SIGNED: u32 = 0x00020000;
 pub(crate) const CS_HASHTYPE_SHA256: u8 = 2;
 pub(crate) const CS_EXECSEG_MAIN_BINARY: u64 = 0x1;
+
+pub(crate) fn code_signature_identifier(args: &MachOArgs) -> &[u8] {
+    args.output()
+        .file_name()
+        .expect("File name should be present at this point")
+        .as_bytes()
+}
+
+pub(crate) fn code_signature_padded_identifier_size(args: &MachOArgs) -> u64 {
+    (code_signature_identifier(args).len() as u64 + 1).next_multiple_of(CS_SECTION_ALIGNMENT)
+}
 
 #[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
@@ -1424,7 +1432,10 @@ impl platform::Platform for MachO {
         // Allocate one extra character as n_strx == 0 is treated as unnamed.
         common.allocate(part_id::STRTAB, 1);
         common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
-        common.allocate(part_id::CODE_SIGNATURE, CS_HEADERS_WITH_FILENAME_SIZE);
+        common.allocate(
+            part_id::CODE_SIGNATURE,
+            CS_HEADERS_SIZE + code_signature_padded_identifier_size(symbol_db.args),
+        );
     }
 
     fn finalise_prelude_layout<'data>(
