@@ -94,6 +94,49 @@ fn check_sources_format() -> Result {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn check_toml_format() -> Result {
+    use std::process::Command;
+    use std::process::Stdio;
+
+    if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
+        return Ok(());
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+
+    let taplo_out = Command::new("taplo")
+        .arg("format")
+        .arg("--check")
+        .arg("--diff")
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to spawn `taplo`");
+
+    if !taplo_out.status.success() {
+        let stdout = String::from_utf8_lossy(&taplo_out.stdout);
+        let stderr = String::from_utf8_lossy(&taplo_out.stderr);
+        let mut out = String::with_capacity(stdout.len() + stderr.len() + 1);
+        if !stdout.is_empty() {
+            out.push_str(&stdout);
+            if !stderr.is_empty() {
+                out.push('\n');
+            }
+        }
+        if !stderr.is_empty() {
+            out.push_str(&stderr);
+        }
+
+        bail!("TOML format check failed:\n{out}\nRun `taplo format` to fix it.");
+    }
+
+    Ok(())
+}
+
+#[test]
 fn check_text_files() -> Result {
     const EXCLUDE_DIR: &[&str] = &[
         "target",
