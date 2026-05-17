@@ -67,6 +67,7 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: apk add build-base lld clang clang-extra-tools bash curl tar
         if: ${{ contains(matrix.container, 'alpine') }}
+      - run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -182,6 +183,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang clang-format lld curl
+      - run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
