@@ -1,1 +1,4 @@
-exclude = ["external_test_suites/mold/third-party/blake3/Cargo.toml"]
+exclude = [
+  ".cargo-home/**",
+  "external_test_suites/mold/third-party/blake3/Cargo.toml",
+]
