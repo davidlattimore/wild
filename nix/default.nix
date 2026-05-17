@@ -8,6 +8,7 @@
   lld,
   clang,
   clang-tools,
+  taplo,
   binutils-unwrapped-all-targets,
   glibc,
   stdenv,
@@ -66,6 +67,7 @@ craneLib.buildPackage (
       lld
       clang
       clang-tools
+      taplo
       binutils-unwrapped-all-targets
       gccWrapper
       gppWrapper
