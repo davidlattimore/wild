@@ -135,7 +135,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
     } else {
         tracing_subscriber::registry()
             .with(fmt::layer())
-            .with(EnvFilter::from_default_env())
+            .with(EnvFilter::from_env("WILD_LOG"))
             .try_init()
             .map_err(|_| AlreadyInitialised)
     }
