@@ -13,6 +13,7 @@ use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
 use colored::Colorize as _;
+use hashbrown::HashSet;
 use std::fmt::Write as _;
 
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
@@ -87,8 +88,8 @@ impl SymbolInfoPrinter {
             .unwrap_or_else(|| state.name.clone());
 
         let matcher = NameMatcher::new(&name);
-        let mut target_ids = Vec::new();
-        target_ids.extend(name.parse().ok().map(SymbolId::from_usize));
+        let mut related_ids = Vec::new();
+        related_ids.extend(name.parse().ok().map(SymbolId::from_usize));
 
         let symbol_id = symbol_db.get(
             &PreHashedSymbolName::from_raw(&P::parse_raw_symbol_name(name.as_bytes())),
@@ -96,11 +97,19 @@ impl SymbolInfoPrinter {
         );
         let _ = writeln!(&mut out, "Global name `{name}` refers to: {symbol_id:?}");
 
-        target_ids.extend(symbol_id);
+        related_ids.extend(symbol_id);
 
-        let _ = writeln!(&mut out, "Definitions / references with name `{name}`:");
-        for i in 0..symbol_db.num_symbols() {
-            let symbol_id = SymbolId::from_usize(i);
+        let _ = writeln!(&mut out, "Matching/related names");
+
+        let mut all_symbol_ids = (0..symbol_db.num_symbols()).map(SymbolId::from_usize);
+
+        let mut printed_ids = HashSet::new();
+
+        while let Some((symbol_id, is_related)) = related_ids
+            .pop()
+            .map(|id| (id, true))
+            .or_else(|| all_symbol_ids.next().map(|id| (id, false)))
+        {
             let canonical = symbol_db.definition(symbol_id);
             let file_id = symbol_db.file_id_for_symbol(symbol_id);
             let flags = per_symbol_flags.flags_for_symbol(symbol_id);
@@ -111,21 +120,21 @@ impl SymbolInfoPrinter {
                 "NOT LOADED".red()
             };
 
-            let Ok(sym_name) = symbol_db.symbol_name(symbol_id) else {
-                continue;
-            };
+            let sym_name = symbol_db.symbol_name(symbol_id);
 
-            let is_name_match = matcher.matches(sym_name.bytes(), symbol_id, symbol_db);
+            let is_name_match = sym_name
+                .as_ref()
+                .is_ok_and(|sym_name| matcher.matches(sym_name.bytes(), symbol_id, symbol_db));
 
-            let is_id_match = target_ids.contains(&symbol_id);
-
-            if is_name_match || is_id_match {
+            if is_name_match || is_related {
                 if symbol_id != canonical {
                     // Show info about the canonical symbol too. Generally the canonical symbol will
-                    // have the same name, so this won't do anything. Note, this only works if the
-                    // related symbol is later. Fixing that would require restructuring this
-                    // function.
-                    target_ids.push(canonical);
+                    // have the same name, so this won't do anything.
+                    related_ids.push(canonical);
+                }
+
+                if !printed_ids.insert(symbol_id) {
+                    continue;
                 }
 
                 let file = symbol_db.file(file_id);
@@ -182,13 +191,17 @@ impl SymbolInfoPrinter {
                     format!("{symbol_id} {arrow} {canonical}", arrow = "->".yellow())
                 };
 
+                let sym_name = match &sym_name {
+                    Ok(n) => n.to_string().purple(),
+                    Err(e) => e.to_string().red(),
+                };
+
                 let _ = writeln!(
                     &mut out,
                     " • {id_string}: {sym_debug}: {flags} \
                             \n    {sym_name}{version_str}\n    \
                             #{local_index} in File #{file_id} {input} ({file_state})",
                     input = input.yellow(),
-                    sym_name = sym_name.to_string().purple(),
                     flags = flags.to_string().blue(),
                 );
             }
