@@ -3479,6 +3479,7 @@ impl Assertions {
         self.verify_section_bytes(&obj)?;
         self.verify_strings(&bytes)?;
         verify_no_overlapping_sections(&obj)?;
+        verify_no_overlapping_segments(&obj)?;
 
         match obj {
             object::File::Elf64(elf_obj) => {
@@ -3797,6 +3798,43 @@ fn verify_no_overlapping_sections(obj: &object::File) -> Result {
         section.data()?;
     }
 
+    Ok(())
+}
+
+fn verify_no_overlapping_segments(obj: &object::File) -> Result {
+    let object::File::Elf64(elf_obj) = obj else {
+        return Ok(());
+    };
+
+    let segments = elf_obj
+        .elf_program_headers()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, seg)| {
+            let start = seg.p_vaddr(elf_obj.endian());
+            let size = seg.p_memsz(elf_obj.endian());
+            let p_type = seg.p_type(elf_obj.endian());
+            if p_type != object::elf::PT_LOAD {
+                return None;
+            }
+            Some((i, start, start + size))
+        })
+        .sorted_by_key(|seg| seg.1);
+
+    for ((idx1, start1, end1), (idx2, start2, end2)) in segments.tuple_windows() {
+        if start2 < end1 {
+            bail!(
+                "Program segment {} (vaddr={:#x}..{:#x}) overlaps with \
+                             segment {} (vaddr={:#x}..{:#x})",
+                idx1,
+                start1,
+                end1,
+                idx2,
+                start2,
+                end2
+            );
+        }
+    }
     Ok(())
 }
 
@@ -4550,6 +4588,13 @@ fn run_with_config(
         }
     }
 
+    for program in &programs {
+        program
+            .assertions
+            .check(&program.link_output)
+            .with_context(|| format!("Output binary assertions failed. {program}"))?;
+    }
+
     if config.test_config.run_all_diffs {
         diff_shared_objects(config, &programs)?;
         diff_executables(config, &programs)?;
@@ -4563,11 +4608,6 @@ fn run_with_config(
     }
 
     for program in programs {
-        program
-            .assertions
-            .check(&program.link_output)
-            .with_context(|| format!("Output binary assertions failed. {program}"))?;
-
         if config.should_run {
             // If RunDynSym is set, execute our binary by loading it dynamically and calling the
             // configured function.
