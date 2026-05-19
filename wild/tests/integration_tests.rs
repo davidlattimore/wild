@@ -1061,6 +1061,7 @@ impl Config {
                 get_glibc_version().is_some_and(|current_version| req_version > current_version)
             })
             || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
+            || (self.requires_linker_plugin && !cfg!(all(feature = "plugins", unix)))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
