@@ -256,7 +256,9 @@ fn resolve_group<'data, 'definitions, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     outputs: &Outputs<'data, P>,
 ) -> ResolvedGroup<'data, P> {
-    match group {
+    let start_defs_len = symbol_definitions_slice.len();
+
+    let resolved_group = match group {
         Group::Prelude(prelude) => {
             let definitions_out = symbol_definitions_slice
                 .split_off_mut(..prelude.symbol_definitions.len())
@@ -318,6 +320,10 @@ fn resolve_group<'data, 'definitions, P: Platform>(
             let files = scripts
                 .iter()
                 .map(|s| {
+                    symbol_definitions_slice
+                        .split_off_mut(..s.symbol_id_range.len())
+                        .unwrap();
+
                     definitions_out_per_file.push(AtomicTake::empty());
 
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
@@ -333,6 +339,10 @@ fn resolve_group<'data, 'definitions, P: Platform>(
             ResolvedGroup { files }
         }
         Group::SyntheticSymbols(syn) => {
+            symbol_definitions_slice
+                .split_off_mut(..syn.symbol_id_range.len())
+                .unwrap();
+
             definitions_out_per_file.push(AtomicTake::empty());
 
             ResolvedGroup {
@@ -374,7 +384,18 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                 })
                 .collect(),
         },
-    }
+    };
+
+    // Every call to this function must consume a number of definitions equal to the group's symbol
+    // count, otherwise subsequent calls will end up writing to the wrong part of the slice.
+    let taken = start_defs_len - symbol_definitions_slice.len();
+    assert_eq!(
+        taken,
+        group.num_symbols(),
+        "resolve_group({group}) took incorrect number of symbol defs"
+    );
+
+    resolved_group
 }
 
 fn resolve_sections<'data, P: Platform>(

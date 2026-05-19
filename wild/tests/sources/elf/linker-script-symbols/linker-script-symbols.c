@@ -2,6 +2,15 @@
 //#AugmentLinkerScript:script.ld
 //#Object:runtime.c
 
+//#Config:lto:default
+//#RequiresLinkerPlugin:true
+//#LinkerDriver:gcc
+//#CompArgs:-flto
+//#LinkArgs:-flto -nostdlib -znow
+//#DiffIgnore:section.got
+// We're not yet correctly handling linker-script symbol aliases with LTO.
+//#RunEnabled:false
+
 #include "../common/runtime.h"
 
 int value1 = 100;
