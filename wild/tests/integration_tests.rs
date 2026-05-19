@@ -191,6 +191,12 @@
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 //!
+//! LinkerScript:{source-filename} Adds a linker script, prefixed with -T. This replaces the
+//! built-in linker script.
+//!
+//! AugmentLinkerScript:{source-filename} Adds a linker script without the -T option. This augments
+//! the built-in linker-script.
+//!
 //! ## Symbol properties
 //!
 //! This describes the format of symbol properties, which can be supplied to `ExpectSym` and
@@ -1244,6 +1250,7 @@ enum InputType {
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
+    AugmentLinkerScript,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1600,8 +1607,14 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive"
-        | "Shared" | "LinkerScript") => {
+        input_type @ ("Object"
+        | "Relocatable"
+        | "Archive"
+        | "ThinArchive"
+        | "BsdArchive"
+        | "Shared"
+        | "LinkerScript"
+        | "AugmentLinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
 
             let mut arg = arg;
@@ -2250,6 +2263,7 @@ fn build_linker_input(
             out
         }
         InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
+        InputType::AugmentLinkerScript => LinkerInput::new(first_obj_path.to_owned()),
     };
 
     linker_input.template = dep.template.clone();
@@ -2307,7 +2321,7 @@ fn build_obj(
 ) -> Result<BuiltObject> {
     let src_path = file.path.clone();
 
-    if input_type == InputType::LinkerScript {
+    if input_type.is_linker_script() {
         return Ok(BuiltObject {
             path: src_path,
             inputs: Vec::new(),
@@ -4204,6 +4218,7 @@ impl Display for InputType {
             InputType::BsdArchive => write!(f, "bsd archive"),
             InputType::SharedObject => write!(f, "shared"),
             InputType::LinkerScript => write!(f, "linker script"),
+            InputType::AugmentLinkerScript => write!(f, "augment linker script"),
         }
     }
 }
@@ -4985,3 +5000,12 @@ impl PartialEq for OutputFileMatch {
 }
 
 impl Eq for OutputFileMatch {}
+
+impl InputType {
+    fn is_linker_script(self) -> bool {
+        matches!(
+            self,
+            InputType::LinkerScript | InputType::AugmentLinkerScript
+        )
+    }
+}
