@@ -758,7 +758,7 @@ pub(crate) struct EpilogueLayoutState<P: Platform> {
 pub(crate) struct LinkerScriptLayoutState<'data, P: Platform> {
     file_id: FileId,
     input: InputRef<'data>,
-    symbol_id_range: SymbolIdRange,
+    pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
 }
 

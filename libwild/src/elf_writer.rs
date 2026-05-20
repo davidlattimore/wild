@@ -4333,38 +4333,29 @@ fn write_linker_script_dynsym(
 /// This is used to copy attributes from a target symbol to a defsym alias.
 fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(SymbolSection, u8)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-    let file = layout.symbol_db.file(file_id);
 
-    match file {
-        crate::grouping::SequencedInput::Object(obj) => {
+    match layout.file_layout(file_id) {
+        FileLayout::Object(obj) => {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let sym = obj.parsed.object.symbol(local_index)?;
+            let sym = obj.object.symbol(local_index)?;
 
             let shndx = obj
-                .parsed
                 .object
                 .symbol_section(sym, local_index)?
-                .and_then(|section_index| match layout.file_layout(file_id) {
-                    FileLayout::Object(obj_layout) => obj_layout
-                        .sections
-                        .get(section_index.0)
-                        .and_then(|slot| match slot {
-                            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
-                                obj_layout
-                                    .section_part_id(
-                                        section_index,
-                                        &layout.symbol_db.section_part_ids,
-                                    )
-                                    .output_section_id(),
-                            ),
-                            _ => None,
-                        })
-                        .and_then(|output_section_id| {
+                .and_then(|section_index| {
+                    let slot = &obj.sections[section_index.0];
+                    match slot {
+                        SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => {
+                            let output_section_id = obj
+                                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                                .output_section_id();
+
                             layout
                                 .output_sections
                                 .output_index_of_section(output_section_id)
-                        }),
-                    _ => None,
+                        }
+                        _ => None,
+                    }
                 })
                 .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
@@ -4372,13 +4363,10 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
 
             Ok((shndx, st_type))
         }
-        crate::grouping::SequencedInput::LinkerScript(script) => {
+        FileLayout::LinkerScript(script) => {
             let local_index = symbol_id.to_input(script.symbol_id_range);
-            let shndx = script
-                .parsed
-                .symbol_defs
-                .get(local_index.0)
-                .and_then(|def_info| def_info.section_id())
+            let shndx = script.internal_symbols.symbol_definitions[local_index.0]
+                .section_id()
                 .and_then(|section_id| {
                     let section_id = layout.output_sections.primary_output_section(section_id);
                     layout.output_sections.output_index_of_section(section_id)
@@ -4387,11 +4375,9 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
-        crate::grouping::SequencedInput::Prelude(prelude) => {
+        FileLayout::Prelude(prelude) => {
             let offset = symbol_id.offset_from(SymbolId::undefined());
-            let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
-                format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
-            })?;
+            let def_info = &prelude.internal_symbols.symbol_definitions[offset];
             let shndx = def_info
                 .section_id()
                 .and_then(|section_id| {
@@ -4401,12 +4387,11 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
                 .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
             Ok((shndx, def_info.symbol.st_type()))
         }
-        crate::grouping::SequencedInput::SyntheticSymbols(_) => {
+        FileLayout::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
-        #[cfg(all(feature = "plugins", unix))]
-        crate::grouping::SequencedInput::LtoInput(_) => {
+        FileLayout::Dynamic(_) | FileLayout::Epilogue(_) | FileLayout::NotLoaded => {
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
     }
