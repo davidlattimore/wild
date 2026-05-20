@@ -2290,7 +2290,7 @@ fn activate<'data, 'scope, A: Arch>(
         FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
-        FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
+        FileLayoutState::LinkerScript(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Epilogue(_) => {}
         FileLayoutState::NotLoaded(_) => {}
         FileLayoutState::SyntheticSymbols(_) => {}
@@ -2866,39 +2866,9 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
 
             match &def_info.placement {
                 SymbolPlacement::Redirect(redirect) => {
-                    resources
-                        .per_symbol_flags
-                        .get_atomic(symbol_id)
-                        .or_assign(ValueFlags::DIRECT);
-
-                    // Also mark any symbols in the expression as used and queue it for loading to
-                    // prevent it from being GC'd.
-                    redirect.expression.visit_expressions(&mut |e| {
-                        if let crate::linker_script::Expression::Symbol(target_name) = e
-                            && let Some(target_symbol_id) = resources
-                                .symbol_db
-                                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
-                        {
-                            let canonical_target_id =
-                                resources.symbol_db.definition(target_symbol_id);
-                            let file_id =
-                                resources.symbol_db.file_id_for_symbol(canonical_target_id);
-                            let old_flags = resources
-                                .per_symbol_flags
-                                .get_atomic(canonical_target_id)
-                                .fetch_or(ValueFlags::DIRECT);
-
-                            if !old_flags.has_resolution() {
-                                queue.send_work::<A>(
-                                    resources,
-                                    file_id,
-                                    WorkItem::LoadGlobalSymbol(canonical_target_id),
-                                    scope,
-                                );
-                            }
-                        }
-                        true
-                    });
+                    load_redirect_referenced_symbols::<A>(
+                        resources, queue, scope, symbol_id, redirect,
+                    );
                 }
                 _ => {}
             }
@@ -3268,11 +3238,53 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 }
 
+fn load_redirect_referenced_symbols<'data, 'scope, A: Arch>(
+    resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
+    queue: &mut LocalWorkQueue,
+    scope: &Scope<'scope>,
+    symbol_id: SymbolId,
+    redirect: &crate::parsing::Redirect<'_>,
+) {
+    resources
+        .per_symbol_flags
+        .get_atomic(symbol_id)
+        .or_assign(ValueFlags::DIRECT);
+
+    // Also mark any symbols in the expression as used and queue it for loading to
+    // prevent it from being GC'd.
+    redirect.expression.visit_expressions(&mut |e| {
+        if let crate::linker_script::Expression::Symbol(target_name) = e
+            && let Some(target_symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+        {
+            let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+            let old_flags = resources
+                .per_symbol_flags
+                .get_atomic(canonical_target_id)
+                .fetch_or(ValueFlags::DIRECT);
+
+            if !old_flags.has_resolution() {
+                queue.send_work::<A>(
+                    resources,
+                    file_id,
+                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                    scope,
+                );
+            }
+        }
+        true
+    });
+}
+
 impl<'data, P: Platform> InternalSymbols<'data, P> {
-    fn activate_symbols(
+    fn activate_symbols<'scope, A: Arch<Platform = P>>(
         &self,
         common: &mut CommonGroupState<'data, P>,
-        resources: &GraphResources<'data, '_, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
     ) -> Result {
         for (offset, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(offset);
@@ -3292,6 +3304,15 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
             // PROVIDE_HIDDEN symbols should not be exported to dynsym.
             if def_info.symbol.is_hidden() {
                 continue;
+            }
+
+            match &def_info.placement {
+                SymbolPlacement::Redirect(redirect) => {
+                    load_redirect_referenced_symbols::<A>(
+                        resources, queue, scope, symbol_id, redirect,
+                    );
+                }
+                _ => {}
             }
 
             resources
@@ -5085,12 +5106,15 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         }
     }
 
-    fn activate(
+    fn activate<'scope, A: Arch<Platform = P>>(
         &self,
         common: &mut CommonGroupState<'data, P>,
-        resources: &GraphResources<'data, '_, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
     ) -> Result {
-        self.internal_symbols.activate_symbols(common, resources)
+        self.internal_symbols
+            .activate_symbols::<A>(common, resources, queue, scope)
     }
 
     fn finalise_sizes(

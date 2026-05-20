@@ -1,7 +1,5 @@
 VERSION {
   libmysqlclient_18 {
-    global:
-      bar;
     local:
       *;
   };
