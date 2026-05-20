@@ -1,4 +1,5 @@
-// Tests that symbol aliases via --defsym and from linker scripts don't get garbage collected.
+// Tests that symbol aliases via --defsym and from linker scripts (a) trigger loading of archive
+// entries and (b) prevent garbage collection of the target symbol.
 
 //#AbstractConfig:default
 //#Object:runtime.c
@@ -10,6 +11,14 @@
 //#Config:script-obj:default
 //#AugmentLinkerScript:script.ld
 //#Object:obj1.c
+
+//#Config:defsym-archive:default
+//#Archive:obj1.c
+//#LinkArgs:--defsym=bar=foo
+
+//#Config:script-archive:default
+//#AugmentLinkerScript:script.ld
+//#Archive:obj1.c
 
 #include "../common/runtime.h"
 

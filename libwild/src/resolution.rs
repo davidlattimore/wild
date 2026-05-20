@@ -19,6 +19,7 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
+use crate::linker_script::Expression;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
 use crate::output_section_id::OutputSections;
@@ -320,11 +321,17 @@ fn resolve_group<'data, 'definitions, P: Platform>(
             let files = scripts
                 .iter()
                 .map(|s| {
-                    symbol_definitions_slice
+                    let definitions_out = symbol_definitions_slice
                         .split_off_mut(..s.symbol_id_range.len())
                         .unwrap();
 
                     definitions_out_per_file.push(AtomicTake::empty());
+
+                    initial_work_out.push(LoadObjectSymbolsRequest {
+                        file_id: s.file_id,
+                        symbol_start_offset: 0,
+                        definitions_out,
+                    });
 
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
                         input: s.parsed.input,
@@ -849,7 +856,15 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
                 .with_context(|| format!("Failed to resolve symbols in {obj}")),
             );
         }
-        Group::LinkerScripts(_) => {}
+        Group::LinkerScripts(scripts) => {
+            for script in scripts {
+                for sym in &script.parsed.symbol_defs {
+                    if let SymbolPlacement::Redirect(redirect) = &sym.placement {
+                        load_symbols_in_redirect(resources, scope, redirect);
+                    }
+                }
+            }
+        }
         Group::SyntheticSymbols(_) => {}
         #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(objects) => {
@@ -897,13 +912,34 @@ fn load_prelude<'scope, 'data, P: Platform>(
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
-        match def_info.placement {
-            SymbolPlacement::ForceUndefined | SymbolPlacement::Redirect(_) => {
+        match &def_info.placement {
+            SymbolPlacement::ForceUndefined => {
                 load_symbol_named(resources, definition_out, def_info.name, scope);
+            }
+            SymbolPlacement::Redirect(redirect) => {
+                load_symbols_in_redirect(resources, scope, redirect);
             }
             _ => {}
         }
     }
+}
+
+fn load_symbols_in_redirect<'data, 'scope, P: Platform>(
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
+    scope: &Scope<'scope>,
+    redirect: &crate::parsing::Redirect<'_>,
+) {
+    redirect.expression.visit_expressions(&mut |e| {
+        if let Expression::Symbol(target_name) = e
+            && let Some(target_symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+        {
+            let file_id = resources.symbol_db.file_id_for_symbol(target_symbol_id);
+            resources.try_request_file_id(file_id, scope);
+        }
+        true
+    });
 }
 
 fn load_symbol_named<'scope, 'data, P: Platform>(
