@@ -316,15 +316,27 @@ impl<'data, P: Platform> std::fmt::Display for ProcessedLinkerScript<'data, P> {
 
 impl Redirect<'_> {
     pub(crate) fn missing_target(&self, target_name: &[u8]) -> crate::error::Error {
-        match self.kind {
-            RedirectKind::DefSym => crate::error!(
-                "Symbol '{}' referenced by --defsym does not exist",
-                String::from_utf8_lossy(target_name)
-            ),
-            RedirectKind::Script => crate::error!(
-                "Undefined symbol '{}' referenced in expression",
-                String::from_utf8_lossy(target_name)
-            ),
+        crate::error!(
+            "Symbol '{name}' referenced by {kind} does not exist",
+            name = String::from_utf8_lossy(target_name),
+            kind = self.kind.message_text(),
+        )
+    }
+
+    pub(crate) fn missing_resolution(&self, target_name: &[u8]) -> crate::error::Error {
+        crate::error!(
+            "Symbol '{name}' referenced by {kind} has no resolution. Might be issue #1960",
+            name = String::from_utf8_lossy(target_name),
+            kind = self.kind.message_text(),
+        )
+    }
+}
+
+impl RedirectKind {
+    fn message_text(self) -> &'static str {
+        match self {
+            RedirectKind::DefSym => "--defsym",
+            RedirectKind::Script => "linker script",
         }
     }
 }

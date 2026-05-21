@@ -2,14 +2,15 @@
 //#AugmentLinkerScript:script.ld
 //#Object:runtime.c
 
+// TODO: Make this test not error and enable for GNU ld. Issue #1960.
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
+//#SkipLinker:ld
 //#LinkerDriver:gcc
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -znow
 //#DiffIgnore:section.got
-// We're not yet correctly handling linker-script symbol aliases with LTO.
-//#RunEnabled:false
+//#ExpectError:Symbol '.+' referenced by linker script has no resolution
 
 #include "../common/runtime.h"
 

@@ -483,9 +483,12 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
                 };
 
                 let canonical_target_id = symbol_db.definition(target_symbol_id);
-                Ok(resolutions[canonical_target_id.as_usize()]
+
+                let resolution = resolutions[canonical_target_id.as_usize()]
                     .as_ref()
-                    .map_or(0, |r| r.raw_value))
+                    .ok_or_else(|| redirect.missing_resolution(name))?;
+
+                Ok(resolution.raw_value)
             },
         )?;
 
