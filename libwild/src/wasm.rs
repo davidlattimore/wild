@@ -49,9 +49,26 @@ pub(crate) mod section_id {
 /// Size of a `[Option<u32>; _]` lookup that can be indexed by any standard section id.
 pub(crate) const STANDARD_SECTION_LOOKUP_LEN: usize = section_id::MAX as usize + 1;
 
+pub(crate) mod reloc_type {
+    pub(crate) const FUNCTION_INDEX_LEB: u8 = 0;
+    pub(crate) const TABLE_INDEX_SLEB: u8 = 1;
+    pub(crate) const TABLE_INDEX_I32: u8 = 2;
+    pub(crate) const MEMORY_ADDR_LEB: u8 = 3;
+    pub(crate) const MEMORY_ADDR_SLEB: u8 = 4;
+    pub(crate) const MEMORY_ADDR_I32: u8 = 5;
+    pub(crate) const TYPE_INDEX_LEB: u8 = 6;
+    pub(crate) const GLOBAL_INDEX_LEB: u8 = 7;
+    pub(crate) const FUNCTION_OFFSET_I32: u8 = 8;
+    pub(crate) const SECTION_OFFSET_I32: u8 = 9;
+    pub(crate) const EVENT_INDEX_LEB: u8 = 10;
+    pub(crate) const GLOBAL_INDEX_I32: u8 = 13;
+    pub(crate) const TABLE_NUMBER_LEB: u8 = 20;
+    pub(crate) const FUNCTION_INDEX_I32: u8 = 26;
+}
+
 /// `R_WASM_TYPE_INDEX_LEB` from the Wasm Tool Conventions. The only reloc whose `index` field
 /// refers to a type index rather than a symbol index.
-pub(crate) const R_WASM_TYPE_INDEX_LEB: u8 = 6;
+pub(crate) const R_WASM_TYPE_INDEX_LEB: u8 = reloc_type::TYPE_INDEX_LEB;
 
 /// The custom-section name used for the linker metadata.
 pub(crate) const LINKING_SECTION_NAME: &str = "linking";
@@ -233,10 +250,94 @@ impl WasmRelocation {
     }
 
     /// Whether `index` refers to a symbol rather than a type index.
-    #[expect(dead_code)] // Will be used once relocation application lands.
-    fn refers_to_symbol(&self) -> bool {
+    pub(crate) fn refers_to_symbol(&self) -> bool {
         self.ty != R_WASM_TYPE_INDEX_LEB
     }
+
+    /// Width in bytes of the slot this relocation overwrites.
+    pub(crate) fn slot_size(&self) -> usize {
+        match self.ty {
+            reloc_type::FUNCTION_INDEX_LEB
+            | reloc_type::TABLE_INDEX_SLEB
+            | reloc_type::MEMORY_ADDR_LEB
+            | reloc_type::MEMORY_ADDR_SLEB
+            | reloc_type::TYPE_INDEX_LEB
+            | reloc_type::GLOBAL_INDEX_LEB
+            | reloc_type::EVENT_INDEX_LEB
+            | reloc_type::TABLE_NUMBER_LEB => 5,
+            reloc_type::TABLE_INDEX_I32
+            | reloc_type::MEMORY_ADDR_I32
+            | reloc_type::FUNCTION_OFFSET_I32
+            | reloc_type::SECTION_OFFSET_I32
+            | reloc_type::GLOBAL_INDEX_I32
+            | reloc_type::FUNCTION_INDEX_I32 => 4,
+            _ => 0,
+        }
+    }
+}
+
+/// Write `value` as a 5-byte fixed-width unsigned LEB128. Used for wasm reloc slots that reserve
+/// exactly 5 bytes regardless of the encoded value.
+pub(crate) fn write_uleb128_5(buf: &mut [u8; 5], value: u32) {
+    buf[0] = (value as u8 & 0x7f) | 0x80;
+    buf[1] = ((value >> 7) as u8 & 0x7f) | 0x80;
+    buf[2] = ((value >> 14) as u8 & 0x7f) | 0x80;
+    buf[3] = ((value >> 21) as u8 & 0x7f) | 0x80;
+    buf[4] = (value >> 28) as u8 & 0x0f;
+}
+
+/// Write `value` as a 5-byte fixed-width signed LEB128. The high three bits of the final byte are
+/// sign-extended so the encoded form is canonical for any `i32`.
+pub(crate) fn write_sleb128_5(buf: &mut [u8; 5], value: i32) {
+    let v = value as u32;
+    buf[0] = (v as u8 & 0x7f) | 0x80;
+    buf[1] = ((v >> 7) as u8 & 0x7f) | 0x80;
+    buf[2] = ((v >> 14) as u8 & 0x7f) | 0x80;
+    buf[3] = ((v >> 21) as u8 & 0x7f) | 0x80;
+    let last = (v >> 28) as u8 & 0x0f;
+    let sign_ext = if value < 0 { 0x70 } else { 0x00 };
+    buf[4] = last | sign_ext;
+}
+
+pub(crate) fn apply_relocation(
+    bytes: &mut [u8],
+    reloc: &WasmRelocation,
+    value: u32,
+) -> crate::error::Result<()> {
+    let offset = reloc.offset as usize;
+    let size = reloc.slot_size();
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| crate::error!("Wasm relocation offset overflow"))?;
+    let slot = bytes
+        .get_mut(offset..end)
+        .ok_or_else(|| crate::error!("Wasm relocation slot out of range"))?;
+    match reloc.ty {
+        reloc_type::FUNCTION_INDEX_LEB
+        | reloc_type::MEMORY_ADDR_LEB
+        | reloc_type::TYPE_INDEX_LEB
+        | reloc_type::GLOBAL_INDEX_LEB
+        | reloc_type::EVENT_INDEX_LEB
+        | reloc_type::TABLE_NUMBER_LEB => {
+            let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
+            write_uleb128_5(buf, value);
+        }
+        reloc_type::TABLE_INDEX_SLEB | reloc_type::MEMORY_ADDR_SLEB => {
+            let buf: &mut [u8; 5] = slot.try_into().expect("slot_size returned 5");
+            write_sleb128_5(buf, value as i32);
+        }
+        reloc_type::TABLE_INDEX_I32
+        | reloc_type::MEMORY_ADDR_I32
+        | reloc_type::FUNCTION_OFFSET_I32
+        | reloc_type::SECTION_OFFSET_I32
+        | reloc_type::GLOBAL_INDEX_I32
+        | reloc_type::FUNCTION_INDEX_I32 => {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        other => crate::bail!("unsupported Wasm relocation type {other}"),
+    }
+
+    Ok(())
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
@@ -1031,7 +1132,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub(crate) struct RelocationList<'data> {
     pub(crate) entries: Vec<WasmRelocation>,
     _phantom: std::marker::PhantomData<&'data ()>,
