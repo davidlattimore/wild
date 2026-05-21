@@ -82,6 +82,7 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 pub(crate) mod wasm;
 pub(crate) mod wasm_wasm32;
+pub(crate) mod wasm_writer;
 
 use crate::elf::Elf;
 use crate::error::Context;

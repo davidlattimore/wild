@@ -1199,7 +1199,7 @@ impl platform::Platform for Wasm {
         output: &crate::file_writer::Output,
         layout: &crate::layout::Layout<'data, Self>,
     ) -> crate::error::Result {
-        todo!()
+        output.write(layout, crate::wasm_writer::write::<A>)
     }
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
