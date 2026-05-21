@@ -479,12 +479,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
     fn relocations(
         &self,
-        _index: object::SectionIndex,
+        index: object::SectionIndex,
         _relocations: &<Self::Platform as platform::Platform>::RelocationSections,
     ) -> crate::error::Result<<Self::Platform as platform::Platform>::RelocationList<'data>> {
-        // Relocation entries are parsed and stored on `File::reloc_sections` but not yet plumbed
-        // through the layout pipeline.
+        let target = u32::try_from(index.0).unwrap_or(u32::MAX);
+        let entries = self
+            .reloc_sections
+            .iter()
+            .find(|s| s.target_section_index == target)
+            .map(|s| s.entries.clone())
+            .unwrap_or_default();
         Ok(RelocationList {
+            entries,
             _phantom: std::marker::PhantomData,
         })
     }
@@ -1025,15 +1031,15 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
     }
 }
 
-// TODO
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RelocationList<'data> {
+    pub(crate) entries: Vec<WasmRelocation>,
     _phantom: std::marker::PhantomData<&'data ()>,
 }
 
 impl<'data> platform::RelocationList<'data> for RelocationList<'data> {
     fn num_relocations(&self) -> usize {
-        0
+        self.entries.len()
     }
 }
 
