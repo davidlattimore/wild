@@ -364,7 +364,9 @@ impl LoadedPlugin {
         // Safety: Truthfully, we don't control the file we're loading. The user gave it to us and
         // there's nothing we can do to guarantee that loading and running it won't trigger UB. The
         // best we can say is that we at least try to conform to the expected plugin API.
-        let lib = unsafe { Library::new(plugin_path) }.context("Failed to open linker plugin")?;
+        let lib = unsafe { Library::new(plugin_path) }
+            .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+            .context("Failed to open linker plugin")?;
 
         timing_phase!("Initialise linker plugin");
 

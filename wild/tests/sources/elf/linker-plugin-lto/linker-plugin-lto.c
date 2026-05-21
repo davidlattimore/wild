@@ -5,6 +5,7 @@
 //#RequiresLinkerPlugin:true
 
 //#AbstractConfig:error
+//#RequiresLinkerPlugin:true
 
 //#Config:gcc:default
 //#CompArgs:-flto
@@ -92,6 +93,12 @@
 //#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
 //#Archive:empty.c:-flto
 //#ExpectError:(Error from linker plugin: Invalid parallelism level: foo|Wild was compiled without linker-plugin support)
+
+//#Config:plugin-not-found:error
+//#Compiler:clang
+//#CompArgs:-flto
+//#LinkArgs:--plugin=/does/not/exist
+//#ExpectError:No such file or directory
 
 #include "../common/runtime.h"
 
