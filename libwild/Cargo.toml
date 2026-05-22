@@ -52,6 +52,7 @@ thread_local.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+wasm-encoder.workspace = true
 wasmparser.workspace = true
 winnow.workspace = true
 zerocopy.workspace = true

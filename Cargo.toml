@@ -108,6 +108,7 @@ uuid = { version = "1.3.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
 wasmparser = "0.251.0"
+wasm-encoder = "0.251.0"
 which = "8.0.0"
 winnow = { version = "1.0.0", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
