@@ -8,7 +8,9 @@
 //! libraries reexported by the main library. This covers a practical subset of
 //! the full TBD v4 format, including the shape used by most system libraries.
 
-use anyhow::ensure;
+use crate::ensure;
+use crate::error;
+use crate::error::Result;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -88,21 +90,19 @@ pub struct DefinedStubLibrary<'a> {
 
 // TODO: remove
 #[allow(unused)]
-pub fn parse_defined_library<'data>(
-    input: &'data str,
-) -> anyhow::Result<DefinedStubLibrary<'data>> {
+pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibrary<'data>> {
     let library_definitions = serde_yaml::Deserializer::from_str(input)
         .map(TextBasedDefinition::deserialize)
         .collect::<Result<Vec<_>, _>>()?;
 
     let main_library = library_definitions
         .first()
-        .ok_or_else(|| anyhow::anyhow!("root library must be defined"))?;
+        .ok_or_else(|| error!("root library must be defined"))?;
     ensure!(
         main_library
             .targets
             .contains(&Cow::Borrowed(ARM64_LIB_ARCH)),
-        format!("'{ARM64_LIB_ARCH}' architecture not implemented by the library",)
+        "'{ARM64_LIB_ARCH}' architecture not implemented by the library"
     );
 
     ensure!(
@@ -134,13 +134,13 @@ pub fn parse_defined_library<'data>(
         .reexported_libraries
         .iter()
         .at_most_one()
-        .map_err(|_| anyhow::anyhow!("expected just a single exported library"))?
+        .map_err(|_| error!("expected just a single exported library"))?
     {
         ensure!(
             exported_libraries
                 .targets
                 .contains(&Cow::Borrowed(ARM64_LIB_ARCH)),
-            format!("'{ARM64_LIB_ARCH}' architecture not covered in the exported library",)
+            "'{ARM64_LIB_ARCH}' architecture not covered in the exported library"
         );
         let exported_libraries: HashSet<_> = exported_libraries.libraries.iter().clone().collect();
         exported_libraries
@@ -151,15 +151,14 @@ pub fn parse_defined_library<'data>(
     for lib in &library_definitions {
         ensure!(
             lib.tbd_version == 4,
-            format!("TBD version 4 expected, got {}", lib.tbd_version)
+            "TBD version 4 expected, got {}",
+            lib.tbd_version
         );
         if lib != main_library {
             ensure!(
                 exported_libraries.contains(&lib.install_name),
-                format!(
-                    "child library '{}' not listed as reexported by the main library",
-                    lib.install_name
-                )
+                "child library '{}' not listed as reexported by the main library",
+                lib.install_name
             );
         }
 
