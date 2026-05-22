@@ -12,6 +12,15 @@ use crate::output_section_id::SectionName;
 use crate::platform;
 use linker_utils::utils::u32_from_slice;
 use std::ops::Range;
+use wasmparser::BinaryReader;
+use wasmparser::ConstExpr;
+use wasmparser::DataKind;
+use wasmparser::DataSectionReader;
+use wasmparser::ExportSectionReader;
+use wasmparser::FunctionSectionReader;
+use wasmparser::GlobalSectionReader;
+use wasmparser::GlobalType;
+use wasmparser::ImportSectionReader;
 use wasmparser::KnownCustom;
 use wasmparser::Linking;
 use wasmparser::Parser;
@@ -20,6 +29,8 @@ use wasmparser::RelocationEntry;
 use wasmparser::SegmentFlags;
 use wasmparser::SymbolFlags;
 use wasmparser::SymbolInfo;
+use wasmparser::TypeRef;
+use wasmparser::TypeSectionReader;
 
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Wasm;
@@ -336,8 +347,229 @@ pub(crate) fn apply_relocation(
         }
         other => crate::bail!("unsupported Wasm relocation type {other}"),
     }
-
     Ok(())
+}
+
+/// A single imported function. `module` / `name` borrow into the source bytes.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmFunctionImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    /// Index into the `type` section.
+    pub(crate) type_index: u32,
+}
+
+/// A single imported global.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmGlobalImport<'data> {
+    pub(crate) module: &'data str,
+    pub(crate) name: &'data str,
+    pub(crate) ty: GlobalType,
+}
+
+/// A function defined inside the module (not imported). Stored as the index into the `type`
+/// section that gives its signature; the function body lives in the `code` section.
+#[derive(Debug, Copy, Clone)]
+pub(crate) struct WasmModuleFunction {
+    pub(crate) type_index: u32,
+}
+
+/// A global defined inside the module (not imported).
+#[derive(Debug, Clone)]
+pub(crate) struct WasmModuleGlobal<'data> {
+    pub(crate) ty: GlobalType,
+    pub(crate) init_expr: ConstExpr<'data>,
+}
+
+/// A single data segment from the `data` section.
+#[derive(Debug, Clone)]
+pub(crate) struct WasmDataSegment<'data> {
+    pub(crate) kind: DataKind<'data>,
+    pub(crate) data: &'data [u8],
+}
+
+impl<'data> File<'data> {
+    /// Construct a `BinaryReader` over the payload of the standard section with the given id,
+    /// or `None` if the input has no such section.
+    fn standard_section_reader(&self, id: u8) -> Option<BinaryReader<'data>> {
+        let section_index = self.standard_section_index.get(id as usize)?.as_ref()?;
+        let header = self.sections.get(*section_index as usize)?;
+        let payload = self.data.get(header.payload_range_usize())?;
+        Some(BinaryReader::new(
+            payload,
+            header.payload_range.start as usize,
+        ))
+    }
+
+    pub(crate) fn import_section_reader(&self) -> Result<Option<ImportSectionReader<'data>>> {
+        self.standard_section_reader(section_id::IMPORT)
+            .map(|r| ImportSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn function_section_reader(&self) -> Result<Option<FunctionSectionReader<'data>>> {
+        self.standard_section_reader(section_id::FUNCTION)
+            .map(|r| FunctionSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn global_section_reader(&self) -> Result<Option<GlobalSectionReader<'data>>> {
+        self.standard_section_reader(section_id::GLOBAL)
+            .map(|r| GlobalSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn data_section_reader(&self) -> Result<Option<DataSectionReader<'data>>> {
+        self.standard_section_reader(section_id::DATA)
+            .map(|r| DataSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn export_section_reader(&self) -> Result<Option<ExportSectionReader<'data>>> {
+        self.standard_section_reader(section_id::EXPORT)
+            .map(|r| ExportSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    pub(crate) fn type_section_reader(&self) -> Result<Option<TypeSectionReader<'data>>> {
+        self.standard_section_reader(section_id::TYPE)
+            .map(|r| TypeSectionReader::new(r).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Imported functions in declaration order. Imports of other kinds are skipped.
+    pub(crate) fn function_imports(&self) -> Result<Vec<WasmFunctionImport<'data>>> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for import in reader.into_imports() {
+            let import = import?;
+            if let TypeRef::Func(type_index) = import.ty {
+                out.push(WasmFunctionImport {
+                    module: import.module,
+                    name: import.name,
+                    type_index,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Imported globals in declaration order. Imports of other kinds are skipped.
+    pub(crate) fn global_imports(&self) -> Result<Vec<WasmGlobalImport<'data>>> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for import in reader.into_imports() {
+            let import = import?;
+            if let TypeRef::Global(ty) = import.ty {
+                out.push(WasmGlobalImport {
+                    module: import.module,
+                    name: import.name,
+                    ty,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Functions defined in this module (excluding imports), in `function` section order.
+    pub(crate) fn module_functions(&self) -> Result<Vec<WasmModuleFunction>> {
+        let Some(reader) = self.function_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|type_index| WasmModuleFunction { type_index })
+                    .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Globals defined in this module (excluding imports), in `global` section order.
+    pub(crate) fn module_globals(&self) -> Result<Vec<WasmModuleGlobal<'data>>> {
+        let Some(reader) = self.global_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|g| WasmModuleGlobal {
+                    ty: g.ty,
+                    init_expr: g.init_expr,
+                })
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Data segments in declaration order.
+    pub(crate) fn data_segments(&self) -> Result<Vec<WasmDataSegment<'data>>> {
+        let Some(reader) = self.data_section_reader()? else {
+            return Ok(Vec::new());
+        };
+
+        reader
+            .into_iter()
+            .map(|res| {
+                res.map(|d| WasmDataSegment {
+                    kind: d.kind,
+                    data: d.data,
+                })
+                .map_err(Into::into)
+            })
+            .collect()
+    }
+
+    /// Number of imported entries in the `function` index space.
+    pub(crate) fn function_import_count(&self) -> Result<u32> {
+        self.count_imports_of(|ty| matches!(ty, TypeRef::Func(_)))
+    }
+
+    /// Number of imported entries in the `global` index space.
+    pub(crate) fn global_import_count(&self) -> Result<u32> {
+        self.count_imports_of(|ty| matches!(ty, TypeRef::Global(_)))
+    }
+
+    /// Size of the `function` index space: imports + module-defined functions.
+    pub(crate) fn total_function_count(&self) -> Result<u32> {
+        let module_count = self
+            .function_section_reader()?
+            .as_ref()
+            .map_or(0, |r| r.count());
+
+        Ok(self.function_import_count()? + module_count)
+    }
+
+    /// Size of the `global` index space: imports + module-defined globals.
+    pub(crate) fn total_global_count(&self) -> Result<u32> {
+        let module_count = self
+            .global_section_reader()?
+            .as_ref()
+            .map_or(0, |r| r.count());
+        Ok(self.global_import_count()? + module_count)
+    }
+
+    fn count_imports_of(&self, mut matches_kind: impl FnMut(&TypeRef) -> bool) -> Result<u32> {
+        let Some(reader) = self.import_section_reader()? else {
+            return Ok(0);
+        };
+        let mut count: u32 = 0;
+        for import in reader.into_imports() {
+            if matches_kind(&import?.ty) {
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
 }
 
 impl<'data> platform::ObjectFile<'data> for File<'data> {
