@@ -1553,8 +1553,7 @@ impl RelocationKindInfo {
         self.verify(value as i64)?;
 
         if matches!(self.kind, RelocationKind::PairSubtractionULEB128(..)) {
-            // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
-            let mut writer = Cursor::new(vec![0u8; 10]);
+            let mut writer = Cursor::new([0u8; u64::BITS.div_ceil(7) as usize]);
             let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
             anyhow::ensure!(
                 output.len() >= n,
