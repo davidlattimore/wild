@@ -88,7 +88,9 @@ pub struct DefinedStubLibrary<'a> {
 
 // TODO: remove
 #[allow(unused)]
-pub fn parse_defined_library(input: &str) -> anyhow::Result<DefinedStubLibrary<'_>> {
+pub fn parse_defined_library<'data>(
+    input: &'data str,
+) -> anyhow::Result<DefinedStubLibrary<'data>> {
     let library_definitions = serde_yaml::Deserializer::from_str(input)
         .map(TextBasedDefinition::deserialize)
         .collect::<Result<Vec<_>, _>>()?;
