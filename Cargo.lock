@@ -864,9 +864,9 @@ dependencies = [
 
 [[package]]
 name = "libmimalloc-sys"
-version = "0.1.47"
+version = "0.1.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1eacfa31c33ec25e873c136ba5669f00f9866d0688bea7be4d3f7e43067df6"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
 dependencies = [
  "cc",
 ]
@@ -917,7 +917,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "nix",
+ "nix 0.30.1",
  "object 0.39.1",
  "perf-event",
  "perfetto-recorder",
@@ -1041,9 +1041,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc"
-version = "0.1.50"
+version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3627c4272df786b9260cabaa46aec1d59c93ede723d4c3ef646c503816b0640"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
 ]
@@ -1075,6 +1075,18 @@ name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -1294,13 +1306,13 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "os_info"
-version = "3.14.0"
+version = "3.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4022a17595a00d6a369236fdae483f0de7f0a339960a53118b818238e132224"
+checksum = "9cf20a545b305cf1da722b236b5155c9bb35f1d5ceb28c048bd96ca842f41b5b"
 dependencies = [
  "android_system_properties",
  "log",
- "nix",
+ "nix 0.31.3",
  "objc2",
  "objc2-foundation",
  "objc2-ui-kit",
@@ -1373,7 +1385,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "14fb4634b7df50e07a4672c50fb2096b59fa2f5f5b3efe41aecae38c55c41f78"
 dependencies = [
  "libc",
- "nix",
+ "nix 0.30.1",
  "prost",
  "rand",
  "windows-sys",
@@ -1825,9 +1837,9 @@ dependencies = [
 
 [[package]]
 name = "symbolic-common"
-version = "13.0.0"
+version = "13.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b309ad35ef0bfa793b8452959e33b83d5712d179fb5b4ceecb80f2c312fd036"
+checksum = "5d04a99feceaed7fb07be2bbeda9c778ca81189439a414a37feffe2ee9904b50"
 dependencies = [
  "debugid",
  "memmap2",
@@ -1837,9 +1849,9 @@ dependencies = [
 
 [[package]]
 name = "symbolic-demangle"
-version = "13.0.0"
+version = "13.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66a65f284a0fa9aca584552dd60617184640d767c036946b2245ba2f7604f6c2"
+checksum = "feb3058583669a52e5ff4d10b9e047d4ef73ca6f0a1d583c871d67926c3fe849"
 dependencies = [
  "cpp_demangle",
  "rustc-demangle",
@@ -1888,7 +1900,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.1",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",
