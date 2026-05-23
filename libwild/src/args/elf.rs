@@ -698,7 +698,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             },
         )
         .execute(|args, _modifier_stack, value| {
-            args.warn_unsupported(&("-z ".to_owned() + value))?;
+            args.warn_unsupported(&(format!("-z {value}")))?;
             Ok(())
         });
 

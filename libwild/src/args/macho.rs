@@ -201,6 +201,14 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         });
     parser
         .declare_with_param()
+        .short("mllvm")
+        .help("Pass an LLVM option")
+        .execute(|args, _modifier_stack, value| match value {
+            "-enable-linkonceodr-outlining" => Ok(()),
+            _ => args.warn_unsupported(&format!("-mllvm {value}")),
+        });
+    parser
+        .declare_with_param()
         .long("output")
         .short("o")
         .help("Set the output filename")
@@ -255,6 +263,8 @@ mod tests {
     use crate::args::InputSpec;
     use crate::platform::Args as _;
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
     const INPUT1: &[&str] = &[
         "-arch",
@@ -269,6 +279,8 @@ mod tests {
         "-demangle",
         "-syslibroot",
         "/foo/bar",
+        "-mllvm",
+        "-enable-linkonceodr-outlining",
         "-o",
         "a.out",
         "main.o",
@@ -295,7 +307,16 @@ mod tests {
     #[test]
     fn test_parse_inline_only_options() {
         let mut args = MachOArgs::new().unwrap();
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let warnings_clone = warnings.clone();
+        args.common.warning_callback = Box::new(move |warning| {
+            warnings_clone
+                .lock()
+                .unwrap()
+                .push(warning.warning().to_owned());
+        });
         args.parse(INPUT1.iter()).unwrap();
         input1_assertions(&args);
+        assert!(warnings.lock().unwrap().is_empty());
     }
 }
