@@ -167,6 +167,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: ImageVersion
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace --features macho
 
