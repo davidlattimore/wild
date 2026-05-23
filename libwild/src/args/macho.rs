@@ -2,6 +2,8 @@ use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::ArgumentParser;
 use crate::args::CommonArgs;
 use crate::args::FileWriteMode;
+use crate::args::Input;
+use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
 use crate::bail;
@@ -35,6 +37,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "no_deduplicate",
     // Mach-O appears to always demangle symbols.
     "demangle",
+    "dynamic",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[];
@@ -209,6 +212,50 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         });
     parser
         .declare_with_param()
+        .prefix("l")
+        .help("Link with library")
+        .sub_option_with_value(
+            ":filename",
+            "Link with specific file",
+            |args, modifier_stack, value| {
+                let stripped = value.strip_prefix(':').unwrap_or(value);
+                let spec = InputSpec::File(Box::from(Path::new(stripped)));
+                args.common_mut().inputs.push(Input {
+                    spec,
+                    search_first: None,
+                    modifiers: *modifier_stack.last().unwrap(),
+                });
+                Ok(())
+            },
+        )
+        .sub_option_with_value(
+            "libname",
+            "Link with library libname.dylib or libname.a",
+            |args, modifier_stack, value| {
+                let spec = InputSpec::Lib(Box::from(value));
+                args.common_mut().inputs.push(Input {
+                    spec,
+                    search_first: None,
+                    modifiers: *modifier_stack.last().unwrap(),
+                });
+                Ok(())
+            },
+        )
+        .execute(|args, modifier_stack, value| {
+            let spec = if let Some(stripped) = value.strip_prefix(':') {
+                InputSpec::Search(Box::from(stripped))
+            } else {
+                InputSpec::Lib(Box::from(value))
+            };
+            args.common_mut().inputs.push(Input {
+                spec,
+                search_first: None,
+                modifiers: *modifier_stack.last().unwrap(),
+            });
+            Ok(())
+        });
+    parser
+        .declare_with_param()
         .long("output")
         .short("o")
         .help("Set the output filename")
@@ -284,6 +331,7 @@ mod tests {
         "-o",
         "a.out",
         "main.o",
+        "-lc++",
     ];
 
     fn input1_assertions(args: &MachOArgs) {
@@ -300,6 +348,10 @@ mod tests {
         assert!(args.common.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("main.o"),
             InputSpec::Lib(_) | InputSpec::Search(_) => false,
+        }));
+        assert!(args.common.inputs.iter().any(|i| match &i.spec {
+            InputSpec::Lib(f) => f.as_ref() == "c++",
+            InputSpec::File(_) | InputSpec::Search(_) => false,
         }));
         assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
     }
