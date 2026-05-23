@@ -30,6 +30,12 @@ pub(crate) struct PlatformVersion {
     pub(crate) sdk_version: String,
 }
 
+const SILENTLY_IGNORED_FLAGS: &[&str] = &[
+    "no_deduplicate",
+    // Mach-O appears to always demangle symbols.
+    "demangle",
+];
+
 const IGNORED_FLAGS: &[&str] = &[];
 
 impl MachOArgs {
@@ -174,14 +180,6 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             },
         );
     parser
-        .declare()
-        .long("demangle")
-        .help("Enable symbol demangling")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().demangle = true;
-            Ok(())
-        });
-    parser
         .declare_with_param()
         .long("syslibroot")
         .help("Set system root")
@@ -227,7 +225,17 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             Ok(())
         });
 
+    add_silently_ignored_flags(&mut parser);
+
     parser
+}
+
+fn add_silently_ignored_flags(parser: &mut ArgumentParser<MachOArgs>) {
+    for flag in SILENTLY_IGNORED_FLAGS {
+        let mut declaration = parser.declare();
+        declaration = declaration.long(flag);
+        declaration.execute(|_args, _modifier_stack| Ok(()));
+    }
 }
 
 #[cfg(test)]
@@ -241,6 +249,7 @@ mod tests {
     const INPUT1: &[&str] = &[
         "-arch",
         "arm64",
+        "-no_deduplicate",
         "-platform_version",
         "macos",
         "14.0",
