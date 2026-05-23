@@ -8,6 +8,7 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::bail;
+use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -710,6 +711,10 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
+        ensure!(
+            kind != FileKind::FatMachOObject,
+            "Fat object file is not supported yet: {input_ref}"
+        );
 
         let input_bytes = InputBytes {
             kind,

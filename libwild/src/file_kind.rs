@@ -130,7 +130,7 @@ impl std::fmt::Display for FileKind {
             FileKind::ElfDynamic => "ELF dynamic",
             FileKind::MachOObject => "MachO object",
             FileKind::WasmObject => "Wasm object",
-            FileKind::FatMachOObject => "Fat MachO",
+            FileKind::FatMachOObject => "Fat MachO object",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",
