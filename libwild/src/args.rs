@@ -649,6 +649,18 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
     }
 
+    fn declare_with_three_params(&mut self) -> OptionDeclaration<'_, T, WithThreeParams> {
+        OptionDeclaration {
+            parser: self,
+            long_names: Vec::new(),
+            short_names: Vec::new(),
+            prefixes: Vec::new(),
+            sub_options: HashMap::new(),
+            help_text: "",
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, T, WithOptionalParam> {
         OptionDeclaration {
             parser: self,
@@ -690,6 +702,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                 if let Some(handler) = self.options.get(option_name) {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
+                        OptionHandlerFn::WithThreeParams(_) => {
+                            bail!("multi-argument option cannot use the '=' syntax")
+                        }
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
                         OptionHandlerFn::NoParam(_) => return Ok(()),
                     }
@@ -712,6 +727,24 @@ impl<T: platform::Args> ArgumentParser<T> {
                                 input.next().context(format!("Missing argument to {arg}"))?;
                             f(args, modifier_stack, next_arg.as_ref())?;
                         }
+                        OptionHandlerFn::WithThreeParams(f) => {
+                            let first_arg = input
+                                .next()
+                                .context(format!("Missing first argument to {arg}"))?;
+                            let second_arg = input
+                                .next()
+                                .context(format!("Missing second argument to {arg}"))?;
+                            let third_arg = input
+                                .next()
+                                .context(format!("Missing third argument to {arg}"))?;
+                            f(
+                                args,
+                                modifier_stack,
+                                first_arg.as_ref(),
+                                second_arg.as_ref(),
+                                third_arg.as_ref(),
+                            )?;
+                        }
                         OptionHandlerFn::OptionalParam(f) => {
                             f(args, modifier_stack, None)?;
                         }
@@ -730,6 +763,24 @@ impl<T: platform::Args> ArgumentParser<T> {
                         let next_arg =
                             input.next().context(format!("Missing argument to {arg}"))?;
                         f(args, modifier_stack, next_arg.as_ref())?;
+                    }
+                    OptionHandlerFn::WithThreeParams(f) => {
+                        let first_arg = input
+                            .next()
+                            .context(format!("Missing first argument to {arg}"))?;
+                        let second_arg = input
+                            .next()
+                            .context(format!("Missing second argument to {arg}"))?;
+                        let third_arg = input
+                            .next()
+                            .context(format!("Missing third argument to {arg}"))?;
+                        f(
+                            args,
+                            modifier_stack,
+                            first_arg.as_ref(),
+                            second_arg.as_ref(),
+                            third_arg.as_ref(),
+                        )?;
                     }
                     OptionHandlerFn::OptionalParam(f) => {
                         f(args, modifier_stack, None)?;
@@ -931,11 +982,13 @@ struct PrefixOptionHandler<T> {
 }
 
 type OptionalParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
+type ThreeParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, &str, &str, &str) -> Result<()>;
 
 #[allow(clippy::enum_variant_names)]
 enum OptionHandlerFn<T> {
     NoParam(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
     WithParam(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
+    WithThreeParams(ThreeParamHandler<T>),
     OptionalParam(OptionalParamHandler<T>),
 }
 
@@ -952,6 +1005,7 @@ impl<T> OptionHandlerFn<T> {
         match self {
             OptionHandlerFn::NoParam(_) => "",
             OptionHandlerFn::WithParam(_) => "=<VALUE>",
+            OptionHandlerFn::WithThreeParams(_) => "=<VALUE> <VALUE> <VALUE>",
             OptionHandlerFn::OptionalParam(_) => "[=<VALUE>]",
         }
     }
@@ -960,6 +1014,7 @@ impl<T> OptionHandlerFn<T> {
         match self {
             OptionHandlerFn::NoParam(_) => "",
             OptionHandlerFn::WithParam(_) => " <VALUE>",
+            OptionHandlerFn::WithThreeParams(_) => " <VALUE> <VALUE> <VALUE>",
             OptionHandlerFn::OptionalParam(_) => " [<VALUE>]",
         }
     }
@@ -977,6 +1032,7 @@ struct OptionDeclaration<'a, T, S> {
 
 struct NoParam;
 struct WithParam;
+struct WithThreeParams;
 struct WithOptionalParam;
 
 enum SubOptionHandler<T> {
@@ -1121,6 +1177,26 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
             };
 
             self.parser.prefix_options.insert(prefix, prefix_handler);
+        }
+    }
+}
+
+impl<'a, T> OptionDeclaration<'a, T, WithThreeParams> {
+    fn execute(self, handler: ThreeParamHandler<T>) {
+        let option_handler = OptionHandler {
+            help_text: self.help_text,
+            handler: OptionHandlerFn::WithThreeParams(handler),
+            short_names: self.short_names.clone(),
+        };
+
+        for name in self.long_names {
+            self.parser.options.insert(name, option_handler.clone());
+        }
+
+        for option in self.short_names {
+            self.parser
+                .short_options
+                .insert(option, option_handler.clone());
         }
     }
 }
