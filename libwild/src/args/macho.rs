@@ -18,6 +18,7 @@ pub struct MachOArgs {
 
     pub(crate) platform_version: Option<PlatformVersion>,
     pub(crate) sysroot: Option<Box<Path>>,
+    pub(crate) plugin_path: Option<String>,
 
     pub(crate) output: Arc<Path>,
     pub(crate) relocation_model: RelocationModel,
@@ -53,6 +54,7 @@ impl Default for MachOArgs {
             common: CommonArgs::default(),
             platform_version: None,
             sysroot: None,
+            plugin_path: None,
 
             // TODO: move to CommonArgs
             relocation_model: RelocationModel::NonRelocatable,
@@ -191,6 +193,14 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         });
     parser
         .declare_with_param()
+        .long("lto_library")
+        .help("Load plugin")
+        .execute(|args, _modifier_stack, value| {
+            args.plugin_path = Some(value.to_owned());
+            Ok(())
+        });
+    parser
+        .declare_with_param()
         .long("output")
         .short("o")
         .help("Set the output filename")
@@ -249,6 +259,8 @@ mod tests {
     const INPUT1: &[&str] = &[
         "-arch",
         "arm64",
+        "-lto_library",
+        "/foo/bar/libLTO.dylib",
         "-no_deduplicate",
         "-platform_version",
         "macos",
@@ -277,6 +289,7 @@ mod tests {
             InputSpec::File(f) => f.as_ref() == Path::new("main.o"),
             InputSpec::Lib(_) | InputSpec::Search(_) => false,
         }));
+        assert_eq!(args.plugin_path, Some("/foo/bar/libLTO.dylib".to_owned()));
     }
 
     #[test]
