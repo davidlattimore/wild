@@ -793,6 +793,17 @@ impl Input {
                         original: PathBuf::from(filename),
                     });
                 }
+                let filename = format!("lib{lib_name}.tbd");
+                if let Some(path) = search_for_file(
+                    args.lib_search_path(),
+                    self.search_first.as_ref(),
+                    &filename,
+                ) {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(&path)?,
+                        original: PathBuf::from(filename),
+                    });
+                }
                 bail!("Couldn't find library `{lib_name}` on library search path");
             }
             InputSpec::Search(filename) => {

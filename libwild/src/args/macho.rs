@@ -20,6 +20,7 @@ pub struct MachOArgs {
 
     pub(crate) platform_version: Option<PlatformVersion>,
     pub(crate) sysroot: Option<Box<Path>>,
+    pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) plugin_path: Option<String>,
 
     pub(crate) output: Arc<Path>,
@@ -57,6 +58,7 @@ impl Default for MachOArgs {
             common: CommonArgs::default(),
             platform_version: None,
             sysroot: None,
+            lib_search_path: Vec::new(),
             plugin_path: None,
 
             // TODO: move to CommonArgs
@@ -89,7 +91,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn lib_search_path(&self) -> &[Box<std::path::Path>] {
-        todo!()
+        &self.lib_search_path
     }
 
     fn output(&self) -> &std::sync::Arc<std::path::Path> {
@@ -102,6 +104,10 @@ impl platform::Args for MachOArgs {
 
     fn common_mut(&mut self) -> &mut crate::args::CommonArgs {
         &mut self.common
+    }
+
+    fn sysroot(&self) -> Option<&Path> {
+        self.sysroot.as_deref()
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {
@@ -191,6 +197,8 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
         .execute(|args, _modifier_stack, value| {
             args.common_mut().save_dir.handle_file(value);
             let sysroot = std::fs::canonicalize(value).unwrap_or_else(|_| PathBuf::from(value));
+            // TODO: handle properly
+            args.lib_search_path = vec![sysroot.join("usr/lib").into_boxed_path()];
             args.sysroot = Some(Box::from(sysroot.as_path()));
             Ok(())
         });
