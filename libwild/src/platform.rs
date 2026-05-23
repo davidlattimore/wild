@@ -1291,6 +1291,8 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
 
     fn should_output_executable(&self) -> bool;
 
+    fn is_ignored_flag(&self, _flag: &str) -> bool;
+
     fn warning(&self, message: impl Into<String>) {
         (self.common().warning_callback)(Warning::new(message.into()));
     }

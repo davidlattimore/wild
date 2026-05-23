@@ -30,6 +30,8 @@ pub(crate) struct PlatformVersion {
     pub(crate) sdk_version: String,
 }
 
+const IGNORED_FLAGS: &[&str] = &[];
+
 impl MachOArgs {
     pub(crate) fn new() -> Result<Self> {
         Ok(Self {
@@ -115,6 +117,10 @@ impl platform::Args for MachOArgs {
     fn should_output_executable(&self) -> bool {
         // TODO
         true
+    }
+
+    fn is_ignored_flag(&self, flag: &str) -> bool {
+        IGNORED_FLAGS.contains(&flag)
     }
 }
 

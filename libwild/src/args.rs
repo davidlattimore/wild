@@ -18,7 +18,6 @@ use crate::error::Context;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
-use elf::IGNORED_FLAGS;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use itertools::Itertools;
@@ -680,8 +679,6 @@ impl<T: platform::Args> ArgumentParser<T> {
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
-        let common = args.common_mut();
-
         // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
@@ -836,16 +833,17 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         if arg.starts_with('-') {
             if let Some(stripped) = strip_option(arg)
-                && IGNORED_FLAGS.contains(&stripped)
+                && args.is_ignored_flag(stripped)
             {
                 args.warn_unsupported(arg)?;
                 return Ok(());
             }
 
-            common.unrecognized_options.push(arg.to_owned());
+            args.common_mut().unrecognized_options.push(arg.to_owned());
             return Ok(());
         }
 
+        let common = args.common_mut();
         common.save_dir.handle_file(arg);
         common.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),

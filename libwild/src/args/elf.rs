@@ -232,7 +232,7 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "C",
 ];
 
-pub(super) const IGNORED_FLAGS: &[&str] = &[
+const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
@@ -2022,6 +2022,10 @@ impl platform::Args for ElfArgs {
 
     fn unresolved_symbols_behaviour(&self) -> crate::args::UnresolvedSymbols {
         self.unresolved_symbols
+    }
+
+    fn is_ignored_flag(&self, flag: &str) -> bool {
+        IGNORED_FLAGS.contains(&flag)
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {

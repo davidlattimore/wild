@@ -117,6 +117,10 @@ impl platform::Args for WasmArgs {
         // TODO
         true
     }
+
+    fn is_ignored_flag(&self, _flag: &str) -> bool {
+        false
+    }
 }
 
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
