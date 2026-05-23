@@ -19,6 +19,7 @@ pub(crate) enum FileKind {
     ElfDynamic,
     MachOObject,
     FatMachOObject,
+    MachOStubLibrary,
     WasmObject,
     Archive,
     ThinArchive,
@@ -82,6 +83,8 @@ impl FileKind {
             || bytes.starts_with(macho::FAT_CIGAM.as_bytes())
         {
             Ok(FileKind::FatMachOObject)
+        } else if bytes.starts_with(b"--- !tapi-tbd") || bytes.starts_with(b"tbd-version:") {
+            Ok(FileKind::MachOStubLibrary)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
@@ -131,6 +134,7 @@ impl std::fmt::Display for FileKind {
             FileKind::MachOObject => "MachO object",
             FileKind::WasmObject => "Wasm object",
             FileKind::FatMachOObject => "Fat MachO",
+            FileKind::MachOStubLibrary => "MachO TBD library",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

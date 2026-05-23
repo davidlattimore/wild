@@ -111,7 +111,7 @@ impl platform::Args for MachOArgs {
     }
 
     fn should_export_all_dynamic_symbols(&self) -> bool {
-        todo!()
+        false
     }
 
     fn should_export_dynamic(&self, _lib_name: &[u8]) -> bool {
