@@ -57,10 +57,44 @@ min_wild_version = "0.6.0"
 skip_linkers = ["bfd"]
 
 [bench.zed]
+skip = true
 skip_linkers = ["bfd"]
 
 [bench.zed-release]
 skip_linkers = ["bfd"]
 
+[bench.zed-debug]
+skip_linkers = ["bfd"]
+
 [bench.clang-debug-strip]
 skip_linkers = ["bfd"]
+
+[bench.chrome-arm64]
+min_wild_version = "0.9.0"
+skip_linkers = ["bfd"]
+
+[bench.wild-aarch64]
+skip_linkers = ["bfd"]
+min_wild_version = "0.9.0"
+
+[bench.wild-debug]
+
+[bench.wild-loongarch64]
+skip_linkers = ["bfd"]
+min_wild_version = "0.9.0"
+
+
+[bench.trivial-with-bevy-version-script]
+skip = true
+
+[bench.chrome-android]
+skip = true
+
+[bench.chrome-android-old]
+skip = true
+
+[bench.chrome-android-old2]
+skip = true
+
+[bench.chrome-android-old3]
+skip = true

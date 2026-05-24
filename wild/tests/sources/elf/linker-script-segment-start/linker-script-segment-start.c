@@ -34,6 +34,8 @@ extern char text_start;
 extern char rodata_start;
 extern char data_start;
 extern char bss_start;
+extern char local_text_start;
+extern char expr;
 
 void _start(void) {
   runtime_init();
@@ -50,6 +52,8 @@ void _start(void) {
   unsigned long expect_rodata = 0x11; /* no -Trodata, always default */
   unsigned long expect_data = (variant == 0) ? 0x12 : 0x800000;
   unsigned long expect_bss = (variant == 0) ? 0x13 : 0x900000;
+  unsigned long expect_local_text = expect_text;
+  unsigned long expect_expr = (expect_text << 2) + expect_rodata;
 
   if (ptr_to_int(&text_start) != expect_text) {
     exit_syscall(10);
@@ -65,6 +69,14 @@ void _start(void) {
 
   if (ptr_to_int(&bss_start) != expect_bss) {
     exit_syscall(13);
+  }
+
+  if (ptr_to_int(&local_text_start) != expect_local_text) {
+    exit_syscall(14);
+  }
+
+  if (ptr_to_int(&expr) != expect_expr) {
+    exit_syscall(15);
   }
 
   exit_syscall(42);

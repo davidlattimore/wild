@@ -15,6 +15,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::SymbolLoc;
+use crate::platform::Args;
 use crate::platform::Platform;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
@@ -24,31 +25,6 @@ fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
     let parsed_len = file_bytes.len().saturating_sub(remainder.len());
     let consumed = &file_bytes[..parsed_len];
     consumed.iter().filter(|&&b| b == b'\n').count() as u32 + 1
-}
-
-/// Evaluate a linker script expression that must be a compile-time constant.
-/// Returns `Err` for any expression that requires runtime context (symbols, location counter,
-/// etc.).
-pub(crate) fn eval_constant_expr(expr: &Expression<'_>) -> crate::error::Result<u64> {
-    match expr {
-        Expression::Number(n) => Ok(*n),
-        Expression::Add(l, r) => Ok(eval_constant_expr(l)?.wrapping_add(eval_constant_expr(r)?)),
-        Expression::Subtract(l, r) => {
-            Ok(eval_constant_expr(l)?.wrapping_sub(eval_constant_expr(r)?))
-        }
-        Expression::Multiply(l, r) => {
-            Ok(eval_constant_expr(l)?.wrapping_mul(eval_constant_expr(r)?))
-        }
-        Expression::Divide(l, r) => {
-            let d = eval_constant_expr(r)?;
-            if d == 0 {
-                return Err(crate::error!("division by zero in constant expression"));
-            }
-            Ok(eval_constant_expr(l)? / d)
-        }
-        Expression::Negate(e) => Ok(eval_constant_expr(e)?.wrapping_neg()),
-        _ => Err(crate::error!("expression is not a compile-time constant")),
-    }
 }
 
 /// Evaluate all ASSERT commands from all processed linker scripts.
@@ -73,6 +49,7 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
                     section_layouts,
                     output_sections,
                     &parsed.memory_regions,
+                    symbol_db,
                     &|name| {
                         let Some(target_symbol_id) =
                             symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -107,6 +84,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
     memory_regions: &[MemoryRegion<'data>],
+    symbol_db: &SymbolDb<'data, P>,
     symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {
     macro_rules! eval {
@@ -117,6 +95,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 section_layouts,
                 output_sections,
                 memory_regions,
+                symbol_db,
                 symbol_resolution_callback,
             )
         };
@@ -131,8 +110,7 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 let layout = section_layouts.get(id);
                 Ok(layout.mem_offset + layout.mem_size)
             }
-            SymbolLoc::FirstSection => Ok(0),
-            SymbolLoc::None => Ok(0),
+            SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
         },
 
         Expression::Symbol(name) => symbol_resolution_callback(name),
@@ -215,9 +193,13 @@ pub(crate) fn evaluate_expression<'data, P: Platform>(
                 })?;
             eval!(&region.length)
         }
-        // SEGMENT_START: segment layout and -T overrides are not available in this evaluator
-        // context, so fall back to evaluating the default expression.
-        Expression::SegmentStart(_name, default_expr) => eval!(default_expr),
+        Expression::SegmentStart(name, default_expr) => {
+            if let Some(val) = symbol_db.args.segment_start_override(*name) {
+                Ok(val)
+            } else {
+                eval!(default_expr)
+            }
+        }
     }
 }
 
@@ -295,8 +277,16 @@ mod tests {
     }
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
-        with_dummy_context(|layouts, sections, _| {
-            evaluate_expression::<Elf>(expr, SymbolLoc::None, layouts, sections, &[], &|_| Ok(1))
+        with_dummy_context(|layouts, sections, symbol_db| {
+            evaluate_expression::<Elf>(
+                expr,
+                SymbolLoc::None,
+                layouts,
+                sections,
+                &[],
+                symbol_db,
+                &|_| Ok(1),
+            )
         })
     }
 
@@ -650,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_memory_functions_evaluation() {
-        with_dummy_context(|layouts, sections, _| {
+        with_dummy_context(|layouts, sections, symbol_db| {
             let regions = [
                 MemoryRegion {
                     name: b"rom",
@@ -663,13 +653,14 @@ mod tests {
                     length: Expression::Number(0x40000),
                 },
             ];
-            let eval = |expr: &Expression| {
+            let eval = |expr: &Expression<'static>| {
                 evaluate_expression::<Elf>(
                     expr,
                     SymbolLoc::None,
                     layouts,
                     sections,
                     &regions,
+                    symbol_db,
                     &|_| Ok(0),
                 )
             };

@@ -3,6 +3,8 @@ reason = "These tests use unsupported options"
 tests = [
   "audit.sh",
   "color-diagnostics.sh",
+  "compress-debug-sections-zlib-level.sh", # --compress-debug-sections=zlib:$level
+  "compress-debug-sections-zstd-level.sh", # --compress-debug-sections=zstd:$level
   "default-symver-version-script.sh",
   "default-symver.sh",
   "depaudit.sh",
@@ -12,33 +14,35 @@ tests = [
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
   "execute-only.sh",
-  "fatal-warnings.sh",                # `-warn-common` and `-fatal-warnings`
+  "fatal-warnings.sh",                     # `-warn-common` and `-fatal-warnings`
   "filter.sh",
-  "global-offset-table.sh",           # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
-  "icf-gcc-except-table.sh",          # `--icf`
-  "icf.sh",                           # `--icf`
+  "global-offset-table.sh",                # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
+  "icf-gcc-except-table.sh",               # `--icf`
+  "icf.sh",                                # `--icf`
   "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
   "library.sh",
   "oformat-binary.sh",
   "omagic.sh",
+  "no-warnings.sh",
+  "pack-dyn-relocs-android.sh",            # `--pack-dyn-relocs=android`
   "package-metadata.sh",
   "relocatable-merge-sections.sh",
-  "repro.sh",                         # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
+  "repro.sh",                              # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "require-defined.sh",
   "response-file-quoting.sh",
   "retain-symbols-file.sh",
   "rosegment.sh",
   "run.sh",
-  "section-align.sh",                 # `--section-alignment`
-  "sort-debug-info-compressed.sh",    # `-Map`
-  "sort-debug-info-merged.sh",        # `-Map`
-  "sort-debug-info.sh",               # `-Map`
+  "section-align.sh",                      # `--section-alignment`
+  "sort-debug-info-compressed.sh",         # `-Map`
+  "sort-debug-info-merged.sh",             # `-Map`
+  "sort-debug-info.sh",                    # `-Map`
   "spare-program-headers.sh",
-  "static-archive.sh",                # error: Undefined symbol main, passes with GNU ld
-  "synthetic-symbols.sh",             # `--image-base`
-  "thin-archive.sh",                  # error: Undefined symbol main, passes with GNU ld
+  "static-archive.sh",                     # error: Undefined symbol main, passes with GNU ld
+  "synthetic-symbols.sh",                  # `--image-base`
+  "thin-archive.sh",                       # error: Undefined symbol main, passes with GNU ld
   "trace-symbol-symver.sh",
   "trace-symbol.sh",
   "undefined-glob-gc-sections.sh",
@@ -58,6 +62,7 @@ tests = [
   "gdb-index-dwarf5.sh",
   "gdb-index-dwarf64.sh",
   "gdb-index-split-dwarf.sh",
+  "gdb-index-rnglistx.sh",
 ]
 
 [skipped_groups.version_script]
@@ -183,13 +188,17 @@ tests = [
 [skipped_groups.lto]
 reason = "Failing LTO tests."
 tests = [
-  "lto-no-plugin.sh",       # We don't currently support LTO without an explicit plugin
-  "lto-gcc.sh",             # We don't currently support LTO without an explicit plugin
-  "lto-llvm2.sh",           # -m llvm is not yet supported
-  "duplicate-error-lto.sh", # Wild deduplicates inputs
-  "lto-comdat.sh",          # We don't support COMDAT
-  "wrap-lto.sh",            # We don't yet support --wrap with LTO
+  "lto-no-plugin.sh",              # We don't currently support LTO without an explicit plugin
+  "lto-gcc.sh",                    # We don't currently support LTO without an explicit plugin
+  "lto-llvm2.sh",                  # -m llvm is not yet supported
+  "duplicate-error-lto.sh",        # Wild deduplicates inputs
+  "lto-comdat.sh",                 # We don't support COMDAT
+  "wrap-lto.sh",                   # We don't yet support --wrap with LTO
   "defsym-lto.sh",
+  "lto-archive4.sh",
+  "lto-mixed-gcc-fat.sh",
+  "lto-mixed-gcc-slim-archive.sh",
+  "lto-unclaimed.sh",
 ]
 
 [skipped_groups.uncommon]
@@ -227,6 +236,7 @@ tests = [
   "mergeable-strings.sh",
   "missing-error.sh",
   "no-allow-shlib-undefined-circular.sh",
+  "no-allow-shlib-undefined-hidden.sh",
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",

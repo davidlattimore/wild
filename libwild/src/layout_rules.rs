@@ -130,6 +130,25 @@ impl SectionOutputInfo {
     }
 }
 
+fn loc_for_global_expr(
+    expr: &crate::linker_script::Expression<'_>,
+    section_id: Option<OutputSectionId>,
+) -> SymbolLoc {
+    let mut loc = SymbolLoc::None;
+    expr.visit_expressions(&mut |e| match e {
+        crate::linker_script::Expression::SegmentStart(..) => {
+            if let Some(section_id) = section_id {
+                loc = SymbolLoc::SectionEnd(section_id);
+            } else {
+                loc = SymbolLoc::FirstSection;
+            }
+            false
+        }
+        _ => true,
+    });
+    loc
+}
+
 impl<'data> LayoutRulesBuilder<'data> {
     /// Records information about any sections and symbols declared by the linker script.
     pub(crate) fn process_linker_script<P: Platform>(
@@ -141,28 +160,25 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();
 
+        let mut current_section_id = None;
+
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
                 let placement = SymbolPlacement::Redirect(Redirect {
                     kind: RedirectKind::Script,
                     expression: provide.value.clone(),
-                    loc: SymbolLoc::None,
+                    loc: loc_for_global_expr(&provide.value, current_section_id),
                 });
                 symbol_defs.push(
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let placement = if let Expression::SegmentStart(name, expr) = value {
-                    let default = crate::expression_eval::eval_constant_expr(expr).unwrap_or(0);
-                    SymbolPlacement::SegmentStart(*name, default)
-                } else {
-                    SymbolPlacement::Redirect(Redirect {
-                        kind: RedirectKind::Script,
-                        expression: value.to_owned(),
-                        loc: SymbolLoc::None,
-                    })
-                };
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: value.to_owned(),
+                    loc: loc_for_global_expr(value, current_section_id),
+                });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
@@ -175,8 +191,6 @@ impl<'data> LayoutRulesBuilder<'data> {
                 // though, it doesn't seem worthwhile having two separate alignment properties on a
                 // section, one of which doesn't affect the header value.
                 let mut extra_min_alignment = alignment::MIN;
-
-                let mut current_section_id = None;
 
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
@@ -237,31 +251,16 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_section_id = Some(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        use crate::linker_script::Expression;
-                                        let placement = match &assignment.expr {
-                                            Expression::LocationCounter => {
-                                                if let Some(id) = last_section_id {
-                                                    SymbolPlacement::SectionEnd(id)
-                                                } else {
-                                                    SymbolPlacement::SectionStart(
-                                                        primary_section_id,
-                                                    )
-                                                }
-                                            }
-                                            Expression::SegmentStart(name, default_expr) => {
-                                                let default =
-                                                    crate::expression_eval::eval_constant_expr(
-                                                        default_expr,
-                                                    )
-                                                    .unwrap_or(0);
-                                                SymbolPlacement::SegmentStart(*name, default)
-                                            }
-                                            _other => {
-                                                // Unsupported RHS expression: skip this symbol
-                                                // definition
-                                                continue;
-                                            }
+                                        let loc = if let Some(id) = last_section_id {
+                                            SymbolLoc::SectionEnd(id)
+                                        } else {
+                                            SymbolLoc::SectionStart(primary_section_id)
                                         };
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: assignment.expr.clone(),
+                                            loc,
+                                        });
                                         symbol_defs.push(InternalSymDefInfo::new(
                                             placement,
                                             assignment.name,
@@ -269,7 +268,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
-                                        let placement = if let Some(id) = last_section_id {
+                                        let loc = if let Some(id) = last_section_id {
                                             SymbolLoc::SectionEnd(id)
                                         } else {
                                             SymbolLoc::SectionStart(primary_section_id)
@@ -277,7 +276,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         let placement = SymbolPlacement::Redirect(Redirect {
                                             kind: RedirectKind::Script,
                                             expression: provide.value.clone(),
-                                            loc: placement,
+                                            loc,
                                         });
                                         symbol_defs.push(
                                             InternalSymDefInfo::new(placement, provide.name)

@@ -94,11 +94,6 @@ pub(crate) enum SymbolPlacement<'data> {
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
-
-    /// Symbol defined via `SEGMENT_START("name", default)` in a linker script.
-    /// Resolves to the value of the corresponding `-Ttext`/`-Tdata`/`-Tbss` command-line
-    /// override if provided, otherwise to `default`.
-    SegmentStart(SegmentName, u64),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

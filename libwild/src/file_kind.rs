@@ -131,10 +131,10 @@ impl std::fmt::Display for FileKind {
         let s = match self {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
-            FileKind::MachOObject => "MachO object",
+            FileKind::MachOObject => "Mach-O object",
             FileKind::WasmObject => "Wasm object",
-            FileKind::FatMachOObject => "Fat MachO",
-            FileKind::MachOStubLibrary => "MachO TBD library",
+            FileKind::FatMachOObject => "Fat Mach-O object",
+            FileKind::MachOStubLibrary => "Mach-O TBD library",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

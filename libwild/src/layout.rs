@@ -414,7 +414,7 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
 fn update_redirect_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
-    output_sections: &OutputSections<P>,
+    output_sections: &OutputSections<'data, P>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
@@ -432,6 +432,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                         resolutions,
                         output_sections,
                         section_layouts,
+                        &[],
                     )?;
                     symbol_id = symbol_id.next();
                 }
@@ -446,6 +447,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                             resolutions,
                             output_sections,
                             section_layouts,
+                            &script.parsed.memory_regions,
                         )?;
                         symbol_id = symbol_id.next();
                     }
@@ -462,11 +464,12 @@ fn update_redirect_resolutions<'data, P: Platform>(
 
 fn update_defsym_symbol_resolution<'data, P: Platform>(
     symbol_id: SymbolId,
-    def_info: &InternalSymDefInfo<P>,
+    def_info: &InternalSymDefInfo<'data, P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
-    output_sections: &OutputSections<P>,
+    output_sections: &OutputSections<'data, P>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    memory_regions: &[crate::linker_script::MemoryRegion<'data>],
 ) -> Result {
     if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
         let value = crate::expression_eval::evaluate_expression(
@@ -474,7 +477,8 @@ fn update_defsym_symbol_resolution<'data, P: Platform>(
             redirect.loc,
             section_layouts,
             output_sections,
-            &[],
+            memory_regions,
+            symbol_db,
             &|name| {
                 let Some(target_symbol_id) =
                     symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
@@ -3434,12 +3438,6 @@ fn create_internal_symbol_resolution<'data, P: Platform>(
             .iter()
             .find(|seg| resources.program_segments.segment_def(seg.id).is_loadable())
             .map(|seg| seg.sizes.mem_offset)?,
-
-        SymbolPlacement::SegmentStart(name, default) => resources
-            .symbol_db
-            .args
-            .segment_start_override(name)
-            .unwrap_or(default),
     };
 
     Some(P::create_resolution(

@@ -18,7 +18,7 @@ path = "tests/integration_tests.rs"
 harness = false
 
 [dependencies]
-libwild = { path = "../libwild", version = "0.8.0" }
+libwild = { path = "../libwild", version = "0.9.0" }
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,

@@ -38,6 +38,9 @@ we benchmark CREL relocations from 0.8.0. Chrome uses CREL relocations by defaul
 
 ![Benchmark of linking chrome-crel](images/ryzen-9955hx/chrome-crel-time.svg)
 
+### chrome-arm64 - time
+![Time to link chrome-arm64](images/ryzen-9955hx/chrome-arm64-time.svg)
+
 ### mold-crel - time
 
 For a smaller CREL benchmark, we link Mold, with the compiler configured to emit CREL relocations
@@ -69,11 +72,11 @@ info that's in the input files.
 ### rust-analyzer-riscv - time
 ![Benchmark of linking rust-analyzer-riscv](images/ryzen-9955hx/rust-analyzer-riscv-time.svg)
 
-### zed - time
-![Benchmark of linking zed](images/ryzen-9955hx/zed-time.svg)
-
 ### zed-release - time
 ![Benchmark of linking zed-release](images/ryzen-9955hx/zed-release-time.svg)
+
+### zed-debug - time
+![Time to link zed-debug](images/ryzen-9955hx/zed-debug-time.svg)
 
 ### bevy-dylib - time
 ![Benchmark of linking bevy-dylib](images/ryzen-9955hx/bevy-dylib-time.svg)
@@ -105,6 +108,21 @@ being produced is for risc-v.
 
 ![Benchmark of linking wild-riscv](images/ryzen-9955hx/wild-riscv-time.svg)
 
+### wild-aarch64 - time
+![Time to link wild-aarch64](images/ryzen-9955hx/wild-aarch64-time.svg)
+
+### wild-loongarch64 - time
+![Time to link wild-loongarch64](images/ryzen-9955hx/wild-loongarch64-time.svg)
+
+### wild-debug - time
+![Time to link wild-debug](images/ryzen-9955hx/wild-debug-time.svg)
+
+Wild linking itself with linker-plugin LTO. This is much much slower, since the linker plugin ends
+up doing heaps of work during linking.
+
+### wild-lto - time
+![Time to link wild-lto](images/ryzen-9955hx/wild-lto-time.svg)
+
 ### rust-hello-world - time
 
 Now a couple of trivial, hello-world programs. One written in Rust and one written in C.
@@ -125,6 +143,9 @@ above repeated, but this time measuring the peak memory consumption of the linke
 ### chrome-crel - memory
 ![Memory consumption while linking chrome-crel](images/ryzen-9955hx/chrome-crel-memory.svg)
 
+### chrome-arm64 - memory
+![Memory consumption while linking chrome-arm64](images/ryzen-9955hx/chrome-arm64-memory.svg)
+
 ### mold-crel - memory
 ![Memory consumption while linking mold-crel](images/ryzen-9955hx/mold-crel-memory.svg)
 
@@ -143,11 +164,11 @@ above repeated, but this time measuring the peak memory consumption of the linke
 ### rust-analyzer-riscv - memory
 ![Memory consumption while linking rust-analyzer-riscv](images/ryzen-9955hx/rust-analyzer-riscv-memory.svg)
 
-### zed - memory
-![Memory consumption while linking zed](images/ryzen-9955hx/zed-memory.svg)
-
 ### zed-release - memory
 ![Memory consumption while linking zed-release](images/ryzen-9955hx/zed-release-memory.svg)
+
+### zed-debug - memory
+![Memory consumption while linking zed-debug](images/ryzen-9955hx/zed-debug-memory.svg)
 
 ### bevy-dylib - memory
 ![Memory consumption while linking bevy-dylib](images/ryzen-9955hx/bevy-dylib-memory.svg)
@@ -164,9 +185,20 @@ above repeated, but this time measuring the peak memory consumption of the linke
 ### wild-riscv - memory
 ![Memory consumption while linking wild-riscv](images/ryzen-9955hx/wild-riscv-memory.svg)
 
+### wild-aarch64 - memory
+![Memory consumption while linking wild-aarch64](images/ryzen-9955hx/wild-aarch64-memory.svg)
+
+### wild-loongarch64 - memory
+![Memory consumption while linking wild-loongarch64](images/ryzen-9955hx/wild-loongarch64-memory.svg)
+
+### wild-debug - memory
+![Memory consumption while linking wild-debug](images/ryzen-9955hx/wild-debug-memory.svg)
+
+### wild-lto - memory
+![Memory consumption while linking wild-lto](images/ryzen-9955hx/wild-lto-memory.svg)
+
 ### rust-hello-world - memory
 ![Memory consumption while linking rust-hello-world](images/ryzen-9955hx/rust-hello-world-memory.svg)
 
 ### c-hello-world - memory
 ![Memory consumption while linking c-hello-world](images/ryzen-9955hx/c-hello-world-memory.svg)
-

@@ -2014,22 +2014,17 @@ impl<'data, P: Platform> Prelude<'data, P> {
                 SymbolPlacement::SectionStart(_)
                 | SymbolPlacement::SectionEnd(_)
                 | SymbolPlacement::SectionGroupEnd(_)
-                | SymbolPlacement::LoadBaseAddress
-                | SymbolPlacement::SegmentStart(_, _) => {
+                | SymbolPlacement::LoadBaseAddress => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
                 SymbolPlacement::Redirect(redirect) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    let mut flags = ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE;
-                    redirect.expression.visit_expressions(&mut |e| {
-                        if matches!(e, crate::linker_script::Expression::Symbol(_)) {
-                            flags.remove(ValueFlags::ABSOLUTE);
-                            return false;
-                        }
-                        true
-                    });
-                    flags
+                    if matches!(redirect.loc, SymbolLoc::None) {
+                        ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
+                    } else {
+                        ValueFlags::NON_INTERPOSABLE
+                    }
                 }
             };
             if definition.symbol.is_hidden() {
@@ -2063,7 +2058,6 @@ impl<P: Platform> InternalSymDefInfo<'_, P> {
             // outside of the selected section. It's tricky for us to find the closest section
             // at this point in the code, so we pick an arbitrary section.
             SymbolPlacement::LoadBaseAddress => Some(output_section_id::TEXT),
-            SymbolPlacement::SegmentStart(_, _) => Some(output_section_id::TEXT),
         }
     }
 }
