@@ -355,6 +355,10 @@ const fn default_target_arch() -> Architecture {
     {
         return Architecture::LoongArch64;
     }
+    #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
+    {
+        return Architecture::Ppc64;
+    }
 
     #[allow(unreachable_code)]
     Architecture::Unsupported
@@ -547,6 +551,10 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
+        .sub_option("elf64lppc", "PowerPC64 LE ELF target", |args, _| {
+            args.arch = Architecture::Ppc64;
+            Ok(())
+        })
         .execute(|_args, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
@@ -2050,6 +2058,7 @@ impl platform::Args for ElfArgs {
             Architecture::AArch64 => Alignment { exponent: 16 },
             Architecture::RISCV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
+            Architecture::Ppc64 => Alignment { exponent: 16 },
             Architecture::Unsupported => unreachable!(),
         }
     }

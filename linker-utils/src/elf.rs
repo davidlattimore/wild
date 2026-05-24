@@ -579,6 +579,48 @@ pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+#[must_use]
+pub fn ppc64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+    if let Some(name) = const_name_by_value![
+        r_type,
+        R_PPC64_ADDR64,
+        R_PPC64_ADDR16_HA,
+        R_PPC64_ADDR16_LO,
+        R_PPC64_ADDR16_LO_DS,
+        R_PPC64_REL16_HA,
+        R_PPC64_REL16_LO,
+        R_PPC64_REL24,
+        R_PPC64_REL14,
+        R_PPC64_TOC16_HA,
+        R_PPC64_TOC16_LO,
+        R_PPC64_TOC16_LO_DS,
+        R_PPC64_TOC,
+        R_PPC64_GOT16_HA,
+        R_PPC64_JMP_SLOT,
+        R_PPC64_GLOB_DAT,
+        R_PPC64_RELATIVE,
+        R_PPC64_COPY,
+        R_PPC64_IRELATIVE,
+        R_PPC64_DTPMOD64,
+        R_PPC64_DTPREL64,
+        R_PPC64_TPREL64,
+        R_PPC64_TPREL16_HA,
+        R_PPC64_TPREL16_LO,
+        R_PPC64_DTPREL16_HA,
+        R_PPC64_GOT_TLSGD16_HA,
+        R_PPC64_GOT_TLSLD16_HA,
+        R_PPC64_GOT_TPREL16_HA,
+        R_PPC64_GOT_TPREL16_LO_DS,
+        R_PPC64_TLS,
+        R_PPC64_TLSGD,
+        R_PPC64_TLSLD,
+    ] {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("Unknown ppc64 relocation type 0x{r_type:x}"))
+    }
+}
+
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
@@ -1252,6 +1294,23 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::GotEntry => object::elf::R_LARCH_64,
             DynamicRelocationKind::TlsDesc => object::elf::R_LARCH_TLS_DESC64,
             DynamicRelocationKind::JumpSlot => object::elf::R_LARCH_JUMP_SLOT,
+        }
+    }
+
+    #[must_use]
+    pub fn ppc64_r_type(&self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_PPC64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_PPC64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_PPC64_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_PPC64_DTPREL64,
+            DynamicRelocationKind::TpOff => object::elf::R_PPC64_TPREL64,
+            DynamicRelocationKind::Relative => object::elf::R_PPC64_RELATIVE,
+            DynamicRelocationKind::Absolute => object::elf::R_PPC64_ADDR64,
+            DynamicRelocationKind::GotEntry => object::elf::R_PPC64_GLOB_DAT,
+            // ppc64 uses the __tls_get_addr (GD/LD) model, not TLS descriptors.
+            DynamicRelocationKind::TlsDesc => unreachable!("ppc64 does not use TLS descriptors"),
+            DynamicRelocationKind::JumpSlot => object::elf::R_PPC64_JMP_SLOT,
         }
     }
 }

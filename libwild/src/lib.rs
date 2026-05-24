@@ -11,6 +11,7 @@ pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
 pub(crate) mod elf_aarch64;
 pub(crate) mod elf_loongarch64;
+pub(crate) mod elf_ppc64;
 pub(crate) mod elf_riscv64;
 pub(crate) mod elf_writer;
 pub(crate) mod elf_x86_64;

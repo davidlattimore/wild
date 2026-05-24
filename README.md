@@ -130,6 +130,7 @@ The following platforms / architectures are currently supported:
 * ARM64 on Linux
 * RISC-V (riscv64gc) on Linux
 * LoongArch64 on Linux (initial support)
+* PPC64LE on Linux (initial support)
 
 The following is working with the caveat that there may be bugs:
 
