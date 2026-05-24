@@ -77,6 +77,7 @@ struct Exports<'a> {
 
 // TODO: remove
 #[allow(unused)]
+#[derive(Debug)]
 pub struct DefinedStubLibrary<'a> {
     /// Install name of the dynamic library, including its `.dylib` suffix.    
     pub install_name: String,

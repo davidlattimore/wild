@@ -56,6 +56,7 @@ impl SymbolInfoPrinter {
                     ResolvedFile::Prelude(_) => Some(PRELUDE_FILE_ID),
                     ResolvedFile::Object(obj) => Some(obj.common.file_id),
                     ResolvedFile::Dynamic(obj) => Some(obj.common.file_id),
+                    ResolvedFile::StubLibrary(obj) => Some(obj.file_id),
                     ResolvedFile::LinkerScript(obj) => Some(obj.file_id),
                     ResolvedFile::SyntheticSymbols(obj) => Some(obj.file_id),
                     #[cfg(all(feature = "plugins", unix))]
@@ -163,6 +164,10 @@ impl SymbolInfoPrinter {
                             continue;
                         }
                     },
+                    SequencedInput::StubLibrary(s) => {
+                        sym_debug = "Mach-O stub library symbol".to_owned();
+                        input = s.to_string();
+                    }
                     SequencedInput::LinkerScript(s) => {
                         sym_debug = "Linker script symbol".to_owned();
                         input = s.parsed.input.to_string();

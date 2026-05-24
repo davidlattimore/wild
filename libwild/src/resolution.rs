@@ -60,6 +60,7 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -311,6 +312,36 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                     ResolvedFile::NotLoaded(NotLoaded {
                         symbol_id_range: s.symbol_id_range,
                         section_id_range: s.section_id_range,
+                    })
+                })
+                .collect();
+
+            ResolvedGroup { files }
+        }
+        Group::StubLibraries(stubs) => {
+            let files = stubs
+                .iter()
+                .map(|stub| {
+                    symbol_definitions_slice
+                        .split_off_mut(..stub.symbol_id_range.len())
+                        .unwrap();
+                    definitions_out_per_file.push(AtomicTake::empty());
+                    ResolvedFile::StubLibrary(ResolvedStubLibrary {
+                        file_id: stub.file_id,
+                        symbol_id_range: stub.symbol_id_range,
+                        weak_symbols: stub
+                            .defined
+                            .weak_symbols
+                            .iter()
+                            .map(|s| {
+                                stub.symbols
+                                    .iter()
+                                    .copied()
+                                    .find(|symbol| *symbol == s.as_bytes())
+                                    .expect("weak stub symbol should be in the symbol list")
+                            })
+                            .collect(),
+                        symbols: stub.symbols.clone(),
                     })
                 })
                 .collect();
@@ -590,6 +621,7 @@ fn work_items_do<'definitions, 'data, P: Platform>(
             // Push won't fail because we allocated enough space for all the objects.
             outputs.loaded.push(resolved_object).unwrap();
         }
+        Group::StubLibraries(_) => {}
         #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => {
             let obj = &lto_objects[file_id.file()];
@@ -648,6 +680,7 @@ pub(crate) enum ResolvedFile<'data, P: Platform> {
     Prelude(ResolvedPrelude<'data, P>),
     Object(ResolvedObject<'data, P>),
     Dynamic(ResolvedDynamic<'data, P>),
+    StubLibrary(ResolvedStubLibrary<'data>),
     LinkerScript(ResolvedLinkerScript<'data, P>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data, P>),
     #[cfg(all(feature = "plugins", unix))]
@@ -753,6 +786,14 @@ pub(crate) struct ResolvedDynamic<'data, P: Platform> {
     dynamic_tag_values: P::DynamicTagValues<'data>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedStubLibrary<'data> {
+    pub(crate) file_id: FileId,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    weak_symbols: HashSet<&'data [u8]>,
+    symbols: Vec<&'data [u8]>,
+}
+
 #[derive(Debug)]
 pub(crate) struct ResolvedLinkerScript<'data, P: Platform> {
     pub(crate) input: InputRef<'data>,
@@ -856,6 +897,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
                 .with_context(|| format!("Failed to resolve symbols in {obj}")),
             );
         }
+        Group::StubLibraries(_) => {}
         Group::LinkerScripts(scripts) => {
             for script in scripts {
                 for sym in &script.parsed.symbol_defs {
@@ -1569,6 +1611,23 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
     }
 }
 
+impl ResolvedStubLibrary<'_> {
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
+        if self.weak_symbols.contains(&self.symbols[local_index]) {
+            SymbolStrength::Weak
+        } else {
+            SymbolStrength::Strong
+        }
+    }
+}
+
+impl std::fmt::Display for ResolvedStubLibrary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt("<Mach-O stub library>", f)
+    }
+}
+
 impl<'data, P: Platform> std::fmt::Display for ResolvedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
@@ -1582,6 +1641,7 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
             ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::Dynamic(o) => std::fmt::Display::fmt(o, f),
+            ResolvedFile::StubLibrary(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
             #[cfg(all(feature = "plugins", unix))]
@@ -1610,6 +1670,7 @@ impl<'data, P: Platform> ResolvedFile<'data, P> {
             ResolvedFile::Prelude(s) => s.symbol_id_range(),
             ResolvedFile::Object(s) => s.common.symbol_id_range,
             ResolvedFile::Dynamic(s) => s.common.symbol_id_range,
+            ResolvedFile::StubLibrary(s) => s.symbol_id_range,
             ResolvedFile::LinkerScript(s) => s.symbol_id_range,
             ResolvedFile::SyntheticSymbols(s) => s.symbol_id_range(),
             #[cfg(all(feature = "plugins", unix))]

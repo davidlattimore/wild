@@ -453,7 +453,7 @@ fn update_redirect_resolutions<'data, P: Platform>(
                     }
                 }
             }
-            Group::Objects(_) | Group::SyntheticSymbols(_) => {}
+            Group::Objects(_) | Group::StubLibraries(_) | Group::SyntheticSymbols(_) => {}
             #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(_) => {}
         }
@@ -4364,6 +4364,13 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
+            resolution::ResolvedFile::StubLibrary(s) => FileLayoutState::NotLoaded(NotLoaded {
+                symbol_id_range: s.symbol_id_range,
+                section_id_range: crate::input_section_id::SectionIdRange::input(
+                    crate::input_section_id::InputSectionId::from_usize(0),
+                    0,
+                ),
+            }),
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s, args))
             }

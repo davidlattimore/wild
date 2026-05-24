@@ -413,7 +413,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                 )?));
         }
 
-        grouping::create_groups(self, parsed_objects, processed_linker_scripts);
+        grouping::create_groups(
+            self,
+            parsed_objects,
+            loaded.stub_libraries,
+            processed_linker_scripts,
+        );
 
         self.create_lto_input_groups(loaded.lto_objects)?;
 
@@ -625,6 +630,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
                 obj_symbol.visibility()
             }
+            Group::StubLibraries(_) => Visibility::Default,
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
             #[cfg(all(feature = "plugins", unix))]
@@ -661,6 +667,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::Objects(parsed_input_objects) => {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
+            Group::StubLibraries(stubs) => Ok(stubs[file_id.file()].symbol_name(symbol_id)),
             Group::LinkerScripts(scripts) => Ok(scripts[file_id.file()].symbol_name(symbol_id)),
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
@@ -793,6 +800,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::Objects(parsed_input_objects) => {
                 SequencedInput::Object(&parsed_input_objects[file_id.file()])
             }
+            Group::StubLibraries(stubs) => SequencedInput::StubLibrary(&stubs[file_id.file()]),
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
             #[cfg(all(feature = "plugins", unix))]
@@ -864,6 +872,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         match &resolved[file_id.group()].files[file_id.file()] {
             ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
             ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
+            ResolvedFile::StubLibrary(stub) => stub.symbol_strength(symbol_id),
             #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(obj) => {
                 use crate::linker_plugins::SymbolKind;
@@ -1496,6 +1505,11 @@ fn read_symbols_for_group<'data, P: Platform>(
                 .with_context(|| format!("Failed to load symbols from `{}`", obj.parsed.input))?;
             }
         }
+        Group::StubLibraries(stubs) => {
+            for stub in stubs {
+                load_stub_library_symbols(stub, shard, &mut outputs);
+            }
+        }
         Group::LinkerScripts(scripts) => {
             for script in scripts {
                 load_linker_script_symbols(script, shard, &mut outputs);
@@ -1513,6 +1527,18 @@ fn read_symbols_for_group<'data, P: Platform>(
     }
 
     Ok(outputs)
+}
+
+fn load_stub_library_symbols<'data, P: Platform>(
+    stub: &crate::grouping::SequencedStubLibrary<'data>,
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
+    outputs: &mut SymbolLoadOutputs<'data>,
+) {
+    for (offset, symbol_name) in stub.symbols.iter().enumerate() {
+        let symbol_id = stub.symbol_id_range.offset_to_id(offset);
+        outputs.add_non_versioned(PendingSymbol::new(symbol_id, symbol_name));
+        symbols_out.set_next(ValueFlags::DYNAMIC, symbol_id, stub.file_id);
+    }
 }
 
 #[cfg(all(feature = "plugins", unix))]
@@ -1904,6 +1930,10 @@ impl<'a, 'data, P: Platform> std::fmt::Display for SymbolDebug<'a, 'data, P> {
                     } else {
                         write!(f, "<unnamed symbol>")?;
                     }
+                }
+                SequencedInput::StubLibrary(_) => {
+                    // TODO: add file name to error message
+                    write!(f, "<unnamed Mach-O stub library symbol>")?;
                 }
                 SequencedInput::LinkerScript(s) => {
                     write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
