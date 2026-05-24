@@ -1534,7 +1534,13 @@ fn load_stub_library_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
-    for (offset, symbol_name) in stub.defined_symbols.symbols.iter().enumerate() {
+    for (offset, symbol_name) in stub
+        .defined_symbols
+        .symbols
+        .iter()
+        .chain(stub.defined_symbols.weak_symbols.iter())
+        .enumerate()
+    {
         let symbol_id = stub.symbol_id_range.offset_to_id(offset);
         outputs.add_non_versioned(PendingSymbol::new(symbol_id, symbol_name.as_bytes()));
         symbols_out.set_next(ValueFlags::DYNAMIC, symbol_id, stub.file_id);
