@@ -19,6 +19,8 @@ use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::SymbolStrength;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
+use itertools::Itertools;
+use std::borrow::Cow;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -49,8 +51,9 @@ pub(crate) struct SequencedLinkerScript<'data, P: Platform> {
 
 #[derive(Debug)]
 pub(crate) struct SequencedStubLibrary<'data> {
-    pub(crate) defined: DefinedStubLibrary<'data>,
+    pub(crate) install_name: String,
     pub(crate) symbols: Vec<&'data [u8]>,
+    pub(crate) weak_symbols: Vec<&'data [u8]>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -209,27 +212,29 @@ pub(crate) fn create_groups<'data, P: Platform>(
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
 
+    let symbol_name_bytes = |symbol_name: &Cow<'data, str>| match symbol_name {
+        Cow::Borrowed(name) => name.as_bytes(),
+        Cow::Owned(name) => allocator.alloc_slice_copy(name.as_bytes()),
+    };
+
     let stub_libraries: Vec<SequencedStubLibrary<'data>> = stub_libraries
         .into_iter()
         .enumerate()
         .map(|(i, defined)| {
-            let mut symbols = defined
-                .symbols
+            let symbols = defined.symbols.iter().map(&symbol_name_bytes).collect_vec();
+            let weak_symbols = defined
+                .weak_symbols
                 .iter()
-                .map(|s| allocator.alloc_slice_copy(s.as_bytes()) as &'data [u8])
-                .collect::<Vec<_>>();
-            symbols.extend(
-                defined
-                    .weak_symbols
-                    .iter()
-                    .map(|s| allocator.alloc_slice_copy(s.as_bytes()) as &'data [u8]),
-            );
-            let symbol_id_range = SymbolIdRange::input(next_symbol_id, symbols.len());
+                .map(&symbol_name_bytes)
+                .collect_vec();
+            let symbol_id_range =
+                SymbolIdRange::input(next_symbol_id, symbols.len() + weak_symbols.len());
             next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
 
             SequencedStubLibrary {
-                defined,
+                install_name: defined.install_name,
                 symbols,
+                weak_symbols,
                 symbol_id_range,
                 file_id: FileId::new(symbol_db.next_group_index(), i as u32),
             }
@@ -365,20 +370,19 @@ impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
 impl<'data> SequencedStubLibrary<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        UnversionedSymbolName::new(self.symbols[local_index])
+        UnversionedSymbolName::new(
+            self.symbols
+                .get(local_index)
+                .unwrap_or(&self.weak_symbols[local_index - self.symbols.len()]),
+        )
     }
 
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        if self
-            .defined
-            .weak_symbols
-            .iter()
-            .any(|weak| weak.as_bytes() == self.symbols[local_index])
-        {
-            SymbolStrength::Weak
-        } else {
+        if local_index <= self.symbols.len() {
             SymbolStrength::Strong
+        } else {
+            SymbolStrength::Weak
         }
     }
 }
@@ -434,7 +438,7 @@ impl<'data, P: Platform> std::fmt::Display for SequencedInputObject<'data, P> {
 
 impl std::fmt::Display for SequencedStubLibrary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.defined.install_name, f)
+        std::fmt::Display::fmt(&self.install_name, f)
     }
 }
 

@@ -74,23 +74,20 @@ struct Exports<'a> {
     #[serde(borrow)]
     weak_symbols: Vec<Cow<'a, str>>,
 }
-
 // TODO: remove
 #[allow(unused)]
 #[derive(Debug)]
-pub struct DefinedStubLibrary<'a> {
+pub(crate) struct DefinedStubLibrary<'a> {
     /// Install name of the dynamic library, including its `.dylib` suffix.    
-    pub install_name: String,
+    pub(crate) install_name: String,
     /// Current version recorded for the library, if present.
-    pub current_version: String,
+    pub(crate) current_version: String,
     /// Global symbols defined by the library or by any reexported child library.
-    pub symbols: HashSet<Cow<'a, str>>,
+    pub(crate) symbols: Vec<Cow<'a, str>>,
     /// Weak symbols defined by the library or by any reexported child library.
-    pub weak_symbols: HashSet<Cow<'a, str>>,
+    pub(crate) weak_symbols: Vec<Cow<'a, str>>,
 }
 
-// TODO: remove
-#[allow(unused)]
 pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibrary<'data>> {
     let library_definitions = serde_yaml::Deserializer::from_str(input)
         .map(TextBasedDefinition::deserialize)
@@ -113,14 +110,14 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
     let mut defined_library = DefinedStubLibrary {
         install_name: main_library.install_name.to_string(),
         current_version: main_library.current_version.to_string(),
-        symbols: HashSet::with_capacity(
+        symbols: Vec::with_capacity(
             library_definitions
                 .iter()
                 .flat_map(TextBasedDefinition::all_exports)
                 .map(|exp| exp.symbols.len())
                 .sum(),
         ),
-        weak_symbols: HashSet::with_capacity(
+        weak_symbols: Vec::with_capacity(
             library_definitions
                 .iter()
                 .flat_map(TextBasedDefinition::all_exports)
@@ -238,9 +235,6 @@ reexports:
         assert_eq!(
             stub_library.symbols,
             ["_main_arm64", "_a_arm64", "_b_arm64", "_b_exported_arm64"]
-                .into_iter()
-                .map(Cow::Borrowed)
-                .collect()
         );
         assert_eq!(
             stub_library.weak_symbols,
@@ -249,9 +243,6 @@ reexports:
                 "_a_weak_arm64",
                 "_b_weak_exported_arm64"
             ]
-            .into_iter()
-            .map(Cow::Borrowed)
-            .collect()
         );
     }
 }

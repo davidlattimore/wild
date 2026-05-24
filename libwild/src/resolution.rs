@@ -60,7 +60,6 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
-use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -329,18 +328,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                     ResolvedFile::StubLibrary(ResolvedStubLibrary {
                         file_id: stub.file_id,
                         symbol_id_range: stub.symbol_id_range,
-                        weak_symbols: stub
-                            .defined
-                            .weak_symbols
-                            .iter()
-                            .map(|s| {
-                                stub.symbols
-                                    .iter()
-                                    .copied()
-                                    .find(|symbol| *symbol == s.as_bytes())
-                                    .expect("weak stub symbol should be in the symbol list")
-                            })
-                            .collect(),
+                        weak_symbols: stub.weak_symbols.clone(),
                         symbols: stub.symbols.clone(),
                     })
                 })
@@ -790,8 +778,8 @@ pub(crate) struct ResolvedDynamic<'data, P: Platform> {
 pub(crate) struct ResolvedStubLibrary<'data> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    weak_symbols: HashSet<&'data [u8]>,
-    symbols: Vec<&'data [u8]>,
+    pub(crate) symbols: Vec<&'data [u8]>,
+    pub(crate) weak_symbols: Vec<&'data [u8]>,
 }
 
 #[derive(Debug)]
