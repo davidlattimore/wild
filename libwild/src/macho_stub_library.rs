@@ -13,7 +13,6 @@ use crate::error;
 use crate::error::Result;
 use itertools::Itertools;
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::collections::HashSet;
 
 const ARM64_LIB_ARCH: &str = "arm64-macos";
@@ -23,11 +22,11 @@ const ARM64_LIB_ARCH: &str = "arm64-macos";
 struct TextBasedDefinition<'a> {
     tbd_version: u32,
     #[serde(borrow)]
-    targets: Vec<Cow<'a, str>>,
+    targets: Vec<&'a str>,
     #[serde(borrow)]
-    install_name: Cow<'a, str>,
+    install_name: &'a str,
     #[serde(default)]
-    current_version: Cow<'a, str>,
+    current_version: &'a str,
     #[serde(default)]
     parent_umbrella: Vec<ParentUmbrella<'a>>,
     #[serde(default)]
@@ -48,44 +47,50 @@ impl<'a> TextBasedDefinition<'a> {
 #[serde(rename_all = "kebab-case")]
 struct ParentUmbrella<'a> {
     #[serde(borrow)]
-    targets: Vec<Cow<'a, str>>,
+    targets: Vec<&'a str>,
     #[serde(borrow)]
-    umbrella: Cow<'a, str>,
+    umbrella: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct ReexportedLibraries<'a> {
     #[serde(borrow)]
-    targets: Vec<Cow<'a, str>>,
+    targets: Vec<&'a str>,
     #[serde(borrow)]
-    libraries: Vec<Cow<'a, str>>,
+    libraries: Vec<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct Exports<'a> {
     #[serde(borrow)]
-    targets: Vec<Cow<'a, str>>,
+    targets: Vec<&'a str>,
     #[serde(default)]
     #[serde(borrow)]
-    symbols: Vec<Cow<'a, str>>,
+    symbols: Vec<&'a str>,
     #[serde(default)]
     #[serde(borrow)]
-    weak_symbols: Vec<Cow<'a, str>>,
+    weak_symbols: Vec<&'a str>,
 }
 // TODO: remove
 #[allow(unused)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DefinedStubLibrary<'a> {
     /// Install name of the dynamic library, including its `.dylib` suffix.    
     pub(crate) install_name: String,
     /// Current version recorded for the library, if present.
     pub(crate) current_version: String,
     /// Global symbols defined by the library or by any reexported child library.
-    pub(crate) symbols: Vec<Cow<'a, str>>,
+    pub(crate) symbols: Vec<&'a str>,
     /// Weak symbols defined by the library or by any reexported child library.
-    pub(crate) weak_symbols: Vec<Cow<'a, str>>,
+    pub(crate) weak_symbols: Vec<&'a str>,
+}
+
+impl DefinedStubLibrary<'_> {
+    pub(crate) fn total_symbols(&self) -> usize {
+        self.symbols.len() + self.weak_symbols.len()
+    }
 }
 
 pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibrary<'data>> {
@@ -97,9 +102,7 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         .first()
         .ok_or_else(|| error!("root library must be defined"))?;
     ensure!(
-        main_library
-            .targets
-            .contains(&Cow::Borrowed(ARM64_LIB_ARCH)),
+        main_library.targets.contains(&ARM64_LIB_ARCH),
         "'{ARM64_LIB_ARCH}' architecture not implemented by the library"
     );
 
@@ -135,12 +138,10 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         .map_err(|_| error!("expected just a single exported library"))?
     {
         ensure!(
-            exported_libraries
-                .targets
-                .contains(&Cow::Borrowed(ARM64_LIB_ARCH)),
+            exported_libraries.targets.contains(&ARM64_LIB_ARCH),
             "'{ARM64_LIB_ARCH}' architecture not covered in the exported library"
         );
-        let exported_libraries: HashSet<_> = exported_libraries.libraries.iter().clone().collect();
+        let exported_libraries: HashSet<_> = exported_libraries.libraries.iter().copied().collect();
         exported_libraries
     } else {
         HashSet::new()
@@ -154,20 +155,18 @@ pub fn parse_defined_library<'data>(input: &'data str) -> Result<DefinedStubLibr
         );
         if lib != main_library {
             ensure!(
-                exported_libraries.contains(&lib.install_name),
+                exported_libraries.contains(lib.install_name),
                 "child library '{}' not listed as reexported by the main library",
                 lib.install_name
             );
         }
 
         for export in lib.all_exports() {
-            if export.targets.contains(&Cow::Borrowed(ARM64_LIB_ARCH)) {
-                defined_library
-                    .symbols
-                    .extend(export.symbols.iter().cloned());
+            if export.targets.contains(&ARM64_LIB_ARCH) {
+                defined_library.symbols.extend(export.symbols.iter());
                 defined_library
                     .weak_symbols
-                    .extend(export.weak_symbols.iter().cloned());
+                    .extend(export.weak_symbols.iter());
             }
         }
     }

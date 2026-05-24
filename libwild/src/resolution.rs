@@ -20,6 +20,7 @@ use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::linker_script::Expression;
+use crate::macho_stub_library::DefinedStubLibrary;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
 use crate::output_section_id::OutputSections;
@@ -328,8 +329,8 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                     ResolvedFile::StubLibrary(ResolvedStubLibrary {
                         file_id: stub.file_id,
                         symbol_id_range: stub.symbol_id_range,
-                        weak_symbols: stub.weak_symbols.clone(),
-                        symbols: stub.symbols.clone(),
+                        // TODO: do we need to clone it?
+                        defined_symbols: stub.defined_symbols.clone(),
                     })
                 })
                 .collect();
@@ -778,8 +779,7 @@ pub(crate) struct ResolvedDynamic<'data, P: Platform> {
 pub(crate) struct ResolvedStubLibrary<'data> {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) symbols: Vec<&'data [u8]>,
-    pub(crate) weak_symbols: Vec<&'data [u8]>,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
 }
 
 #[derive(Debug)]
@@ -1602,10 +1602,10 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
 impl ResolvedStubLibrary<'_> {
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        if self.weak_symbols.contains(&self.symbols[local_index]) {
-            SymbolStrength::Weak
-        } else {
+        if local_index <= self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
+        } else {
+            SymbolStrength::Weak
         }
     }
 }

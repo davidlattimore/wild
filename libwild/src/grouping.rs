@@ -19,8 +19,6 @@ use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::SymbolStrength;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
-use itertools::Itertools;
-use std::borrow::Cow;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -51,9 +49,7 @@ pub(crate) struct SequencedLinkerScript<'data, P: Platform> {
 
 #[derive(Debug)]
 pub(crate) struct SequencedStubLibrary<'data> {
-    pub(crate) install_name: String,
-    pub(crate) symbols: Vec<&'data [u8]>,
-    pub(crate) weak_symbols: Vec<&'data [u8]>,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
@@ -212,29 +208,16 @@ pub(crate) fn create_groups<'data, P: Platform>(
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
     }
 
-    let symbol_name_bytes = |symbol_name: &Cow<'data, str>| match symbol_name {
-        Cow::Borrowed(name) => name.as_bytes(),
-        Cow::Owned(name) => allocator.alloc_slice_copy(name.as_bytes()),
-    };
-
     let stub_libraries: Vec<SequencedStubLibrary<'data>> = stub_libraries
         .into_iter()
         .enumerate()
-        .map(|(i, defined)| {
-            let symbols = defined.symbols.iter().map(&symbol_name_bytes).collect_vec();
-            let weak_symbols = defined
-                .weak_symbols
-                .iter()
-                .map(&symbol_name_bytes)
-                .collect_vec();
+        .map(|(i, defined_symbols)| {
             let symbol_id_range =
-                SymbolIdRange::input(next_symbol_id, symbols.len() + weak_symbols.len());
+                SymbolIdRange::input(next_symbol_id, defined_symbols.total_symbols());
             next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
 
             SequencedStubLibrary {
-                install_name: defined.install_name,
-                symbols,
-                weak_symbols,
+                defined_symbols,
                 symbol_id_range,
                 file_id: FileId::new(symbol_db.next_group_index(), i as u32),
             }
@@ -371,15 +354,20 @@ impl<'data> SequencedStubLibrary<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
         UnversionedSymbolName::new(
-            self.symbols
+            self.defined_symbols
+                .symbols
                 .get(local_index)
-                .unwrap_or(&self.weak_symbols[local_index - self.symbols.len()]),
+                .unwrap_or(
+                    &self.defined_symbols.weak_symbols
+                        [local_index - self.defined_symbols.symbols.len()],
+                )
+                .as_bytes(),
         )
     }
 
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        if local_index <= self.symbols.len() {
+        if local_index <= self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
         } else {
             SymbolStrength::Weak
@@ -438,7 +426,7 @@ impl<'data, P: Platform> std::fmt::Display for SequencedInputObject<'data, P> {
 
 impl std::fmt::Display for SequencedStubLibrary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.install_name, f)
+        std::fmt::Display::fmt(&self.defined_symbols.install_name, f)
     }
 }
 
