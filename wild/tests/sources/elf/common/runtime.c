@@ -53,4 +53,25 @@ void exit_syscall(int exit_code) {
                        : "r"(a7), "r"(a0)
                        : "memory");
 }
+#elif defined(__powerpc64__)
+void exit_syscall(int exit_code) {
+  register long r0 __asm__("r0") = 1;  // __NR_exit
+  register long r3 __asm__("r3") = exit_code;
+  __asm__ __volatile__("sc" : "+r"(r3) : "r"(r0) : "memory");
+}
+#endif
+
+#if defined(__powerpc64__)
+// Unlike the other targets, gcc on ppc64le lowers large aggregate initialisers to a call to
+// memcpy even at -O0, and these freestanding tests don't link libc. Provide a minimal
+// implementation. At -O0 gcc doesn't run loop-idiom recognition, so this byte loop is not turned
+// back into a memcpy call (verified by disassembly).
+void* memcpy(void* dest, const void* src, __SIZE_TYPE__ n) {
+  char* d = dest;
+  const char* s = src;
+  for (__SIZE_TYPE__ i = 0; i < n; i++) {
+    d[i] = s[i];
+  }
+  return dest;
+}
 #endif
