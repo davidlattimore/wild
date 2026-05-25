@@ -361,17 +361,17 @@ impl<'data> SequencedStubLibrary<'data> {
             self.defined_symbols
                 .symbols
                 .get(local_index)
-                .unwrap_or(
+                .unwrap_or_else(|| {
                     &self.defined_symbols.weak_symbols
-                        [local_index - self.defined_symbols.symbols.len()],
-                )
+                        [local_index - self.defined_symbols.symbols.len()]
+                })
                 .as_bytes(),
         )
     }
 
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        if local_index <= self.defined_symbols.symbols.len() {
+        if local_index < self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
         } else {
             SymbolStrength::Weak

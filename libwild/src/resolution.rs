@@ -1604,7 +1604,7 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
 impl ResolvedStubLibrary<'_> {
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        if local_index <= self.defined_symbols.symbols.len() {
+        if local_index < self.defined_symbols.symbols.len() {
             SymbolStrength::Strong
         } else {
             SymbolStrength::Weak
