@@ -14,15 +14,30 @@
 
 //#Config:sframe:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
+//#LinkArgs:-Wl,-z,now,--gc-sections
 //#WildExtraLinkArgs:-Wl,--wild-experimental-sframe
 //#RemoveSection:.eh_frame
 //#RemoveSection:.eh_frame_hdr
 //#RequiresGlibcVersion:2.42
 //#RequiresSFrameBacktrace:true
+// FIXME: This should be enabled with LD but requires LD 2.46 to retain the .sframe section with
+// `--gc-sections`.
 //#SkipLinker:ld
 
-// Without `--wild-experimental-sframe` we should discard `.sframe` section.
 //#Config:discard-sframe:default
+//#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
+//#LinkArgs:-Wl,-z,now,--gc-sections,--discard-sframe
+//#WildExtraLinkArgs:-Wl,--wild-experimental-sframe
+//#RequiresGlibcVersion:2.42
+//#RequiresSFrameBacktrace:true
+//#RunEnabled:false
+//#DoesNotContain:.sframe
+// FIXME: This should be enabled with LD but requires LD 2.46 to retain the .sframe section with
+// `--gc-sections`.
+//#SkipLinker:ld
+
+// Without `--wild-experimental-sframe` we should discard `.sframe` section for now.
+//#Config:discard-sframe-by-default:default
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
 //#RequiresGlibcVersion:2.42
 //#RequiresSFrameBacktrace:true

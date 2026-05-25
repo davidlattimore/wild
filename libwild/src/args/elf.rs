@@ -121,6 +121,7 @@ pub struct ElfArgs {
     pub(crate) trace: bool,
     pack_dyn_relocs: PackDynRelocs,
     pub(crate) use_android_relr_tags: bool,
+    pub(crate) discard_sframe: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -130,7 +131,7 @@ pub struct ElfArgs {
 
     rpath_set: IndexSet<String>,
 
-    pub experimental_sframe: bool,
+    experimental_sframe: bool,
 
     pub(crate) debug_compression_kind: Option<CompressionKind>,
 }
@@ -314,6 +315,7 @@ impl Default for ElfArgs {
             trace: false,
             pack_dyn_relocs: PackDynRelocs::None,
             use_android_relr_tags: false,
+            discard_sframe: false,
 
             nmagic: false,
 
@@ -432,6 +434,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
             .inputs
             .iter_mut()
             .for_each(|input| input.modifiers.allow_shared = false);
+    }
+
+    if !args.experimental_sframe {
+        args.discard_sframe = true;
     }
 
     Ok(())
@@ -1835,6 +1841,15 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .help("Page align sections (default)")
         .execute(|args, _modifier_stack| {
             args.nmagic = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("discard-sframe")
+        .help("Discard SFrame section")
+        .execute(|args, _modifier_stack| {
+            args.discard_sframe = true;
             Ok(())
         });
 

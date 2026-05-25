@@ -1712,12 +1712,12 @@ impl platform::Platform for Elf {
     }
 
     fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>> {
-        let sframe_outcome = if args.experimental_sframe {
+        let sframe_outcome = if args.discard_sframe {
+            SectionRuleOutcome::Discard
+        } else {
             SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
                 output_section_id::SFRAME,
             ))
-        } else {
-            SectionRuleOutcome::Discard
         };
         let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
         rules.extend(DEFAULT_SECTION_RULES.iter().cloned());

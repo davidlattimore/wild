@@ -313,7 +313,7 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
-    if !layout.args().experimental_sframe || sframe_buffer.is_empty() {
+    if layout.args().discard_sframe || sframe_buffer.is_empty() {
         return Ok(());
     }
 
