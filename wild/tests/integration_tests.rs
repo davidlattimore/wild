@@ -552,6 +552,8 @@ enum Architecture {
     RiscV64,
     #[strum(serialize = "loongarch64")]
     LoongArch64,
+    #[strum(serialize = "ppc64le")]
+    Ppc64,
 }
 
 const ALL_ARCHITECTURES: &[Architecture] = &[
@@ -559,6 +561,7 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::AArch64,
     Architecture::RiscV64,
     Architecture::LoongArch64,
+    Architecture::Ppc64,
 ];
 
 impl Architecture {
@@ -568,6 +571,16 @@ impl Architecture {
             Architecture::AArch64 => "aarch64elf",
             Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
+            Architecture::Ppc64 => "elf64lppc",
+        }
+    }
+
+    /// The architecture prefix used in target triples / cross-toolchain names. This differs from
+    /// the short name (`Display`) for ppc64le, whose triple prefix is `powerpc64le`.
+    fn triple_arch(&self) -> String {
+        match self {
+            Architecture::Ppc64 => "powerpc64le".to_owned(),
+            _ => self.to_string(),
         }
     }
 
@@ -580,7 +593,7 @@ impl Architecture {
 
     fn default_target_triple(&self, platform: PlatformKind) -> String {
         match platform {
-            PlatformKind::Elf => format!("{self}-unknown-linux-gnu"),
+            PlatformKind::Elf => format!("{}-unknown-linux-gnu", self.triple_arch()),
             PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
         }
     }
@@ -593,11 +606,12 @@ impl Architecture {
     }
 
     fn cross_triplet(&self) -> String {
-        let suse_triplet = format!("{self}-suse-linux");
+        let arch = self.triple_arch();
+        let suse_triplet = format!("{arch}-suse-linux");
         if std::path::Path::new(&format!("/usr/{suse_triplet}/sys-root")).exists() {
             return suse_triplet;
         }
-        format!("{self}-linux-gnu")
+        format!("{arch}-linux-gnu")
     }
 
     fn get_cross_sysroot_path(&self) -> String {
@@ -643,6 +657,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
         Some(Architecture::RiscV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
         Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
+        Some(Architecture::Ppc64) => "/lib64/ld64.so.2",
     }
 }
 
@@ -704,6 +719,10 @@ fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "loongarch64")]
     {
         Architecture::LoongArch64
+    }
+    #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
+    {
+        Architecture::Ppc64
     }
 }
 
@@ -2304,14 +2323,20 @@ fn get_c_compiler(
         (_, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64
+                | Architecture::RiscV64
+                | Architecture::LoongArch64
+                | Architecture::Ppc64),
             ),
             "gcc" | "g++",
             CLanguage::C,
         ) => Ok(format!("{}-gcc", arch.cross_triplet())),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64
+                | Architecture::RiscV64
+                | Architecture::LoongArch64
+                | Architecture::Ppc64),
             ),
             "gcc" | "g++",
             CLanguage::Cpp,
@@ -4434,10 +4459,12 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
         Architecture::AArch64,
         Architecture::RiscV64,
         Architecture::LoongArch64,
+        Architecture::Ppc64,
     ]
     .into_iter()
     .map(|arch| {
-        let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
+        // Use the GNU triple prefix (`powerpc64le`), not the short arch name (`ppc64le`).
+        let path = PathBuf::from(format!("/usr/{}-linux-gnu/bin/{name}", arch.triple_arch()));
         if path.exists() {
             (arch, path)
         } else {
