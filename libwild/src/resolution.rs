@@ -330,7 +330,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                         input: stub.input,
                         file_id: stub.file_id,
                         symbol_id_range: stub.symbol_id_range,
-                        // TODO: do we need to clone it?
+                        // TODO: Consider alternative to cloning this.
                         defined_symbols: stub.defined_symbols.clone(),
                     })
                 })
