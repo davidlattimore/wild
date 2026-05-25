@@ -18,6 +18,10 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
         ArchKind::RiscV64 => ("riscv:rv64", ["riscv64-linux-gnu-objdump", "objdump"]),
         ArchKind::X86_64 => todo!(), // x86_64 objdump is not used in linker-diff currently
         ArchKind::LoongArch64 => ("Loongarch64", ["loongarch64-linux-gnu-objdump", "objdump"]),
+        ArchKind::Ppc64 => (
+            "powerpc:common64",
+            ["powerpc64le-linux-gnu-objdump", "objdump"],
+        ),
     };
 
     let objdump = objdump_bin_candidates
@@ -28,6 +32,10 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
     let command = Command::new(objdump)
         .arg("-b")
         .arg("binary")
+        // Every target we support is little-endian. Be explicit, since some machines (e.g. the
+        // generic `powerpc:common64`) default to big-endian and would otherwise disassemble the
+        // raw bytes as garbage on a big-endian-defaulting host.
+        .arg("--endian=little")
         .arg(format!("--adjust-vma=0x{address:x}"))
         .arg("-m")
         .arg(objdump_arch)

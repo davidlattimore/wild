@@ -730,6 +730,23 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_PPC64_JMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn from_ppc64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_PPC64_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_PPC64_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_PPC64_DTPMOD64 => DynamicRelocationKind::DtpMod,
+            object::elf::R_PPC64_DTPREL64 => DynamicRelocationKind::DtpOff,
+            object::elf::R_PPC64_TPREL64 => DynamicRelocationKind::TpOff,
+            object::elf::R_PPC64_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_PPC64_ADDR64 => DynamicRelocationKind::Absolute,
+            object::elf::R_PPC64_GLOB_DAT => DynamicRelocationKind::GotEntry,
+            object::elf::R_PPC64_JMP_SLOT => DynamicRelocationKind::JumpSlot,
+            _ => return None,
+        };
+        Some(kind)
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
