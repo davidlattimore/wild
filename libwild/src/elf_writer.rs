@@ -3237,7 +3237,6 @@ fn apply_relocation<
         });
         tracing::trace!(
             %flags,
-            %flags,
             relaxation_kind = ?relaxation.debug_kind(),
             ?rel_info.kind,
             %rel_info.size,
