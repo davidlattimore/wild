@@ -1381,10 +1381,24 @@ pub enum LoongArch64Instruction {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum Ppc64Instruction {
+    /// D-form: 16-bit field in instruction bits [15:0] (e.g. `addi`, `addis`, `lwz`).
+    D,
+    /// DS-form: 14-bit field in instruction bits [15:2]; the low two bits are part of the opcode
+    /// and are preserved (e.g. `ld`, `std`).
+    Ds,
+    /// B-form conditional branch (`bc`): 14-bit displacement field in instruction bits [15:2].
+    Branch14,
+    /// I-form branch (`b`/`bl`): 24-bit displacement field in instruction bits [25:2].
+    Branch24,
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationInstruction {
     AArch64(AArch64Instruction),
     RiscV(RiscVInstruction),
     LoongArch64(LoongArch64Instruction),
+    Ppc64(Ppc64Instruction),
 }
 
 impl RelocationInstruction {
@@ -1410,6 +1424,7 @@ impl RelocationInstruction {
             Self::AArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
             Self::RiscV(insn) => insn.write_to_value(extracted_value, negative, dest),
             Self::LoongArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
+            Self::Ppc64(insn) => insn.write_to_value(extracted_value, negative, dest),
         }
     }
 
@@ -1421,6 +1436,7 @@ impl RelocationInstruction {
             Self::AArch64(insn) => insn.read_value(bytes),
             Self::RiscV(insn) => insn.read_value(bytes),
             Self::LoongArch64(insn) => insn.read_value(bytes),
+            Self::Ppc64(insn) => insn.read_value(bytes),
         }
     }
 
@@ -1431,6 +1447,7 @@ impl RelocationInstruction {
             Self::AArch64(..) => 4,
             Self::RiscV(..) => 4,
             Self::LoongArch64(..) => 4,
+            Self::Ppc64(..) => 4,
         }
     }
 }
@@ -1487,6 +1504,19 @@ impl RelocationSize {
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
             RelocationInstruction::LoongArch64(instruction),
+            bit_start,
+            bit_end,
+        ))
+    }
+
+    #[must_use]
+    pub const fn bit_mask_ppc64(
+        bit_start: u32,
+        bit_end: u32,
+        instruction: Ppc64Instruction,
+    ) -> RelocationSize {
+        Self::BitMasking(BitMask::new(
+            RelocationInstruction::Ppc64(instruction),
             bit_start,
             bit_end,
         ))

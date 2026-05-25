@@ -142,6 +142,9 @@ pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
+/// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
+pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
+
 pub(crate) const THUNK_SYMBOL_PREFIX: &str = "__thunk_";
 
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
@@ -909,6 +912,10 @@ impl platform::Platform for Elf {
                 output_section_id::DATA,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
             );
+        }
+
+        if args.arch == Architecture::Ppc64 {
+            symbols.section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME);
         }
 
         symbols
