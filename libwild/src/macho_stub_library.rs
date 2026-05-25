@@ -1,7 +1,9 @@
 //! Parser for the Text-Based Stub (`.tbd`) library definitions used by Mach-O.
 //!
 //! This crate currently targets TBD format version 4 and extracts the
-//! linker-visible symbol definitions (and weak symbols).
+//! linker-visible symbol definitions (and weak symbols). To keep parsing
+//! simple and efficient, the parser rejects escape sequences and returns
+//! `&'data str` slices directly from the input.
 //!
 //! The parser accepts multi-document YAML TBD files. The first document is
 //! treated as the main library. Additional documents are treated as child
