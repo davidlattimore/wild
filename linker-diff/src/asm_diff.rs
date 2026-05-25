@@ -1650,6 +1650,11 @@ impl<R: RType> Referent<'_, R> {
                 true
             }
             (Referent::DynamicRelocation(a), Referent::DynamicRelocation(b)) => a.matches(b),
+            (Referent::IFunc(_), Referent::IFunc(_)) => {
+                // Linkers differ as to whether the symbol name is the resolver or the ifunc name.
+                // So we just accept any two ifuncs as being equal.
+                true
+            }
             _ => self == other,
         }
     }
@@ -1701,6 +1706,10 @@ impl<R: RType> DynamicRelocation<'_, R> {
         // TODO: Remove this. We currently don't propagate symbol visibility correctly when emitting
         // dynamic symbols.
         out.entry.is_weak = false;
+
+        // Wild currently seems to set undefined dynamic symbols as STT_IFUNC if they resolved to an
+        // IFUNC in a shared object. Other linkers don't. TODO: Fix this.
+        out.entry.is_ifunc = false;
 
         out
     }
@@ -2978,6 +2987,7 @@ struct SymtabEntryInfo<'data> {
     name: SymbolName<'data>,
     is_weak: bool,
     visibility: Visibility,
+    is_ifunc: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -3286,6 +3296,7 @@ impl<'data> AddressIndex<'data> {
                     },
                     is_weak: false,
                     visibility: Visibility::Default,
+                    is_ifunc: false,
                 });
             }
 
@@ -3293,6 +3304,7 @@ impl<'data> AddressIndex<'data> {
                 name,
                 is_weak: sym.is_weak(),
                 visibility,
+                is_ifunc: sym.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC,
             });
         }
 
@@ -3596,6 +3608,10 @@ impl<'data> GotIndex<'data> {
                     } else {
                         Ok(Referent::UnmatchedTlsOffset(rel.addend()))
                     }
+                }
+                DynamicRelocationKind::JumpSlot if symbol.is_some_and(|s| s.is_ifunc) => {
+                    let symbol = symbol.unwrap();
+                    Ok(Referent::IFunc(Some(symbol.name)))
                 }
                 _ => {
                     let symbol = symbol.with_context(|| format!("{r_type} without symbol"))?;
