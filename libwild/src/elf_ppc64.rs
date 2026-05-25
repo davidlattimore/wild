@@ -3,6 +3,7 @@ use crate::elf::Elf;
 use crate::error;
 use crate::error::Result;
 use crate::platform::Platform;
+use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::ppc64_rel_type_to_string;
@@ -67,6 +68,14 @@ impl crate::platform::Arch for ElfPpc64 {
 
     fn high_part_relocations() -> &'static [u32] {
         &[]
+    }
+
+    fn local_entry_offset(st_other: u8) -> u64 {
+        // ELFv2 encodes the distance from a function's global entry point to its local entry point
+        // in st_other bits [7:5]: offset = ((1 << k) >> 2) << 2 (k=0,1 -> 0; 2 -> 4; 3 -> 8; ...).
+        let bit = u32::from(object::elf::STO_PPC64_LOCAL_BIT);
+        let k = u64::from(st_other).extract_bit_range(bit..bit + 3);
+        u64::from(((1u32 << k) >> 2) << 2)
     }
 
     #[allow(unused_variables)]

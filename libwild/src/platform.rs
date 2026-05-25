@@ -145,6 +145,13 @@ pub(crate) trait Arch: Send + Sync + 'static {
         false
     }
 
+    /// For a call/branch relocation, returns the offset from a callee's global entry point to its
+    /// local entry point, derived from the callee's `st_other`. Only meaningful on ppc64 (ELFv2
+    /// dual-entry functions); defaults to 0.
+    fn local_entry_offset(_st_other: u8) -> u64 {
+        0
+    }
+
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
     fn new_relaxation(

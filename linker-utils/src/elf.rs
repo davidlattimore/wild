@@ -938,6 +938,21 @@ impl RelocationSize {
             bit_end,
         ))
     }
+
+    /// Returns whether this relocation writes a ppc64 branch instruction, i.e. a call/branch site
+    /// that may need a local-entry-point adjustment. False for every non-ppc64 relocation.
+    #[must_use]
+    pub fn is_ppc64_branch(&self) -> bool {
+        matches!(
+            self,
+            RelocationSize::BitMasking(BitMask {
+                instruction: RelocationInstruction::Ppc64(
+                    Ppc64Instruction::Branch14 | Ppc64Instruction::Branch24
+                ),
+                ..
+            })
+        )
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]

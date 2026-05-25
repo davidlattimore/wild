@@ -2652,6 +2652,19 @@ fn get_resolution<'data, R: Relocation>(
     Ok((resolution, symbol_index, local_symbol_id))
 }
 
+/// Returns the `st_other` byte of the canonical definition of `symbol_id`, or 0 if it isn't
+/// defined by a regular object. Used for ppc64 local-entry-point computation.
+fn callee_st_other(layout: &ElfLayout, symbol_id: SymbolId) -> u8 {
+    let canonical = layout.symbol_db.definition(symbol_id);
+    let file_id = layout.symbol_db.file_id_for_symbol(canonical);
+    if let FileLayout::Object(obj) = layout.file_layout(file_id)
+        && let Ok(sym) = obj.object.symbol(canonical.to_input(obj.symbol_id_range))
+    {
+        return sym.st_other.0;
+    }
+    0
+}
+
 fn write_got_plt_syms(
     layout: &ElfLayout,
     symbol_writer: &mut SymbolTableWriter<'_, '_>,
@@ -2876,6 +2889,13 @@ fn apply_relocation<
 
     let mask = get_page_mask(rel_info.mask);
     let bias = rel_info.bias;
+    // For ppc64 calls, branch to the callee's local entry point (we share its TOC, so the global
+    // entry's r2 setup is unnecessary). Zero for every other architecture and relocation.
+    let branch_local_entry = if rel_info.size.is_ppc64_branch() {
+        A::local_entry_offset(callee_st_other(layout, local_symbol_id))
+    } else {
+        0
+    };
     let mut value = match rel_info.kind {
         RelocationKind::Absolute => write_absolute_relocation::<A>(
             table_writer,
@@ -2919,6 +2939,7 @@ fn apply_relocation<
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
+            .wrapping_add(branch_local_entry)
             .wrapping_add(bias)
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
