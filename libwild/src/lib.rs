@@ -55,7 +55,11 @@ pub(crate) mod perf;
     not(target_os = "linux"),
     all(
         target_os = "linux",
-        any(target_arch = "riscv64", target_arch = "loongarch64")
+        any(
+            target_arch = "riscv64",
+            target_arch = "loongarch64",
+            target_arch = "powerpc64"
+        )
     )
 ))]
 #[path = "perf_unsupported.rs"]
