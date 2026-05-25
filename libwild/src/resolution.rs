@@ -937,6 +937,15 @@ fn load_symbols_in_redirect<'data, 'scope, P: Platform>(
         {
             let file_id = resources.symbol_db.file_id_for_symbol(target_symbol_id);
             resources.try_request_file_id(file_id, scope);
+
+            // Mark the target as having a non-IR reference. Without this, when the target is
+            // defined in an LTO/IR input, the linker plugin would report the symbol as
+            // `PrevailingDefIronly` and the LTO compiler would be free to DCE or internalize the
+            // symbol, leaving the --defsym/script redirect with no resolution.
+            resources
+                .per_symbol_flags
+                .get_atomic(target_symbol_id)
+                .or_assign(ValueFlags::HAS_NON_IR_REF);
         }
         true
     });

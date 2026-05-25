@@ -4413,7 +4413,8 @@ fn get_defsym_attributes(
                 ));
 
         if let Some(target_id) = target_symbol_id {
-            get_symbol_attributes(layout, target_id)
+            let canonical_id = layout.symbol_db.definition(target_id);
+            get_symbol_attributes(layout, canonical_id)
         } else {
             Err(redirect.missing_target(target_name))
         }

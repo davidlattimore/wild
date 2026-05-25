@@ -5,6 +5,13 @@
 //#LinkArgs:--defsym=bar=foo
 //#ExpectSym:bar section=".text"
 
+//#Config:symbol_alias_lto:symbol_alias
+//#RequiresLinkerPlugin:true
+//#SkipLinker:ld
+//#LinkerDriver:gcc
+//#CompArgs:-flto
+//#LinkArgs:-flto -nostdlib -Wl,--defsym=bar=foo
+
 //#Config:address_alias:default
 //#LinkArgs:--defsym=bar=0x12345678
 //#ExpectSym:bar address=0x12345678

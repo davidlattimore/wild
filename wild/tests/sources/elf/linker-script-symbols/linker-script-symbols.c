@@ -2,7 +2,6 @@
 //#AugmentLinkerScript:script.ld
 //#Object:runtime.c
 
-// TODO: Make this test not error and enable for GNU ld. Issue #1960.
 //#Config:lto:default
 //#RequiresLinkerPlugin:true
 //#SkipLinker:ld
@@ -10,7 +9,6 @@
 //#CompArgs:-flto
 //#LinkArgs:-flto -nostdlib -znow
 //#DiffIgnore:section.got
-//#ExpectError:Symbol '.+' referenced by linker script has no resolution
 
 #include "../common/runtime.h"
 

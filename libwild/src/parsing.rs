@@ -320,7 +320,7 @@ impl Redirect<'_> {
 
     pub(crate) fn missing_resolution(&self, target_name: &[u8]) -> crate::error::Error {
         crate::error!(
-            "Symbol '{name}' referenced by {kind} has no resolution. Might be issue #1960",
+            "Symbol '{name}' referenced by {kind} has no resolution.",
             name = String::from_utf8_lossy(target_name),
             kind = self.kind.message_text(),
         )

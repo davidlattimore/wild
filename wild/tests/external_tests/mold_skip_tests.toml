@@ -194,7 +194,6 @@ tests = [
   "duplicate-error-lto.sh",        # Wild deduplicates inputs
   "lto-comdat.sh",                 # We don't support COMDAT
   "wrap-lto.sh",                   # We don't yet support --wrap with LTO
-  "defsym-lto.sh",
   "lto-archive4.sh",
   "lto-mixed-gcc-fat.sh",
   "lto-mixed-gcc-slim-archive.sh",
