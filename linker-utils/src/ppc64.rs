@@ -60,6 +60,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             0,
         ),
         // PC-relative data (e.g. .eh_frame pointers).
+        object::elf::R_PPC64_REL64 => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(8),
+            AllowedRange::no_check(),
+            1,
+            0,
+        ),
         object::elf::R_PPC64_REL32 => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
