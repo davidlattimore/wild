@@ -227,13 +227,11 @@ impl ThunkLayoutBuilder {
         // Returns true if a thunk can be skipped based on known source and definition positions.
         let provably_in_range = |src_start: u64, src_end: u64, definition_id: SymbolId| -> bool {
             let definition_flags = per_symbol_flags.flags_for_symbol(definition_id);
-            if definition_flags.contains(ValueFlags::DYNAMIC) {
-                // For dynamic targets (e.g. PLT), source distance depends on pre-.text executable
-                // bytes that aren't captured by primary ranges alone.
-                return false;
-            }
 
-            if let Some((def_start, def_end)) = primary_range_for_symbol(definition_id) {
+            if let Some((mut def_start, def_end)) = primary_range_for_symbol(definition_id) {
+                if definition_flags.contains(ValueFlags::PLT) {
+                    def_start = 0;
+                }
                 let span_start = src_start.min(def_start);
                 let span_end = src_end.max(def_end);
                 return span_end.saturating_sub(span_start) < self.branch_range;

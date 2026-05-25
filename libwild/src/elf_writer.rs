@@ -1581,18 +1581,7 @@ fn write_thunks<'data, A: Arch<Platform = Elf>>(
                 )
             })?;
 
-        // For ifunc symbols, the raw_value is the resolver address, but the thunk must
-        // branch to the PLT stub that loads the resolved function pointer from the GOT.
-        let target_address = if res.flags.is_ifunc() {
-            res.plt_address().with_context(|| {
-                format!(
-                    "Ifunc symbol {} has no PLT entry for thunk",
-                    layout.symbol_db.symbol_name_for_display(*symbol_id)
-                )
-            })?
-        } else {
-            res.raw_value
-        };
+        let target_address = res.plt_address().unwrap_or(res.raw_value);
 
         let buf = buffers.get_mut(primary_part_id);
         let thunk_buf = buf

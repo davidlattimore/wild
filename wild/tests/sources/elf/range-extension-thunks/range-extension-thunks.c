@@ -19,7 +19,7 @@
 //#Object:get_3_aligned.c
 //#Shared:shared.c
 //#SoSingleLinker:lld
-//#MaxThunks:20
+//#MaxThunks:19
 //#Arch:aarch64
 // We only test with lld, since GNU ld doesn't seem to be able to create thunks for ifuncs.
 //#SkipLinker:ld
@@ -31,6 +31,9 @@
 // On Ubuntu 24.04, lld ends up setting the INFO flag for .rela.dyn.
 //#DiffIgnore:section.rela.dyn.flags
 //#DiffIgnore:section.data
+//#CompArgs:-fPIC
+//#LinkArgs:-shared -znow
+//#RunDynSym:entry
 
 int foo1(void);
 int foo2(void);
@@ -51,10 +54,11 @@ int call_ifunc2_from_far1(void);
 int call_ifunc1_from_far2(void);
 int call_ifunc2_from_far2(void);
 int call_get_3(void);
+int call_get_4(void);
 
 __attribute__((section("foo_calls"))) int call_foo3_custom0(void) { return foo3(); }
 
-int main() {
+int entry(void) {
   if (foo1() != 1) {
     return 1;
   }
@@ -105,6 +109,9 @@ int main() {
   }
   if (call_get_3() != 3) {
     return 30;
+  }
+  if (call_get_4() != 4) {
+    return 31;
   }
   return 42;
 }
