@@ -44,6 +44,7 @@ mod gnu_hash;
 mod header_diff;
 mod init_order;
 mod loongarch64;
+mod ppc64;
 mod riscv64;
 mod riscv_attributes;
 pub(crate) mod section_map;
@@ -319,6 +320,7 @@ impl Config {
                 .map(ToOwned::to_owned),
             ),
             ArchKind::X86_64 => {}
+            ArchKind::Ppc64 => {}
             ArchKind::LoongArch64 => self.ignore.extend(
                 [
                     "section.sdata",
@@ -695,6 +697,9 @@ impl Report {
             }
             ArchKind::LoongArch64 => {
                 self.report_arch_specific_diffs::<crate::loongarch64::LoongArch64>(objects);
+            }
+            ArchKind::Ppc64 => {
+                self.report_arch_specific_diffs::<crate::ppc64::Ppc64>(objects);
             }
         }
     }

@@ -19,6 +19,7 @@ pub(crate) enum ArchKind {
     Aarch64,
     RISCV64,
     LoongArch64,
+    Ppc64,
 }
 
 /// Provides architecture-specific functionality needed by linker-diff.
@@ -281,6 +282,7 @@ impl ArchKind {
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
             object::elf::EM_RISCV => Ok(ArchKind::RISCV64),
             object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
+            object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
             other => bail!("Unsupported object architecture {other}",),
         }
     }
