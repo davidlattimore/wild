@@ -327,6 +327,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                         .unwrap();
                     definitions_out_per_file.push(AtomicTake::empty());
                     ResolvedFile::StubLibrary(ResolvedStubLibrary {
+                        input: stub.input,
                         file_id: stub.file_id,
                         symbol_id_range: stub.symbol_id_range,
                         // TODO: do we need to clone it?
@@ -777,6 +778,7 @@ pub(crate) struct ResolvedDynamic<'data, P: Platform> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) defined_symbols: DefinedStubLibrary<'data>,
@@ -1612,7 +1614,7 @@ impl ResolvedStubLibrary<'_> {
 
 impl std::fmt::Display for ResolvedStubLibrary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt("<Mach-O stub library>", f)
+        std::fmt::Display::fmt(&self.input, f)
     }
 }
 

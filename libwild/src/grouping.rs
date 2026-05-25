@@ -1,5 +1,7 @@
 use crate::error::Result;
 use crate::input_data::FileId;
+use crate::input_data::InputRef;
+use crate::input_data::LoadedStubLibrary;
 use crate::input_data::MAX_FILES_PER_GROUP;
 use crate::input_section_id::InputSectionId;
 use crate::input_section_id::SectionIdRange;
@@ -49,6 +51,7 @@ pub(crate) struct SequencedLinkerScript<'data, P: Platform> {
 
 #[derive(Debug)]
 pub(crate) struct SequencedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
     pub(crate) defined_symbols: DefinedStubLibrary<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
@@ -121,7 +124,7 @@ impl<'data, P: Platform> Group<'data, P> {
 pub(crate) fn create_groups<'data, P: Platform>(
     symbol_db: &mut SymbolDb<'data, P>,
     parsed_objects: Vec<Box<ParsedInputObject<'data, P>>>,
-    stub_libraries: Vec<DefinedStubLibrary<'data>>,
+    stub_libraries: Vec<LoadedStubLibrary<'data>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data, P>>,
 ) {
     timing_phase!("Group files");
@@ -211,13 +214,14 @@ pub(crate) fn create_groups<'data, P: Platform>(
     let stub_libraries: Vec<SequencedStubLibrary<'data>> = stub_libraries
         .into_iter()
         .enumerate()
-        .map(|(i, defined_symbols)| {
+        .map(|(i, stub)| {
             let symbol_id_range =
-                SymbolIdRange::input(next_symbol_id, defined_symbols.total_symbols());
+                SymbolIdRange::input(next_symbol_id, stub.defined_symbols.total_symbols());
             next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
 
             SequencedStubLibrary {
-                defined_symbols,
+                input: stub.input,
+                defined_symbols: stub.defined_symbols,
                 symbol_id_range,
                 file_id: FileId::new(symbol_db.next_group_index(), i as u32),
             }
@@ -390,8 +394,8 @@ impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
 
     pub(crate) fn is_dynamic(&self) -> bool {
         match self {
-            SequencedInput::StubLibrary(_) => true,
             SequencedInput::Object(o) if o.is_dynamic() => true,
+            SequencedInput::StubLibrary(_) => true,
             _ => false,
         }
     }
@@ -426,7 +430,7 @@ impl<'data, P: Platform> std::fmt::Display for SequencedInputObject<'data, P> {
 
 impl std::fmt::Display for SequencedStubLibrary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.defined_symbols.install_name, f)
+        std::fmt::Display::fmt(&self.input, f)
     }
 }
 

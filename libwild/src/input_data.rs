@@ -62,9 +62,14 @@ pub(crate) struct LoadedInputs<'data, P: Platform> {
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
 
-    pub(crate) stub_libraries: Vec<DefinedStubLibrary<'data>>,
+    pub(crate) stub_libraries: Vec<LoadedStubLibrary<'data>>,
 
     pub(crate) lto_objects: Vec<Result<Box<LtoInputInfo<'data>>>>,
+}
+
+pub(crate) struct LoadedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
 }
 
 pub(crate) struct InputBytes<'data> {
@@ -443,7 +448,13 @@ impl<'data> FileLoader<'data> {
             }
             Some(LoadedFileState::StubLibrary(input_file, defined_stub_library)) => {
                 self.has_dynamic = true;
-                loaded.stub_libraries.push(defined_stub_library);
+                loaded.stub_libraries.push(LoadedStubLibrary {
+                    input: InputRef {
+                        file: input_file,
+                        entry: None,
+                    },
+                    defined_symbols: defined_stub_library,
+                });
                 self.loaded_files.push(input_file);
             }
             Some(LoadedFileState::Error(error)) => {

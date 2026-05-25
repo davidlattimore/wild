@@ -1937,9 +1937,8 @@ impl<'a, 'data, P: Platform> std::fmt::Display for SymbolDebug<'a, 'data, P> {
                         write!(f, "<unnamed symbol>")?;
                     }
                 }
-                SequencedInput::StubLibrary(_) => {
-                    // TODO: add file name to error message
-                    write!(f, "<unnamed Mach-O stub library symbol>")?;
+                SequencedInput::StubLibrary(s) => {
+                    write!(f, "<unnamed Mach-O stub library symbol from `{}`>", s.input)?;
                 }
                 SequencedInput::LinkerScript(s) => {
                     write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
