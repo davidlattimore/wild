@@ -15,7 +15,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
 
     let (objdump_arch, objdump_bin_candidates) = match arch {
         ArchKind::Aarch64 => ("aarch64", ["aarch64-linux-gnu-objdump", "objdump"]),
-        ArchKind::RISCV64 => ("riscv:rv64", ["riscv64-linux-gnu-objdump", "objdump"]),
+        ArchKind::RiscV64 => ("riscv:rv64", ["riscv64-linux-gnu-objdump", "objdump"]),
         ArchKind::X86_64 => todo!(), // x86_64 objdump is not used in linker-diff currently
         ArchKind::LoongArch64 => ("Loongarch64", ["loongarch64-linux-gnu-objdump", "objdump"]),
     };
@@ -73,7 +73,7 @@ fn test_align_up() {
             .is_ok_and(|v| v == "all" || v.split(',').any(|a| a == "riscv64"))
     {
         assert_eq!(
-            decode_insn_with_objdump(&[0x00, 0x20, 0xb0, 0x23], 0x1000, ArchKind::RISCV64).unwrap(),
+            decode_insn_with_objdump(&[0x00, 0x20, 0xb0, 0x23], 0x1000, ArchKind::RiscV64).unwrap(),
             "fld\tfa2,64(a5)"
         );
     }

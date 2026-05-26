@@ -5053,7 +5053,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_RISCV_VARIANT_CC,
-        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RISCV64,
+        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RiscV64,
         |_inputs| 0,
     ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),

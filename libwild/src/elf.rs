@@ -347,7 +347,7 @@ impl platform::Platform for Elf {
             crate::arch::Architecture::AArch64 => {
                 linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
             }
-            crate::arch::Architecture::RISCV64 => {
+            crate::arch::Architecture::RiscV64 => {
                 linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
             }
             crate::arch::Architecture::LoongArch64 => {
@@ -907,7 +907,7 @@ impl platform::Platform for Elf {
             .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
-        if args.arch == Architecture::RISCV64 {
+        if args.arch == Architecture::RiscV64 {
             symbols.section_start(
                 output_section_id::DATA,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,

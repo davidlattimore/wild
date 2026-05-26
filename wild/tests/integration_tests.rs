@@ -546,7 +546,7 @@ enum Architecture {
     #[strum(serialize = "aarch64")]
     AArch64,
     #[strum(serialize = "riscv64")]
-    RISCV64,
+    RiscV64,
     #[strum(serialize = "loongarch64")]
     LoongArch64,
 }
@@ -554,7 +554,7 @@ enum Architecture {
 const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::X86_64,
     Architecture::AArch64,
-    Architecture::RISCV64,
+    Architecture::RiscV64,
     Architecture::LoongArch64,
 ];
 
@@ -563,7 +563,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
-            Architecture::RISCV64 => "elf64lriscv",
+            Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
         }
     }
@@ -584,7 +584,7 @@ impl Architecture {
 
     fn default_target_triple_rustc(&self, platform: PlatformKind) -> String {
         match (platform, self) {
-            (PlatformKind::Elf, Architecture::RISCV64) => "riscv64gc-unknown-linux-gnu".to_string(),
+            (PlatformKind::Elf, Architecture::RiscV64) => "riscv64gc-unknown-linux-gnu".to_string(),
             _ => self.default_target_triple(platform),
         }
     }
@@ -638,7 +638,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
-        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
+        Some(Architecture::RiscV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
         Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
     }
 }
@@ -696,7 +696,7 @@ fn get_host_architecture() -> Architecture {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        Architecture::RISCV64
+        Architecture::RiscV64
     }
     #[cfg(target_arch = "loongarch64")]
     {
@@ -2296,14 +2296,14 @@ fn get_c_compiler(
         (_, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
             ),
             "gcc" | "g++",
             CLanguage::C,
         ) => Ok(format!("{}-gcc", arch.cross_triplet())),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
             ),
             "gcc" | "g++",
             CLanguage::Cpp,
@@ -4419,7 +4419,7 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [
         Architecture::AArch64,
-        Architecture::RISCV64,
+        Architecture::RiscV64,
         Architecture::LoongArch64,
     ]
     .into_iter()

@@ -17,7 +17,7 @@ use std::ops::Range;
 pub(crate) enum ArchKind {
     X86_64,
     Aarch64,
-    RISCV64,
+    RiscV64,
     LoongArch64,
 }
 
@@ -279,7 +279,7 @@ impl ArchKind {
         match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
             object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
-            object::elf::EM_RISCV => Ok(ArchKind::RISCV64),
+            object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
             object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
             other => bail!("Unsupported object architecture {other}",),
         }

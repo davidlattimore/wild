@@ -349,7 +349,7 @@ const fn default_target_arch() -> Architecture {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RISCV64;
+        return Architecture::RiscV64;
     }
     #[cfg(target_arch = "loongarch64")]
     {
@@ -540,7 +540,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         })
         .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
-            args.arch = Architecture::RISCV64;
+            args.arch = Architecture::RiscV64;
             Ok(())
         })
         .sub_option(
@@ -2056,7 +2056,7 @@ impl platform::Args for ElfArgs {
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
-            Architecture::RISCV64 => Alignment { exponent: 12 },
+            Architecture::RiscV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
             Architecture::Ppc64 => Alignment { exponent: 16 },
             Architecture::Unsupported => unreachable!(),

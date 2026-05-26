@@ -105,7 +105,7 @@ impl Arch for RiscV64 {
             let bytes = &section_bytes[offset as usize..offset as usize + 4];
             let address = section_address + offset;
 
-            let raw_instruction = decode_insn_with_objdump(bytes, address, ArchKind::RISCV64).ok();
+            let raw_instruction = decode_insn_with_objdump(bytes, address, ArchKind::RiscV64).ok();
 
             instructions.push(crate::arch::Instruction {
                 raw_instruction,

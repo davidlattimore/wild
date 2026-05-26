@@ -11,7 +11,7 @@ use std::fmt::Display;
 pub(crate) enum Architecture {
     X86_64,
     AArch64,
-    RISCV64,
+    RiscV64,
     LoongArch64,
     Ppc64,
     Unsupported,
@@ -24,7 +24,7 @@ impl TryFrom<u16> for Architecture {
         match arch {
             EM_X86_64 => Ok(Self::X86_64),
             EM_AARCH64 => Ok(Self::AArch64),
-            EM_RISCV => Ok(Self::RISCV64),
+            EM_RISCV => Ok(Self::RiscV64),
             EM_LOONGARCH => Ok(Self::LoongArch64),
             EM_PPC64 => Ok(Self::Ppc64),
             _ => bail!("Unsupported architecture: 0x{:x}", arch),
@@ -37,7 +37,7 @@ impl Display for Architecture {
         let arch = match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64",
-            Architecture::RISCV64 => "riscv64",
+            Architecture::RiscV64 => "riscv64",
             Architecture::LoongArch64 => "loongarch64",
             Architecture::Ppc64 => "ppc64",
             Architecture::Unsupported => "unsupported",
