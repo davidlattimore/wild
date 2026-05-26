@@ -99,6 +99,10 @@ pub struct Config {
     #[arg(long = "ref", value_name = "FILE")]
     pub references: Vec<PathBuf>,
 
+    /// Match any reference instead of requiring all references to match
+    #[arg(long)]
+    pub match_any: bool,
+
     #[arg(long, alias = "color", default_value = "auto")]
     pub colour: Colour,
 
@@ -392,6 +396,16 @@ impl Config {
         // we compare a value from our file against each of the values from the other files.
         std::iter::once(&self.file).chain(&self.references)
     }
+
+    /// Returns whether the first item equals all or any of the others, depending on the --match-any
+    /// flag.
+    fn match_multi<T: PartialEq>(&self, values: impl Iterator<Item = T>) -> bool {
+        if self.match_any {
+            first_equals_any(values)
+        } else {
+            first_equals_all(values)
+        }
+    }
 }
 
 impl<'data> Binary<'data> {
@@ -529,7 +543,7 @@ fn validate_objects(
             Err(e) => e.to_string(),
         })
         .collect_vec();
-    if first_equals_any(values.iter()) {
+    if report.config.match_multi(values.iter()) {
         return;
     }
     report.add_diff(Diff {

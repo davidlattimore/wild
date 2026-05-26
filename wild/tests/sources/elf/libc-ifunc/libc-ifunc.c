@@ -6,6 +6,7 @@
 // we need to diff against lld.
 //#EnableLinker:lld
 //#RequiresGlibc:true
+//#DiffMatchAny:true
 
 int foo() { return 42; }
 

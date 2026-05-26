@@ -78,6 +78,9 @@
 //! DiffEnabled:{bool} Defaults to true. Set to false to disable diffing of output files with
 //! linker-diff.
 //!
+//! DiffMatchAny:{bool} Defaults to false. If set, diff will pass provided our output matches any of
+//! the reference linker outputs.
+//!
 //! RunEnabled:{bool} Defaults to true. Set to false to disable execution of the resulting binary.
 //!
 //! RunDynSym:{string} If set and RunEnabled:true, then, instead of executing the binary normally,
@@ -741,6 +744,7 @@ struct Config {
     deps: Vec<Dep>,
     compiler: String,
     should_diff: bool,
+    diff_match_any: bool,
     should_run: bool,
     run_dyn_sym: Option<String>,
     should_error: bool,
@@ -1312,6 +1316,7 @@ impl Config {
             compiler: platform.default_c_compiler().to_owned(),
             should_diff: platform.diff_supported(),
             should_run: platform.can_execute_on_host(),
+            diff_match_any: false,
             run_dyn_sym: None,
             should_error: false,
             expect_stderr: Default::default(),
@@ -1571,6 +1576,9 @@ fn process_directive(
         "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
         "DiffEnabled" => {
             config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
+        }
+        "DiffMatchAny" => {
+            config.diff_match_any = arg.parse().context("Invalid bool for DiffMatchAny")?
         }
         "RunEnabled" => config.should_run = arg.parse().context("Invalid bool for RunEnabled")?,
         "RunDynSym" => {
@@ -4356,6 +4364,7 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
     diff_config
         .equiv
         .extend(config.section_equiv.iter().cloned());
+    diff_config.match_any = config.diff_match_any;
     diff_config.references = files.clone();
     diff_config.file = diff_config
         .references

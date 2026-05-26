@@ -7,6 +7,7 @@
 //#DiffIgnore:section.data
 //#DiffIgnore:rel.R_AARCH64_ADR_GOT_PAGE.R_AARCH64_ADR_GOT_PAGE
 //#EnableLinker:lld
+//#DiffMatchAny:true
 
 int foo(void);
 

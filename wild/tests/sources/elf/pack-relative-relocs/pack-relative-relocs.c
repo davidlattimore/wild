@@ -14,6 +14,7 @@
 //#Mode:dynamic
 //#Contains:.relr.dyn
 //#DoesNotContain:GLIBC_ABI_DT_RELR
+//#DiffMatchAny:true
 
 //#Config:z-pack-relative-relocs:default
 //#LinkArgs:-pie -z now -z pack-relative-relocs --pack-dyn-relocs=none

@@ -230,13 +230,17 @@ fn compare_sections<A: Arch>(
             resolutions.push(tester.resolve_group_traced(section_kind, &group));
         }
 
-        // The first resolution (the one from our linker-under-test) must be equal to at least one
-        // of the other resolutions.
+        // The first resolution (the one from our linker-under-test) must be equal to all
+        // of the other resolutions (or at least one if --match-any is set).
         if let Some(first) = resolutions.first() {
             let mut trace = TraceOutput::default();
 
-            let at_least_one_match = crate::diagnostics::trace_scope(&mut trace, || {
-                resolutions[1..].iter().any(|other| first.matches(other))
+            let has_match = crate::diagnostics::trace_scope(&mut trace, || {
+                if report.config.match_any {
+                    resolutions[1..].iter().any(|other| first.matches(other))
+                } else {
+                    resolutions[1..].iter().all(|other| first.matches(other))
+                }
             });
 
             // Ideally we'd successfully match all binaries, however GNU ld when it has PLT
@@ -244,7 +248,7 @@ fn compare_sections<A: Arch>(
             // address. We don't have any good way to match something like that.
             let first_has_match_failure = first.relaxations.is_none() || first.has_error();
 
-            if !at_least_one_match || first_has_match_failure {
+            if !has_match || first_has_match_failure {
                 // Check if the diff key would be ignored
                 let start_offset = group.start_offset();
                 let original_annotations = group.into_original_annotations();

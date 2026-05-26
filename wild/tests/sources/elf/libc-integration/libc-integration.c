@@ -11,6 +11,7 @@
 //#DiffIgnore:section.rela.dyn
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
+//#DiffMatchAny:true
 
 //#AbstractConfig:shared:default
 //#Shared:libc-integration-0.c,libc-integration-0b.c

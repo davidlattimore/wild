@@ -1,6 +1,7 @@
 //#Object:global_references.c
 //#Object:runtime.c
 //#EnableLinker:lld
+//#DiffMatchAny:true
 
 int global_value = 38;
 int global_values[4] = {1, 2, 3, 4};

@@ -3,6 +3,7 @@
 //#Object:common_section1.c
 //#Object:runtime.c
 //#EnableLinker:lld
+//#DiffMatchAny:true
 
 #include "../common/runtime.h"
 

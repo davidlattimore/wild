@@ -8,6 +8,7 @@
 // At least some versions of GNU ld for risc-v export these symbols for some reason.
 //#DiffIgnore:dynsym.tbss_a.section
 //#DiffIgnore:dynsym.tcustom_a.section
+//#DiffMatchAny:true
 
 extern __thread char tbss_a[1024];
 extern __thread char tcustom_a[1024];

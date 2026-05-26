@@ -14,6 +14,7 @@
 //#DiffIgnore:section.got
 //#ExpectSym:_start section=".text"
 //#ExpectSym:foo_ptr section=".data"
+//#DiffMatchAny:true
 
 //#Config:origin:default
 //#LinkArgs:-z now -z origin

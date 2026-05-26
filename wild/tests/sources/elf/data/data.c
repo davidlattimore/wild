@@ -2,6 +2,7 @@
 //#EnableLinker:lld
 //#ExpectSym:_start section=".text"
 //#TestUpdateInPlace:true
+//#DiffMatchAny:true
 
 #include <stddef.h>
 

@@ -10,6 +10,7 @@
 //#DiffIgnore:dynsym.w2.section
 //#ExpectSym:_start section=".text"
 //#ExpectSym:w4
+//#DiffMatchAny:true
 
 #include "../common/runtime.h"
 
