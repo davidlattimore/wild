@@ -261,7 +261,9 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
             }
             cu_index_base += boundaries.len() as u32;
 
-            collect_pubnames_symbols(object, &offset_to_idx, base_idx, &mut symbol_map);
+            for_each_pubname_entry(object, &offset_to_idx, base_idx, |name, entry| {
+                symbol_map.entry(name).or_default().push(entry);
+            });
         }
     }
 
@@ -470,25 +472,13 @@ fn build_address_and_symbol_tables<'data>(
             }
             cu_offset += boundaries.len() as u32;
 
-            for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
-                let Some(data) = raw_section_by_name(object, section_name) else {
-                    continue;
-                };
-                for set in parse_pubnames_sets(data) {
-                    let cu_idx = offset_to_idx
-                        .get(&set.debug_info_offset)
-                        .copied()
-                        .unwrap_or(base);
-                    for (name, attrs) in set.entries {
-                        let entry = encode_cu_vector_entry(cu_idx, attrs);
-                        let sd = sym_map.entry(name).or_insert_with(|| SymData {
-                            cv_entries: Vec::new(),
-                            hash: gdb_hash(name),
-                        });
-                        sd.cv_entries.push(entry);
-                    }
-                }
-            }
+            for_each_pubname_entry(object, &offset_to_idx, base, |name, entry| {
+                let sd = sym_map.entry(name).or_insert_with(|| SymData {
+                    cv_entries: Vec::new(),
+                    hash: gdb_hash(name),
+                });
+                sd.cv_entries.push(entry);
+            });
         }
     }
 
@@ -507,12 +497,13 @@ fn build_address_and_symbol_tables<'data>(
     }
 }
 
-/// Collect pubnames/pubtypes symbols from an object into the global map.
-fn collect_pubnames_symbols<'data>(
+/// Iterate over `.debug_gnu_pubnames` and `.debug_gnu_pubtypes` entries in an object,
+/// calling `on_entry(name, encoded_entry)` for each symbol.
+fn for_each_pubname_entry<'data>(
     object: &crate::elf::File<'data>,
     offset_to_idx: &HashMap<u64, u32>,
     fallback_cu: u32,
-    symbol_map: &mut HashMap<&'data [u8], Vec<u32>>,
+    mut on_entry: impl FnMut(&'data [u8], u32),
 ) {
     for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
         let Some(data) = raw_section_by_name(object, section_name) else {
@@ -524,8 +515,7 @@ fn collect_pubnames_symbols<'data>(
                 .copied()
                 .unwrap_or(fallback_cu);
             for (name, attrs) in set.entries {
-                let entry = encode_cu_vector_entry(cu_idx, attrs);
-                symbol_map.entry(name).or_default().push(entry);
+                on_entry(name, encode_cu_vector_entry(cu_idx, attrs));
             }
         }
     }
