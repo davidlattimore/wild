@@ -255,8 +255,7 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
             total_addr_entries += obj_addr_count;
 
             let base_idx = cu_index_base;
-            let mut offset_to_idx: HashMap<u64, u32> =
-                HashMap::with_capacity(boundaries.len());
+            let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(boundaries.len());
             for (i, cu) in boundaries.iter().enumerate() {
                 offset_to_idx.insert(cu.offset, base_idx + i as u32);
             }
@@ -300,8 +299,11 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
     }
 
     let cu_entries = build_cu_list(output_buf, layout);
-    let addr_entries = build_address_entries(layout);
-    let (sorted, ht_slots) = build_symbol_table(layout);
+    let AddressAndSymbolData {
+        addr_entries,
+        sorted_symbols: sorted,
+        ht_slots,
+    } = build_address_and_symbol_tables(layout);
 
     let cu_list_off = HEADER_SIZE as u32;
     let tu_list_off = cu_list_off + (cu_entries.len() * CU_ENTRY_SIZE) as u32;
@@ -401,65 +403,22 @@ fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Vec<GdbIndexCuE
         .collect()
 }
 
-/// Build address entries by mapping each executable section to its resolved address.
-fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> {
-    let mut entries = Vec::new();
-    let mut cu_offset = 0u32;
-
-    for group in &layout.group_layouts {
-        for file in &group.files {
-            let FileLayout::Object(obj) = file else {
-                continue;
-            };
-            let object = obj.object;
-
-            let obj_cu_count = raw_section_by_name(object, ".debug_info")
-                .map_or(0, |data| parse_cu_boundaries(data).len() as u32);
-            if obj_cu_count == 0 {
-                continue;
-            }
-            let base_cu = cu_offset;
-
-            for (si, slot) in obj.sections.iter().enumerate() {
-                let SectionSlot::Loaded(section) = slot else {
-                    continue;
-                };
-                if section.size == 0 {
-                    continue;
-                }
-                let Ok(header) = object.section(object::SectionIndex(si)) else {
-                    continue;
-                };
-                if !header.is_alloc() || !header.is_executable() {
-                    continue;
-                }
-                if let Some(addr) = obj.section_resolutions[si].address()
-                    && addr != 0
-                {
-                    entries.push(GdbIndexAddressEntry {
-                        low_address: addr,
-                        high_address: addr + section.size,
-                        cu_index: base_cu,
-                    });
-                }
-            }
-
-            cu_offset += obj_cu_count;
-        }
-    }
-    entries
-}
-
 struct SymData {
     cv_entries: Vec<u32>,
     hash: u32,
 }
 
-/// Build the symbol table from `.debug_gnu_pubnames`/`.debug_gnu_pubtypes`, returning
-/// the symbols sorted by name and the computed hash table slot count.
-fn build_symbol_table<'data>(
+struct AddressAndSymbolData<'data> {
+    addr_entries: Vec<GdbIndexAddressEntry>,
+    sorted_symbols: Vec<(&'data [u8], SymData)>,
+    ht_slots: usize,
+}
+
+/// Build address entries and symbol table in a single pass over input objects.
+fn build_address_and_symbol_tables<'data>(
     layout: &'data Layout<'_, Elf>,
-) -> (Vec<(&'data [u8], SymData)>, usize) {
+) -> AddressAndSymbolData<'data> {
+    let mut addr_entries = Vec::new();
     let mut sym_map: HashMap<&'data [u8], SymData> = HashMap::new();
     let mut cu_offset = 0u32;
 
@@ -478,6 +437,33 @@ fn build_symbol_table<'data>(
             }
 
             let base = cu_offset;
+
+            // Address entries: map each executable section to its resolved address.
+            for (si, slot) in obj.sections.iter().enumerate() {
+                let SectionSlot::Loaded(section) = slot else {
+                    continue;
+                };
+                if section.size == 0 {
+                    continue;
+                }
+                let Ok(header) = object.section(object::SectionIndex(si)) else {
+                    continue;
+                };
+                if !header.is_alloc() || !header.is_executable() {
+                    continue;
+                }
+                if let Some(addr) = obj.section_resolutions[si].address()
+                    && addr != 0
+                {
+                    addr_entries.push(GdbIndexAddressEntry {
+                        low_address: addr,
+                        high_address: addr + section.size,
+                        cu_index: base,
+                    });
+                }
+            }
+
+            // Symbol table: collect from pubnames/pubtypes.
             let mut offset_to_idx: HashMap<u64, u32> = HashMap::with_capacity(boundaries.len());
             for (i, cu) in boundaries.iter().enumerate() {
                 offset_to_idx.insert(cu.offset, base + i as u32);
@@ -514,7 +500,11 @@ fn build_symbol_table<'data>(
     let mut sorted: Vec<(&[u8], SymData)> = sym_map.into_iter().collect();
     sorted.sort_unstable_by_key(|(name, _)| *name);
     let ht_slots = compute_hash_table_slots(sorted.len());
-    (sorted, ht_slots)
+    AddressAndSymbolData {
+        addr_entries,
+        sorted_symbols: sorted,
+        ht_slots,
+    }
 }
 
 /// Collect pubnames/pubtypes symbols from an object into the global map.
