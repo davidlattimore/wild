@@ -1889,6 +1889,7 @@ impl platform::Platform for Elf {
         builder.add_sections(&custom.bss);
 
         builder.add_sections(&custom.nonalloc);
+        builder.add_section(output_section_id::GDB_INDEX);
         builder.add_section(output_section_id::COMMENT);
         builder.add_section(output_section_id::RISCV_ATTRIBUTES);
         builder.add_section(output_section_id::SHSTRTAB);
@@ -2097,6 +2098,10 @@ impl platform::Platform for Elf {
 
         group_sizes.merge(&extra_sizes);
         total_sizes.merge(&extra_sizes);
+    }
+
+    fn compute_gdb_index_size(groups: &[crate::layout::GroupState<Self>]) -> u64 {
+        crate::gdb_index::compute_gdb_index_size(groups)
     }
 
     fn align_load_segment_start(
@@ -4755,6 +4760,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::SYMTAB_SHNDX_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Secondary(output_section_id::SYMTAB_SHNDX_LOCAL),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GDB_INDEX.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(GDB_INDEX_SECTION_NAME)),
+        ty: sht::PROGBITS,
         ..DEFAULT_DEFS
     };
     // Start of regular sections

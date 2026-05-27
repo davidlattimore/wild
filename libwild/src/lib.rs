@@ -22,6 +22,7 @@ pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
 pub(crate) mod gc_stats;
+pub(crate) mod gdb_index;
 pub(crate) mod glob_match;
 pub(crate) mod grouping;
 pub(crate) mod hash;

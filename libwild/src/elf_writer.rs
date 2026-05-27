@@ -185,6 +185,9 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
+    // Write .gdb_index before splitting, since it needs to read .debug_info from the output.
+    write_gdb_index_section(&mut sized_output.out, layout);
+
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr {
@@ -311,6 +314,24 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     section_buffers.for_each_mut(|_, out| {
         out.fill(0);
     });
+}
+
+fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) {
+    use crate::platform::Args as _;
+    if !layout.args().should_write_gdb_index() {
+        return;
+    }
+    let sl = layout.section_layouts.get(output_section_id::GDB_INDEX);
+    if sl.file_size == 0 {
+        return;
+    }
+    timing_phase!("Write .gdb_index");
+    let start = sl.file_offset;
+    // Split the output buffer so that the part before our section is readable (for .debug_info)
+    // and our section is writable.
+    let (before, rest) = output.split_at_mut(start);
+    let gdb_buf = &mut rest[..sl.file_size];
+    crate::gdb_index::write_gdb_index(gdb_buf, before, layout);
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
