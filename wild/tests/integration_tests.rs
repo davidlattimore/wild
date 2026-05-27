@@ -67,8 +67,18 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
+//! ExpectSection:{section_name} Checks that the specified section exists in the output binary.
+//!
+//! NoSection:{section_name} Checks that the specified section does not exist in the output binary.
+//!
 //! ExpectSectionBytes:{section_name}=0x{hex_bytes} Checks that the specified section contains
 //! exactly the given bytes.
+//!
+//! ExpectGdbIndexCuCount:{count} Checks that the `.gdb_index` section contains exactly the
+//! specified number of CU entries.
+//!
+//! ExpectGdbIndexSymbol:{name} Checks that the `.gdb_index` symbol table contains an entry for the
+//! specified symbol name.
 //!
 //! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
 //! together with LinkerDriver.
@@ -1261,7 +1271,11 @@ struct Assertions {
     expected_load_alignments: Vec<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
+    expected_sections: Vec<String>,
+    absent_sections: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
+    expected_gdb_index_cu_count: Option<usize>,
+    expected_gdb_index_symbols: Vec<String>,
     output_file_matches: Vec<OutputFileMatch>,
     max_thunks: u64,
     expected_program_headers: Vec<ExpectedProgramHeaders>,
@@ -1613,6 +1627,25 @@ fn process_directive(
         }
         "DoesNotContain" => config.assertions.does_not_contain.push(arg.to_owned()),
         "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
+        "ExpectSection" => config
+            .assertions
+            .expected_sections
+            .push(arg.trim().to_owned()),
+        "NoSection" => config
+            .assertions
+            .absent_sections
+            .push(arg.trim().to_owned()),
+        "ExpectGdbIndexCuCount" => {
+            config.assertions.expected_gdb_index_cu_count = Some(
+                arg.trim()
+                    .parse::<usize>()
+                    .with_context(|| format!("Invalid CU count: {arg}"))?,
+            );
+        }
+        "ExpectGdbIndexSymbol" => config
+            .assertions
+            .expected_gdb_index_symbols
+            .push(arg.trim().to_owned()),
         "ExpectSectionBytes" => {
             let (section_name, hex_str) = arg.split_once('=').with_context(|| {
                 format!("ExpectSectionBytes requires section_name=0xhex_bytes, got `{arg}`")
@@ -3605,7 +3638,11 @@ impl Assertions {
             "dynsym",
         )?;
         self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
+        self.verify_expected_sections(&obj)?;
+        self.verify_absent_sections(&obj)?;
         self.verify_section_bytes(&obj)?;
+        self.verify_gdb_index_cu_count(&obj)?;
+        self.verify_gdb_index_symbols(&obj)?;
         self.verify_strings(&bytes)?;
         verify_no_overlapping_sections(&obj)?;
         verify_no_overlapping_segments(&obj)?;
@@ -3647,6 +3684,88 @@ impl Assertions {
 
         if linker_used.is_wild() {
             self.verify_max_thunks(path)?;
+        }
+        Ok(())
+    }
+
+    fn verify_expected_sections(&self, obj: &object::File) -> Result {
+        for name in &self.expected_sections {
+            ensure!(
+                obj.section_by_name(name).is_some(),
+                "Expected section `{name}` not found"
+            );
+        }
+        Ok(())
+    }
+
+    fn verify_absent_sections(&self, obj: &object::File) -> Result {
+        for name in &self.absent_sections {
+            ensure!(
+                obj.section_by_name(name).is_none(),
+                "Section `{name}` should not exist but was found"
+            );
+        }
+        Ok(())
+    }
+
+    fn verify_gdb_index_cu_count(&self, obj: &object::File) -> Result {
+        let Some(expected) = self.expected_gdb_index_cu_count else {
+            return Ok(());
+        };
+        let data = gdb_index_section_data(obj, "ExpectGdbIndexCuCount")?;
+        let hdr = GdbIndexOffsets::parse(&data)?;
+        let cu_count = (hdr.tu_list - hdr.cu_list) / 16;
+        ensure!(
+            cu_count == expected,
+            "ExpectGdbIndexCuCount: expected {expected} CUs, got {cu_count}"
+        );
+        Ok(())
+    }
+
+    fn verify_gdb_index_symbols(&self, obj: &object::File) -> Result {
+        if self.expected_gdb_index_symbols.is_empty() {
+            return Ok(());
+        }
+        let data = gdb_index_section_data(obj, "ExpectGdbIndexSymbol")?;
+        let hdr = GdbIndexOffsets::parse(&data)?;
+        let num_slots = (hdr.constant_pool - hdr.symbol_table) / 8;
+
+        // Walk the hash table to collect all indexed symbol names.
+        let mut found: HashSet<&str> = HashSet::new();
+        for i in 0..num_slots {
+            let so = hdr.symbol_table + i * 8;
+            if so + 8 > data.len() {
+                break;
+            }
+            let name_rel = u32::from_le_bytes(data[so..so + 4].try_into().unwrap()) as usize;
+            let cv_rel = u32::from_le_bytes(data[so + 4..so + 8].try_into().unwrap()) as usize;
+            if name_rel == 0 && cv_rel == 0 {
+                continue;
+            }
+            let abs = hdr.constant_pool + name_rel;
+            if abs >= data.len() {
+                continue;
+            }
+            let end = data[abs..]
+                .iter()
+                .position(|&b| b == 0)
+                .map_or(data.len(), |p| abs + p);
+            if let Ok(name) = std::str::from_utf8(&data[abs..end]) {
+                found.insert(name);
+            }
+        }
+
+        for expected in &self.expected_gdb_index_symbols {
+            ensure!(
+                found.contains(expected.as_str()),
+                "ExpectGdbIndexSymbol: `{expected}` not found in .gdb_index.\n\
+                 Found symbols: {:?}",
+                {
+                    let mut v: Vec<_> = found.iter().collect();
+                    v.sort();
+                    v
+                }
+            );
         }
         Ok(())
     }
@@ -4014,6 +4133,52 @@ impl Assertions {
         // won't be checked for the test that writes the output to /dev/null.
         self.max_thunks > 0
     }
+}
+
+/// Parsed offsets from a `.gdb_index` header, version-agnostic.
+struct GdbIndexOffsets {
+    cu_list: usize,
+    tu_list: usize,
+    symbol_table: usize,
+    constant_pool: usize,
+}
+
+impl GdbIndexOffsets {
+    /// Parse from section data. Handles both the 6-field header (versions <= 7)
+    /// and the 7-field header (versions 8+, which adds a shortcut table offset).
+    fn parse(data: &[u8]) -> Result<Self> {
+        ensure!(data.len() >= 24, ".gdb_index too small for header");
+        let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let cu_list = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+        let tu_list = u32::from_le_bytes(data[8..12].try_into().unwrap()) as usize;
+        let symbol_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
+        let constant_pool = if version >= 8 {
+            ensure!(
+                data.len() >= 28,
+                ".gdb_index v{version} too small for header"
+            );
+            // Version 8+: header has a shortcut_table_offset between symbol_table and
+            // constant_pool.
+            u32::from_le_bytes(data[24..28].try_into().unwrap()) as usize
+        } else {
+            // Version <= 7: no shortcut table; constant_pool immediately follows
+            // symbol_table_offset.
+            u32::from_le_bytes(data[20..24].try_into().unwrap()) as usize
+        };
+        Ok(Self {
+            cu_list,
+            tu_list,
+            symbol_table,
+            constant_pool,
+        })
+    }
+}
+
+fn gdb_index_section_data<'a>(obj: &'a object::File, directive: &str) -> Result<Vec<u8>> {
+    let section = obj
+        .section_by_name(".gdb_index")
+        .with_context(|| format!("{directive}: .gdb_index section not found"))?;
+    Ok(section.data()?.to_vec())
 }
 
 fn verify_no_overlapping_sections(obj: &object::File) -> Result {
