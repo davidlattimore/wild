@@ -228,10 +228,10 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
             };
             let object = obj.object;
 
-            let obj_cu_count = raw_section_by_name(object, ".debug_info")
-                .map_or(0, |data| parse_cu_boundaries(data).len());
-
-            if obj_cu_count == 0 {
+            let boundaries = raw_section_by_name(object, ".debug_info")
+                .map(parse_cu_boundaries)
+                .unwrap_or_default();
+            if boundaries.is_empty() {
                 continue;
             }
 
@@ -251,17 +251,16 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
                 }
             }
 
-            total_cus += obj_cu_count;
+            total_cus += boundaries.len();
             total_addr_entries += obj_addr_count;
 
             let base_idx = cu_index_base;
-            let mut offset_to_idx: HashMap<u64, u32> = HashMap::new();
-            if let Some(di_data) = raw_section_by_name(object, ".debug_info") {
-                for (i, cu) in parse_cu_boundaries(di_data).iter().enumerate() {
-                    offset_to_idx.insert(cu.offset, base_idx + i as u32);
-                }
+            let mut offset_to_idx: HashMap<u64, u32> =
+                HashMap::with_capacity(boundaries.len());
+            for (i, cu) in boundaries.iter().enumerate() {
+                offset_to_idx.insert(cu.offset, base_idx + i as u32);
             }
-            cu_index_base += obj_cu_count as u32;
+            cu_index_base += boundaries.len() as u32;
 
             collect_pubnames_symbols(object, &offset_to_idx, base_idx, &mut symbol_map);
         }
