@@ -127,6 +127,7 @@ pub struct ElfArgs {
 
     pub(crate) nmagic: bool,
     pub(crate) rosegment: bool,
+    pub(crate) gdb_index: bool,
 
     rpath_set: IndexSet<String>,
 
@@ -233,7 +234,6 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
-    "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "discard-all",
@@ -332,6 +332,7 @@ impl Default for ElfArgs {
 
             experimental_sframe: false,
             debug_compression_kind: None,
+            gdb_index: false,
         }
     }
 }
@@ -1114,6 +1115,24 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 "zstd" => args.debug_compression_kind = Some(CompressionKind::Zstd),
                 value => bail!("--compress-debug-sections={value}"),
             }
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("gdb-index")
+        .help("Generate GDB index")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-gdb-index")
+        .help("Disable GDB index generation")
+        .execute(|args, _modifier_stack| {
+            args.gdb_index = false;
             Ok(())
         });
 
@@ -2056,6 +2075,10 @@ impl platform::Args for ElfArgs {
 
     fn should_output_partial_object(&self) -> bool {
         self.should_output_partial_object
+    }
+
+    fn should_write_gdb_index(&self) -> bool {
+        self.gdb_index
     }
 }
 
