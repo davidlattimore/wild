@@ -4174,7 +4174,7 @@ impl GdbIndexOffsets {
     }
 }
 
-fn gdb_index_section_data<'a>(obj: &'a object::File, directive: &str) -> Result<Vec<u8>> {
+fn gdb_index_section_data(obj: &object::File, directive: &str) -> Result<Vec<u8>> {
     let section = obj
         .section_by_name(".gdb_index")
         .with_context(|| format!("{directive}: .gdb_index section not found"))?;
