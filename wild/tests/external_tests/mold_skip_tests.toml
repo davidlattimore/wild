@@ -16,6 +16,7 @@ tests = [
   "execute-only.sh",
   "fatal-warnings.sh",                     # `-warn-common` and `-fatal-warnings`
   "filter.sh",
+  "gdb-index-compress-output.sh",          # --compress-debug-sections=zlib-gabi
   "global-offset-table.sh",                # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
   "icf-gcc-except-table.sh",               # `--icf`
   "icf.sh",                                # `--icf`
@@ -48,20 +49,6 @@ tests = [
   "undefined-glob.sh",
   "warn-common.sh",
   "warn-once.sh",
-]
-
-[skipped_groups.gdb_index]
-reason = "GDB index support"
-tracking_issue = "https://github.com/wild-linker/wild/issues/811"
-tests = [
-  "gdb-index-compress-output.sh",
-  "gdb-index-dwarf2.sh",
-  "gdb-index-dwarf3.sh",
-  "gdb-index-dwarf4.sh",
-  "gdb-index-dwarf5.sh",
-  "gdb-index-dwarf64.sh",
-  "gdb-index-split-dwarf.sh",
-  "gdb-index-rnglistx.sh",
 ]
 
 [skipped_groups.version_script]
