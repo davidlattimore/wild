@@ -2,8 +2,8 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Load at standard x86_64 executable address */
-    . = 0x400000;
+    /* Start at base + 4KB to safely leave room for ELF headers without using math */
+    . = 0x401000;
 
     .text : {
         *(.text)
