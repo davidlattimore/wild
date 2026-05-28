@@ -3803,7 +3803,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
         };
 
         if let SectionSlot::Loaded(sec) = &object.sections[harvested.section_index.0] {
-            write_object_section::<A>(object, layout, sec, harvested.section_index, buffers, table_writer, trace)?;
+            write_object_section::<A>(object, layout, &sec, harvested.section_index, buffers, table_writer, trace)?;
         }
     }
 

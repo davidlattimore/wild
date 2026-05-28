@@ -149,8 +149,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-        let script_sorted_sections = harvest_and_sort_script_sections(&mut group_states, &output_sections, &symbol_db.section_part_ids);
-
+        let mut script_sorted_sections = harvest_and_sort_script_sections(&mut group_states, &output_sections, &symbol_db.section_part_ids);
+        
+    
     group_states.push(GroupState {
         files: vec![FileLayoutState::Epilogue(EpilogueLayoutState::new(
             symbol_db.args,
@@ -266,19 +267,22 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     // We perform a two-step finalization:
     // Sort the harvested sections according to the requested criteria.
     // Linearize them in memory, starting from the base offset of their respective output section part, and advancing by the size of each section.
-    let mut script_sorted_sections = script_sorted_sections;
-    script_sorted_sections.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let mut harvested_sections_registry = std::collections::HashMap::new();
-    if let Some(first) = script_sorted_sections.first() {
-        let mut current_offset = *mem_offsets.get(first.part_id);
-        for sec in &mut script_sorted_sections {
-            sec.mem_offset = current_offset;     // Assign the real hex address!
-            current_offset += sec.size;          // Advance the address by the function's size
-            // Adding to our instant-lookup HashMap
-            harvested_sections_registry.insert((sec.file_id, sec.section_index.0), sec.clone());
-        }
+    let mut harvested_sections_registry = Vec::with_capacity(script_sorted_sections.len());
+    let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
+    
+    for sec in &mut script_sorted_sections {
+        let offset = epilogue_offsets.get_mut(sec.part_id);
+        // Ensure the memory address correctly aligns with CPU instruction requirements
+        *offset = sec.alignment.align_up(*offset);
+        sec.mem_offset = *offset;
+        *offset += sec.size;
+        
+        // Push directly into our flat Vector—no hashing math required!
+        harvested_sections_registry.push(sec.clone());
     }
+
+    // Crucial: We MUST sort by the IDs here, otherwise the Binary Search in Step 3 will fail.
+    harvested_sections_registry.sort_unstable_by_key(|s| (s.file_id, s.section_index.0));
    
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
@@ -602,7 +606,7 @@ pub(crate) enum FileLayout<'data, P: Platform> {
     Object(ObjectLayout<'data, P>),
     Dynamic(DynamicLayout<'data, P>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data, P>),
-    Epilogue(EpilogueLayout<P>),
+    Epilogue(EpilogueLayout<'data, P>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
@@ -660,7 +664,7 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     Dynamic(DynamicLayoutState<'data, P>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
-    Epilogue(EpilogueLayoutState<P>),
+    Epilogue(EpilogueLayoutState<'data, P>),
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
 
@@ -682,10 +686,10 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     internal_symbols: InternalSymbols<'data, P>,
 }
 
-pub(crate) struct EpilogueLayoutState<P: Platform> {
+pub(crate) struct EpilogueLayoutState<'data, P: Platform> {
     format_specific: P::EpilogueLayoutExt,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
-}
+    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection<'data>>
+    }
 
 #[derive(Debug)]
 pub(crate) struct LinkerScriptLayoutState<'data, P: Platform> {
@@ -701,10 +705,10 @@ pub(crate) struct SyntheticSymbolsLayout<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout<P: Platform> {
+pub(crate) struct EpilogueLayout<'data, P: Platform> {
     pub(crate) format_specific: P::EpilogueLayoutExt,
     pub(crate) dynsym_start_index: u32,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
+    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection<'data>>,
 }
 
 #[derive(Debug)]
@@ -1231,7 +1235,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     output_sections: &'scope OutputSections<'data, P>,
     output_order: &'scope OutputOrder,
     pub(crate) section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
-    pub(crate) harvested_sections_registry: &'scope std::collections::HashMap<(FileId, usize), HarvestedSortedSection>,
+    pub(crate) harvested_sections_registry: &'scope [HarvestedSortedSection<'data>],
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
@@ -2395,7 +2399,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution<P>>>,
-        resources: &FinaliseLayoutResources<'_, 'data, P>,
+        resources: &FinaliseLayoutResources<'_, 'data, P>
     ) -> Result<FileLayout<'data, P>> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
         let file_layout = match self {
@@ -2459,7 +2463,7 @@ impl<P: Platform> std::fmt::Display for PreludeLayoutState<'_, P> {
     }
 }
 
-impl<P: Platform> std::fmt::Display for EpilogueLayoutState<P> {
+impl<P: Platform> std::fmt::Display for EpilogueLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
@@ -3404,12 +3408,12 @@ impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
     }
 }
 
-impl<'data, P: Platform> EpilogueLayoutState<P> {
+impl<'data, P: Platform> EpilogueLayoutState<'data, P> {
     fn new(
         args: &P::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<P>],
-        script_sorted_sections: Vec<HarvestedSortedSection>,
+        script_sorted_sections: Vec<HarvestedSortedSection<'data>>,
     ) -> Self {
         EpilogueLayoutState {
             format_specific: P::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
@@ -3462,7 +3466,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<EpilogueLayout<P>> {
+    ) -> Result<EpilogueLayout<'data, P>> {
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -3826,12 +3830,23 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         sframe_ranges.push(offset..offset + len);
                     }
 
-                    if let Some(harvested) = resources.harvested_sections_registry.get(&(self.file_id, sec_idx)) {
-                        address = harvested.mem_offset;
+                    // Collect SFrame section ranges while we're already iterating
+                    if part_id.output_section_id() == output_section_id::SFRAME {
+                        let offset = (address - sframe_start_address) as usize;
+                        let len = sec.size as usize;
+                        sframe_ranges.push(offset..offset + len);
+                    }
+
+                    if let Ok(idx) = resources.harvested_sections_registry.binary_search_by_key(
+                        &(self.file_id, sec_idx), 
+                        |s| (s.file_id, s.section_index.0)
+                    ) {
+                        address = resources.harvested_sections_registry[idx].mem_offset;
                     }
                     
                     SectionResolution { address }
                 }
+                
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
                     let address = *memory_offsets.get(part_id);
                     *memory_offsets.get_mut(part_id) +=
@@ -5210,36 +5225,45 @@ impl<'data, P: Platform> Drop for Layout<'data, P> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct HarvestedSortedSection {
+pub(crate) struct HarvestedSortedSection<'data> {
     pub(crate) file_id: FileId,
     pub(crate) section_index: object::SectionIndex,
     pub(crate) part_id: PartId,
     pub(crate) size: u64,
     pub(crate) alignment: Alignment,
     pub(crate) mem_offset: u64,
-    pub(crate) name: Vec<u8>,
+    pub(crate) name: &'data [u8],
 }
 
 fn harvest_and_sort_script_sections<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &OutputSections<P>,
     section_part_ids: &[PartId],
-) -> Vec<HarvestedSortedSection> {
+) -> Vec<HarvestedSortedSection<'data>> {
     timing_phase!("Harvest and sort script sections"); 
+
+    let has_any_sorting = group_states.iter().any(|g| {
+        g.files.iter().any(|f| {
+            if let FileLayoutState::Object(obj) = f {
+                !obj.script_sorted_sections.is_empty()
+            } else {
+                false
+            }
+        })
+    });
+
+    if !has_any_sorting {
+        return Vec::new();
+    }
+
     let mut temp = Vec::new();
     for group in group_states.iter_mut() {
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
-                // Steal the sticky notes
-                let notes = &obj.script_sorted_sections;
-                for note in notes {
-                    let slot = &obj.sections[note.index.0];
-                    // Only harvest it if it survived GC!
-                    if let SectionSlot::Loaded(sec) = slot {
+                for note in &obj.script_sorted_sections {
+                    if let SectionSlot::Loaded(sec) = &obj.sections[note.index.0] {
                         let part_id = obj.section_part_id(note.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
-                        // Steal the space from the original object!
-                        // group.common.mem_sizes.decrement(sec.part_id, capacity);
                         temp.push((note.name, HarvestedSortedSection {
                             file_id: obj.file_id,
                             section_index: note.index,
@@ -5247,13 +5271,15 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                             size: capacity, 
                             alignment: part_id.alignment(output_sections),
                             mem_offset: 0,
-                            name: note.name.to_vec(),
+                            name: note.name, // Zero-copy pointer
                         }));
                     }
                 }
             }
         }
     }
+    
     temp.sort_by(|a, b| a.0.cmp(&b.0));
-    temp.into_iter().map(|(_, harvested)| harvested).collect() // rreturn the clean, sorted list
+    temp.into_iter().map(|(_, harvested)| harvested).collect()
 }
+
