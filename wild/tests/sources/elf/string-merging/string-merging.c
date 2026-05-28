@@ -1,5 +1,5 @@
-// Defines identical string literals in two different C files and checks that
-// they end up pointing to the same memory.
+// Defines identical string literals in two different C files and checks that they end up pointing
+// to the same memory.
 
 //#AbstractConfig:default
 //#LinkArgs:-z noexecstack

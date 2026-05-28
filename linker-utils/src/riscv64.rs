@@ -119,6 +119,7 @@ impl RelaxationKind {
             range: AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
             alignment: 1,
             bias: 0,
+            thunkable: false,
         }
     }
 }
@@ -144,7 +145,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_64 => (
             RelocationKind::Absolute,
-            RelocationSize::ByteSize(4),
+            RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
             1,
@@ -450,6 +451,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         range,
         alignment,
         bias: 0,
+        thunkable: false,
     })
 }
 

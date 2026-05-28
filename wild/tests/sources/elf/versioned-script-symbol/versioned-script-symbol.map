@@ -1,0 +1,8 @@
+VERSION {
+  libmysqlclient_18 {
+    local:
+      *;
+  };
+};
+
+"mysql_affected_rows@libmysqlclient_18" = foo;

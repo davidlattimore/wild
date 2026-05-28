@@ -17,7 +17,7 @@ use std::ops::Range;
 pub(crate) enum ArchKind {
     X86_64,
     Aarch64,
-    RISCV64,
+    RiscV64,
     LoongArch64,
 }
 
@@ -105,6 +105,13 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     ) -> Vec<Instruction<'_, Self>>;
 
     fn decode_plt_entry(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry>;
+
+    /// If `bytes` at the given `address` form a range-extension thunk, returns the absolute target
+    /// address. The default implementation returns `None` (no thunks on this architecture).
+    fn decode_thunk(bytes: &[u8], address: u64) -> Option<u64> {
+        let _ = (bytes, address);
+        None
+    }
 
     /// Returns whether the supplied relocations should be chained together. `chain_prefix` will
     /// always be of length at least 2.
@@ -272,7 +279,7 @@ impl ArchKind {
         match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
             object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
-            object::elf::EM_RISCV => Ok(ArchKind::RISCV64),
+            object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
             object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
             other => bail!("Unsupported object architecture {other}",),
         }

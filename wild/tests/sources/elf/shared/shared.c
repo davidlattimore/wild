@@ -1,6 +1,5 @@
-// One notable scenario that this test tests is having a non-weak undefined
-// symbol (baz) in a shared object and having that symbol be defined by an
-// archive entry that we don't load.
+// One notable scenario that this test tests is having a non-weak undefined symbol (baz) in a shared
+// object and having that symbol be defined by an archive entry that we don't load.
 
 //#Config:default
 //#LinkArgs:-shared -z now

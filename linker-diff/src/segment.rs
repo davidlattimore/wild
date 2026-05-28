@@ -3,7 +3,7 @@ use crate::header_diff::DiffMode;
 use crate::header_diff::FieldValues;
 use anyhow::Ok;
 use anyhow::Result;
-use linker_utils::elf::SegmentType;
+use linker_utils::elf::pt;
 use object::LittleEndian;
 use object::elf::PT_LOAD;
 use object::read::elf::ProgramHeader as _;
@@ -28,13 +28,13 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
 
         if p_type == PT_LOAD {
             let mut flag_str = String::new();
-            if p_flags & 4 != 0 {
+            if p_flags.contains(object::elf::PF_R) {
                 flag_str.push('R');
             }
-            if p_flags & 2 != 0 {
+            if p_flags.contains(object::elf::PF_W) {
                 flag_str.push('W');
             }
-            if p_flags & 1 != 0 {
+            if p_flags.contains(object::elf::PF_X) {
                 flag_str.push('X');
             }
 
@@ -45,7 +45,7 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
                 object,
             );
         } else {
-            let segment_type = SegmentType::from_u32(p_type);
+            let segment_type = pt::Display(p_type);
 
             values.insert(
                 format!("{segment_type}.alignment"),
@@ -55,7 +55,7 @@ fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
             );
             values.insert(
                 format!("{segment_type}.flags"),
-                p_flags,
+                p_flags.0,
                 Converter::None,
                 object,
             );

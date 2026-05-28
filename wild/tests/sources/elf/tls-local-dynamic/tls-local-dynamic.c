@@ -11,8 +11,8 @@
 //#Config:gcc-no-relax:gcc
 //#LinkArgs:-Wl,-z,now,--no-relax
 //#DiffEnabled:false
-// TODO: For some reason, the test fails under QEMU for LoongArch64,
-// even though it runs correctly on a native Alpine Linux system.
+// TODO: For some reason, the test fails under QEMU for LoongArch64, even though it runs correctly
+// on a native Alpine Linux system.
 //#SkipArch:loongarch64
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax

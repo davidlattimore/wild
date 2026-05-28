@@ -6,6 +6,7 @@ use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::bail;
+use crate::compression::CompressedSection;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::ensure;
@@ -61,7 +62,9 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
-use crate::symbol_db::is_mapping_symbol_name;
+use crate::thunks;
+use crate::thunks::ThunkBlockId;
+use crate::thunks::ThunkLayoutBuilder;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
@@ -84,6 +87,7 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use smallvec::SmallVec;
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::replace;
@@ -138,13 +142,16 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
             )
         },
     );
+
     let merged_strings = merged_strings?;
     let gc_outputs = gc_outputs?;
 
     let mut group_states = gc_outputs.group_states;
+    let thunk_layout_builder = gc_outputs.thunk_layout_builder;
 
     let epilogue_file_id = FileId::new(group_states.len() as u32, 0);
 
+    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     P::finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
 
     let mut dynamic_symbol_definitions =
@@ -210,6 +217,25 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &finalise_sizes_resources,
     )?;
 
+    let thunk_blocks = thunk_layout_builder
+        .map(|builder| {
+            builder.build(
+                &mut group_states,
+                &symbol_db,
+                &per_symbol_flags,
+                &output_sections,
+                &section_part_sizes,
+            )
+        })
+        .unwrap_or_default();
+
+    allocate_thunk_block_space::<A::Platform>(
+        &mut group_states,
+        &thunk_blocks,
+        &mut section_part_sizes,
+        &symbol_db,
+    );
+
     let mut section_part_layouts = layout_section_parts::<A::Platform>(
         &section_part_sizes,
         &output_sections,
@@ -231,11 +257,26 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         );
     }
 
+    if let Some((record, last_part_id)) = section_part_layouts
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(index, rec)| (rec, PartId::from_usize(index)))
+        .max_by_key(|(record, _)| record.file_offset + record.file_size)
+    {
+        let extra_file_size = A::Platform::last_part_size_to_extend(record, last_part_id)?;
+        if extra_file_size > 0 {
+            section_part_sizes.increment(last_part_id, extra_file_size as u64);
+
+            let rec = section_part_layouts.get_mut(last_part_id);
+            rec.file_size += extra_file_size;
+            rec.mem_size += extra_file_size as u64;
+        }
+    }
+
     let section_layouts = layout_sections(&output_sections, &section_part_layouts);
     let mut merged_section_layouts = section_layouts.clone();
     merge_secondary_parts(&output_sections, &mut merged_section_layouts);
-
-    output.set_size(compute_total_file_size(&section_layouts));
 
     let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
@@ -295,6 +336,10 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         .map(|group| res_writer.take_shard(group.num_symbols))
         .collect_vec();
 
+    let thunk_block_addresses_out = std::iter::repeat_with(Default::default)
+        .take(thunk_blocks.len())
+        .collect();
+
     let resources = FinaliseLayoutResources {
         symbol_db: &symbol_db,
         output_sections: &output_sections,
@@ -308,6 +353,8 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         segment_layouts: &segment_layouts,
         program_segments: &program_segments,
         format_specific: &properties_and_attributes,
+        thunk_blocks: &thunk_blocks,
+        thunk_block_addresses: &thunk_block_addresses_out,
     };
 
     let group_layouts = compute_symbols_and_layouts(
@@ -328,20 +375,32 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &group_layouts,
         &mut symbol_resolutions.resolutions,
     );
-    update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
+    update_redirect_resolutions(
+        &symbol_db,
+        &mut symbol_resolutions.resolutions,
+        &output_sections,
+        &section_layouts,
+    )?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, &symbol_db)?;
 
     // Evaluate ASSERT commands from all linker scripts now that layout is complete.
     crate::expression_eval::evaluate_assertions(
-        &symbol_db.groups,
+        &symbol_db,
         &section_layouts,
         &output_sections,
-        &resources.symbol_db.args.common().warning_callback,
+        &symbol_resolutions.resolutions,
     )?;
+
+    let thunk_block_addresses = thunk_block_addresses_out
+        .into_iter()
+        .map(|m| m.into_inner().unwrap())
+        .collect();
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
 
-    Ok(Layout {
+    let num_sections = output_sections.num_sections();
+
+    let mut layout = Layout {
         symbol_db,
         symbol_resolutions,
         segment_layouts,
@@ -361,7 +420,15 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         per_symbol_flags,
         dynamic_symbol_definitions,
         properties_and_attributes,
-    })
+        thunk_block_addresses,
+        compressed_debug_sections: OutputSectionMap::with_size(num_sections),
+    };
+
+    P::maybe_compress_debug_sections::<A>(&mut layout)?;
+
+    output.set_size(compute_total_file_size(&layout.section_layouts));
+
+    Ok(layout)
 }
 
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
@@ -371,10 +438,12 @@ struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     format_specific: &'scope P::LayoutExt,
 }
 
-/// Update resolutions for defsym symbols that reference other symbols.
-fn update_defsym_symbol_resolutions<'data, P: Platform>(
+/// Update resolutions for symbol redirects.
+fn update_redirect_resolutions<'data, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
+    output_sections: &OutputSections<'data, P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result {
     verbose_timing_phase!("Update symdef resolutions");
 
@@ -384,7 +453,15 @@ fn update_defsym_symbol_resolutions<'data, P: Platform>(
         match group {
             Group::Prelude(prelude) => {
                 for def_info in &prelude.symbol_definitions {
-                    update_defsym_symbol_resolution(symbol_id, def_info, symbol_db, resolutions)?;
+                    update_defsym_symbol_resolution(
+                        symbol_id,
+                        def_info,
+                        symbol_db,
+                        resolutions,
+                        output_sections,
+                        section_layouts,
+                        &[],
+                    )?;
                     symbol_id = symbol_id.next();
                 }
             }
@@ -396,13 +473,16 @@ fn update_defsym_symbol_resolutions<'data, P: Platform>(
                             def_info,
                             symbol_db,
                             resolutions,
+                            output_sections,
+                            section_layouts,
+                            &script.parsed.memory_regions,
                         )?;
                         symbol_id = symbol_id.next();
                     }
                 }
             }
-            Group::Objects(_) | Group::SyntheticSymbols(_) => {}
-            #[cfg(feature = "plugins")]
+            Group::Objects(_) | Group::StubLibraries(_) | Group::SyntheticSymbols(_) => {}
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(_) => {}
         }
     }
@@ -412,33 +492,44 @@ fn update_defsym_symbol_resolutions<'data, P: Platform>(
 
 fn update_defsym_symbol_resolution<'data, P: Platform>(
     symbol_id: SymbolId,
-    def_info: &InternalSymDefInfo<P>,
+    def_info: &InternalSymDefInfo<'data, P>,
     symbol_db: &SymbolDb<'data, P>,
     resolutions: &mut [Option<Resolution<P>>],
+    output_sections: &OutputSections<'data, P>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    memory_regions: &[crate::linker_script::MemoryRegion<'data>],
 ) -> Result {
-    let SymbolPlacement::DefsymSymbol(target_name, offset) = def_info.placement else {
-        return Ok(());
+    if let SymbolPlacement::Redirect(redirect) = &def_info.placement {
+        let value = crate::expression_eval::evaluate_expression(
+            &redirect.expression,
+            redirect.loc,
+            section_layouts,
+            output_sections,
+            memory_regions,
+            symbol_db,
+            &|name| {
+                let Some(target_symbol_id) =
+                    symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+                else {
+                    return Err(redirect.missing_target(name));
+                };
+
+                let canonical_target_id = symbol_db.definition(target_symbol_id);
+
+                let resolution = resolutions[canonical_target_id.as_usize()]
+                    .as_ref()
+                    .ok_or_else(|| redirect.missing_resolution(name))?;
+
+                Ok(resolution.raw_value)
+            },
+        )?;
+
+        let Some(resolution) = &mut resolutions[symbol_id.as_usize()] else {
+            return Ok(());
+        };
+
+        resolution.raw_value = value;
     };
-
-    if !symbol_db.is_canonical(symbol_id) {
-        return Ok(());
-    }
-
-    let Some(target_symbol_id) =
-        symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
-    else {
-        return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
-    };
-
-    let canonical_target_id = symbol_db.definition(target_symbol_id);
-    if let Some(target_value) = resolutions[canonical_target_id.as_usize()]
-        .as_ref()
-        .map(|r| r.raw_value)
-        && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
-    {
-        // Apply the offset from the defsym expression.
-        resolution.raw_value = (target_value as i64).wrapping_add(offset) as u64;
-    }
 
     Ok(())
 }
@@ -514,7 +605,7 @@ fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
             .iter()
             .enumerate()
         {
-            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_, _)) {
+            if !matches!(def_info.placement, SymbolPlacement::Redirect(_)) {
                 continue;
             }
 
@@ -580,6 +671,11 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
     pub(crate) properties_and_attributes: P::LayoutExt,
+    /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
+    /// of the thunk for that symbol within the block.
+    pub(crate) thunk_block_addresses: Vec<BTreeMap<SymbolId, u64>>,
+
+    pub(crate) compressed_debug_sections: OutputSectionMap<Option<CompressedSection>>,
 }
 
 #[derive(Debug, Default)]
@@ -695,7 +791,7 @@ pub(crate) struct EpilogueLayoutState<'data, P: Platform> {
 pub(crate) struct LinkerScriptLayoutState<'data, P: Platform> {
     file_id: FileId,
     input: InputRef<'data>,
-    symbol_id_range: SymbolIdRange,
+    pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols<'data, P>,
 }
 
@@ -721,10 +817,19 @@ pub(crate) struct ObjectLayout<'data, P: Platform> {
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) section_id_range: SectionIdRange,
+
     /// SFrame section ranges for this object, relative to the start of the .sframe output section.
     pub(crate) sframe_ranges: Vec<std::ops::Range<usize>>,
+
     /// Sparse map from section index to relaxation delta details.
     pub(crate) section_relax_deltas: RelaxDeltaMap,
+
+    /// Which ThunkBlock holds primary thunks for this object. Used during relocation writing to
+    /// look up the thunk address for out-of-range branch targets.
+    pub(crate) thunk_block_id: crate::thunks::ThunkBlockId,
+
+    /// Whether this object is responsible for writing the thunks in its ThunkBlock.
+    pub(crate) owns_thunk_block: bool,
 }
 
 #[derive(Debug)]
@@ -1116,8 +1221,19 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// Sparse map from section index to relaxation delta details, built during `finalise_sizes`
     /// and later transferred to `ObjectLayout`.
     section_relax_deltas: RelaxDeltaMap,
-    
+
+    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search.
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
+
+    /// Which ThunkBlock handles primary-part thunks for this object.
+    pub(crate) thunk_block_id: ThunkBlockId,
+
+    /// Whether this object is responsible for writing the thunk block.
+    pub(crate) owns_thunk_block: bool,
+
+    /// Total bytes of primary-function-part sections that survived GC. Used to help determine
+    /// distances for range-extension thunks.
+    pub(crate) post_gc_primary_bytes: u64,
 
 }
 
@@ -1215,6 +1331,8 @@ pub(crate) struct GraphResources<'data, 'scope, P: Platform> {
 
     has_variant_pcs: AtomicBool,
 
+    pub(crate) thunk_layout_builder: Option<crate::thunks::ThunkLayoutBuilder>,
+
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
@@ -1242,6 +1360,14 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     segment_layouts: &'scope SegmentLayouts,
     program_segments: &'scope ProgramSegments<P::ProgramSegmentDef>,
     format_specific: &'scope P::LayoutExt,
+
+    pub(crate) thunk_blocks: &'scope [crate::thunks::ThunkBlock],
+
+    /// Per-thunk-block addresses-maps. We could store this on ObjectLayoutState, but only a small
+    /// fraction of the input objects will be thunk-block owners, so it'd seem wasteful. Instead we
+    /// put it here and wrap each map in a mutex. Since each map is only written by its owner, each
+    /// mutex should only ever get locked once during its lifetime.
+    pub(crate) thunk_block_addresses: &'scope Vec<Mutex<BTreeMap<SymbolId, u64>>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1402,6 +1528,8 @@ impl<'data, P: Platform> Layout<'data, P> {
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
+        let thunk_count = self.thunk_count();
+
         let files = self
             .group_layouts
             .iter()
@@ -1442,7 +1570,18 @@ impl<'data, P: Platform> Layout<'data, P> {
                 })
             })
             .collect();
-        linker_layout::Layout { files }
+
+        linker_layout::Layout {
+            files,
+            metrics: linker_layout::Metrics { thunk_count },
+        }
+    }
+
+    fn thunk_count(&self) -> u64 {
+        self.thunk_block_addresses
+            .iter()
+            .map(|m| m.len() as u64)
+            .sum()
     }
 
     pub(crate) fn flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
@@ -1502,7 +1641,7 @@ fn layout_sections<P: Platform>(
     })
 }
 
-fn merge_secondary_parts<P: Platform>(
+pub(crate) fn merge_secondary_parts<P: Platform>(
     output_sections: &OutputSections<P>,
     section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
 ) {
@@ -1777,6 +1916,47 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
     Ok(total_sizes)
 }
 
+/// Allocates space for thunk blocks in each object that owns one.
+fn allocate_thunk_block_space<P: Platform>(
+    group_states: &mut [GroupState<P>],
+    thunk_blocks: &[crate::thunks::ThunkBlock],
+    total_sizes: &mut OutputSectionPartMap<u64>,
+    symbol_db: &SymbolDb<P>,
+) {
+    if thunk_blocks.is_empty() {
+        return;
+    }
+
+    verbose_timing_phase!("Apply thunk block sizes");
+
+    let emit_symbols = !symbol_db.args.should_strip_all();
+
+    for group_state in group_states.iter_mut() {
+        let mut extra_thunk_sizes: OutputSectionPartMap<u64> =
+            OutputSectionPartMap::with_size(total_sizes.num_parts());
+        for file in &group_state.files {
+            if let FileLayoutState::Object(obj) = file
+                && let Some(config) = P::file_thunk_config(obj.object)
+                && obj.owns_thunk_block
+            {
+                let block = thunk_blocks.get(obj.thunk_block_id.as_usize());
+                let count = block.map_or(0, |b| b.symbols.len());
+                let size = count as u64 * config.thunk_size;
+                extra_thunk_sizes.increment(config.primary_function_part_id, size);
+                if emit_symbols && let Some(block) = block {
+                    P::allocate_thunk_symbol_sizes(
+                        &mut extra_thunk_sizes,
+                        &block.symbols,
+                        symbol_db,
+                    );
+                }
+            }
+        }
+        group_state.common.mem_sizes.merge(&extra_thunk_sizes);
+        total_sizes.merge(&extra_thunk_sizes);
+    }
+}
+
 /// Propagates attributes from input sections to the output sections into which they were placed.
 fn propagate_section_attributes<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
@@ -1857,6 +2037,7 @@ struct GcOutputs<'data, P: Platform> {
     must_keep_sections: OutputSectionMap<bool>,
     has_static_tls: bool,
     has_variant_pcs: bool,
+    thunk_layout_builder: Option<ThunkLayoutBuilder>,
 }
 
 struct GroupActivationInputs<'data, P: Platform> {
@@ -1882,6 +2063,7 @@ impl<'data, P: Platform> GroupActivationInputs<'data, P> {
             .into_iter()
             .map(|file| file.create_layout_state(resources.symbol_db.args))
             .collect();
+
         let mut group = GroupState {
             queue: LocalWorkQueue::new(group_index),
             num_symbols,
@@ -1935,6 +2117,8 @@ fn find_required_sections<'data, A: Arch>(
 
     let num_groups = groups_in.len();
 
+    let thunk_layout_builder = thunks::ThunkLayoutBuilder::new::<A>(&groups_in);
+
     let mut worker_slots = Vec::with_capacity(num_groups);
     worker_slots.resize_with(num_groups, || {
         Mutex::new(WorkerSlot {
@@ -1952,6 +2136,7 @@ fn find_required_sections<'data, A: Arch>(
         must_keep_sections: output_sections.new_section_map(),
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
+        thunk_layout_builder,
         start_stop_sections: output_sections.new_section_map(),
         activations_remaining: AtomicUsize::new(num_groups),
         delay_processing: ArrayQueue::new(1),
@@ -1993,6 +2178,7 @@ fn find_required_sections<'data, A: Arch>(
         must_keep_sections,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
         has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
+        thunk_layout_builder: resources.thunk_layout_builder,
     })
 }
 
@@ -2146,7 +2332,7 @@ fn activate<'data, 'scope, A: Arch>(
         FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
-        FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
+        FileLayoutState::LinkerScript(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Epilogue(_) => {}
         FileLayoutState::NotLoaded(_) => {}
         FileLayoutState::SyntheticSymbols(_) => {}
@@ -2720,41 +2906,11 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
                 continue;
             }
 
-            match def_info.placement {
-                SymbolPlacement::DefsymAbsolute(_) => {
-                    resources
-                        .per_symbol_flags
-                        .get_atomic(symbol_id)
-                        .or_assign(ValueFlags::DIRECT);
-                }
-                SymbolPlacement::DefsymSymbol(target_name, _offset) => {
-                    resources
-                        .per_symbol_flags
-                        .get_atomic(symbol_id)
-                        .or_assign(ValueFlags::DIRECT);
-
-                    // Also mark the target symbol as used and queue it for loading to prevent it
-                    // from being GC'd.
-                    if let Some(target_symbol_id) = resources
-                        .symbol_db
-                        .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
-                    {
-                        let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
-                        let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
-                        let old_flags = resources
-                            .per_symbol_flags
-                            .get_atomic(canonical_target_id)
-                            .fetch_or(ValueFlags::DIRECT);
-
-                        if !old_flags.has_resolution() {
-                            queue.send_work::<A>(
-                                resources,
-                                file_id,
-                                WorkItem::LoadGlobalSymbol(canonical_target_id),
-                                scope,
-                            );
-                        }
-                    }
+            match &def_info.placement {
+                SymbolPlacement::Redirect(redirect) => {
+                    load_redirect_referenced_symbols::<A>(
+                        resources, queue, scope, symbol_id, redirect,
+                    );
                 }
                 _ => {}
             }
@@ -3124,11 +3280,53 @@ impl<'data, P: Platform> PreludeLayoutState<'data, P> {
     }
 }
 
+fn load_redirect_referenced_symbols<'data, 'scope, A: Arch>(
+    resources: &'scope GraphResources<'data, '_, <A as Arch>::Platform>,
+    queue: &mut LocalWorkQueue,
+    scope: &Scope<'scope>,
+    symbol_id: SymbolId,
+    redirect: &crate::parsing::Redirect<'_>,
+) {
+    resources
+        .per_symbol_flags
+        .get_atomic(symbol_id)
+        .or_assign(ValueFlags::DIRECT);
+
+    // Also mark any symbols in the expression as used and queue it for loading to
+    // prevent it from being GC'd.
+    redirect.expression.visit_expressions(&mut |e| {
+        if let crate::linker_script::Expression::Symbol(target_name) = e
+            && let Some(target_symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+        {
+            let canonical_target_id = resources.symbol_db.definition(target_symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(canonical_target_id);
+            let old_flags = resources
+                .per_symbol_flags
+                .get_atomic(canonical_target_id)
+                .fetch_or(ValueFlags::DIRECT);
+
+            if !old_flags.has_resolution() {
+                queue.send_work::<A>(
+                    resources,
+                    file_id,
+                    WorkItem::LoadGlobalSymbol(canonical_target_id),
+                    scope,
+                );
+            }
+        }
+        true
+    });
+}
+
 impl<'data, P: Platform> InternalSymbols<'data, P> {
-    fn activate_symbols(
+    fn activate_symbols<'scope, A: Arch<Platform = P>>(
         &self,
         common: &mut CommonGroupState<'data, P>,
-        resources: &GraphResources<'data, '_, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
     ) -> Result {
         for (offset, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(offset);
@@ -3148,6 +3346,15 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
             // PROVIDE_HIDDEN symbols should not be exported to dynsym.
             if def_info.symbol.is_hidden() {
                 continue;
+            }
+
+            match &def_info.placement {
+                SymbolPlacement::Redirect(redirect) => {
+                    load_redirect_referenced_symbols::<A>(
+                        resources, queue, scope, symbol_id, redirect,
+                    );
+                }
+                _ => {}
             }
 
             resources
@@ -3192,11 +3399,11 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
         resources: &FinaliseLayoutResources<'_, 'data, P>,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        for (local_index, &def_info) in self.symbol_definitions.iter().enumerate() {
+        for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
 
             let resolution =
-                create_start_end_symbol_resolution(memory_offsets, resources, def_info, symbol_id);
+                create_internal_symbol_resolution(memory_offsets, resources, def_info, symbol_id);
 
             resolutions_out.write(resolution)?;
         }
@@ -3208,10 +3415,10 @@ impl<'data, P: Platform> InternalSymbols<'data, P> {
     }
 }
 
-fn create_start_end_symbol_resolution<'data, P: Platform>(
+fn create_internal_symbol_resolution<'data, P: Platform>(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     resources: &FinaliseLayoutResources<'_, 'data, P>,
-    def_info: InternalSymDefInfo<P>,
+    def_info: &InternalSymDefInfo<P>,
     symbol_id: SymbolId,
 ) -> Option<Resolution<P>> {
     if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3231,12 +3438,10 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
         SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
-
         SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
         }
-
         SymbolPlacement::SectionGroupEnd(section_id) => {
             let mut end = {
                 let sec = resources.section_layouts.get(section_id);
@@ -3256,16 +3461,12 @@ fn create_start_end_symbol_resolution<'data, P: Platform>(
             }
             end
         }
-
-        SymbolPlacement::DefsymAbsolute(value) => value,
-
-        SymbolPlacement::DefsymSymbol(_, _) => {
-            // For defsym symbols that reference another symbol, we defer resolution
-            // until later when all symbols have been resolved. This is handled by
-            // update_defsym_symbol_resolutions() which is called after layout is complete.
+        SymbolPlacement::Redirect(_) => {
+            // For redirects to other symbols, we defer resolution until later when all symbols have
+            // been resolved. This is handled by update_redirect_resolutions() which is called after
+            // layout is complete.
             0
         }
-
         SymbolPlacement::LoadBaseAddress => resources
             .segment_layouts
             .segments
@@ -3524,10 +3725,12 @@ fn new_object_layout_state<P: Platform>(
         format_specific: Default::default(),
         section_relax_deltas: RelaxDeltaMap::new(),
         script_sorted_sections: input_state.script_sorted_sections,
+        thunk_block_id: ThunkBlockId::default(),
+        owns_thunk_block: false,
+        post_gc_primary_bytes: 0,
     })
 }
     
-
 fn new_dynamic_object_layout_state<'data, P: Platform>(
     input_state: &resolution::ResolvedDynamic<'data, P>,
 ) -> FileLayoutState<'data, P> {
@@ -3550,7 +3753,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        let mut frame_section_index = None;
+        let mut frame_section_indices = SmallVec::<[SectionIndex; 2]>::new();
         let mut note_gnu_property_section = None;
         let mut riscv_attributes_section = None;
 
@@ -3591,7 +3794,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                     }
                 }
                 SectionSlot::FrameData(index) => {
-                    frame_section_index = Some(*index);
+                    frame_section_indices.push(*index);
                 }
                 SectionSlot::NoteGnuProperty(index) => {
                     note_gnu_property_section = Some(*index);
@@ -3603,7 +3806,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             }
         }
 
-        if let Some(frame_data_section_index) = frame_section_index {
+        for frame_data_section_index in frame_section_indices {
             <A::Platform as Platform>::load_exception_frame_data::<A>(
                 self,
                 common,
@@ -3715,6 +3918,13 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         common.section_loaded(part_id, header, section, resources.output_sections);
 
+        if let Some(config) = A::thunk_config()
+            && resources.thunk_layout_builder.is_some()
+            && part_id == config.primary_function_part_id
+        {
+            self.post_gc_primary_bytes += section.size;
+        }
+
         let section_id = part_id.output_section_id();
 
         if section.size > 0 {
@@ -3777,6 +3987,7 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         }
 
         P::finalise_object_sizes(self, common);
+
         Ok(())
     }
 
@@ -3880,6 +4091,24 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
 
         P::finalise_object_layout(&self, memory_offsets);
 
+        // If this object owns a ThunkBlock, assign addresses for the block's thunks and write
+        // them directly into the shared output map.
+        if self.owns_thunk_block
+            && let Some(config) = P::file_thunk_config(self.object)
+            && let Some(block) = resources.thunk_blocks.get(self.thunk_block_id.as_usize())
+            && !block.symbols.is_empty()
+        {
+            let mut addresses = resources.thunk_block_addresses[self.thunk_block_id.as_usize()]
+                .lock()
+                .unwrap();
+
+            let addr = memory_offsets.get_mut(config.primary_function_part_id);
+            for &symbol_id in &block.symbols {
+                addresses.insert(symbol_id, *addr);
+                *addr += config.thunk_size;
+            }
+        }
+
         Ok(ObjectLayout {
             input: self.input,
             file_id: self.file_id,
@@ -3891,6 +4120,8 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             section_id_range: self.section_id_range,
             sframe_ranges,
             section_relax_deltas: self.section_relax_deltas,
+            thunk_block_id: self.thunk_block_id,
+            owns_thunk_block: self.owns_thunk_block,
         })
     }
 
@@ -3937,7 +4168,9 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
             .symbol_section(local_symbol, local_symbol_index)?
         {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
-                let input_offset = local_symbol.value();
+                let input_offset = self
+                    .object
+                    .symbol_offset_in_section(local_symbol, section_index)?;
                 let output_offset = opt_input_to_output(
                     self.section_relax_deltas.get(section_index.0),
                     input_offset,
@@ -4010,6 +4243,12 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         for (sym_index, sym) in self.object.enumerate_symbols() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
+            if let Some(section_index) = self.object.symbol_section(sym, sym_index)?
+                && matches!(self.sections[section_index.0], SectionSlot::Discard)
+            {
+                continue;
+            }
+
             if !can_export_symbol(sym, symbol_id, resources, export_all_dynamic) {
                 continue;
             }
@@ -4038,9 +4277,14 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
         queue: &mut LocalWorkQueue,
         scope: &Scope<'scope>,
     ) -> Result {
-        let sym = self
-            .object
-            .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+        let sym_index = self.symbol_id_range.id_to_input(symbol_id);
+        let sym = self.object.symbol(sym_index)?;
+
+        if let Some(section_index) = self.object.symbol_section(sym, sym_index)?
+            && matches!(self.sections[section_index.0], SectionSlot::Discard)
+        {
+            return Ok(());
+        }
 
         // Shared objects that we're linking against sometimes define symbols that are also defined
         // in regular object. When that happens, if we resolve the symbol to the definition from the
@@ -4118,8 +4362,7 @@ impl<'data> SymbolCopyInfo<'data> {
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
         if name.is_empty()
-            || (!symbol_db.args.should_output_partial_object()
-                && ((sym.is_local() && name.starts_with(b".L")) || is_mapping_symbol_name(name)))
+            || (!symbol_db.args.should_output_partial_object() && sym.is_default_strippable(name))
         {
             return None;
         }
@@ -4186,6 +4429,13 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
+            resolution::ResolvedFile::StubLibrary(s) => FileLayoutState::NotLoaded(NotLoaded {
+                symbol_id_range: s.symbol_id_range,
+                section_id_range: crate::input_section_id::SectionIdRange::input(
+                    crate::input_section_id::InputSectionId::from_usize(0),
+                    0,
+                ),
+            }),
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s, args))
             }
@@ -4196,7 +4446,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::SyntheticSymbols(s) => {
                 FileLayoutState::SyntheticSymbols(SyntheticSymbolsLayoutState::new(s))
             }
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             resolution::ResolvedFile::LtoInput(s) => FileLayoutState::NotLoaded(NotLoaded {
                 symbol_id_range: s.symbol_id_range,
                 section_id_range: s.section_id_range,
@@ -4940,12 +5190,15 @@ impl<'data, P: Platform> LinkerScriptLayoutState<'data, P> {
         }
     }
 
-    fn activate(
+    fn activate<'scope, A: Arch<Platform = P>>(
         &self,
         common: &mut CommonGroupState<'data, P>,
-        resources: &GraphResources<'data, '_, P>,
+        resources: &'scope GraphResources<'data, '_, P>,
+        queue: &mut LocalWorkQueue,
+        scope: &Scope<'scope>,
     ) -> Result {
-        self.internal_symbols.activate_symbols(common, resources)
+        self.internal_symbols
+            .activate_symbols::<A>(common, resources, queue, scope)
     }
 
     fn finalise_sizes(
@@ -4994,13 +5247,10 @@ pub(crate) fn section_debug<P: Platform>(
     object: &P::File<'_>,
     section_index: object::SectionIndex,
 ) -> impl std::fmt::Display {
-    let name = object
-        .section(section_index)
-        .and_then(|section| object.section_name(section))
-        .map_or_else(
-            |_| "??".to_owned(),
-            |name| String::from_utf8_lossy(name).into_owned(),
-        );
+    let name = object.section_name(section_index).map_or_else(
+        |_| "??".to_owned(),
+        |name| String::from_utf8_lossy(name).into_owned(),
+    );
     std::fmt::from_fn(move |f| write!(f, "`{name}`"))
 }
 

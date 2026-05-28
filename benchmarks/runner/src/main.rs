@@ -344,14 +344,11 @@ impl LinkerIdentifier {
         } else if let Some(mut rest) = version_line.strip_prefix("mold ") {
             kind = LinkerKind::Mold;
             version = take_word(&mut rest)?.to_owned();
-        } else if let Some(mut rest) =
-            version_line.strip_prefix("GNU ld (GNU Binutils for Ubuntu) ")
-        {
+        } else {
+            let mut rest = version_line.strip_prefix("GNU ld (GNU Binutils for Ubuntu) ")?;
             kind = LinkerKind::Bfd;
             version = take_word(&mut rest)?.to_owned();
             variant = Some("Ubuntu".to_owned());
-        } else {
-            return None;
         }
 
         let mut effective_version = parse_version_number(&version).ok()?;

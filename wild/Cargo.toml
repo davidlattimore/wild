@@ -18,7 +18,7 @@ path = "tests/integration_tests.rs"
 harness = false
 
 [dependencies]
-libwild = { path = "../libwild", version = "0.8.0" }
+libwild = { path = "../libwild", version = "0.9.0" }
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,
@@ -28,34 +28,40 @@ mimalloc = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
-ar = { workspace = true }
-itertools = { workspace = true }
-foldhash = { workspace = true }
-hex = { workspace = true }
-linker-diff = { path = "../linker-diff" }
-libloading = { workspace = true }
-libtest-mimic =  { workspace = true }
-object = { workspace = true }
-os_info = { workspace = true }
-regex = { workspace = true }
-serde = { workspace = true }
-serde-keyvalue = { workspace =  true }
-strum = { workspace = true }
-tempfile = { workspace = true }
-toml = { workspace = true }
-which = { workspace = true }
+ar.workspace = true
+itertools.workspace = true
+foldhash.workspace = true
+gimli.workspace = true
+hex.workspace = true
+linker-diff.path = "../linker-diff"
+linker-layout.path = "../linker-layout"
+libloading.workspace = true
+libtest-mimic = { workspace = true }
+object.workspace = true
+os_info.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde-keyvalue = { workspace = true }
+strum.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+which.workspace = true
 
 [target.'cfg(not(target_os = "wasi"))'.dev-dependencies]
-wait-timeout = { workspace = true }
+wait-timeout.workspace = true
 
 [features]
-default = ["fork"]
+default = ["fork", "plugins"]
 
 fork = ["libwild/fork"]
 
 plugins = ["libwild/plugins"]
 
 perfetto = ["libwild/perfetto"]
+
+wasm = ["libwild/wasm"]
+
+macho = ["libwild/macho"]
 
 # external tests
 external_tests = ["mold_tests"]

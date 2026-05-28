@@ -1,98 +1,70 @@
+use crate::bit_misc::BitExtraction;
 use crate::bit_misc::BitRange;
 use anyhow::Result;
-use object::LittleEndian;
-use object::read::elf::ProgramHeader as _;
-use object::read::elf::SectionHeader;
 use std::borrow::Cow;
 use std::fmt;
-
-macro_rules! const_name_by_value {
-    ($needle: expr, $( $const:ident ),* $(,)?) => {
-        match $needle {
-            $(object::elf::$const => Some(stringify!($const)),)*
-            _ => None
-        }
-    };
-}
+use std::io::Cursor;
 
 macro_rules! const_or_literal {
-    ($prefix:ident $const:ident = $value:expr) => {
-        $value
+    ($name:ident $prefix:ident $const:ident = $value:expr) => {
+        $name($value)
     };
-    ($prefix:ident $const:ident) => {
+    ($name:ident $prefix:ident $const:ident) => {
         ::paste::paste! {
             ::object::elf::[<$prefix _ $const>]
         }
     };
 }
 
-/// Generates newtypes for the non-flag, enum constants exposed by [object].
-/// Each type has automatically generated [Debug] and [Display] implementations.
+/// Reexport newtypes for the non-flag, enum constants exposed by [object].
 /// Constants not (yet) defined by [object] can be given literal values.
+/// For each type, define a Display wrapper that has an automatically generated
+/// [Display] implementation.
 macro_rules! elf_constant_newtype {
     (
         $name:ident,
-        $inner_type:ident,
+        $inner_type:ty,
         $constants_module:ident,
         $prefix:ident,
         $(
             $const:ident $(= $value:expr)?
         ),* $(,)?
     ) => {
-        #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
-        #[debug("{}", self.as_str())]
-        pub struct $name($inner_type);
-
-        impl $name {
-            #[must_use]
-            pub fn raw(&self) -> $inner_type {
-                self.0
-            }
-
-            #[allow(unreachable_patterns)] // rustc issues a spurious warning here
-            #[must_use]
-            pub fn as_str(&self) -> Cow<'static, str> {
-                    match self.0 {
-                        $(
-                            const_or_literal!($prefix $const $(= $value )?)
-                                => ::std::borrow::Cow::Borrowed(stringify!($const)),
-                        )*
-                        r => Cow::Owned(format!("Unknown({r})")),
-                    }
-            }
-
-            ::paste::paste! {
-                #[must_use]
-                pub const fn [<from_ $inner_type>](value: $inner_type) -> Self {
-                    Self(value)
-                }
-            }
-        }
-
-        impl From < $inner_type > for $name {
-            fn from(value: $inner_type) -> Self {
-                Self(value)
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.as_str())
-            }
-        }
+        pub use $inner_type as $name;
 
         pub mod $constants_module {
             #![allow(non_upper_case_globals)]
             use super::$name;
+            use std::borrow::Cow;
 
-            $(pub const $const: $name = $name(const_or_literal!($prefix $const $(= $value)?));)*
+            #[allow(unreachable_patterns)] // rustc issues a spurious warning here
+            #[must_use]
+            pub fn as_str(val: $name) -> Cow<'static, str> {
+                    match val {
+                        $(
+                            const_or_literal!($name $prefix $const $(= $value )?)
+                                => ::std::borrow::Cow::Borrowed(stringify!($const)),
+                        )*
+                        $name(r) => Cow::Owned(format!("Unknown({r})")),
+                    }
+            }
+
+            pub struct Display(pub $name);
+
+            impl std::fmt::Display for Display {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "{}", as_str(self.0))
+                }
+            }
+
+            $(pub const $const: $name = const_or_literal!($name $prefix $const $(= $value)?);)*
         }
     };
 }
 
 elf_constant_newtype!(
     SegmentType,
-    u32,
+    object::elf::ProgramType,
     pt,
     PT,
     NULL,
@@ -111,16 +83,9 @@ elf_constant_newtype!(
     RISCV_ATTRIBUTES,
 );
 
-impl SegmentType {
-    #[must_use]
-    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
-        Self(header.p_type(LittleEndian))
-    }
-}
-
 elf_constant_newtype!(
     SectionType,
-    u32,
+    object::elf::SectionType,
     sht,
     SHT,
     NULL,
@@ -141,91 +106,24 @@ elf_constant_newtype!(
     PREINIT_ARRAY,
     GROUP,
     SYMTAB_SHNDX,
-    LOOS,
     GNU_SFRAME,
     GNU_ATTRIBUTES,
     GNU_HASH,
     GNU_LIBLIST,
     CHECKSUM,
-    LOSUNW,
     SUNW_COMDAT,
     SUNW_syminfo,
     GNU_VERDEF,
     GNU_VERNEED,
     GNU_VERSYM,
-    HISUNW,
-    HIOS,
-    LOPROC,
-    HIPROC,
-    LOUSER,
-    HIUSER,
     RISCV_ATTRIBUTES,
 );
 
-impl SectionType {
-    #[must_use]
-    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_type(LittleEndian))
-    }
-}
-
-elf_constant_newtype!(SymbolType, u8, stt, STT, NOTYPE, TLS);
+elf_constant_newtype!(SymbolType, object::elf::SymbolType, stt, STT, NOTYPE, TLS);
 
 #[must_use]
 pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-    if let Some(name) = const_name_by_value![
-        r_type,
-        R_X86_64_NONE,
-        R_X86_64_64,
-        R_X86_64_PC32,
-        R_X86_64_GOT32,
-        R_X86_64_PLT32,
-        R_X86_64_COPY,
-        R_X86_64_GLOB_DAT,
-        R_X86_64_JUMP_SLOT,
-        R_X86_64_RELATIVE,
-        R_X86_64_GOTPCREL,
-        R_X86_64_32,
-        R_X86_64_32S,
-        R_X86_64_16,
-        R_X86_64_PC16,
-        R_X86_64_8,
-        R_X86_64_PC8,
-        R_X86_64_DTPMOD64,
-        R_X86_64_DTPOFF64,
-        R_X86_64_TPOFF64,
-        R_X86_64_TLSGD,
-        R_X86_64_TLSLD,
-        R_X86_64_DTPOFF32,
-        R_X86_64_GOTTPOFF,
-        R_X86_64_TPOFF32,
-        R_X86_64_PC64,
-        R_X86_64_GOTOFF64,
-        R_X86_64_GOTPC32,
-        R_X86_64_GOT64,
-        R_X86_64_GOTPCREL64,
-        R_X86_64_GOTPC64,
-        R_X86_64_GOTPLT64,
-        R_X86_64_PLTOFF64,
-        R_X86_64_SIZE32,
-        R_X86_64_SIZE64,
-        R_X86_64_GOTPC32_TLSDESC,
-        R_X86_64_TLSDESC_CALL,
-        R_X86_64_TLSDESC,
-        R_X86_64_IRELATIVE,
-        R_X86_64_RELATIVE64,
-        R_X86_64_GOTPCRELX,
-        R_X86_64_REX_GOTPCRELX,
-        R_X86_64_CODE_4_GOTPCRELX,
-        R_X86_64_CODE_4_GOTTPOFF,
-        R_X86_64_CODE_4_GOTPC32_TLSDESC,
-        R_X86_64_CODE_5_GOTPCRELX,
-        R_X86_64_CODE_5_GOTTPOFF,
-        R_X86_64_CODE_5_GOTPC32_TLSDESC,
-        R_X86_64_CODE_6_GOTPCRELX,
-        R_X86_64_CODE_6_GOTTPOFF,
-        R_X86_64_CODE_6_GOTPC32_TLSDESC,
-    ] {
+    if let Some(name) = object::elf::NAMES_R_X86_64.name(r_type) {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(format!("Unknown x86_64 relocation type 0x{r_type:x}"))
@@ -234,144 +132,7 @@ pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 
 #[must_use]
 pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-    if let Some(name) = const_name_by_value![
-        r_type,
-        R_AARCH64_NONE,
-        R_AARCH64_P32_ABS32,
-        R_AARCH64_P32_COPY,
-        R_AARCH64_P32_GLOB_DAT,
-        R_AARCH64_P32_JUMP_SLOT,
-        R_AARCH64_P32_RELATIVE,
-        R_AARCH64_P32_TLS_DTPMOD,
-        R_AARCH64_P32_TLS_DTPREL,
-        R_AARCH64_P32_TLS_TPREL,
-        R_AARCH64_P32_TLSDESC,
-        R_AARCH64_P32_IRELATIVE,
-        R_AARCH64_ABS64,
-        R_AARCH64_ABS32,
-        R_AARCH64_ABS16,
-        R_AARCH64_PREL64,
-        R_AARCH64_PREL32,
-        R_AARCH64_PREL16,
-        R_AARCH64_MOVW_UABS_G0,
-        R_AARCH64_MOVW_UABS_G0_NC,
-        R_AARCH64_MOVW_UABS_G1,
-        R_AARCH64_MOVW_UABS_G1_NC,
-        R_AARCH64_MOVW_UABS_G2,
-        R_AARCH64_MOVW_UABS_G2_NC,
-        R_AARCH64_MOVW_UABS_G3,
-        R_AARCH64_MOVW_SABS_G0,
-        R_AARCH64_MOVW_SABS_G1,
-        R_AARCH64_MOVW_SABS_G2,
-        R_AARCH64_LD_PREL_LO19,
-        R_AARCH64_ADR_PREL_LO21,
-        R_AARCH64_ADR_PREL_PG_HI21,
-        R_AARCH64_ADR_PREL_PG_HI21_NC,
-        R_AARCH64_ADD_ABS_LO12_NC,
-        R_AARCH64_LDST8_ABS_LO12_NC,
-        R_AARCH64_TSTBR14,
-        R_AARCH64_CONDBR19,
-        R_AARCH64_JUMP26,
-        R_AARCH64_CALL26,
-        R_AARCH64_LDST16_ABS_LO12_NC,
-        R_AARCH64_LDST32_ABS_LO12_NC,
-        R_AARCH64_LDST64_ABS_LO12_NC,
-        R_AARCH64_MOVW_PREL_G0,
-        R_AARCH64_MOVW_PREL_G0_NC,
-        R_AARCH64_MOVW_PREL_G1,
-        R_AARCH64_MOVW_PREL_G1_NC,
-        R_AARCH64_MOVW_PREL_G2,
-        R_AARCH64_MOVW_PREL_G2_NC,
-        R_AARCH64_MOVW_PREL_G3,
-        R_AARCH64_LDST128_ABS_LO12_NC,
-        R_AARCH64_MOVW_GOTOFF_G0,
-        R_AARCH64_MOVW_GOTOFF_G0_NC,
-        R_AARCH64_MOVW_GOTOFF_G1,
-        R_AARCH64_MOVW_GOTOFF_G1_NC,
-        R_AARCH64_MOVW_GOTOFF_G2,
-        R_AARCH64_MOVW_GOTOFF_G2_NC,
-        R_AARCH64_MOVW_GOTOFF_G3,
-        R_AARCH64_GOTREL64,
-        R_AARCH64_GOTREL32,
-        R_AARCH64_GOT_LD_PREL19,
-        R_AARCH64_LD64_GOTOFF_LO15,
-        R_AARCH64_ADR_GOT_PAGE,
-        R_AARCH64_LD64_GOT_LO12_NC,
-        R_AARCH64_LD64_GOTPAGE_LO15,
-        R_AARCH64_PLT32,
-        R_AARCH64_GOTPCREL32,
-        R_AARCH64_TLSGD_ADR_PREL21,
-        R_AARCH64_TLSGD_ADR_PAGE21,
-        R_AARCH64_TLSGD_ADD_LO12_NC,
-        R_AARCH64_TLSGD_MOVW_G1,
-        R_AARCH64_TLSGD_MOVW_G0_NC,
-        R_AARCH64_TLSLD_ADR_PREL21,
-        R_AARCH64_TLSLD_ADR_PAGE21,
-        R_AARCH64_TLSLD_ADD_LO12_NC,
-        R_AARCH64_TLSLD_MOVW_G1,
-        R_AARCH64_TLSLD_MOVW_G0_NC,
-        R_AARCH64_TLSLD_LD_PREL19,
-        R_AARCH64_TLSLD_MOVW_DTPREL_G2,
-        R_AARCH64_TLSLD_MOVW_DTPREL_G1,
-        R_AARCH64_TLSLD_MOVW_DTPREL_G1_NC,
-        R_AARCH64_TLSLD_MOVW_DTPREL_G0,
-        R_AARCH64_TLSLD_MOVW_DTPREL_G0_NC,
-        R_AARCH64_TLSLD_ADD_DTPREL_HI12,
-        R_AARCH64_TLSLD_ADD_DTPREL_LO12,
-        R_AARCH64_TLSLD_ADD_DTPREL_LO12_NC,
-        R_AARCH64_TLSLD_LDST8_DTPREL_LO12,
-        R_AARCH64_TLSLD_LDST8_DTPREL_LO12_NC,
-        R_AARCH64_TLSLD_LDST16_DTPREL_LO12,
-        R_AARCH64_TLSLD_LDST16_DTPREL_LO12_NC,
-        R_AARCH64_TLSLD_LDST32_DTPREL_LO12,
-        R_AARCH64_TLSLD_LDST32_DTPREL_LO12_NC,
-        R_AARCH64_TLSLD_LDST64_DTPREL_LO12,
-        R_AARCH64_TLSLD_LDST64_DTPREL_LO12_NC,
-        R_AARCH64_TLSIE_MOVW_GOTTPREL_G1,
-        R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC,
-        R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21,
-        R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC,
-        R_AARCH64_TLSIE_LD_GOTTPREL_PREL19,
-        R_AARCH64_TLSLE_MOVW_TPREL_G2,
-        R_AARCH64_TLSLE_MOVW_TPREL_G1,
-        R_AARCH64_TLSLE_MOVW_TPREL_G1_NC,
-        R_AARCH64_TLSLE_MOVW_TPREL_G0,
-        R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
-        R_AARCH64_TLSLE_ADD_TPREL_HI12,
-        R_AARCH64_TLSLE_ADD_TPREL_LO12,
-        R_AARCH64_TLSLE_ADD_TPREL_LO12_NC,
-        R_AARCH64_TLSLE_LDST8_TPREL_LO12,
-        R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC,
-        R_AARCH64_TLSLE_LDST16_TPREL_LO12,
-        R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC,
-        R_AARCH64_TLSLE_LDST32_TPREL_LO12,
-        R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC,
-        R_AARCH64_TLSLE_LDST64_TPREL_LO12,
-        R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC,
-        R_AARCH64_TLSDESC_LD_PREL19,
-        R_AARCH64_TLSDESC_ADR_PREL21,
-        R_AARCH64_TLSDESC_ADR_PAGE21,
-        R_AARCH64_TLSDESC_LD64_LO12,
-        R_AARCH64_TLSDESC_ADD_LO12,
-        R_AARCH64_TLSDESC_OFF_G1,
-        R_AARCH64_TLSDESC_OFF_G0_NC,
-        R_AARCH64_TLSDESC_LDR,
-        R_AARCH64_TLSDESC_ADD,
-        R_AARCH64_TLSDESC_CALL,
-        R_AARCH64_TLSLE_LDST128_TPREL_LO12,
-        R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC,
-        R_AARCH64_TLSLD_LDST128_DTPREL_LO12,
-        R_AARCH64_TLSLD_LDST128_DTPREL_LO12_NC,
-        R_AARCH64_COPY,
-        R_AARCH64_GLOB_DAT,
-        R_AARCH64_JUMP_SLOT,
-        R_AARCH64_RELATIVE,
-        R_AARCH64_TLS_DTPMOD,
-        R_AARCH64_TLS_DTPREL,
-        R_AARCH64_TLS_TPREL,
-        R_AARCH64_TLSDESC,
-        R_AARCH64_IRELATIVE,
-    ] {
+    if let Some(name) = object::elf::NAMES_R_AARCH64.name(r_type) {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(format!("Unknown aarch64 relocation type 0x{r_type:x}"))
@@ -380,71 +141,7 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 
 #[must_use]
 pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-    if let Some(name) = const_name_by_value![
-        r_type,
-        R_RISCV_NONE,
-        R_RISCV_32,
-        R_RISCV_64,
-        R_RISCV_RELATIVE,
-        R_RISCV_COPY,
-        R_RISCV_JUMP_SLOT,
-        R_RISCV_TLS_DTPMOD32,
-        R_RISCV_TLS_DTPMOD64,
-        R_RISCV_TLS_DTPREL32,
-        R_RISCV_TLS_DTPREL64,
-        R_RISCV_TLS_TPREL32,
-        R_RISCV_TLS_TPREL64,
-        R_RISCV_TLSDESC,
-        R_RISCV_BRANCH,
-        R_RISCV_JAL,
-        R_RISCV_CALL,
-        R_RISCV_CALL_PLT,
-        R_RISCV_GOT_HI20,
-        R_RISCV_TLS_GOT_HI20,
-        R_RISCV_TLS_GD_HI20,
-        R_RISCV_PCREL_HI20,
-        R_RISCV_PCREL_LO12_I,
-        R_RISCV_PCREL_LO12_S,
-        R_RISCV_HI20,
-        R_RISCV_LO12_I,
-        R_RISCV_LO12_S,
-        R_RISCV_TPREL_HI20,
-        R_RISCV_TPREL_LO12_I,
-        R_RISCV_TPREL_LO12_S,
-        R_RISCV_TPREL_ADD,
-        R_RISCV_ADD8,
-        R_RISCV_ADD16,
-        R_RISCV_ADD32,
-        R_RISCV_ADD64,
-        R_RISCV_SUB8,
-        R_RISCV_SUB16,
-        R_RISCV_SUB32,
-        R_RISCV_SUB64,
-        R_RISCV_GOT32_PCREL,
-        R_RISCV_ALIGN,
-        R_RISCV_RVC_BRANCH,
-        R_RISCV_RVC_JUMP,
-        R_RISCV_RVC_LUI,
-        R_RISCV_GPREL_I,
-        R_RISCV_GPREL_S,
-        R_RISCV_TPREL_I,
-        R_RISCV_TPREL_S,
-        R_RISCV_RELAX,
-        R_RISCV_SUB6,
-        R_RISCV_SET6,
-        R_RISCV_SET8,
-        R_RISCV_SET16,
-        R_RISCV_SET32,
-        R_RISCV_32_PCREL,
-        R_RISCV_IRELATIVE,
-        R_RISCV_PLT32,
-        R_RISCV_SET_ULEB128,
-        R_RISCV_SUB_ULEB128,
-        R_RISCV_TLSDESC_HI20,
-        R_RISCV_TLSDESC_LOAD_LO12,
-        R_RISCV_TLSDESC_ADD_LO12,
-        R_RISCV_TLSDESC_CALL,
-    ] {
+    if let Some(name) = object::elf::NAMES_R_RISCV.name(r_type) {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(format!("Unknown riscv64 relocation type 0x{r_type:x}"))
@@ -453,246 +150,68 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 
 #[must_use]
 pub fn loongarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-    if let Some(name) = const_name_by_value![
-        r_type,
-        R_LARCH_32,
-        R_LARCH_64,
-        R_LARCH_B16,
-        R_LARCH_CFA,
-        R_LARCH_B21,
-        R_LARCH_B26,
-        R_LARCH_NONE,
-        R_LARCH_ADD6,
-        R_LARCH_SUB8,
-        R_LARCH_COPY,
-        R_LARCH_ADD8,
-        R_LARCH_SUB6,
-        R_LARCH_ADD16,
-        R_LARCH_ADD64,
-        R_LARCH_SUB32,
-        R_LARCH_ADD24,
-        R_LARCH_ADD32,
-        R_LARCH_SUB16,
-        R_LARCH_SUB24,
-        R_LARCH_SOP_SL,
-        R_LARCH_SOP_SR,
-        R_LARCH_SUB64,
-        R_LARCH_RELAX,
-        R_LARCH_ALIGN,
-        R_LARCH_SOP_SUB,
-        R_LARCH_SOP_ADD,
-        R_LARCH_SOP_AND,
-        R_LARCH_MARK_LA,
-        R_LARCH_CALL36,
-        R_LARCH_SOP_NOT,
-        R_LARCH_DELETE,
-        R_LARCH_GOT_HI20,
-        R_LARCH_GOT_LO12,
-        R_LARCH_32_PCREL,
-        R_LARCH_64_PCREL,
-        R_LARCH_ABS_HI20,
-        R_LARCH_ABS_LO12,
-        R_LARCH_JUMP_SLOT,
-        R_LARCH_RELATIVE,
-        R_LARCH_PCREL20_S2,
-        R_LARCH_ABS64_HI12,
-        R_LARCH_ABS64_LO20,
-        R_LARCH_TLS_LD_HI20,
-        R_LARCH_GOT64_HI12,
-        R_LARCH_GOT64_LO20,
-        R_LARCH_TLS_LE_LO12,
-        R_LARCH_GOT_PC_LO12,
-        R_LARCH_TLS_LE_ADD_R,
-        R_LARCH_SOP_POP_32_U,
-        R_LARCH_SOP_IF_ELSE,
-        R_LARCH_TLS_DESC_LD,
-        R_LARCH_SOP_ASSERT,
-        R_LARCH_MARK_PCREL,
-        R_LARCH_PCALA_HI20,
-        R_LARCH_PCALA_LO12,
-        R_LARCH_GOT_PC_HI20,
-        R_LARCH_TLS_LE_HI20,
-        R_LARCH_IRELATIVE,
-        R_LARCH_TLS_GD_HI20,
-        R_LARCH_TLS_IE_HI20,
-        R_LARCH_TLS_IE_LO12,
-        R_LARCH_SOP_PUSH_DUP,
-        R_LARCH_TLS_TPREL32,
-        R_LARCH_TLS_LE_LO12_R,
-        R_LARCH_TLS_TPREL64,
-        R_LARCH_TLS_LE_HI20_R,
-        R_LARCH_GNU_VTENTRY,
-        R_LARCH_SUB_ULEB128,
-        R_LARCH_ADD_ULEB128,
-        R_LARCH_TLS_DTPREL32,
-        R_LARCH_GOT64_PC_HI12,
-        R_LARCH_TLS_GD_PC_HI20,
-        R_LARCH_TLS_IE64_LO20,
-        R_LARCH_TLS_DESC_CALL,
-        R_LARCH_TLS_LE64_LO20,
-        R_LARCH_TLS_DTPMOD32,
-        R_LARCH_PCALA64_LO20,
-        R_LARCH_TLS_DTPMOD64,
-        R_LARCH_TLS_IE64_HI12,
-        R_LARCH_TLS_DTPREL64,
-        R_LARCH_TLS_DESC_HI20,
-        R_LARCH_GOT64_PC_LO20,
-        R_LARCH_TLS_IE_PC_HI20,
-        R_LARCH_TLS_IE_PC_LO12,
-        R_LARCH_TLS_DESC_LO12,
-        R_LARCH_TLS_LE64_HI12,
-        R_LARCH_TLS_LD_PC_HI20,
-        R_LARCH_PCALA64_HI12,
-        R_LARCH_SOP_POP_32_S_10_5,
-        R_LARCH_SOP_PUSH_PCREL,
-        R_LARCH_SOP_POP_32_S_5_20,
-        R_LARCH_SOP_PUSH_GPREL,
-        R_LARCH_SOP_PUSH_TLS_GD,
-        R_LARCH_GNU_VTINHERIT,
-        R_LARCH_TLS_IE64_PC_LO20,
-        R_LARCH_SOP_POP_32_S_10_12,
-        R_LARCH_TLS_DESC_PC_HI20,
-        R_LARCH_TLS_DESC_PC_LO12,
-        R_LARCH_SOP_POP_32_S_10_16,
-        R_LARCH_SOP_POP_32_U_10_12,
-        R_LARCH_TLS_DESC64_HI12,
-        R_LARCH_SOP_PUSH_TLS_GOT,
-        R_LARCH_TLS_IE64_PC_HI12,
-        R_LARCH_TLS_DESC64_LO20,
-        R_LARCH_TLS_LD_PCREL20_S2,
-        R_LARCH_TLS_GD_PCREL20_S2,
-        R_LARCH_TLS_DESC64_PC_HI12,
-        R_LARCH_SOP_PUSH_ABSOLUTE,
-        R_LARCH_TLS_DESC64_PC_LO20,
-        R_LARCH_SOP_PUSH_PLT_PCREL,
-        R_LARCH_SOP_PUSH_TLS_TPREL,
-        R_LARCH_SOP_POP_32_S_10_16_S2,
-        R_LARCH_TLS_DESC_PCREL20_S2,
-        R_LARCH_SOP_POP_32_S_0_5_10_16_S2,
-        R_LARCH_SOP_POP_32_S_0_10_10_16_S2,
-    ] {
+    if let Some(name) = object::elf::NAMES_R_LARCH.name(r_type) {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(format!("Unknown loongarch relocation type 0x{r_type:x}"))
     }
 }
 
+#[must_use]
+pub fn ppc64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+    if let Some(name) = object::elf::NAMES_R_PPC64.name(r_type) {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("Unknown ppc64 relocation type 0x{r_type:x}"))
+    }
+}
+
+pub use object::elf::SectionFlags;
+
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
 
-    pub const WRITE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_WRITE);
-    pub const ALLOC: SectionFlags = SectionFlags::from_u32(object::elf::SHF_ALLOC);
-    pub const EXECINSTR: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXECINSTR);
-    pub const MERGE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_MERGE);
-    pub const STRINGS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_STRINGS);
-    pub const INFO_LINK: SectionFlags = SectionFlags::from_u32(object::elf::SHF_INFO_LINK);
-    pub const LINK_ORDER: SectionFlags = SectionFlags::from_u32(object::elf::SHF_LINK_ORDER);
-    pub const OS_NONCONFORMING: SectionFlags =
-        SectionFlags::from_u32(object::elf::SHF_OS_NONCONFORMING);
-    pub const GROUP: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GROUP);
-    pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
-    pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
-    pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
-    pub const EXCLUDE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXCLUDE);
-}
+    pub const WRITE: SectionFlags = object::elf::SHF_WRITE;
+    pub const ALLOC: SectionFlags = object::elf::SHF_ALLOC;
+    pub const EXECINSTR: SectionFlags = object::elf::SHF_EXECINSTR;
+    pub const MERGE: SectionFlags = object::elf::SHF_MERGE;
+    pub const STRINGS: SectionFlags = object::elf::SHF_STRINGS;
+    pub const INFO_LINK: SectionFlags = object::elf::SHF_INFO_LINK;
+    pub const LINK_ORDER: SectionFlags = object::elf::SHF_LINK_ORDER;
+    pub const OS_NONCONFORMING: SectionFlags = object::elf::SHF_OS_NONCONFORMING;
+    pub const GROUP: SectionFlags = object::elf::SHF_GROUP;
+    pub const TLS: SectionFlags = object::elf::SHF_TLS;
+    pub const COMPRESSED: SectionFlags = object::elf::SHF_COMPRESSED;
+    pub const GNU_RETAIN: SectionFlags = object::elf::SHF_GNU_RETAIN;
+    pub const EXCLUDE: SectionFlags = object::elf::SHF_EXCLUDE;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct SectionFlags(u32);
+    pub struct Display(pub SectionFlags);
 
-impl SectionFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_flags(LittleEndian) as u32)
-    }
-
-    #[must_use]
-    pub fn contains(self, flag: SectionFlags) -> bool {
-        self.0 & flag.0 != 0
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> SectionFlags {
-        SectionFlags(raw)
-    }
-
-    /// Returns self with the specified flags set.
-    #[must_use]
-    pub const fn with(self, flags: SectionFlags) -> SectionFlags {
-        SectionFlags(self.0 | flags.0)
-    }
-
-    /// Returns self with the specified flags cleared.
-    #[must_use]
-    pub const fn without(self, flags: SectionFlags) -> SectionFlags {
-        SectionFlags(self.0 & !flags.0)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u64 {
-        self.0 as u64
-    }
-
-    #[must_use]
-    pub fn should_exclude(&self) -> bool {
-        self.contains(shf::EXCLUDE)
-    }
-}
-
-impl From<u64> for SectionFlags {
-    fn from(value: u64) -> Self {
-        Self(value as u32)
-    }
-}
-
-impl std::fmt::Display for SectionFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (flag, ch) in [
-            (shf::WRITE, "W"),
-            (shf::ALLOC, "A"),
-            (shf::EXECINSTR, "X"),
-            (shf::MERGE, "M"),
-            (shf::STRINGS, "S"),
-            (shf::INFO_LINK, "I"),
-            (shf::LINK_ORDER, "L"),
-            (shf::OS_NONCONFORMING, "O"),
-            (shf::GROUP, "G"),
-            (shf::TLS, "T"),
-            (shf::COMPRESSED, "C"),
-            (shf::EXCLUDE, "E"),
-            // TODO: ld linker sometimes propagates the flag
-            // (shf::GNU_RETAIN, "R"),
-        ] {
-            if self.contains(flag) {
-                f.write_str(ch)?;
+    impl std::fmt::Display for Display {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            for (flag, ch) in [
+                (WRITE, "W"),
+                (ALLOC, "A"),
+                (EXECINSTR, "X"),
+                (MERGE, "M"),
+                (STRINGS, "S"),
+                (INFO_LINK, "I"),
+                (LINK_ORDER, "L"),
+                (OS_NONCONFORMING, "O"),
+                (GROUP, "G"),
+                (TLS, "T"),
+                (COMPRESSED, "C"),
+                (EXCLUDE, "E"),
+                // TODO: ld linker sometimes propagates the flag
+                // (shf::GNU_RETAIN, "R"),
+            ] {
+                if self.0.contains(flag) {
+                    f.write_str(ch)?;
+                }
             }
+            Ok(())
         }
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for SectionFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
-impl std::ops::BitOrAssign for SectionFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl std::ops::BitAnd for SectionFlags {
-    type Output = SectionFlags;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
     }
 }
 
@@ -811,88 +330,30 @@ pub mod secnames {
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct SegmentFlags(u32);
-
-impl SegmentFlags {
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
-        Self(header.p_flags(LittleEndian))
-    }
-
-    #[must_use]
-    pub fn contains(self, flag: SegmentFlags) -> bool {
-        self.0 & flag.0 != 0
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> SegmentFlags {
-        SegmentFlags(raw)
-    }
-
-    /// Returns self with the specified flags set.
-    #[must_use]
-    pub const fn with(self, flags: SegmentFlags) -> SegmentFlags {
-        SegmentFlags(self.0 | flags.0)
-    }
-
-    /// Returns self with the specified flags cleared.
-    #[must_use]
-    pub const fn without(self, flags: SegmentFlags) -> SegmentFlags {
-        SegmentFlags(self.0 & !flags.0)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
+pub use object::elf::ProgramFlags as SegmentFlags;
 
 pub mod pf {
     use super::SegmentFlags;
 
-    pub const EXECUTABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_X);
-    pub const WRITABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_W);
-    pub const READABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_R);
-}
+    pub const EXECUTABLE: SegmentFlags = object::elf::PF_X;
+    pub const WRITABLE: SegmentFlags = object::elf::PF_W;
+    pub const READABLE: SegmentFlags = object::elf::PF_R;
 
-impl std::fmt::Display for SegmentFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.contains(pf::WRITABLE) {
-            f.write_str("W")?;
+    pub struct Display(pub SegmentFlags);
+
+    impl std::fmt::Display for Display {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            if self.0.contains(WRITABLE) {
+                f.write_str("W")?;
+            }
+            if self.0.contains(READABLE) {
+                f.write_str("R")?;
+            }
+            if self.0.contains(EXECUTABLE) {
+                f.write_str("X")?;
+            }
+            Ok(())
         }
-        if self.contains(pf::READABLE) {
-            f.write_str("R")?;
-        }
-        if self.contains(pf::EXECUTABLE) {
-            f.write_str("X")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for SegmentFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self, f)
-    }
-}
-
-impl std::ops::BitOrAssign for SegmentFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-impl std::ops::BitAnd for SegmentFlags {
-    type Output = SegmentFlags;
-
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
     }
 }
 
@@ -1252,6 +713,23 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_LARCH_JUMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn ppc64_r_type(&self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_PPC64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_PPC64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_PPC64_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_PPC64_DTPREL64,
+            DynamicRelocationKind::TpOff => object::elf::R_PPC64_TPREL64,
+            DynamicRelocationKind::Relative => object::elf::R_PPC64_RELATIVE,
+            DynamicRelocationKind::Absolute => object::elf::R_PPC64_ADDR64,
+            DynamicRelocationKind::GotEntry => object::elf::R_PPC64_GLOB_DAT,
+            // ppc64 uses the __tls_get_addr (GD/LD) model, not TLS descriptors.
+            DynamicRelocationKind::TlsDesc => unreachable!("ppc64 does not use TLS descriptors"),
+            DynamicRelocationKind::JumpSlot => object::elf::R_PPC64_JMP_SLOT,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1266,6 +744,8 @@ pub enum AArch64Instruction {
     TstBr,
     Bcond,
     JumpCall,
+    // Mach-O specific
+    MachOLow12,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1318,10 +798,24 @@ pub enum LoongArch64Instruction {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum Ppc64Instruction {
+    /// D-form: 16-bit field in instruction bits [15:0] (e.g. `addi`, `addis`, `lwz`).
+    D,
+    /// DS-form: 14-bit field in instruction bits [15:2]; the low two bits are part of the opcode
+    /// and are preserved (e.g. `ld`, `std`).
+    Ds,
+    /// B-form conditional branch (`bc`): 14-bit displacement field in instruction bits [15:2].
+    Branch14,
+    /// I-form branch (`b`/`bl`): 24-bit displacement field in instruction bits [25:2].
+    Branch24,
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationInstruction {
     AArch64(AArch64Instruction),
     RiscV(RiscVInstruction),
     LoongArch64(LoongArch64Instruction),
+    Ppc64(Ppc64Instruction),
 }
 
 impl RelocationInstruction {
@@ -1347,6 +841,7 @@ impl RelocationInstruction {
             Self::AArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
             Self::RiscV(insn) => insn.write_to_value(extracted_value, negative, dest),
             Self::LoongArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
+            Self::Ppc64(insn) => insn.write_to_value(extracted_value, negative, dest),
         }
     }
 
@@ -1358,6 +853,7 @@ impl RelocationInstruction {
             Self::AArch64(insn) => insn.read_value(bytes),
             Self::RiscV(insn) => insn.read_value(bytes),
             Self::LoongArch64(insn) => insn.read_value(bytes),
+            Self::Ppc64(insn) => insn.read_value(bytes),
         }
     }
 
@@ -1368,6 +864,7 @@ impl RelocationInstruction {
             Self::AArch64(..) => 4,
             Self::RiscV(..) => 4,
             Self::LoongArch64(..) => 4,
+            Self::Ppc64(..) => 4,
         }
     }
 }
@@ -1390,7 +887,8 @@ impl fmt::Display for RelocationSize {
 }
 
 impl RelocationSize {
-    pub(crate) const fn bit_mask_aarch64(
+    #[must_use]
+    pub const fn bit_mask_aarch64(
         bit_start: u32,
         bit_end: u32,
         instruction: AArch64Instruction,
@@ -1402,7 +900,8 @@ impl RelocationSize {
         ))
     }
 
-    pub(crate) const fn bit_mask_riscv(
+    #[must_use]
+    pub const fn bit_mask_riscv(
         bit_start: u32,
         bit_end: u32,
         instruction: RiscVInstruction,
@@ -1414,13 +913,27 @@ impl RelocationSize {
         ))
     }
 
-    pub(crate) const fn bit_mask_loongarch64(
+    #[must_use]
+    pub const fn bit_mask_loongarch64(
         bit_start: u32,
         bit_end: u32,
         instruction: LoongArch64Instruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
             RelocationInstruction::LoongArch64(instruction),
+            bit_start,
+            bit_end,
+        ))
+    }
+
+    #[must_use]
+    pub const fn bit_mask_ppc64(
+        bit_start: u32,
+        bit_end: u32,
+        instruction: Ppc64Instruction,
+    ) -> RelocationSize {
+        Self::BitMasking(BitMask::new(
+            RelocationInstruction::Ppc64(instruction),
             bit_start,
             bit_end,
         ))
@@ -1497,6 +1010,18 @@ impl AllowedRange {
     pub fn contains(&self, value: i64) -> bool {
         self.min <= value && value < self.max
     }
+
+    /// Returns how far we're outside the allowed range.
+    #[must_use]
+    pub fn overrun(&self, value: i64) -> i64 {
+        if value < self.min {
+            value - self.min
+        } else if value > self.max {
+            value - self.max
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Clone, Debug, Copy)]
@@ -1507,11 +1032,13 @@ pub struct RelocationKindInfo {
     pub range: AllowedRange,
     pub alignment: usize,
     pub bias: u64,
+    /// Whether this relocation type supports range-extension thunks.
+    pub thunkable: bool,
 }
 
 impl RelocationKindInfo {
     #[inline(always)]
-    pub fn verify(&self, value: i64) -> Result<()> {
+    fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
             (value as usize).is_multiple_of(self.alignment),
             "Relocation {value} not aligned to {} bytes",
@@ -1524,6 +1051,43 @@ impl RelocationKindInfo {
                 self.range.min, self.range.max
             )
         );
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn write_to_buffer(self, value: u64, output: &mut [u8]) -> Result<()> {
+        self.verify(value as i64)?;
+
+        if matches!(self.kind, RelocationKind::PairSubtractionULEB128(..)) {
+            let mut writer = Cursor::new([0u8; u64::BITS.div_ceil(7) as usize]);
+            let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
+            anyhow::ensure!(
+                output.len() >= n,
+                "cannot write encoded ULEB128 value of {n} bytes"
+            );
+            output[..n].copy_from_slice(&writer.into_inner()[..n]);
+        } else {
+            match self.size {
+                RelocationSize::ByteSize(byte_size) => {
+                    anyhow::ensure!(
+                        byte_size <= output.len(),
+                        "Relocation outside of bounds of section"
+                    );
+                    let value_bytes = value.to_le_bytes();
+                    output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+                }
+                RelocationSize::BitMasking(BitMask {
+                    range,
+                    instruction: insn,
+                }) => {
+                    let extracted_value = value.extract_bit_range(range.start..range.end);
+                    let negative = (value as i64).is_negative();
+                    let output_len = output.len();
+                    insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
+                }
+            }
+        }
+
         Ok(())
     }
 }

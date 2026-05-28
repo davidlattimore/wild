@@ -1,8 +1,7 @@
 //#LinkerScript:linker-script-executable.ld
 //#Object:runtime.c
 //#DiffIgnore: segment.LOAD.RW.alignment
-// RISC-V: BFD complains about missing __global_pointer$ (defined in the default
-// linker script)
+// RISC-V: BFD complains about missing __global_pointer$ (defined in the default linker script)
 //#SkipArch:riscv64
 
 #include <stddef.h>

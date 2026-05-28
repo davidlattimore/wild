@@ -99,6 +99,10 @@ pub struct Config {
     #[arg(long = "ref", value_name = "FILE")]
     pub references: Vec<PathBuf>,
 
+    /// Match any reference instead of requiring all references to match
+    #[arg(long)]
+    pub match_any: bool,
+
     #[arg(long, alias = "color", default_value = "auto")]
     pub colour: Colour,
 
@@ -229,8 +233,8 @@ impl Config {
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // LLD does some different relaxations to us
-                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.dynamic-pie",
-                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.dynamic-pie",
+                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.ReplaceWithNop.*",
+                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.ReplaceWithNop.*",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
@@ -264,10 +268,14 @@ impl Config {
                 // Wild does.
                 "segment.GNU_PROPERTY.alignment",
                 "segment.GNU_PROPERTY.flags",
-                // GNU ld and lld sometimes don’t generate .sframe sections in cases where we do.
-                // TODO: Figure out why this is happening.
+                // TODO: We consider SFrame sections experimental and disabled by default.
                 "segment.GNU_SFRAME.alignment",
                 "segment.GNU_SFRAME.flags",
+                "section.sframe",
+                // Different linkers put the PLT in different locations relative to .text, so
+                // whether range-extension thunks are needed varies.
+                "rel.plt.extra-thunk",
+                "rel.plt.absent-thunk",
                 // On some systems Wild outputs these symbols while GNU ld does not.
             ]
             .into_iter()
@@ -296,7 +304,7 @@ impl Config {
                 .into_iter()
                 .map(ToOwned::to_owned),
             ),
-            ArchKind::RISCV64 => self.ignore.extend(
+            ArchKind::RiscV64 => self.ignore.extend(
                 [
                     // TODO: for some reason, main is put into .dynsym by GNU ld.
                     "dynsym.main.section",
@@ -387,6 +395,16 @@ impl Config {
         // We always put our file first, since it makes it easier to treat it differently. e.g. when
         // we compare a value from our file against each of the values from the other files.
         std::iter::once(&self.file).chain(&self.references)
+    }
+
+    /// Returns whether the first item equals all or any of the others, depending on the --match-any
+    /// flag.
+    fn match_multi<T: PartialEq>(&self, values: impl Iterator<Item = T>) -> bool {
+        if self.match_any {
+            first_equals_any(values)
+        } else {
+            first_equals_all(values)
+        }
     }
 }
 
@@ -525,7 +543,7 @@ fn validate_objects(
             Err(e) => e.to_string(),
         })
         .collect_vec();
-    if first_equals_any(values.iter()) {
+    if report.config.match_multi(values.iter()) {
         return;
     }
     report.add_diff(Diff {
@@ -685,7 +703,7 @@ impl Report {
                 self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
             }
 
-            ArchKind::RISCV64 => {
+            ArchKind::RiscV64 => {
                 self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
                 riscv_attributes::report_diffs(self, objects);
             }

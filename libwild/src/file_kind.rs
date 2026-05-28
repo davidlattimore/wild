@@ -18,6 +18,9 @@ pub(crate) enum FileKind {
     ElfObject,
     ElfDynamic,
     MachOObject,
+    FatMachOObject,
+    MachOStubLibrary,
+    WasmObject,
     Archive,
     ThinArchive,
     Text,
@@ -72,6 +75,16 @@ impl FileKind {
                 "Expected object file"
             );
             Ok(FileKind::MachOObject)
+        } else if bytes.starts_with(b"\0asm") {
+            // Wasm binary magic number is `\0asm` followed by a 4-byte version.
+            ensure!(bytes.len() >= 8, "Invalid Wasm file (too short)");
+            Ok(FileKind::WasmObject)
+        } else if bytes.starts_with(macho::FAT_MAGIC.as_bytes())
+            || bytes.starts_with(macho::FAT_CIGAM.as_bytes())
+        {
+            Ok(FileKind::FatMachOObject)
+        } else if bytes.starts_with(b"--- !tapi-tbd") || bytes.starts_with(b"tbd-version:") {
+            Ok(FileKind::MachOStubLibrary)
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
@@ -94,7 +107,7 @@ fn is_gcc_bitcode(data: &[u8], header: &crate::elf::FileHeader) -> Option<bool> 
     // If we don't have plugin support, then we skip checking if the file contains GCC IR. If it is,
     // then we'll figure that out later on and report an error. We do this because this code has a
     // measurable performance impact.
-    if !cfg!(feature = "plugins") {
+    if !cfg!(all(feature = "plugins", unix)) {
         return Some(false);
     }
     let e = LittleEndian;
@@ -118,7 +131,10 @@ impl std::fmt::Display for FileKind {
         let s = match self {
             FileKind::ElfObject => "ELF object",
             FileKind::ElfDynamic => "ELF dynamic",
-            FileKind::MachOObject => "MachO object",
+            FileKind::MachOObject => "Mach-O object",
+            FileKind::WasmObject => "Wasm object",
+            FileKind::FatMachOObject => "Fat Mach-O object",
+            FileKind::MachOStubLibrary => "Mach-O TBD library",
             FileKind::Archive => "archive",
             FileKind::ThinArchive => "thin archive",
             FileKind::Text => "text",

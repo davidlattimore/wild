@@ -54,8 +54,14 @@
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
-//! ExpectLoadAlignment:{alignment} Checks that the first PT_LOAD segment in the output binary has
-//! the specified alignment.
+//! ExpectLoadAlignment:{alignment} {alignment} ... Checks that the first N PT_LOAD segments in the
+//! output binary have the specified alignment.
+//!
+//! ExpectProgramHeader:{type} Checks that the output binary contains a program header of the
+//! specified type.
+//!
+//! NoProgramHeader:{type} Checks that the output binary contains no program headers of the
+//! specified type.
 //!
 //! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
 //!
@@ -71,6 +77,9 @@
 //!
 //! DiffEnabled:{bool} Defaults to true. Set to false to disable diffing of output files with
 //! linker-diff.
+//!
+//! DiffMatchAny:{bool} Defaults to false. If set, diff will pass provided our output matches any of
+//! the reference linker outputs.
 //!
 //! RunEnabled:{bool} Defaults to true. Set to false to disable execution of the resulting binary.
 //!
@@ -95,6 +104,8 @@
 //!
 //! ExpectWarning:{message regex} Verifies that the linker emits a warning matching the specified
 //! regex. Warning must be written to stderr. May be specified multiple times - all must match.
+//!
+//! ExpectWarningWild:{message regex} As for ExpectWarning, but only checks Wild's warning output.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
@@ -122,6 +133,10 @@
 //! test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements are
 //! met and no tests are skipped.
 //!
+//! RequiresLinkerFlags:{flag} Checks if the system linker supports the specified flag(s) and skips
+//! the test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements
+//! are met and no tests are skipped.
+//!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 //!
@@ -142,7 +157,19 @@
 //! at least one line matching the specified regex. Such output files are generally written by
 //! specifying a flag in LinkArgs that uses $OUT_DIR.
 //!
+//! MaxThunks:{count} Maximum number of range-extension thunks that should be allocated by Wild.
+//! Defaults to 0. The test will fail if Wild allocates more than this many thunks. Tests that need
+//! thunks must specify a sufficiently large value here.
+//!
 //! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
+//!
+//! DriverMode:{mode} Links using a non-standard mode. See Driver Modes section below.
+//!
+//! ## Driver Modes
+//!
+//! save-dir-response: Writes all arguments to a response file, passes that response file to the
+//! linker driver to produce a save-dir, then runs the save-dir's run-with script to perform
+//! linking. This is intended to exercise save-dir's handling of response files.
 //!
 //! ## Inputs
 //!
@@ -167,6 +194,12 @@
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 //!
+//! LinkerScript:{source-filename} Adds a linker script, prefixed with -T. This replaces the
+//! built-in linker script.
+//!
+//! AugmentLinkerScript:{source-filename} Adds a linker script without the -T option. This augments
+//! the built-in linker-script.
+//!
 //! ## Symbol properties
 //!
 //! This describes the format of symbol properties, which can be supplied to `ExpectSym` and
@@ -182,6 +215,8 @@
 //! offset-in-section=N: Type: Integer. Asserts the offset of the symbol within the section.
 //! Requires that section is also specified.
 //!
+//! alignment=N: Type: Integer. Asserts that the symbol's address is a multiple of N.
+//!
 //! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
 //!
 //! size=N: Type: Integer. Asserts the st_size of the symbol. Useful for verifying that
@@ -189,6 +224,8 @@
 //!
 //! binding=local|global|weak: Type: string. Asserts the binding of the symbol (STB_LOCAL,
 //! STB_GLOBAL or STB_WEAK).
+//!
+//! line={num} Parses debug info to check that the symbol is on the line specified.
 
 mod external_tests;
 
@@ -202,10 +239,9 @@ use libwild::error::Context as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
-use object::ObjectSection as _;
+use object::ObjectSection;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
-use os_info::Type;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -228,6 +264,7 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -236,6 +273,7 @@ use std::time::Duration;
 use std::time::Instant;
 use strum::Display;
 use strum::EnumString;
+use strum::VariantNames;
 use wait_timeout::ChildExt;
 
 fn main() -> Result<std::process::ExitCode> {
@@ -253,81 +291,91 @@ fn main() -> Result<std::process::ExitCode> {
 fn collect_tests(tests: &mut Vec<Trial>, filter: &Filter) -> Result {
     let test_config = read_test_config()?;
 
-    let platform = PlatformKind::Elf;
-    let platform_name = platform.to_str();
-
     let host_arch = get_host_architecture();
 
-    if filter.excludes(platform_name) {
-        return Ok(());
-    }
-
-    let root = src_path(platform_name);
-    let dir = std::fs::read_dir(&root)
-        .with_context(|| format!("Failed to read directory {}", root.display()))?;
-
-    let is_nextest = std::env::var("NEXTEST").is_ok();
-
-    let linkers = available_linkers()?;
-
-    for entry in dir {
-        let entry = entry?;
-        let path = entry.path();
-        if path.ends_with("common") {
+    for platform in [PlatformKind::Elf, PlatformKind::MachO] {
+        // Right now, the Mach-O provided Clang and the ld linker do not support the ELF format.
+        if platform == PlatformKind::Elf && cfg!(target_os = "macos") {
             continue;
         }
 
-        let base_name = path
-            .file_name()
-            .context("Missing filename")?
-            .to_str()
-            .context("Non-UTF-8 path")?
-            .to_owned();
+        if platform == PlatformKind::MachO && !cfg!(feature = "macho") {
+            continue;
+        }
 
-        for &arch in ALL_ARCHITECTURES {
-            let name_prefix = format!("{platform_name}/{arch}/{base_name}");
-            if filter.excludes(&name_prefix) {
+        let linkers = platform.available_linkers()?;
+
+        let platform_name = platform.to_str();
+
+        if filter.excludes(platform_name) {
+            continue;
+        }
+
+        let root = src_path(platform_name);
+        let dir = std::fs::read_dir(&root)
+            .with_context(|| format!("Failed to read directory {}", root.display()))?;
+
+        let is_nextest = std::env::var("NEXTEST").is_ok();
+
+        for entry in dir {
+            let entry = entry?;
+            let path = entry.path();
+            if path.ends_with("common") {
                 continue;
             }
 
-            let primary_source_file = identify_primary_source(&path, &base_name)?;
+            let base_name = path
+                .file_name()
+                .context("Missing filename")?
+                .to_str()
+                .context("Non-UTF-8 path")?
+                .to_owned();
 
-            let configs = parse_configs(
-                &primary_source_file,
-                &Config::new(
-                    base_name.clone(),
-                    platform,
-                    arch,
-                    path.clone(),
-                    &test_config,
-                    &linkers,
-                ),
-            )?;
-
-            let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
-
-            for config in configs {
-                if config.should_skip(arch) {
+            for &arch in platform.supported_architectures() {
+                let name_prefix = format!("{platform_name}/{arch}/{base_name}");
+                if filter.excludes(&name_prefix) {
                     continue;
                 }
 
-                let full_name = format!("{name_prefix}/{}", config.config_name);
-                let test_config = test_config.clone();
-                let program_inputs = program_inputs.clone();
+                let primary_source_file = identify_primary_source(&path, &base_name)?;
 
-                // Nextest spawns a process for every test, so emitting a large number of tests that
-                // we'll ignore at runtime is a bit wasteful. There are various different criteria
-                // for ignoring tests, but the biggest one is that the architecture isn't enabled.
-                // So we just filter for that and only when running under nextest. For the normal
-                // test runner, it doesn't matter much.
-                if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
-                    continue;
+                let configs = parse_configs(
+                    &primary_source_file,
+                    &Config::new(
+                        base_name.clone(),
+                        platform,
+                        arch,
+                        path.clone(),
+                        &test_config,
+                        &linkers,
+                    ),
+                )?;
+
+                let program_inputs = ProgramInputs::new(primary_source_file.clone())?;
+
+                for config in configs {
+                    if config.should_skip(arch) {
+                        continue;
+                    }
+
+                    let full_name = format!("{name_prefix}/{}", config.config_name);
+                    let test_config = test_config.clone();
+                    let program_inputs = program_inputs.clone();
+
+                    // Nextest spawns a process for every test, so emitting a large number of tests
+                    // that we'll ignore at runtime is a bit wasteful. There are various different
+                    // criteria for ignoring tests, but the biggest one is that the architecture
+                    // isn't enabled. So we just filter for that and only when running under
+                    // nextest. For the normal test runner, it doesn't matter much.
+                    if is_nextest && arch != host_arch && !test_config.qemu_arch.contains(&arch) {
+                        continue;
+                    }
+
+                    tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
+                        run_integration_test(arch, &program_inputs, config, &test_config)
+                            .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
+                    }));
                 }
-
-                tests.push(libtest_mimic::Trial::ignorable_test(full_name, move || {
-                    run_integration_test(arch, &program_inputs, config, &test_config)
-                        .map_err(|e| libtest_mimic::Failed::from(e.to_string()))
-                }));
             }
         }
     }
@@ -450,6 +498,10 @@ impl Linker {
             Linker::ThirdParty(l) => l.enabled_by_default,
         }
     }
+
+    fn is_lld(&self) -> bool {
+        self.name() == "lld"
+    }
 }
 
 fn wild_path() -> &'static Path {
@@ -496,7 +548,7 @@ enum Architecture {
     #[strum(serialize = "aarch64")]
     AArch64,
     #[strum(serialize = "riscv64")]
-    RISCV64,
+    RiscV64,
     #[strum(serialize = "loongarch64")]
     LoongArch64,
 }
@@ -504,7 +556,7 @@ enum Architecture {
 const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::X86_64,
     Architecture::AArch64,
-    Architecture::RISCV64,
+    Architecture::RiscV64,
     Architecture::LoongArch64,
 ];
 
@@ -513,24 +565,69 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
-            Architecture::RISCV64 => "elf64lriscv",
+            Architecture::RiscV64 => "elf64lriscv",
             Architecture::LoongArch64 => "elf64loongarch",
         }
     }
 
-    fn default_target_triple(&self) -> String {
-        format!("{self}-unknown-linux-gnu")
-    }
-
-    fn default_target_triple_rustc(&self) -> String {
+    fn darwin_arch_name(&self) -> &'static str {
         match self {
-            Architecture::RISCV64 => "riscv64gc-unknown-linux-gnu".to_string(),
-            other => other.default_target_triple(),
+            Architecture::AArch64 => "arm64",
+            _ => panic!("Unsupported architecture {self} for darwin"),
         }
     }
 
+    fn default_target_triple(&self, platform: PlatformKind) -> String {
+        match platform {
+            PlatformKind::Elf => format!("{self}-unknown-linux-gnu"),
+            PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
+        }
+    }
+
+    fn default_target_triple_rustc(&self, platform: PlatformKind) -> String {
+        match (platform, self) {
+            (PlatformKind::Elf, Architecture::RiscV64) => "riscv64gc-unknown-linux-gnu".to_string(),
+            _ => self.default_target_triple(platform),
+        }
+    }
+
+    fn cross_triplet(&self) -> String {
+        let suse_triplet = format!("{self}-suse-linux");
+        if std::path::Path::new(&format!("/usr/{suse_triplet}/sys-root")).exists() {
+            return suse_triplet;
+        }
+        format!("{self}-linux-gnu")
+    }
+
     fn get_cross_sysroot_path(&self) -> String {
-        format!("/usr/{self}-linux-gnu")
+        let triplet = self.cross_triplet();
+        if triplet.ends_with("-suse-linux") {
+            format!("/usr/{triplet}/sys-root")
+        } else {
+            format!("/usr/{triplet}")
+        }
+    }
+
+    /// Returns extra library directories that should be added to `LD_LIBRARY_PATH` when running
+    /// binaries under qemu.
+    fn qemu_extra_lib_paths(&self) -> Vec<String> {
+        let triplet = self.cross_triplet();
+        let gcc_base = format!("/usr/lib64/gcc/{triplet}");
+        let Ok(entries) = std::fs::read_dir(&gcc_base) else {
+            return Vec::new();
+        };
+
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.join("libstdc++.so.6").exists() {
+                    path.to_str().map(|s| s.to_owned())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn parse(name: &str) -> Result<Architecture> {
@@ -543,7 +640,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
-        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
+        Some(Architecture::RiscV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
         Some(Architecture::LoongArch64) => "/lib/ld-linux-loongarch-lp64d.so.1",
     }
 }
@@ -601,7 +698,7 @@ fn get_host_architecture() -> Architecture {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        Architecture::RISCV64
+        Architecture::RiscV64
     }
     #[cfg(target_arch = "loongarch64")]
     {
@@ -612,12 +709,12 @@ fn get_host_architecture() -> Architecture {
 fn is_host_debian_based() -> bool {
     matches!(
         os_info::get().os_type(),
-        Type::Debian | Type::Ubuntu | Type::Pop
+        os_info::Type::Debian | os_info::Type::Ubuntu | os_info::Type::Pop
     )
 }
 
 fn is_musl_used() -> bool {
-    os_info::get().os_type() == Type::Alpine
+    os_info::get().os_type() == os_info::Type::Alpine
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -646,6 +743,7 @@ struct Config {
     deps: Vec<Dep>,
     compiler: String,
     should_diff: bool,
+    diff_match_any: bool,
     should_run: bool,
     run_dyn_sym: Option<String>,
     should_error: bool,
@@ -656,6 +754,7 @@ struct Config {
     requires_glibc_version: Option<String>,
     requires_sframe_backtrace: bool,
     requires_compiler_flags: Vec<String>,
+    requires_linker_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     remove_sections: Vec<String>,
@@ -667,6 +766,7 @@ struct Config {
     tracked_files: Vec<PathBuf>,
     so_single_linker: Option<Linker>,
     available_linkers: Vec<Linker>,
+    driver_mode: Option<DriverMode>,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
@@ -726,6 +826,7 @@ enum Mode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformKind {
     Elf,
+    MachO,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -733,9 +834,33 @@ struct DirectConfig {
     mode: Mode,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, VariantNames)]
+#[strum(serialize_all = "kebab-case")]
+enum DriverMode {
+    SaveDirResponse,
+}
+
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, EnumString)]
+#[strum(serialize_all = "SCREAMING_SNAKE_CASE")]
+#[repr(u32)]
+enum ProgramHeaderType {
+    Dynamic = object::elf::PT_DYNAMIC.0,
+    Interp = object::elf::PT_INTERP.0,
+    GnuEhFrame = object::elf::PT_GNU_EH_FRAME.0,
+    GnuProperty = object::elf::PT_GNU_PROPERTY.0,
+    GnuRelro = object::elf::PT_GNU_RELRO.0,
+    GnuStack = object::elf::PT_GNU_STACK.0,
+    Load = object::elf::PT_LOAD.0,
+    Note = object::elf::PT_NOTE.0,
+    Null = object::elf::PT_NULL.0,
+    Phdr = object::elf::PT_PHDR.0,
+    Tls = object::elf::PT_TLS.0,
+}
+
 #[derive(Debug, Clone)]
 struct ErrorMatcher {
     regex: regex::Regex,
+    wild_only: bool,
 }
 
 fn get_glibc_version() -> Option<Vec<u32>> {
@@ -851,7 +976,7 @@ int main(void) {
     let is_cross = arch != host_arch;
 
     let (compiler, sysroot) = if is_cross {
-        let cross_compiler = format!("{}-linux-gnu-gcc", arch);
+        let cross_compiler = format!("{}-gcc", arch.cross_triplet());
         let sysroot = arch.get_cross_sysroot_path();
         (cross_compiler, Some(sysroot))
     } else {
@@ -933,6 +1058,7 @@ impl Config {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
             || (arch != get_host_architecture()
+                && self.platform == PlatformKind::Elf
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
@@ -944,6 +1070,7 @@ impl Config {
                 get_glibc_version().is_some_and(|current_version| req_version > current_version)
             })
             || (self.requires_sframe_backtrace && !is_sframe_backtrace_supported(arch))
+            || (self.requires_linker_plugin && !cfg!(all(feature = "plugins", unix)))
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -1051,11 +1178,14 @@ struct Assertions {
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
     expect_dynamic: bool,
-    expected_load_alignment: Option<u64>,
+    expected_load_alignments: Vec<u64>,
     expected_dynamic_entries: Vec<String>,
     absent_dynamic_entries: Vec<String>,
     expected_section_bytes: Vec<ExpectedSectionBytes>,
     output_file_matches: Vec<OutputFileMatch>,
+    max_thunks: u64,
+    expected_program_headers: Vec<ProgramHeaderType>,
+    absent_program_headers: Vec<ProgramHeaderType>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1085,12 +1215,16 @@ struct SymtabAssertions {
     #[serde(rename = "offset-in-section")]
     section_offset: Option<u64>,
 
+    alignment: Option<u64>,
+
     #[serde(rename = "address")]
     absolute_address: Option<u64>,
 
     size: Option<u64>,
 
     binding: Option<String>,
+
+    line: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
@@ -1120,6 +1254,7 @@ enum InputType {
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
+    AugmentLinkerScript,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1136,13 +1271,6 @@ impl ArgumentSet {
                 .filter(|s| !s.is_empty())
                 .collect(),
         })
-    }
-
-    fn default_for_linking() -> Self {
-        Self {
-            // Wild linker uses -znow by default!
-            args: vec!["-z".to_owned(), "now".to_owned()],
-        }
     }
 
     fn default_for_compiling() -> Self {
@@ -1172,8 +1300,8 @@ impl Config {
             variant_num: None,
             assertions: Default::default(),
             linker_driver: LinkerDriver::Direct(DirectConfig::default()),
-            linker_args: ArgumentSet::default_for_linking(),
-            linker_so_args: ArgumentSet::default_for_linking(),
+            linker_args: platform.default_args_for_linking(),
+            linker_so_args: platform.default_args_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
             wild_extra_linker_args: ArgumentSet::empty(),
@@ -1184,9 +1312,10 @@ impl Config {
             is_abstract: false,
             deps: Default::default(),
             remove_sections: Vec::new(),
-            compiler: "gcc".to_owned(),
-            should_diff: true,
-            should_run: true,
+            compiler: platform.default_c_compiler().to_owned(),
+            should_diff: platform.diff_supported(),
+            should_run: platform.can_execute_on_host(),
+            diff_match_any: false,
             run_dyn_sym: None,
             should_error: false,
             expect_stderr: Default::default(),
@@ -1197,6 +1326,7 @@ impl Config {
             requires_glibc_version: None,
             requires_sframe_backtrace: false,
             requires_compiler_flags: Vec::new(),
+            requires_linker_flags: Vec::new(),
             requires_nightly_rustc: false,
             requires_linker_plugin: false,
             auto_add_objects: true,
@@ -1207,6 +1337,7 @@ impl Config {
             tracked_files: Default::default(),
             available_linkers: available_linkers.to_owned(),
             so_single_linker: None,
+            driver_mode: None,
         }
     }
 }
@@ -1406,16 +1537,31 @@ fn process_directive(
             .absent_dynamic_entries
             .push(arg.trim().to_owned()),
         "ExpectLoadAlignment" => {
-            let alignment_str = arg.trim();
-            let alignment = if let Some(hex) = alignment_str.strip_prefix("0x") {
-                u64::from_str_radix(hex, 16)
-                    .with_context(|| format!("Invalid hex alignment: {alignment_str}"))?
-            } else {
-                alignment_str
-                    .parse()
-                    .with_context(|| format!("Invalid alignment: {alignment_str}"))?
-            };
-            config.assertions.expected_load_alignment = Some(alignment);
+            let alignment_strs = arg.split(" ").map(str::trim);
+            let alignments = alignment_strs.map(|alignment_str| {
+                if let Some(hex) = alignment_str.strip_prefix("0x") {
+                    u64::from_str_radix(hex, 16)
+                        .with_context(|| format!("Invalid hex alignment: {alignment_str}"))
+                } else {
+                    alignment_str
+                        .parse::<u64>()
+                        .with_context(|| format!("Invalid alignment: {alignment_str}"))
+                }
+            });
+            config.assertions.expected_load_alignments =
+                alignments.collect::<Result<Vec<u64>>>()?;
+        }
+        "ExpectProgramHeader" => {
+            let header_type: ProgramHeaderType = arg
+                .parse()
+                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            config.assertions.expected_program_headers.push(header_type);
+        }
+        "NoProgramHeader" => {
+            let header_type: ProgramHeaderType = arg
+                .parse()
+                .with_context(|| format!("Invalid program header type `{arg}`"))?;
+            config.assertions.absent_program_headers.push(header_type);
         }
         "Mode" => {
             let mode: Mode = arg
@@ -1429,6 +1575,9 @@ fn process_directive(
         "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
         "DiffEnabled" => {
             config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
+        }
+        "DiffMatchAny" => {
+            config.diff_match_any = arg.parse().context("Invalid bool for DiffMatchAny")?
         }
         "RunEnabled" => config.should_run = arg.parse().context("Invalid bool for RunEnabled")?,
         "RunDynSym" => {
@@ -1454,6 +1603,11 @@ fn process_directive(
         "ExpectWarning" => {
             config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
         }
+        "ExpectWarningWild" => {
+            config
+                .expect_stderr
+                .push(ErrorMatcher::wild_only(arg.trim())?);
+        }
         "SecEquiv" => config.section_equiv.push(
             arg.trim()
                 .split_once('=')
@@ -1461,8 +1615,14 @@ fn process_directive(
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
         "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-        input_type @ ("Object" | "Relocatable" | "Archive" | "ThinArchive" | "BsdArchive"
-        | "Shared" | "LinkerScript") => {
+        input_type @ ("Object"
+        | "Relocatable"
+        | "Archive"
+        | "ThinArchive"
+        | "BsdArchive"
+        | "Shared"
+        | "LinkerScript"
+        | "AugmentLinkerScript") => {
             let input_type = InputType::from_str(input_type)?;
 
             let mut arg = arg;
@@ -1536,6 +1696,11 @@ fn process_directive(
                 .requires_compiler_flags
                 .extend(arg.trim().split(' ').map(str::to_owned));
         }
+        "RequiresLinkerFlags" => {
+            config
+                .requires_linker_flags
+                .extend(arg.trim().split(' ').map(str::to_owned));
+        }
         "RequiresNightlyRustc" => {
             config.requires_nightly_rustc = arg.to_lowercase().parse()?;
         }
@@ -1547,6 +1712,17 @@ fn process_directive(
         }
         "TestUpdateInPlace" => {
             config.test_update_in_place = arg.to_lowercase().parse()?;
+        }
+        "DriverMode" => {
+            config.driver_mode = Some(DriverMode::from_str(arg).map_err(|_| {
+                error!(
+                    "Unknown driver mode `{arg}`, supported options are: {}",
+                    DriverMode::VARIANTS.join(",")
+                )
+            })?);
+        }
+        "MaxThunks" => {
+            config.assertions.max_thunks = arg.parse().context("Invalid MaxThunks value")?;
         }
         other => bail!("Unknown directive '{other}'"),
     }
@@ -1598,11 +1774,7 @@ impl ProgramInputs {
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
-        if config.test_update_in_place
-            && matches!(linker, Linker::Wild)
-            && !config.should_error
-            && (config.should_diff || config.should_run)
-        {
+        if config.test_update_in_place && matches!(linker, Linker::Wild) {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
         }
 
@@ -1754,7 +1926,7 @@ fn remove_sections(
 /// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
 fn sections_with_diffs(bytes_a: &[u8], bytes_b: &[u8]) -> Result<Vec<SectionDiff>> {
     let file =
-        ElfFile64::parse(bytes_a).context("Failed to parse output with --update-in-place")?;
+        object::File::parse(bytes_a).context("Failed to parse output with --update-in-place")?;
 
     let mut sections = HashMap::new();
 
@@ -1833,6 +2005,13 @@ impl Program<'_> {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
             c.arg(arch.get_cross_sysroot_path());
+
+            let extra_lib_paths = arch.qemu_extra_lib_paths();
+            if !extra_lib_paths.is_empty() {
+                c.arg("-E");
+                c.arg(format!("LD_LIBRARY_PATH={}", extra_lib_paths.join(":")));
+            }
+
             c.arg(&self.link_output.binary);
             c
         } else {
@@ -1854,9 +2033,9 @@ impl Program<'_> {
             )
         })?;
 
-        // We need to drop command here since it holds a copy or two of our send pipe. While they
-        // are open, our `recv_to_end` call below can't finish.
-        drop(command);
+        // Drop pipes from command. While they are open, our `recv_to_end` call below can't finish.
+        command.stdout(Stdio::null());
+        command.stderr(Stdio::null());
 
         let mut output = Vec::new();
 
@@ -1877,7 +2056,7 @@ impl Program<'_> {
         let output = String::from_utf8_lossy(&output);
 
         if status.code() != Some(EXIT_SUCCESS) {
-            bail!("Binary exited with unexpected {status}: {output}");
+            bail!("Binary exited with unexpected {status}: {output}\nCommand:\n  {command:?}");
         }
 
         Ok(())
@@ -1888,12 +2067,14 @@ impl Program<'_> {
         // In particular: All initialization, termination and entry routines of the shared library
         // need to be safe and entry_sym has to be of type `extern "C" fn() -> i32`.
         let exit_code = unsafe {
-            let lib = Library::new(&self.link_output.binary).with_context(|| {
-                format!(
-                    "Cannot load shared library {}",
-                    self.link_output.binary.to_string_lossy()
-                )
-            })?;
+            let lib = Library::new(&self.link_output.binary)
+                .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+                .with_context(|| {
+                    format!(
+                        "Cannot load shared library {}",
+                        self.link_output.binary.to_string_lossy()
+                    )
+                })?;
             let entry = lib
                 .get::<unsafe extern "C" fn() -> i32>(entry_sym)
                 .with_context(|| format!("Cannot find entry point symbol {entry_sym}"))?;
@@ -2090,6 +2271,7 @@ fn build_linker_input(
             out
         }
         InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
+        InputType::AugmentLinkerScript => LinkerInput::new(first_obj_path.to_owned()),
     };
 
     linker_input.template = dep.template.clone();
@@ -2121,18 +2303,18 @@ fn get_c_compiler(
         (_, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
             ),
             "gcc" | "g++",
             CLanguage::C,
-        ) => Ok(format!("{arch}-linux-gnu-gcc")),
+        ) => Ok(format!("{}-gcc", arch.cross_triplet())),
         (
             Some(
-                arch @ (Architecture::AArch64 | Architecture::RISCV64 | Architecture::LoongArch64),
+                arch @ (Architecture::AArch64 | Architecture::RiscV64 | Architecture::LoongArch64),
             ),
             "gcc" | "g++",
             CLanguage::Cpp,
-        ) => Ok(format!("{arch}-linux-gnu-g++")),
+        ) => Ok(format!("{}-g++", arch.cross_triplet())),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
 }
@@ -2147,7 +2329,7 @@ fn build_obj(
 ) -> Result<BuiltObject> {
     let src_path = file.path.clone();
 
-    if input_type == InputType::LinkerScript {
+    if input_type.is_linker_script() {
         return Ok(BuiltObject {
             path: src_path,
             inputs: Vec::new(),
@@ -2221,7 +2403,7 @@ fn build_obj(
                 command.arg("-fdiagnostics-color=always");
             }
 
-            add_cross_args(&mut command, &compiler_args, cross_arch);
+            add_cross_args(&mut command, &compiler_args, cross_arch, config.platform);
 
             command.arg("-c");
 
@@ -2251,8 +2433,11 @@ fn build_obj(
 
             if let Some(arch) = cross_arch {
                 let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
-                    command.arg(format!("--target={}", arch.default_target_triple_rustc()));
-                    arch.default_target_triple().to_owned()
+                    command.arg(format!(
+                        "--target={}",
+                        arch.default_target_triple_rustc(config.platform)
+                    ));
+                    arch.default_target_triple(config.platform).to_owned()
                 });
                 let target_underscore = target.replace('-', "_");
                 let target_triple = target.replace("-unknown", "");
@@ -2413,11 +2598,9 @@ fn add_cross_args(
     command: &mut Command,
     compiler_args: &[String],
     cross_arch: Option<Architecture>,
+    platform: PlatformKind,
 ) {
-    let Some(cross_arch) = cross_arch else {
-        return;
-    };
-
+    // We currently only support cross compiling with clang.
     if !command
         .get_program()
         .as_encoded_bytes()
@@ -2426,10 +2609,13 @@ fn add_cross_args(
         return;
     }
 
-    let target = get_target(compiler_args)
-        .cloned()
-        .unwrap_or_else(|_| cross_arch.default_target_triple().to_owned());
-    command.arg(format!("--target={target}"));
+    if !platform.is_host() || cross_arch.is_some() {
+        let arch = cross_arch.unwrap_or_else(get_host_architecture);
+        let target = get_target(compiler_args)
+            .cloned()
+            .unwrap_or_else(|_| arch.default_target_triple(platform).to_owned());
+        command.arg(format!("--target={target}"));
+    }
 }
 
 impl RustcChannel {
@@ -2773,7 +2959,7 @@ impl LinkCommand {
                                     .expect("Linker path must be valid UTF-8")
                             ));
 
-                            add_cross_args(&mut command, &[], cross_arch);
+                            add_cross_args(&mut command, &[], cross_arch, config.platform);
                         }
                         Compiler::Gcc(_) => {
                             match linker {
@@ -2806,25 +2992,45 @@ impl LinkCommand {
                 LinkerDriver::Direct(direct_config) => {
                     command = Command::new(linker_path);
 
-                    if let Some(arch) = cross_arch {
-                        command.arg("-m").arg(arch.emulation_name());
+                    // Only some linkers support -flavor
+                    if linker.is_wild() || linker.is_lld() {
+                        command.arg("-flavor").arg(config.platform.flavor());
                     }
 
-                    match direct_config.mode {
-                        Mode::Dynamic => {
-                            command
-                                .arg("-dynamic-linker")
-                                .arg(dynamic_linker_path(cross_arch));
+                    match config.platform {
+                        PlatformKind::Elf => {
+                            if let Some(arch) = cross_arch {
+                                command.arg("-m").arg(arch.emulation_name());
+                            }
+
+                            match direct_config.mode {
+                                Mode::Dynamic => {
+                                    command
+                                        .arg("-dynamic-linker")
+                                        .arg(dynamic_linker_path(cross_arch));
+                                }
+                                Mode::Static => {
+                                    command.arg("-static");
+                                }
+                                Mode::Unspecified => {}
+                            }
+
+                            if !linker_args.args.iter().any(|a| a == "-r") {
+                                command.arg("--gc-sections");
+                            }
                         }
-                        Mode::Static => {
-                            command.arg("-static");
+                        PlatformKind::MachO => {
+                            if linker.is_lld() {
+                                let arch = cross_arch.unwrap_or(arch);
+                                command.arg("-arch").arg(arch.darwin_arch_name());
+                                command.arg("-platform_version");
+                                command.arg("macos");
+                                command.arg("11.0");
+                                command.arg("11.0");
+                            }
                         }
-                        Mode::Unspecified => {}
                     }
 
-                    if !linker_args.args.iter().any(|a| a == "-r") {
-                        command.arg("--gc-sections");
-                    }
                     command.args(&linker_args.args);
                 }
             }
@@ -2848,7 +3054,7 @@ impl LinkCommand {
                 command.env(libwild::args::VALIDATE_ENV, "1");
             }
 
-            if config.should_diff {
+            if config.should_diff || config.assertions.requires_metrics() {
                 if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
                     command.arg("--write-layout");
                     command.arg("--write-trace");
@@ -2873,17 +3079,25 @@ impl LinkCommand {
             output_path: output_path.to_owned(),
         };
 
-        link_command
-            .command
-            .arg(invocation_mode.format_arg(&format!(
-                "--dependency-file={}",
-                link_command.depfile_path().display()
-            )));
+        if config.platform == PlatformKind::Elf {
+            link_command
+                .command
+                .arg(invocation_mode.format_arg(&format!(
+                    "--dependency-file={}",
+                    link_command.depfile_path().display()
+                )));
+        }
 
         Ok(link_command)
     }
 
     fn run(&mut self, config: &Config) -> Result {
+        if let Some(mode) = config.driver_mode {
+            match mode {
+                DriverMode::SaveDirResponse => return self.run_save_dir_response(config),
+            }
+        }
+
         // If we're linking with wild and we're going to be invoking the linker directly, then just
         // use libwild as a library. This is marginally faster, since we avoid the process startup
         // costs. It also allows us to exercise wild as a library. We still exercise wild from the
@@ -2903,9 +3117,11 @@ impl LinkCommand {
             let get_args = || std::iter::once("wild").chain(args.iter().copied());
             let mut parsed_args = libwild::Args::new(get_args)?;
             parsed_args.set_version("integration-test");
-            // Tests that are checking for warnings use a subprocess to capture output. For now, we
-            // suppress warnings for tests that use libwild.
-            parsed_args.on_warning(Box::new(|_| {}));
+            let warnings = Arc::new(Mutex::new(String::new()));
+            parsed_args.on_warning({
+                let warnings = warnings.clone();
+                Box::new(move |warning| warnings.lock().unwrap().push_str(&format!("{warning}\n")))
+            });
             parsed_args.parse(get_args)?;
 
             // This call is expected to error for all but the first call.
@@ -2915,6 +3131,9 @@ impl LinkCommand {
             linker
                 .run(&parsed_args, &thread_pool)
                 .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
+
+            let warnings = warnings.lock().unwrap();
+            self.check_messages(&config.expect_stderr, "stderr", &warnings, "", &warnings)?;
 
             return Ok(());
         }
@@ -2954,6 +3173,137 @@ impl LinkCommand {
         Ok(())
     }
 
+    fn run_save_dir_response(&mut self, config: &Config) -> Result {
+        let save_dir = self.output_path.with_extension("save");
+        self.command.env("WILD_SAVE_DIR", &save_dir);
+        self.opt_save_dir = Some(save_dir.clone());
+
+        let rsp_path = self.output_path.with_extension("rsp");
+
+        // Collect args but skip -flavor (it should be the first arg, not in response file)
+        let mut skip_next = false;
+        let rsp_contents = self
+            .command
+            .get_args()
+            .filter_map(|arg| {
+                if skip_next {
+                    skip_next = false;
+                    return None;
+                }
+                let arg_str = arg.to_string_lossy();
+                if arg_str == "-flavor" {
+                    skip_next = true;
+                    return None;
+                }
+                Some(arg_str.into_owned())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        std::fs::write(&rsp_path, format!("{rsp_contents}\n"))
+            .with_context(|| format!("Failed to write response file `{}`", rsp_path.display()))?;
+
+        let mut create_save_dir_cmd = Command::new(self.command.get_program());
+
+        // Add -flavor as the first argument if present
+        let has_flavor = self
+            .command
+            .get_args()
+            .any(|arg| arg.to_string_lossy() == "-flavor");
+        if has_flavor {
+            create_save_dir_cmd.arg("-flavor");
+            // Find the flavor value
+            let mut args = self.command.get_args();
+            while let Some(arg) = args.next() {
+                if arg.to_string_lossy() == "-flavor" {
+                    if let Some(flavor_value) = args.next() {
+                        create_save_dir_cmd.arg(flavor_value);
+                    }
+                    break;
+                }
+            }
+        }
+
+        create_save_dir_cmd.arg(format!("@{}", rsp_path.display()));
+
+        for (key, value) in self.command.get_envs() {
+            if let Some(value) = value {
+                create_save_dir_cmd.env(key, value);
+            } else {
+                create_save_dir_cmd.env_remove(key);
+            }
+        }
+
+        if let Some(dir) = self.command.get_current_dir() {
+            create_save_dir_cmd.current_dir(dir);
+        }
+
+        create_save_dir_cmd.env("WILD_SAVE_DIR", &save_dir);
+        create_save_dir_cmd.env("WILD_SAVE_SKIP_LINKING", "1");
+
+        let output = create_save_dir_cmd.output().with_context(|| {
+            format!(
+                "Failed to run {}",
+                create_save_dir_cmd.get_program().to_string_lossy()
+            )
+        })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            bail!(
+                "Failed to run: {}\nOutput:\n{stdout}{stderr}",
+                command_as_str(&create_save_dir_cmd)
+            );
+        }
+
+        let run_with = run_with_path(&save_dir);
+        if !run_with.exists() {
+            bail!(
+                "run-with script wasn't generated at `{}`. Command:\n{}\nOutput:\n{stdout}{stderr}",
+                run_with.display(),
+                command_as_str(&create_save_dir_cmd),
+            );
+        }
+
+        let mut run_save_dir_cmd = Command::new("bash");
+        run_save_dir_cmd.arg(&run_with);
+        run_save_dir_cmd.arg(wild_path());
+
+        // The fact that our save-dirs use D is an implementation detail, but it's convenient to
+        // stress-test our handling of that variable by setting it to an invalid value here.
+        run_save_dir_cmd.env("D", "/definitely/wrong/save-dir");
+
+        let output = run_save_dir_cmd
+            .output()
+            .with_context(|| format!("Failed to run save-dir script `{}`", run_with.display()))?;
+
+        let stdout = std::str::from_utf8(&output.stdout).context("script stdout is not UTF-8")?;
+        let stderr = std::str::from_utf8(&output.stderr).context("script stderr is not UTF-8")?;
+
+        self.check_messages(&config.expect_stderr, "stderr", stderr, stdout, stderr)?;
+        self.check_messages(&config.expect_stdout, "stdout", stdout, stdout, stderr)?;
+
+        if !output.status.success() {
+            bail!(
+                "save-dir run-with script failed:\n{stdout}{stderr}\nRelink with:\n{}",
+                run_with.display()
+            );
+        }
+
+        let bin_output = save_dir.join("bin");
+        std::fs::rename(&bin_output, &self.output_path).with_context(|| {
+            format!(
+                "Failed to rename save-dir output from `{}` to `{}`",
+                bin_output.display(),
+                self.output_path.display()
+            )
+        })?;
+
+        Ok(())
+    }
+
     fn check_messages(
         &self,
         expectations: &[ErrorMatcher],
@@ -2963,13 +3313,23 @@ impl LinkCommand {
         stderr: &str,
     ) -> Result {
         for expected_error in expectations {
+            if expected_error.wild_only && !self.linker.is_wild() {
+                continue;
+            }
+
             if !expected_error.matches(output) {
-                eprintln!("-- stdout --\n{stdout}\n-- stderr --\n{stderr}\n-- end --");
                 bail!(
                     "Linker expected to report `{expected_error}` on {output_name}, but didn't. \
-                         Command:\n{self}"
+                    Command:\n{self}\n\
+                    -- stdout --\n{stdout}\n\
+                    -- stderr --\n{stderr}\n\
+                    -- end --"
                 );
             }
+        }
+
+        if self.linker.is_wild() && expectations.is_empty() && !output.is_empty() {
+            bail!("Unexpected output on {output_name}:\n{output}\nCommand:\n{self}");
         }
 
         Ok(())
@@ -3092,6 +3452,13 @@ fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
 
 impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
+        // If the output file doesn't exist and we have no assertions, then skip parsing the output
+        // file. This allows tests like the one that writes to /dev/null to succeed, while still
+        // checking that the output file is valid in cases where we don't have any assertions.
+        if !link_output.binary.exists() && *self == Self::default() {
+            return Ok(());
+        }
+
         self.check_path(&link_output.binary, &link_output.linker_used)?;
         self.check_output_files(link_output)?;
         Ok(())
@@ -3118,26 +3485,66 @@ impl Assertions {
     }
 
     fn check_path(&self, path: &PathBuf, linker_used: &Linker) -> Result {
-        let bytes = std::fs::read(path)?;
-        let obj = ElfFile64::parse(bytes.as_slice())?;
+        let bytes =
+            std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_file_kind(&obj)?;
-        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())
-            .context(".symtab assertion failed")?;
-        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())
-            .context(".dynsym assertion failed")?;
-        self.verify_symbols_absent(&self.no_sym, obj.symbols(), ".symtab")?;
-        self.verify_symbols_absent(&self.no_sym, obj.dynamic_symbols(), ".dynsym")?;
-        self.verify_symbols_absent(&self.no_dynsym, obj.dynamic_symbols(), ".dynsym")?;
-        self.verify_comment_section(&obj, linker_used)?;
-        self.verify_strings(&bytes)?;
-        self.verify_load_alignment(&obj)?;
-        self.verify_dynamic_entries(&obj)?;
+        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols(), "symtab")?;
+        verify_symbol_assertions(
+            &obj,
+            &self.expected_dynsym_entries,
+            obj.dynamic_symbols(),
+            "dynsym",
+        )?;
+        self.verify_symbols_absent(&self.no_sym, obj.symbols(), "symtab")?;
         self.verify_section_bytes(&obj)?;
+        self.verify_strings(&bytes)?;
+        verify_no_overlapping_sections(&obj)?;
+        verify_no_overlapping_segments(&obj)?;
+
+        match obj {
+            object::File::Elf64(elf_obj) => {
+                self.verify_comment_section(&elf_obj, linker_used)?;
+                self.verify_load_alignment(&elf_obj)?;
+                self.verify_dynamic_entries(&elf_obj)?;
+                self.verify_symbols_absent(&self.no_sym, elf_obj.dynamic_symbols(), "dynsym")?;
+                self.verify_symbols_absent(&self.no_dynsym, elf_obj.dynamic_symbols(), "dynsym")?;
+                self.verify_program_headers(&elf_obj)?;
+            }
+            object::File::MachO64(_) => {
+                if !self.expected_comments.is_empty() {
+                    bail!("ExpectComment is not supported for MachO",);
+                }
+                if !self.no_dynsym.is_empty() {
+                    bail!("NoDynSym is not supported for MachO",);
+                }
+                if !self.expected_load_alignments.is_empty() {
+                    bail!("ExpectLoadAlignment is not supported for MachO",);
+                }
+                if !self.expected_dynamic_entries.is_empty() {
+                    bail!("ExpectDynamic is not supported for MachO",);
+                }
+                if !self.absent_dynamic_entries.is_empty() {
+                    bail!("NoDynamic is not supported for MachO",);
+                }
+                if !self.expected_program_headers.is_empty() {
+                    bail!("ExpectProgramHeader is not supported for MachO",);
+                }
+                if !self.absent_program_headers.is_empty() {
+                    bail!("NoProgramHeader is not supported for MachO");
+                }
+            }
+            _ => bail!("Unsupported object file format"),
+        }
+
+        if linker_used.is_wild() {
+            self.verify_max_thunks(path)?;
+        }
         Ok(())
     }
 
-    fn verify_section_bytes(&self, obj: &ElfFile64) -> Result {
+    fn verify_section_bytes(&self, obj: &object::File) -> Result {
         for expected in &self.expected_section_bytes {
             let section = obj
                 .section_by_name(&expected.section_name)
@@ -3154,7 +3561,32 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_comment_section(&self, obj: &ElfFile64, linker_used: &Linker) -> Result {
+    fn verify_max_thunks(&self, binary_path: &Path) -> Result {
+        let layout_path = linker_layout::layout_path(binary_path);
+        let layout_bytes = std::fs::read(&layout_path);
+        if layout_bytes.is_err() && !self.requires_metrics() {
+            return Ok(());
+        }
+        let layout_bytes = layout_bytes.with_context(|| {
+            format!("Failed to read layout file for `{}`", layout_path.display())
+        })?;
+        let layout = linker_layout::Layout::from_bytes(&layout_bytes)
+            .with_context(|| format!("Failed to read layout from `{}`", layout_path.display()))?;
+        let actual = layout.metrics.thunk_count;
+        ensure!(
+            actual <= self.max_thunks,
+            "Too many thunks allocated: expected at most {}, but got {}",
+            self.max_thunks,
+            actual,
+        );
+        Ok(())
+    }
+
+    fn verify_comment_section<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+        linker_used: &Linker,
+    ) -> Result {
         if obj.kind() == ObjectKind::Relocatable {
             return Ok(());
         }
@@ -3217,33 +3649,43 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_load_alignment(&self, obj: &ElfFile64) -> Result {
-        let Some(expected) = self.expected_load_alignment else {
-            return Ok(());
-        };
-
-        let endian = LittleEndian;
+    fn verify_load_alignment<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
+        let mut expected_load_alignments = self.expected_load_alignments.iter();
+        let endian = obj.endian();
         let segments = obj.elf_program_headers();
         for segment in segments {
             if segment.p_type(endian) == object::elf::PT_LOAD {
                 let alignment = segment.p_align(endian);
-                if alignment != expected {
+                let Some(expected) = expected_load_alignments.next() else {
+                    return Ok(());
+                };
+
+                if alignment != *expected {
                     bail!("Expected LOAD segment alignment {expected:#x}, but got {alignment:#x}");
                 }
-
-                return Ok(());
             }
         }
 
-        bail!("No LOAD segment found");
+        if expected_load_alignments.count() > 0 {
+            bail!("No LOAD segment found");
+        }
+
+        Ok(())
     }
 
-    fn verify_symbols_absent(
+    fn verify_symbols_absent<'a, I>(
         &self,
         absent_syms: &HashSet<String>,
-        symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
+        symbols: I,
         table_name: &str,
-    ) -> Result {
+    ) -> Result
+    where
+        I: Iterator,
+        I::Item: object::ObjectSymbol<'a>,
+    {
         if absent_syms.is_empty() {
             return Ok(());
         }
@@ -3259,7 +3701,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_file_kind(&self, obj: &ElfFile64) -> Result {
+    fn verify_file_kind(&self, obj: &object::File) -> Result {
         // For now, our file-kind identification is limited to just whether there's a dynamic symbol
         // table.
         if self.expect_dynamic {
@@ -3272,7 +3714,10 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_dynamic_entries(&self, obj: &ElfFile64) -> Result {
+    fn verify_dynamic_entries<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
         if self.expected_dynamic_entries.is_empty() && self.absent_dynamic_entries.is_empty() {
             return Ok(());
         }
@@ -3288,11 +3733,14 @@ impl Assertions {
         };
 
         let data = dynamic_section.data()?;
-        let entry_size = std::mem::size_of::<object::elf::Dyn64<LittleEndian>>();
+        let endian = obj.endian();
+        let Ok(entries) = object::pod::slice_from_all_bytes::<object::elf::Dyn64<_>>(data) else {
+            bail!("Unexpected .dynamic section length {:#x}", data.len());
+        };
         let mut found_tags: HashSet<String> = HashSet::new();
 
-        for chunk in data.chunks_exact(entry_size) {
-            let tag = i64::from_le_bytes(chunk[0..8].try_into().unwrap());
+        for entry in entries {
+            let tag = entry.d_tag.get(endian);
             if let Some(name) = dynamic_tag_name(tag) {
                 found_tags.insert(name.to_string());
             }
@@ -3319,9 +3767,102 @@ impl Assertions {
 
         Ok(())
     }
+
+    fn verify_program_headers<'data>(
+        &self,
+        obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+    ) -> Result {
+        if self.expected_program_headers.is_empty() && self.absent_program_headers.is_empty() {
+            return Ok(());
+        }
+
+        let endian = obj.endian();
+        let mut header_types = HashSet::new();
+
+        for header in obj.elf_program_headers() {
+            header_types.insert(header.p_type(endian).0);
+        }
+
+        for header in &self.expected_program_headers {
+            if !header_types.contains(&(*header as u32)) {
+                bail!("Expected program header `{header}' not found.");
+            }
+        }
+
+        for header in &self.absent_program_headers {
+            if header_types.contains(&(*header as u32)) {
+                bail!("Program header `{header}' should be absent but was found.");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Returns whether we have assertions configured that require metrics to be enabled. Even if
+    /// this returns false, if diffing is enabled, we'll collect metrics and check them.
+    fn requires_metrics(&self) -> bool {
+        // If max_thunks is 0 (the default), then we consider checking it to be optional. e.g. it
+        // won't be checked for the test that writes the output to /dev/null.
+        self.max_thunks > 0
+    }
 }
 
-fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
+fn verify_no_overlapping_sections(obj: &object::File) -> Result {
+    let mut previous_range = None;
+    for section in obj.sections() {
+        if let Some((_, prev_end)) = previous_range
+            && let Some((start, _)) = section.file_range()
+            && start < prev_end
+        {
+            bail!("Section {} overlaps with previous section", section.name()?);
+        }
+
+        previous_range = section.file_range();
+
+        section.data()?;
+    }
+
+    Ok(())
+}
+
+fn verify_no_overlapping_segments(obj: &object::File) -> Result {
+    let object::File::Elf64(elf_obj) = obj else {
+        return Ok(());
+    };
+
+    let segments = elf_obj
+        .elf_program_headers()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, seg)| {
+            let start = seg.p_vaddr(elf_obj.endian());
+            let size = seg.p_memsz(elf_obj.endian());
+            let p_type = seg.p_type(elf_obj.endian());
+            if p_type != object::elf::PT_LOAD {
+                return None;
+            }
+            Some((i, start, start + size))
+        })
+        .sorted_by_key(|seg| seg.1);
+
+    for ((idx1, start1, end1), (idx2, start2, end2)) in segments.tuple_windows() {
+        if start2 < end1 {
+            bail!(
+                "Program segment {} (vaddr={:#x}..{:#x}) overlaps with \
+                             segment {} (vaddr={:#x}..{:#x})",
+                idx1,
+                start1,
+                end1,
+                idx2,
+                start2,
+                end2
+            );
+        }
+    }
+    Ok(())
+}
+
+fn dynamic_tag_name(tag: object::elf::DynamicTag) -> Option<&'static str> {
     use object::elf::*;
     Some(match tag {
         DT_NULL => "DT_NULL",
@@ -3376,11 +3917,60 @@ fn dynamic_tag_name(tag: i64) -> Option<&'static str> {
     })
 }
 
-fn verify_symbol_assertions(
-    obj: &ElfFile64,
+fn lookup_line_for_symbol(obj: &object::File, sym_address: u64) -> Result<Option<u64>> {
+    let load_section = |id: gimli::SectionId| -> Result<std::borrow::Cow<[u8]>> {
+        match obj.section_by_name(id.name()) {
+            Some(section) => section
+                .uncompressed_data()
+                .map_err(|e| libwild::error::Error::from(format!("Failed to read section: {}", e))),
+            None => Ok(std::borrow::Cow::Borrowed(&[])),
+        }
+    };
+
+    let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
+
+    let borrow_section: &dyn for<'a> Fn(
+        &'a std::borrow::Cow<[u8]>,
+    ) -> gimli::EndianSlice<'a, gimli::LittleEndian> =
+        &|section| gimli::EndianSlice::new(section, gimli::LittleEndian);
+
+    let dwarf = dwarf_sections.borrow(borrow_section);
+
+    let mut iter = dwarf.units();
+    while let Some(header) = iter.next()? {
+        let unit = dwarf.unit(header)?;
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+
+        let mut rows = program.rows();
+        while let Some((_header, row)) = rows.next_row()? {
+            if row.address() > sym_address {
+                break;
+            }
+            if row.address() == sym_address {
+                return Ok(row.line().map(|l| l.get()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn verify_symbol_assertions<'a, I>(
+    obj: &object::File,
     assertions: &[ExpectedSymtabEntry],
-    symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
-) -> Result {
+    symbols: I,
+    context_name: &str,
+) -> Result
+where
+    I: Iterator,
+    I::Item: object::ObjectSymbol<'a>,
+{
+    if assertions.is_empty() {
+        return Ok(());
+    }
+
     let mut missing = assertions
         .iter()
         .map(|exp| (exp.name.as_str(), exp))
@@ -3390,7 +3980,10 @@ fn verify_symbol_assertions(
         let Ok(name) = sym.name() else {
             continue;
         };
-        let Some(exp) = missing.remove(name) else {
+
+        let exp = missing.remove(name);
+
+        let Some(exp) = exp else {
             continue;
         };
 
@@ -3402,8 +3995,9 @@ fn verify_symbol_assertions(
 
                     if section_name != exp_name {
                         bail!(
-                            "Expected symbol `{name}` to be in section `{exp_name}`, \
-                                but it was in `{section_name}`"
+                            "Expected symbol `{}` to be in section `{exp_name}`, \
+                                but it was in `{section_name}`",
+                            exp.name
                         );
                     }
 
@@ -3411,17 +4005,30 @@ fn verify_symbol_assertions(
                         let actual_offset = sym.address().wrapping_sub(section.address());
                         if expected_offset != actual_offset {
                             bail!(
-                                "Expected symbol `{name}` to be at offset {expected_offset} \
+                                "Expected symbol `{}` to be at offset {expected_offset} \
                                     in section `{exp_name}`, but it was actually at offset {}",
+                                exp.name,
                                 actual_offset as i64
                             );
                         }
                     }
                 }
                 other => bail!(
-                    "Expected symbol `name` to be in section `{exp_name}`, \
-                     but it was {other:?}"
+                    "Expected symbol `{}` to be in section `{exp_name}`, \
+                     but it was {other:?}",
+                    exp.name
                 ),
+            }
+        }
+
+        if let Some(expected_alignment) = exp.assertions.alignment {
+            let addr = sym.address();
+            if !addr.is_multiple_of(expected_alignment) {
+                bail!(
+                    "Expected symbol `{}` to have address aligned to {expected_alignment:#x}, \
+                     but its address was {addr:#x}",
+                    exp.name
+                );
             }
         }
 
@@ -3430,8 +4037,9 @@ fn verify_symbol_assertions(
             let actual_address = sym.address();
             if expected_address != actual_address {
                 bail!(
-                    "Expected symbol `{name}` to have address {expected_address:#x}, \
-                                but it actually had address {actual_address:#x}"
+                    "Expected symbol `{}` to have address {expected_address:#x}, \
+                                but it actually had address {actual_address:#x}",
+                    exp.name
                 );
             }
         }
@@ -3440,8 +4048,9 @@ fn verify_symbol_assertions(
             let actual_size = sym.size();
             if expected_size != actual_size {
                 bail!(
-                    "Expected symbol `{name}` to have size {expected_size}, \
-                                but it actually had size {actual_size}"
+                    "Expected symbol `{}` to have size {expected_size}, \
+                                but it actually had size {actual_size}",
+                    exp.name
                 );
             }
         }
@@ -3449,8 +4058,9 @@ fn verify_symbol_assertions(
         if let Some(expected_binding) = exp.assertions.binding.as_deref() {
             if !matches!(expected_binding, "local" | "global" | "weak") {
                 bail!(
-                    "Invalid binding value `{expected_binding}` for symbol `{name}`. \
-                     Must be one of: local, global, weak"
+                    "Invalid binding value `{expected_binding}` for symbol `{}`. \
+                     Must be one of: local, global, weak",
+                    exp.name
                 );
             }
             let actual_binding = if sym.is_weak() {
@@ -3462,8 +4072,24 @@ fn verify_symbol_assertions(
             };
             if expected_binding != actual_binding {
                 bail!(
-                    "Expected symbol `{name}` to have binding `{expected_binding}`, \
-                     but it actually had binding `{actual_binding}`"
+                    "Expected symbol `{}` to have binding `{expected_binding}`, \
+                     but it actually had binding `{actual_binding}`",
+                    exp.name
+                );
+            }
+        }
+
+        if let Some(expected_line) = exp.assertions.line {
+            let address = sym.address();
+
+            let actual_line = lookup_line_for_symbol(obj, address)
+                .with_context(|| format!("Error reading line info for `{name}` (0x{address:x})"))?
+                .with_context(|| format!("Missing line info for `{name}` (0x{address:x})"))?;
+
+            if actual_line != expected_line {
+                bail!(
+                    "Expected symbol `{name}` to be on line {expected_line}, \
+                     but it was on line {actual_line}"
                 );
             }
         }
@@ -3471,14 +4097,19 @@ fn verify_symbol_assertions(
 
     let missing = missing.into_keys().collect_vec();
     if !missing.is_empty() {
-        bail!("Missing expected symbol(s): {}", missing.join(", "));
+        bail!(
+            "Missing expected symbol(s) in {context_name}: {}",
+            missing.join(", ")
+        );
     };
 
     Ok(())
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
-fn was_linked_with_wild(obj: &ElfFile64) -> bool {
+fn was_linked_with_wild<'data>(
+    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+) -> bool {
     let Ok(actual_comments) = read_comments(obj) else {
         return false;
     };
@@ -3487,7 +4118,9 @@ fn was_linked_with_wild(obj: &ElfFile64) -> bool {
         .any(|comment| comment.starts_with("Linker: Wild "))
 }
 
-fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'data, str>>> {
+fn read_comments<'data>(
+    obj: &object::read::elf::ElfFile64<'data, object::Endianness>,
+) -> Result<Vec<std::borrow::Cow<'data, str>>> {
     let comment_section = obj
         .section_by_name(".comment")
         .context("Missing .comment section")?;
@@ -3633,6 +4266,7 @@ impl Display for InputType {
             InputType::BsdArchive => write!(f, "bsd archive"),
             InputType::SharedObject => write!(f, "shared"),
             InputType::LinkerScript => write!(f, "linker script"),
+            InputType::AugmentLinkerScript => write!(f, "augment linker script"),
         }
     }
 }
@@ -3731,6 +4365,7 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
     diff_config
         .equiv
         .extend(config.section_equiv.iter().cloned());
+    diff_config.match_any = config.diff_match_any;
     diff_config.references = files.clone();
     diff_config.file = diff_config
         .references
@@ -3794,7 +4429,7 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [
         Architecture::AArch64,
-        Architecture::RISCV64,
+        Architecture::RiscV64,
         Architecture::LoongArch64,
     ]
     .into_iter()
@@ -3836,11 +4471,21 @@ impl LinkerInvocationMode {
 impl ErrorMatcher {
     fn new(pattern: &str) -> Result<Self> {
         let regex = regex::Regex::new(pattern)?;
-        Ok(Self { regex })
+        Ok(Self {
+            regex,
+            wild_only: false,
+        })
     }
 
     fn matches(&self, stderr: &str) -> bool {
         self.regex.is_match(stderr)
+    }
+
+    fn wild_only(pattern: &str) -> Result<Self> {
+        Ok(Self {
+            wild_only: true,
+            ..Self::new(pattern)?
+        })
     }
 }
 
@@ -3858,7 +4503,7 @@ impl PartialEq for ErrorMatcher {
 
 impl Eq for ErrorMatcher {}
 
-fn available_linkers() -> Result<Vec<Linker>> {
+fn available_linkers_for_linux() -> Result<Vec<Linker>> {
     let mut linkers = vec![Linker::ThirdParty(ThirdPartyLinker {
         name: "ld",
         gcc_name: "bfd",
@@ -3895,6 +4540,24 @@ fn available_linkers() -> Result<Vec<Linker>> {
             path,
             cross_paths: find_cross_paths("mold"),
             enabled_by_default: false,
+        }));
+    }
+
+    linkers.push(Linker::Wild);
+
+    Ok(linkers)
+}
+
+fn available_linkers_for_mac() -> Result<Vec<Linker>> {
+    let mut linkers = Vec::new();
+
+    if let Ok(path) = find_bin(&["ld.lld"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "lld",
+            gcc_name: "lld",
+            path,
+            cross_paths: find_cross_paths("ld.lld"),
+            enabled_by_default: true,
         }));
     }
 
@@ -3951,6 +4614,13 @@ fn run_with_config(
         }
     }
 
+    for program in &programs {
+        program
+            .assertions
+            .check(&program.link_output)
+            .with_context(|| format!("Output binary assertions failed. {program}"))?;
+    }
+
     if config.test_config.run_all_diffs {
         diff_shared_objects(config, &programs)?;
         diff_executables(config, &programs)?;
@@ -3964,13 +4634,6 @@ fn run_with_config(
     }
 
     for program in programs {
-        if config.should_run || program.assertions != &Assertions::default() {
-            program
-                .assertions
-                .check(&program.link_output)
-                .with_context(|| format!("Output binary assertions failed. {program}"))?;
-        }
-
         if config.should_run {
             // If RunDynSym is set, execute our binary by loading it dynamically and calling the
             // configured function.
@@ -4021,6 +4684,11 @@ fn run_integration_test(
     }
 
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
+
+    // For cross-platform tests (e.g., Mac binaries on Linux), link but don't execute
+    if !config.platform.can_execute_on_host() {
+        config.should_run = false;
+    }
 
     config.rustc_channel = test_config.rustc_channel;
 
@@ -4078,19 +4746,39 @@ fn verify_platform_requirements(
         verify_linker_plugin_requirements(config, cross_arch, src_path)?;
     }
 
-    if config.requires_compiler_flags.is_empty() {
-        return Ok(());
+    if !config.requires_compiler_flags.is_empty() {
+        let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
+            return Ok(());
+        };
+
+        verify_command_success(
+            Command::new(&compiler)
+                .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+                .args(&config.requires_compiler_flags),
+        )?;
     }
 
-    let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
-        return Ok(());
-    };
+    if !config.requires_linker_flags.is_empty() {
+        let linker = config
+            .platform
+            .available_linkers()?
+            .iter()
+            .find_map(|linker| match linker {
+                Linker::ThirdParty(third_party_linker) if third_party_linker.enabled_by_default => {
+                    Some(third_party_linker.path.clone())
+                }
+                _ => None,
+            })
+            .context("RequiresLinkerFlags is set, but no system linker was configured")?;
 
-    verify_command_success(
-        Command::new(&compiler)
-            .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
-            .args(&config.requires_compiler_flags),
-    )
+        verify_command_success(
+            Command::new(&linker)
+                .arg("-v")
+                .args(&config.requires_linker_flags),
+        )?;
+    }
+
+    Ok(())
 }
 
 fn verify_linker_plugin_requirements(
@@ -4098,7 +4786,7 @@ fn verify_linker_plugin_requirements(
     cross_arch: Option<Architecture>,
     src: &Path,
 ) -> Result {
-    if !cfg!(feature = "plugins") {
+    if !cfg!(all(feature = "plugins", unix)) {
         bail!("The `plugins` feature is disabled");
     }
 
@@ -4242,9 +4930,70 @@ fn read_test_config() -> Result<TestConfig> {
 }
 
 impl PlatformKind {
+    fn host() -> Option<Self> {
+        if cfg!(target_os = "linux") {
+            Some(PlatformKind::Elf)
+        } else if cfg!(target_os = "macos") {
+            Some(PlatformKind::MachO)
+        } else {
+            None
+        }
+    }
+
     fn to_str(self) -> &'static str {
         match self {
             PlatformKind::Elf => "elf",
+            PlatformKind::MachO => "macho",
+        }
+    }
+
+    fn flavor(self) -> &'static str {
+        match self {
+            PlatformKind::Elf => "gnu",
+            PlatformKind::MachO => "darwin",
+        }
+    }
+
+    fn is_host(self) -> bool {
+        Some(self) == PlatformKind::host()
+    }
+
+    fn can_execute_on_host(self) -> bool {
+        self.is_host()
+    }
+
+    fn diff_supported(self) -> bool {
+        self == PlatformKind::Elf
+    }
+
+    fn available_linkers(self) -> Result<Vec<Linker>> {
+        match self {
+            PlatformKind::Elf => available_linkers_for_linux(),
+            PlatformKind::MachO => available_linkers_for_mac(),
+        }
+    }
+
+    fn supported_architectures(self) -> &'static [Architecture] {
+        match self {
+            PlatformKind::Elf => ALL_ARCHITECTURES,
+            PlatformKind::MachO => &[Architecture::AArch64],
+        }
+    }
+
+    fn default_args_for_linking(self) -> ArgumentSet {
+        match self {
+            PlatformKind::Elf => ArgumentSet {
+                // Wild linker uses -znow by default!
+                args: vec!["-z".to_owned(), "now".to_owned()],
+            },
+            PlatformKind::MachO => ArgumentSet::empty(),
+        }
+    }
+
+    fn default_c_compiler(self) -> &'static str {
+        match self {
+            PlatformKind::Elf => "gcc",
+            PlatformKind::MachO => "clang",
         }
     }
 }
@@ -4302,3 +5051,12 @@ impl PartialEq for OutputFileMatch {
 }
 
 impl Eq for OutputFileMatch {}
+
+impl InputType {
+    fn is_linker_script(self) -> bool {
+        matches!(
+            self,
+            InputType::LinkerScript | InputType::AugmentLinkerScript
+        )
+    }
+}

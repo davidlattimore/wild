@@ -1,7 +1,6 @@
 //#AbstractConfig:default
-// We match lld's behaviour, not GNU ld's for --allow-shlib-undefined. That is,
-// we only validate shared object undefined symbols when all of the shared
-// object's direct dependencies are loaded.
+// We match lld's behaviour, not GNU ld's for --allow-shlib-undefined. That is, we only validate
+// shared object undefined symbols when all of the shared object's direct dependencies are loaded.
 //#EnableLinker:lld
 //#SkipLinker:ld
 //#Object:runtime.c
@@ -15,21 +14,20 @@
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 
-// Allow linking against shared object with undefined symbols. We don't run this
-// because the runtime linker would error due to the undefined symbol.
+// Allow linking against shared object with undefined symbols. We don't run this because the runtime
+// linker would error due to the undefined symbol.
 //#Config:allow:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--allow-shlib-undefined -z now
 
-// This should also succeed to link because our shared object depends on another
-// shared object that we don't have loaded.
+// This should also succeed to link because our shared object depends on another shared object that
+// we don't have loaded.
 //#Config:disallow-incomplete:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--no-allow-shlib-undefined
 
-// Disallow linking against shared object with undefined symbols. In this
-// variant, the shared object (2) that we depend on has all of its dependencies
-// (3) also loaded.
+// Disallow linking against shared object with undefined symbols. In this variant, the shared object
+// (2) that we depend on has all of its dependencies (3) also loaded.
 //#Config:disallow-complete:default
 //#Shared:shlib-undefined-2.c
 //#Shared:shlib-undefined-3.c

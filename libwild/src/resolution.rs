@@ -19,6 +19,8 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_section_id::SectionIdRange;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
+use crate::linker_script::Expression;
+use crate::macho_stub_library::DefinedStubLibrary;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::InitFiniSectionDetail;
 use crate::output_section_id::OutputSections;
@@ -103,6 +105,9 @@ impl<'data, P: Platform> Resolver<'data, P> {
             output_sections,
             symbol_db.args,
         );
+
+        // Apply -Ttext/-Tdata/-Tbss (and --section-start) overrides to built-in sections.
+        output_sections.apply_section_start_overrides(symbol_db.args);
 
         canonicalise_undefined_symbols(
             self.undefined_symbols,
@@ -233,7 +238,7 @@ fn resolve_symbols_and_select_archive_entries<'data, P: Platform>(
         resolver.resolved_groups[file_id.group()].files[file_id.file()] = obj;
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     for obj in outputs.loaded_lto_objects {
         let file_id = obj.file_id;
         resolver.resolved_groups[file_id.group()].files[file_id.file()] =
@@ -253,7 +258,9 @@ fn resolve_group<'data, 'definitions, P: Platform>(
     symbol_db: &SymbolDb<'data, P>,
     outputs: &Outputs<'data, P>,
 ) -> ResolvedGroup<'data, P> {
-    match group {
+    let start_defs_len = symbol_definitions_slice.len();
+
+    let resolved_group = match group {
         Group::Prelude(prelude) => {
             let definitions_out = symbol_definitions_slice
                 .split_off_mut(..prelude.symbol_definitions.len())
@@ -311,11 +318,41 @@ fn resolve_group<'data, 'definitions, P: Platform>(
 
             ResolvedGroup { files }
         }
+        Group::StubLibraries(stubs) => {
+            let files = stubs
+                .iter()
+                .map(|stub| {
+                    symbol_definitions_slice
+                        .split_off_mut(..stub.symbol_id_range.len())
+                        .unwrap();
+                    definitions_out_per_file.push(AtomicTake::empty());
+                    ResolvedFile::StubLibrary(ResolvedStubLibrary {
+                        input: stub.input,
+                        file_id: stub.file_id,
+                        symbol_id_range: stub.symbol_id_range,
+                        // TODO: Consider alternative to cloning this.
+                        defined_symbols: stub.defined_symbols.clone(),
+                    })
+                })
+                .collect();
+
+            ResolvedGroup { files }
+        }
         Group::LinkerScripts(scripts) => {
             let files = scripts
                 .iter()
                 .map(|s| {
+                    let definitions_out = symbol_definitions_slice
+                        .split_off_mut(..s.symbol_id_range.len())
+                        .unwrap();
+
                     definitions_out_per_file.push(AtomicTake::empty());
+
+                    initial_work_out.push(LoadObjectSymbolsRequest {
+                        file_id: s.file_id,
+                        symbol_start_offset: 0,
+                        definitions_out,
+                    });
 
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
                         input: s.parsed.input,
@@ -330,6 +367,10 @@ fn resolve_group<'data, 'definitions, P: Platform>(
             ResolvedGroup { files }
         }
         Group::SyntheticSymbols(syn) => {
+            symbol_definitions_slice
+                .split_off_mut(..syn.symbol_id_range.len())
+                .unwrap();
+
             definitions_out_per_file.push(AtomicTake::empty());
 
             ResolvedGroup {
@@ -340,7 +381,7 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                 })],
             }
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => ResolvedGroup {
             files: lto_objects
                 .iter()
@@ -371,7 +412,18 @@ fn resolve_group<'data, 'definitions, P: Platform>(
                 })
                 .collect(),
         },
-    }
+    };
+
+    // Every call to this function must consume a number of definitions equal to the group's symbol
+    // count, otherwise subsequent calls will end up writing to the wrong part of the slice.
+    let taken = start_defs_len - symbol_definitions_slice.len();
+    assert_eq!(
+        taken,
+        group.num_symbols(),
+        "resolve_group({group}) took incorrect number of symbol defs"
+    );
+
+    resolved_group
 }
 
 fn resolve_sections<'data, P: Platform>(
@@ -559,7 +611,8 @@ fn work_items_do<'definitions, 'data, P: Platform>(
             // Push won't fail because we allocated enough space for all the objects.
             outputs.loaded.push(resolved_object).unwrap();
         }
-        #[cfg(feature = "plugins")]
+        Group::StubLibraries(_) => {}
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => {
             let obj = &lto_objects[file_id.file()];
             // Push won't fail because we allocated enough space for all the LTO objects.
@@ -617,9 +670,10 @@ pub(crate) enum ResolvedFile<'data, P: Platform> {
     Prelude(ResolvedPrelude<'data, P>),
     Object(ResolvedObject<'data, P>),
     Dynamic(ResolvedDynamic<'data, P>),
+    StubLibrary(ResolvedStubLibrary<'data>),
     LinkerScript(ResolvedLinkerScript<'data, P>),
     SyntheticSymbols(ResolvedSyntheticSymbols<'data, P>),
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     LtoInput(ResolvedLtoInput),
 }
 
@@ -715,13 +769,26 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
+    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search same as layout file
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
+
+    /// Total size in bytes of all executable input sections in this object. Used to determine
+    /// early-on if we can be sure that thunks won't be needed.
+    pub(crate) executable_bytes: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct ResolvedDynamic<'data, P: Platform> {
     pub(crate) common: ResolvedCommon<'data, P>,
     dynamic_tag_values: P::DynamicTagValues<'data>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) file_id: FileId,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
 }
 
 #[derive(Debug)]
@@ -739,7 +806,7 @@ pub(crate) struct ResolvedSyntheticSymbols<'data, P: Platform> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data, P>>,
 }
 
-#[cfg(feature = "plugins")]
+#[cfg(all(feature = "plugins", unix))]
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedLtoInput {
     pub(crate) file_id: FileId,
@@ -775,7 +842,7 @@ struct Outputs<'data, P: Platform> {
     /// Where we put objects once we've loaded them.
     loaded: ArrayQueue<ResolvedFile<'data, P>>,
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     loaded_lto_objects: ArrayQueue<ResolvedLtoInput>,
 
     /// Any errors that we encountered.
@@ -789,7 +856,7 @@ impl<'data, P: Platform> Outputs<'data, P> {
     fn new(num_regular_objects: usize, num_lto_objects: usize) -> Self {
         Self {
             loaded: ArrayQueue::new(num_regular_objects.max(1)),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             loaded_lto_objects: ArrayQueue::new(num_lto_objects.max(1)),
             errors: ArrayQueue::new(1),
             undefined_symbols: SegQueue::new(),
@@ -827,9 +894,18 @@ fn process_object<'scope, 'data: 'scope, 'definitions, P: Platform>(
                 .with_context(|| format!("Failed to resolve symbols in {obj}")),
             );
         }
-        Group::LinkerScripts(_) => {}
+        Group::StubLibraries(_) => {}
+        Group::LinkerScripts(scripts) => {
+            for script in scripts {
+                for sym in &script.parsed.symbol_defs {
+                    if let SymbolPlacement::Redirect(redirect) = &sym.placement {
+                        load_symbols_in_redirect(resources, scope, redirect);
+                    }
+                }
+            }
+        }
         Group::SyntheticSymbols(_) => {}
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(objects) => {
             let obj = &objects[file_id.file()];
             resources.handle_result(
@@ -857,24 +933,61 @@ fn load_prelude<'scope, 'data, P: Platform>(
     // The start symbol could be defined within an archive entry. If it is, then we need to load
     // it. We don't currently store the resulting SymbolId, but instead look it up again during
     // layout.
-    load_symbol_named(
+    let symbol_id = load_symbol_named(
         resources,
         &mut SymbolId::undefined(),
         resources.symbol_db.entry_symbol_name(),
         scope,
     );
 
+    if let Some(symbol_id) = symbol_id {
+        resources
+            .per_symbol_flags
+            .get_atomic(symbol_id)
+            .fetch_or(ValueFlags::HAS_NON_IR_REF);
+    }
+
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
-        match def_info.placement {
-            SymbolPlacement::ForceUndefined | SymbolPlacement::DefsymSymbol(_, _) => {
+        match &def_info.placement {
+            SymbolPlacement::ForceUndefined => {
                 load_symbol_named(resources, definition_out, def_info.name, scope);
+            }
+            SymbolPlacement::Redirect(redirect) => {
+                load_symbols_in_redirect(resources, scope, redirect);
             }
             _ => {}
         }
     }
+}
+
+fn load_symbols_in_redirect<'data, 'scope, P: Platform>(
+    resources: &'scope ResolutionResources<'data, 'scope, P>,
+    scope: &Scope<'scope>,
+    redirect: &crate::parsing::Redirect<'_>,
+) {
+    redirect.expression.visit_expressions(&mut |e| {
+        if let Expression::Symbol(target_name) = e
+            && let Some(target_symbol_id) = resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(target_name))
+        {
+            let file_id = resources.symbol_db.file_id_for_symbol(target_symbol_id);
+            resources.try_request_file_id(file_id, scope);
+
+            // Mark the target as having a non-IR reference. Without this, when the target is
+            // defined in an LTO/IR input, the linker plugin would report the symbol as
+            // `PrevailingDefIronly` and the LTO compiler would be free to DCE or internalize the
+            // symbol, leaving the --defsym/script redirect with no resolution.
+            resources
+                .per_symbol_flags
+                .get_atomic(target_symbol_id)
+                .or_assign(ValueFlags::HAS_NON_IR_REF);
+        }
+        true
+    });
 }
 
 fn load_symbol_named<'scope, 'data, P: Platform>(
@@ -882,16 +995,19 @@ fn load_symbol_named<'scope, 'data, P: Platform>(
     definition_out: &mut SymbolId,
     name: &[u8],
     scope: &Scope<'scope>,
-) {
-    if let Some(symbol_id) = resources
+) -> Option<SymbolId> {
+    let symbol_id = resources
         .symbol_db
-        .get_unversioned(&UnversionedSymbolName::prehashed(name))
-    {
+        .get_unversioned(&UnversionedSymbolName::prehashed(name));
+
+    if let Some(symbol_id) = symbol_id {
         *definition_out = symbol_id;
 
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         resources.try_request_file_id(symbol_file_id, scope);
     }
+
+    symbol_id
 }
 
 /// Where there are multiple references to undefined symbols with the same name, pick one reference
@@ -1035,10 +1151,9 @@ fn allocate_start_stop_symbol_id<'data, P: Platform>(
 
     let (section_name, is_start) = if let Some(s) = symbol_name_bytes.strip_prefix(b"__start_") {
         (s, true)
-    } else if let Some(s) = symbol_name_bytes.strip_prefix(b"__stop_") {
-        (s, false)
     } else {
-        return None;
+        let s = symbol_name_bytes.strip_prefix(b"__stop_")?;
+        (s, false)
     };
 
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
@@ -1110,6 +1225,7 @@ impl<'data, P: Platform> ResolvedObject<'data, P> {
             custom_sections: Default::default(),
             init_fini_sections: Default::default(),
             script_sorted_sections: Default::default(),
+            executable_bytes: 0,
         }
     }
 }
@@ -1142,8 +1258,12 @@ fn resolve_sections_for_object<'data, P: Platform>(
     // would result in resizing.
     let mut sections = Vec::with_capacity(obj.common.object.num_sections());
     let mut section_part_ids = Vec::with_capacity(obj.common.object.num_sections());
-
+    let mut executable_bytes: u64 = 0;
     for (input_section_index, input_section) in obj.common.object.enumerate_sections() {
+        let section_size = obj.common.object.section_size(input_section).unwrap_or(0);
+        if input_section.is_executable() {
+            executable_bytes += section_size;
+        }
         let (slot, part_id) = resolve_section(
             input_section_index,
             input_section,
@@ -1156,7 +1276,7 @@ fn resolve_sections_for_object<'data, P: Platform>(
         sections.push(slot);
         section_part_ids.push(part_id);
     }
-
+    obj.executable_bytes = executable_bytes;
     Ok((sections, section_part_ids))
 }
 
@@ -1173,7 +1293,7 @@ fn resolve_section<'data, P: Platform>(
     let section_name = obj
         .common
         .object
-        .section_name(input_section)
+        .section_name(input_section_index)
         .unwrap_or_default();
 
     P::verify_allowed_input_section_name(section_name)?;
@@ -1384,6 +1504,7 @@ fn resolve_symbols<'data, 'scope, P: Platform>(
                     obj.is_dynamic(),
                     obj.file_id,
                     scope,
+                    false,
                 )
             },
         )
@@ -1406,6 +1527,7 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
     is_dynamic: bool,
     file_id: FileId,
     scope: &Scope<'scope>,
+    from_ir: bool,
 ) -> Result {
     debug_assert_bail!(
         !local_symbol_attributes.is_local,
@@ -1447,6 +1569,14 @@ pub(crate) fn resolve_symbol<'data, 'scope, P: Platform>(
                     Visibility::Default => {}
                 }
             }
+
+            if !from_ir {
+                resources
+                    .per_symbol_flags
+                    .get_atomic(symbol_id)
+                    .or_assign(ValueFlags::HAS_NON_IR_REF);
+            }
+
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
 
             if symbol_file_id != file_id && !local_symbol_attributes.is_weak {
@@ -1496,6 +1626,23 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedDynamic<'data, P> {
     }
 }
 
+impl ResolvedStubLibrary<'_> {
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
+        if local_index < self.defined_symbols.symbols.len() {
+            SymbolStrength::Strong
+        } else {
+            SymbolStrength::Weak
+        }
+    }
+}
+
+impl std::fmt::Display for ResolvedStubLibrary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
 impl<'data, P: Platform> std::fmt::Display for ResolvedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
@@ -1509,9 +1656,10 @@ impl<'data, P: Platform> std::fmt::Display for ResolvedFile<'data, P> {
             ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::Dynamic(o) => std::fmt::Display::fmt(o, f),
+            ResolvedFile::StubLibrary(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(_) => std::fmt::Display::fmt("<lto object>", f),
         }
     }
@@ -1537,9 +1685,10 @@ impl<'data, P: Platform> ResolvedFile<'data, P> {
             ResolvedFile::Prelude(s) => s.symbol_id_range(),
             ResolvedFile::Object(s) => s.common.symbol_id_range,
             ResolvedFile::Dynamic(s) => s.common.symbol_id_range,
+            ResolvedFile::StubLibrary(s) => s.symbol_id_range,
             ResolvedFile::LinkerScript(s) => s.symbol_id_range,
             ResolvedFile::SyntheticSymbols(s) => s.symbol_id_range(),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(s) => s.symbol_id_range,
         }
     }

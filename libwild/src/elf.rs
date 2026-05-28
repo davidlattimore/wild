@@ -62,6 +62,7 @@ use crate::platform::SectionFlags as _;
 use crate::platform::SectionHeader as _;
 use crate::platform::SectionType as _;
 use crate::platform::Symbol as _;
+use crate::platform::ThunkConfig;
 use crate::platform::VerneedTable as _;
 use crate::program_segments::ProgramSegments;
 use crate::resolution::LoadedMetrics;
@@ -81,13 +82,9 @@ use foldhash::HashSet;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools as _;
-use linker_utils::bit_misc::BitExtraction;
-use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
-use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentFlags;
@@ -145,6 +142,11 @@ pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
+/// The ppc64 TOC base symbol. Defined to point at the start of the GOT.
+pub(crate) const TOC_SYMBOL_NAME: &str = ".TOC.";
+
+pub(crate) const THUNK_SYMBOL_PREFIX: &str = "__thunk_";
+
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
 pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
@@ -191,7 +193,7 @@ pub(crate) struct File<'data> {
     pub(crate) verneed: Option<(VerneedIterator<'data>, object::SectionIndex)>,
 
     /// e_flags from the header.
-    pub(crate) eflags: u32,
+    pub(crate) eflags: object::elf::FileFlags,
 
     pub(crate) dynamic_tag_values: Option<DynamicTagValues<'data>>,
 }
@@ -298,6 +300,7 @@ pub(crate) fn symtab_name_for_strtab(raw_name: &[u8]) -> &[u8] {
 
 impl platform::Platform for Elf {
     type File<'data> = File<'data>;
+    type FileFlags = object::elf::FileFlags;
     type SymtabEntry = SymtabEntry;
     type SectionHeader = SectionHeader;
     type SectionFlags = SectionFlags;
@@ -309,6 +312,7 @@ impl platform::Platform for Elf {
     type RelocationSections = RelocationSections;
     type DynamicEntry = DynamicEntry;
     type DynamicSymbolDefinitionExt = DynamicSymbolDefinitionExt;
+    type RelocationInfo = u32;
     type LayoutExt = LayoutExt;
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
@@ -318,8 +322,8 @@ impl platform::Platform for Elf {
     type CommonGroupStateExt = CommonGroupStateExt;
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
     type PreludeLayoutExt = PreludeLayoutExt;
-    type ArchIdentifier = u16;
-    type SectionIterator<'data> = core::slice::Iter<'data, SectionHeader>;
+    type ArchIdentifier = object::elf::Machine;
+    type SectionIterator<'a> = core::slice::Iter<'a, SectionHeader>;
     type DynamicTagValues<'data> = crate::elf::DynamicTagValues<'data>;
     type RelocationList<'data> = RelocationList<'data>;
     type VersionNames<'data> = VersionNames<'data>;
@@ -344,11 +348,14 @@ impl platform::Platform for Elf {
             crate::arch::Architecture::AArch64 => {
                 linker.link_for_arch::<Elf, crate::elf_aarch64::ElfAArch64>(args)
             }
-            crate::arch::Architecture::RISCV64 => {
+            crate::arch::Architecture::RiscV64 => {
                 linker.link_for_arch::<Elf, crate::elf_riscv64::ElfRiscV64>(args)
             }
             crate::arch::Architecture::LoongArch64 => {
                 linker.link_for_arch::<Elf, crate::elf_loongarch64::ElfLoongArch64>(args)
+            }
+            crate::arch::Architecture::Ppc64 => {
+                linker.link_for_arch::<Elf, crate::elf_ppc64::ElfPpc64>(args)
             }
             crate::arch::Architecture::Unsupported => {
                 bail!(
@@ -364,6 +371,12 @@ impl platform::Platform for Elf {
         layout: &layout::Layout<'data, Self>,
     ) -> Result {
         output.write(layout, elf_writer::write::<A>)
+    }
+
+    fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
+        layout: &mut layout::Layout<'data, Self>,
+    ) -> Result {
+        crate::compression::maybe_compress_debug_sections_elf::<A>(layout)
     }
 
     fn maybe_init_linker_plugin<'data>(
@@ -411,7 +424,6 @@ impl platform::Platform for Elf {
             output_section_id::PROGRAM_HEADERS,
             output_section_id::SECTION_HEADERS,
             output_section_id::SHSTRTAB,
-            output_section_id::RELRO_PADDING,
         ];
 
         for section_id in FORCE_KEEP_SECTIONS {
@@ -435,8 +447,8 @@ impl platform::Platform for Elf {
 
     fn section_attributes(header: &Self::SectionHeader) -> Self::SectionAttributes {
         SectionAttributes {
-            flags: SectionFlags::from_header(header),
-            ty: SectionType::from_header(header),
+            flags: header.sh_flags(LittleEndian),
+            ty: header.sh_type(LittleEndian),
             entsize: header.sh_entsize.get(LittleEndian),
         }
     }
@@ -557,6 +569,10 @@ impl platform::Platform for Elf {
         memory_offsets.increment(part_id::EH_FRAME, object.format_specific.eh_frame_size);
     }
 
+    fn file_thunk_config<'data>(file: &File<'data>) -> Option<ThunkConfig> {
+        thunk_config_for_object(file)
+    }
+
     fn finalise_layout_dynamic<'data>(
         state: &mut layout::DynamicLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -669,7 +685,7 @@ impl platform::Platform for Elf {
     }
 
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
+        state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
@@ -719,16 +735,13 @@ impl platform::Platform for Elf {
             is_default,
         } = RawSymbolName::parse(symbol_name.bytes());
 
-        let mut version = object::elf::VER_NDX_GLOBAL;
-        if symbol_db.version_script.version_count() > 0
+        let mut version = object::elf::VER_NDX_GLOBAL.into();
+        if (symbol_db.version_script.version_count() > 0 || version_name.is_some())
             && let Some(v) = symbol_db
                 .version_script
                 .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
         {
-            version = v;
-            if !is_default {
-                version |= object::elf::VERSYM_HIDDEN;
-            }
+            version = object::elf::VersymIndex::new(v, !is_default);
         }
         Ok(layout::DynamicSymbolDefinition {
             symbol_id,
@@ -804,6 +817,13 @@ impl platform::Platform for Elf {
                 if segment_def.segment_type == pt::GNU_RELRO {
                     *keep = false;
                 }
+            }
+        }
+
+        // The PHDR program header should only be present if --nmagic is not set
+        for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+            if segment_def.segment_type == pt::PHDR {
+                *keep = !args.nmagic;
             }
         }
     }
@@ -885,11 +905,15 @@ impl platform::Platform for Elf {
             .set_hidden(hidden);
         symbols.section_end(output_section_id::BSS, "__end").hide();
 
-        if args.arch == Architecture::RISCV64 {
+        if args.arch == Architecture::RiscV64 {
             symbols.section_start(
                 output_section_id::DATA,
                 crate::elf::GLOBAL_POINTER_SYMBOL_NAME,
             );
+        }
+
+        if args.arch == Architecture::Ppc64 {
+            symbols.section_start(output_section_id::GOT, crate::elf::TOC_SYMBOL_NAME);
         }
 
         symbols
@@ -971,6 +995,7 @@ impl platform::Platform for Elf {
         let file_symbol_id_range = object.symbol_id_range;
         let eh_frame_section = object.object.section(eh_frame_section_index)?;
         let data = object.object.raw_section_data(eh_frame_section)?;
+        let frame_index_offset = object.format_specific.exception_frames.len();
         let exception_frames = match object.relocations(eh_frame_section_index)? {
             RelocationList::Rela(relocations) => {
                 ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
@@ -980,6 +1005,8 @@ impl platform::Platform for Elf {
                     resources,
                     queue,
                     eh_frame_section,
+                    eh_frame_section_index,
+                    frame_index_offset,
                     data,
                     &relocations,
                     scope,
@@ -993,6 +1020,8 @@ impl platform::Platform for Elf {
                     resources,
                     queue,
                     eh_frame_section,
+                    eh_frame_section_index,
+                    frame_index_offset,
                     data,
                     &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
                     scope,
@@ -1000,9 +1029,10 @@ impl platform::Platform for Elf {
             }
         };
 
-        object.format_specific.exception_frames = exception_frames;
-        object.format_specific.eh_frame_section = Some(eh_frame_section);
-
+        object
+            .format_specific
+            .exception_frames
+            .extend(exception_frames);
         Ok(())
     }
 
@@ -1512,10 +1542,29 @@ impl platform::Platform for Elf {
         };
         sizes.increment(symtab_part, size_of::<elf::SymtabEntry>() as u64);
         let symbol_name = symbol_db.symbol_name(symbol_id)?;
-        let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name();
+        let symbol_name = symtab_name_for_strtab(symbol_name.bytes());
         sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
 
         Ok(())
+    }
+
+    fn allocate_thunk_symbol_sizes(
+        sizes: &mut OutputSectionPartMap<u64>,
+        symbols: &[SymbolId],
+        symbol_db: &SymbolDb<Self>,
+    ) {
+        let total_name_bytes: usize = symbols
+            .iter()
+            .map(|&sym_id| {
+                let name_len = symbol_db.symbol_name(sym_id).map_or(0, |n| n.bytes().len());
+                elf::THUNK_SYMBOL_PREFIX.len() + name_len + 1
+            })
+            .sum();
+        sizes.increment(
+            part_id::SYMTAB_LOCAL,
+            symbols.len() as u64 * size_of::<elf::SymtabEntry>() as u64,
+        );
+        sizes.increment(part_id::STRTAB, total_name_bytes as u64);
     }
 
     fn allocate_prelude(common: &mut CommonGroupState<Self>, symbol_db: &SymbolDb<Self>) {
@@ -1660,8 +1709,21 @@ impl platform::Platform for Elf {
         }
     }
 
-    fn default_layout_rules() -> &'static [SectionRule<'static>] {
-        DEFAULT_SECTION_RULES
+    fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>> {
+        let sframe_outcome = if args.discard_sframe {
+            SectionRuleOutcome::Discard
+        } else {
+            SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
+                output_section_id::SFRAME,
+            ))
+        };
+        let mut rules = Vec::with_capacity(DEFAULT_SECTION_RULES.len() + 1);
+        rules.extend(DEFAULT_SECTION_RULES.iter().cloned());
+        rules.push(SectionRule::exact(
+            secnames::SFRAME_SECTION_NAME,
+            sframe_outcome,
+        ));
+        rules
     }
 
     fn linker_script_rules_pre_build(rule_builder: &mut crate::layout_rules::LayoutRulesBuilder) {
@@ -1681,7 +1743,7 @@ impl platform::Platform for Elf {
 
     fn verify_allowed_input_section_name(name: &[u8]) -> Result {
         if name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-            if cfg!(feature = "plugins") {
+            if cfg!(all(feature = "plugins", unix)) {
                 bail!("Found GCC LTO input that we didn't supply to linker plugin");
             }
             return Err(crate::symbol_db::linker_plugin_disabled_error());
@@ -1796,10 +1858,12 @@ impl platform::Platform for Elf {
         builder.add_sections(&custom.ro);
 
         builder.add_section(output_section_id::PLT_GOT);
-        builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::INIT);
         builder.add_section(output_section_id::FINI);
         builder.add_sections(&custom.exec);
+        // We want ThunkConfig::primary_function_part_id to be more or less last, since we only
+        // support generating thunks before the primary_function_part, not after.
+        builder.add_section(output_section_id::TEXT);
 
         builder.add_section(output_section_id::TDATA);
         builder.add_sections(&custom.tdata);
@@ -2006,7 +2070,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         // Find all the sections that we're interested in a single scan of the section table so
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
-            match SectionType::from_header(section) {
+            match section.sh_type(endian) {
                 sht::DYNSYM if is_dynamic => {
                     symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
                 }
@@ -2044,25 +2108,24 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+    fn section(&self, index: object::SectionIndex) -> Result<&SectionHeader> {
         Ok(self.sections.section(index)?)
     }
 
-    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+    fn section_by_name(&self, name: &str) -> Option<(object::SectionIndex, &SectionHeader)> {
         self.sections.section_by_name(LittleEndian, name.as_bytes())
     }
 
-    fn section_name(&self, section: &'data SectionHeader) -> Result<&'data [u8]> {
+    fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]> {
+        let section = self.sections.section(index)?;
         Ok(self.sections.section_name(LittleEndian, section)?)
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
-        self.section(index)
-            .and_then(|section| self.section_name(section))
-            .map_or_else(
-                |_| format!("<index {}>", index.0).into(),
-                String::from_utf8_lossy,
-            )
+        self.section_name(index).map_or_else(
+            |_| format!("<index {}>", index.0).into(),
+            String::from_utf8_lossy,
+        )
     }
 
     fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
@@ -2160,7 +2223,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         )
     }
 
-    fn symbol(&self, index: object::SymbolIndex) -> Result<&'data SymtabEntry> {
+    fn symbol(&self, index: object::SymbolIndex) -> Result<&SymtabEntry> {
         Ok(self.symbols.symbol(index)?)
     }
 
@@ -2202,8 +2265,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         let endian = LittleEndian;
         let versym = self.versym.get(symbol_index.0)?;
         let versym = versym.0.get(endian);
-        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+        let is_default = !versym.is_hidden();
+        let symbol_version_index = versym.index();
         if let Some((verdefs, string_table_index)) = self.verdef.clone() {
             let strings = self
                 .sections
@@ -2247,13 +2310,11 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         None
     }
 
-    fn section_iter(&self) -> core::slice::Iter<'data, SectionHeader> {
+    fn section_iter<'a>(&'a self) -> core::slice::Iter<'a, SectionHeader> {
         self.sections.iter()
     }
 
-    fn enumerate_sections(
-        &self,
-    ) -> impl Iterator<Item = (object::SectionIndex, &'data SectionHeader)> {
+    fn enumerate_sections(&self) -> impl Iterator<Item = (object::SectionIndex, &SectionHeader)> {
         self.sections.enumerate()
     }
 
@@ -2303,8 +2364,8 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
         if let Some(versym) = self.versym.get(local_index) {
             let versym = versym.0.get(LittleEndian);
-            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
-            let version_index = versym & object::elf::VERSYM_VERSION;
+            is_default = !versym.is_hidden();
+            let version_index = versym.index();
             version_name = version_names
                 .names
                 .get(usize::from(version_index))
@@ -2322,7 +2383,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
         })
     }
 
-    fn symbols_iter(&self) -> impl Iterator<Item = &'data SymtabEntry> {
+    fn symbols_iter(&self) -> impl Iterator<Item = &SymtabEntry> {
         self.symbols.iter()
     }
 
@@ -2403,18 +2464,18 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
                 let version_index = verdef.vd_ndx.get(e);
 
-                if version_index == 0 {
+                if version_index == object::elf::VER_NDX_LOCAL {
                     bail!("Invalid version index");
                 }
 
                 let flags = verdef.vd_flags.get(e);
-                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+                let is_base = flags.contains(object::elf::VER_FLG_BASE);
 
                 // Keep the base version and any versions that are referenced.
                 let needed = is_base
                     || *state
                         .symbol_versions_needed
-                        .get(usize::from(version_index - 1))
+                        .get(usize::from(version_index - object::elf::VER_NDX_GLOBAL))
                         .context("Invalid version index")?;
 
                 if needed {
@@ -2476,7 +2537,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             counts.verneed_count += 1;
             indexes.next_gnu_version_r_index = indexes
                 .next_gnu_version_r_index
-                .checked_add(info.version_count)
+                .checked_offset(info.version_count)
                 .context("Symbol versions overflowed 2**16")?;
         }
         Ok(())
@@ -2493,18 +2554,26 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
             // checks our shared object against those.
             && has_complete_deps(self, resources)
     }
+
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        _section_index: object::SectionIndex,
+    ) -> Result<u64> {
+        Ok(symbol.value())
+    }
 }
 
 impl DynamicLayoutStateExt<'_> {
     /// Marks the specified version as needed, provided it's not a local or global version.
     fn mark_version_as_needed(&mut self, version_index: Versym) -> Result {
-        let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+        let version_index = version_index.0.get(LittleEndian).index();
 
         // Versions 0 and 1 are local and global. We care about the versions after that.
-        if version_index > object::elf::VER_NDX_GLOBAL {
+        if !version_index.is_special() {
             *self
                 .symbol_versions_needed
-                .get_mut(version_index as usize - 1)
+                .get_mut(usize::from(version_index - object::elf::VER_NDX_GLOBAL))
                 .with_context(|| format!("Invalid symbol version index {version_index}"))? = true;
         }
         Ok(())
@@ -2518,6 +2587,8 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    eh_frame_section_index: object::SectionIndex,
+    frame_index_offset: usize,
     data: &'data [u8],
     relocations: &R::Sequence<'data>,
     scope: &Scope<'scope>,
@@ -2563,6 +2634,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     common,
                     rel,
                     eh_frame_section,
+                    output_section_id::EH_FRAME.base_part_id(),
                     resources,
                     queue,
                     false,
@@ -2612,7 +2684,8 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
             if let Some(section_index) = section_index
                 && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
             {
-                let frame_index = FrameIndex::from_usize(exception_frames.len());
+                let frame_index =
+                    FrameIndex::from_usize(frame_index_offset + exception_frames.len());
 
                 // Update our unloaded section to point to our new frame. Our frame will then in
                 // turn point to whatever the section pointed to before.
@@ -2622,13 +2695,14 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     relocations: relocations.subsequence(rel_start_index..rel_end_index),
                     frame_size: size as u32,
                     previous_frame_for_section,
+                    eh_frame_section_index,
                 });
             }
         }
         offset = next_offset;
     }
 
-    common.format_specific.exception_frame_count += object.format_specific.exception_frames.len();
+    common.format_specific.exception_frame_count += exception_frames.len();
 
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
@@ -2660,22 +2734,22 @@ fn process_section_exception_frames<'data, 'scope, A: Arch<Platform = Elf>, R: R
 
         // Request loading of any sections/symbols referenced by the FDEs for our
         // section.
-        if let Some(eh_frame_section) = object.format_specific.eh_frame_section {
-            for rel in frame_data.relocations.rel_iter() {
-                process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
-                    object,
-                    common,
-                    &rel,
-                    eh_frame_section,
-                    resources,
-                    queue,
-                    false,
-                    scope,
-                )?;
-            }
-            common.format_specific.exception_frame_relocations +=
-                frame_data.relocations.num_relocations();
+        let eh_frame_section = object.object.section(frame_data.eh_frame_section_index)?;
+        for rel in frame_data.relocations.rel_iter() {
+            process_relocation::<A, <R::Sequence<'data> as RelocationSequence>::Rel>(
+                object,
+                common,
+                &rel,
+                eh_frame_section,
+                output_section_id::EH_FRAME.base_part_id(),
+                resources,
+                queue,
+                true,
+                scope,
+            )?;
         }
+        common.format_specific.exception_frame_relocations +=
+            frame_data.relocations.num_relocations();
     }
 
     Ok(EhFrameSizes {
@@ -2718,7 +2792,7 @@ fn allocate_sysv_hash(
 fn compute_version_mapping(
     symbol_versions_needed: &[bool],
     non_addressable_indexes: NonAddressableIndexes,
-) -> Vec<u16> {
+) -> Vec<object::elf::VersionIndex> {
     let mut out = vec![object::elf::VER_NDX_GLOBAL; symbol_versions_needed.len()];
     let mut next_output_version = non_addressable_indexes.next_gnu_version_r_index;
     for (input_version, needed) in symbol_versions_needed.iter().enumerate() {
@@ -2732,51 +2806,51 @@ fn compute_version_mapping(
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        SectionFlags::from_header(self).is_alloc()
+        self.sh_flags(LittleEndian).is_alloc()
     }
 
     fn is_writable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::WRITE)
+        self.sh_flags(LittleEndian).contains(shf::WRITE)
     }
 
     fn is_executable(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::EXECINSTR)
+        self.sh_flags(LittleEndian).contains(shf::EXECINSTR)
     }
 
     fn is_tls(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::TLS)
+        self.sh_flags(LittleEndian).contains(shf::TLS)
     }
 
     fn is_merge_section(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::MERGE)
+        self.sh_flags(LittleEndian).contains(shf::MERGE)
     }
 
     fn is_strings(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::STRINGS)
+        self.sh_flags(LittleEndian).contains(shf::STRINGS)
     }
 
     fn should_retain(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GNU_RETAIN)
+        self.sh_flags(LittleEndian).contains(shf::GNU_RETAIN)
     }
 
     fn should_exclude(&self) -> bool {
-        SectionFlags::from_header(self).should_exclude()
+        self.sh_flags(LittleEndian).contains(shf::EXCLUDE)
     }
 
     fn is_group(&self) -> bool {
-        SectionFlags::from_header(self).contains(shf::GROUP)
+        self.sh_flags(LittleEndian).contains(shf::GROUP)
     }
 
     fn is_note(&self) -> bool {
-        SectionType::from_header(self) == sht::NOTE
+        self.sh_type(LittleEndian) == sht::NOTE
     }
 
     fn is_prog_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::PROGBITS
+        self.sh_type(LittleEndian) == sht::PROGBITS
     }
 
     fn is_no_bits(&self) -> bool {
-        SectionType::from_header(self) == sht::NOBITS
+        self.sh_type(LittleEndian) == sht::NOBITS
     }
 }
 
@@ -2861,6 +2935,11 @@ impl platform::Symbol for SymtabEntry {
         object::read::elf::Sym::st_name(self, LittleEndian) != 0
     }
 
+    fn is_default_strippable(&self, name: &[u8]) -> bool {
+        (self.is_local() && name.starts_with(b".L"))
+            || crate::symbol_db::is_mapping_symbol_name(name)
+    }
+
     fn debug_string(&self) -> String {
         SymDebug(self).to_string()
     }
@@ -2890,17 +2969,16 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn with_hidden(mut self, hidden: bool) -> Self {
-        self.st_other &= !0x3;
-        self.st_other |= if hidden {
+        self.st_other = self.st_other.with_visibility(if hidden {
             object::elf::STV_HIDDEN
         } else {
             object::elf::STV_DEFAULT
-        };
+        });
         self
     }
 }
 
-pub(crate) fn convert_elf_visibility(st_visibility: u8) -> Visibility {
+pub(crate) fn convert_elf_visibility(st_visibility: object::elf::SymbolVisibility) -> Visibility {
     match st_visibility {
         object::elf::STV_PROTECTED => Visibility::Protected,
         object::elf::STV_HIDDEN => Visibility::Hidden,
@@ -3083,48 +3161,6 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     }
 }
 
-#[inline(always)]
-pub(crate) fn write_relocation_to_buffer(
-    rel_info: RelocationKindInfo,
-    value: u64,
-    output: &mut [u8],
-) -> Result<()> {
-    rel_info.verify(value as i64)?;
-
-    if matches!(rel_info.kind, RelocationKind::PairSubtractionULEB128(..)) {
-        // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
-        let mut writer = Cursor::new(vec![0u8; 10]);
-        let n = leb128::write::unsigned(&mut writer, value).expect("Must fit into the buffer");
-        ensure!(
-            output.len() >= n,
-            "cannot write encoded ULEB128 value of {n} bytes"
-        );
-        output[..n].copy_from_slice(&writer.into_inner()[..n]);
-    } else {
-        match rel_info.size {
-            RelocationSize::ByteSize(byte_size) => {
-                ensure!(
-                    byte_size <= output.len(),
-                    "Relocation outside of bounds of section"
-                );
-                let value_bytes = value.to_le_bytes();
-                output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
-            }
-            RelocationSize::BitMasking(BitMask {
-                range,
-                instruction: insn,
-            }) => {
-                let extracted_value = value.extract_bit_range(range.start..range.end);
-                let negative = (value as i64).is_negative();
-                let output_len = output.len();
-                insn.write_to_value(extracted_value, negative, &mut output[..output_len]);
-            }
-        }
-    }
-
-    Ok(())
-}
-
 #[derive(Default, Debug, Clone, Copy)]
 pub(crate) struct DynamicTagValues<'data> {
     pub(crate) verdefnum: u64,
@@ -3217,7 +3253,7 @@ pub(crate) enum PropertyClass {
 
 #[derive(Debug)]
 pub(crate) struct GnuProperty {
-    pub(crate) ptype: u32,
+    pub(crate) ptype: object::elf::GnuPropertyType,
     pub(crate) data: u32,
 }
 
@@ -3235,9 +3271,6 @@ impl RiscVArch {
             .clone()
     }
 }
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Eflags(pub(crate) u32);
 
 #[derive(Debug)]
 pub(crate) struct RiscVAttributes {
@@ -3268,7 +3301,6 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
-    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
 
     /// Indexed by `FrameIndex`.
@@ -3279,11 +3311,11 @@ pub(crate) struct ObjectLayoutStateExt<'data> {
 pub(crate) struct LayoutExt {
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) riscv_attributes: RiscVAttributes,
-    pub(crate) eflags: Eflags,
+    pub(crate) eflags: object::elf::FileFlags,
 }
 
 impl LayoutExt {
-    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch>(
+    pub(crate) fn new<'files, 'states, 'data: 'files + 'states, A: Arch<Platform = Elf>>(
         objects: impl Iterator<Item = &'files File<'data>>,
         states: impl Iterator<Item = &'states ObjectLayoutStateExt<'data>> + Clone,
         args: &ElfArgs,
@@ -3313,7 +3345,7 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
 
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = A::get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype.0)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -3364,14 +3396,12 @@ fn merge_gnu_property_notes<'states, 'data: 'states, A: Arch>(
     Ok(output_properties)
 }
 
-fn merge_eflags<'files, 'data: 'files, A: Arch>(
+fn merge_eflags<'files, 'data: 'files, A: Arch<Platform = Elf>>(
     objects: impl Iterator<Item = &'files File<'data>>,
-) -> Result<Eflags> {
+) -> Result<object::elf::FileFlags> {
     timing_phase!("Merge e_flags");
 
-    Ok(Eflags(A::merge_eflags(
-        objects.map(|object| object.eflags),
-    )?))
+    A::merge_eflags(objects.map(|object| object.eflags))
 }
 
 fn merge_riscv_attributes<'groups, 'data: 'groups, A: Arch>(
@@ -3679,10 +3709,10 @@ pub(crate) struct SectionAttributes {
     pub(crate) entsize: u64,
 }
 
-/// Section flags that should be propagated from input sections to the output section in which they
-/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
-const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+/// Section flags that should not be propagated from input sections to the output section in which
+/// they are placed. This is passed to `without`, so we keep all flags other than the one listed
+/// here.
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags = object::elf::SHF_GROUP;
 
 impl platform::SectionAttributes for SectionAttributes {
     type Platform = Elf;
@@ -3704,7 +3734,7 @@ impl platform::SectionAttributes for SectionAttributes {
     fn apply(&self, output_sections: &mut OutputSections<Elf>, section_id: OutputSectionId) {
         let info = output_sections.section_infos.get_mut(section_id);
 
-        info.section_attributes.flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+        info.section_attributes.flags |= self.flags.without(SECTION_FLAGS_PROPAGATION_MASK);
 
         info.section_attributes.entsize = self.entsize;
 
@@ -3834,7 +3864,7 @@ impl<'data> platform::VerneedTable<'data> for VerneedTable<'data> {
     fn version_name(&self, local_symbol_index: object::SymbolIndex) -> Option<&'data [u8]> {
         let version_index = self.versym.get(local_symbol_index.0)?.0.get(LittleEndian);
         self.version_names_by_index
-            .get(usize::from(version_index))
+            .get(usize::from(version_index.index()))
             .copied()
             .flatten()
     }
@@ -3894,7 +3924,7 @@ pub(crate) struct DynamicLayoutStateExt<'data> {
 #[derive(Debug)]
 pub(crate) struct DynamicLayoutExt<'data> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
-    pub(crate) version_mapping: Vec<u16>,
+    pub(crate) version_mapping: Vec<object::elf::VersionIndex>,
 
     pub(crate) verneed_info: Option<VerneedInfo<'data>>,
 
@@ -3907,7 +3937,7 @@ pub(crate) struct DynamicLayoutExt<'data> {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NonAddressableIndexes {
     /// The version index that will be used for the next `.gnu.version_r` entry that we define.
-    next_gnu_version_r_index: u16,
+    next_gnu_version_r_index: object::elf::VersionIndex,
 }
 
 impl platform::NonAddressableIndexes for NonAddressableIndexes {
@@ -4070,13 +4100,30 @@ enum ExceptionFrames<'data> {
     Crel(Vec<ExceptionFrame<'data, Crel>>),
 }
 
+impl<'data> ExceptionFrames<'data> {
+    fn extend(&mut self, other: Self) {
+        match (self, other) {
+            (ExceptionFrames::Rela(a), ExceptionFrames::Rela(b)) => a.extend(b),
+            (ExceptionFrames::Crel(a), ExceptionFrames::Crel(b)) => a.extend(b),
+            (a, b) if a.is_empty() => *a = b,
+            _ => panic!("Mixed exception frame relocations"),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            ExceptionFrames::Rela(a) => a.is_empty(),
+            ExceptionFrames::Crel(a) => a.is_empty(),
+        }
+    }
+}
+
 impl<'data> Default for ExceptionFrames<'data> {
     fn default() -> Self {
         ExceptionFrames::Rela(Vec::new())
     }
 }
 
-#[derive(Default)]
 struct ExceptionFrame<'data, R: Relocation> {
     /// The relocations that need to be processed if we load this frame.
     relocations: R::Sequence<'data>,
@@ -4086,6 +4133,8 @@ struct ExceptionFrame<'data, R: Relocation> {
 
     /// The index of the previous frame that is for the same section.
     previous_frame_for_section: Option<FrameIndex>,
+
+    eh_frame_section_index: object::SectionIndex,
 }
 
 struct EhFrameSizes {
@@ -4273,7 +4322,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
     }
 
     fn always_keep(self) -> bool {
-        self.segment_type == pt::PHDR
+        false
     }
 
     fn is_loadable(self) -> bool {
@@ -4295,7 +4344,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         TYPE_ORDER
             .iter()
             .position(|t| *t == self.segment_type)
-            .unwrap_or(TYPE_ORDER.len() + self.segment_type.raw() as usize)
+            .unwrap_or(TYPE_ORDER.len() + self.segment_type.0 as usize)
     }
 
     fn should_include_section(
@@ -4332,7 +4381,12 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
 
 impl std::fmt::Display for ProgramSegmentDef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}, {}", self.segment_type, self.segment_flags)
+        write!(
+            f,
+            "{}, {}",
+            pt::Display(self.segment_type),
+            pf::Display(self.segment_flags),
+        )
     }
 }
 
@@ -4351,7 +4405,7 @@ pub(crate) struct BuiltInSectionDetails {
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     kind: SectionKind::Primary(SectionName(&[])),
-    section_flags: SectionFlags::empty(),
+    section_flags: SectionFlags(0),
     link: &[],
     min_alignment: alignment::MIN,
     element_size: 0,
@@ -4699,7 +4753,7 @@ impl platform::BuiltInSectionDetails for BuiltInSectionDetails {}
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DynamicSymbolDefinitionExt {
     pub(crate) hash: u32,
-    pub(crate) version: u16,
+    pub(crate) version: object::elf::VersymIndex,
 }
 
 fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocation>(
@@ -4717,11 +4771,15 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
             modifier = RelocationModifier::Normal;
             continue;
         }
+        let section_header = state.object.section(section_index)?;
+        let section_part_id =
+            state.section_part_id(section_index, &resources.symbol_db.section_part_ids);
         modifier = process_relocation::<A, R>(
             state,
             common,
             &rel,
-            state.object.section(section_index)?,
+            section_header,
+            section_part_id,
             resources,
             queue,
             false,
@@ -4740,10 +4798,11 @@ fn load_section_relocations<'scope, 'data, A: Arch<Platform = Elf>, R: Relocatio
 
 #[inline(always)]
 fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
-    object: &layout::ObjectLayoutState<'data, Elf>,
+    object: &ObjectLayoutState<'data, Elf>,
     common: &mut CommonGroupState<'data, Elf>,
     rel: &R,
     section: &<A::Platform as Platform>::SectionHeader,
+    section_part_id: crate::part_id::PartId,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     is_debug_section: bool,
@@ -4759,7 +4818,7 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.offset();
         let r_type = rel.raw_type();
-        let section_flags = SectionFlags::from_header(section);
+        let section_flags = section.sh_flags(LittleEndian);
 
         let rel_info = if let Some(relaxation) = A::new_relaxation(
             r_type,
@@ -4876,6 +4935,16 @@ fn process_relocation<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
             }
 
             queue.send_symbol_request::<A>(symbol_id, resources, scope);
+        }
+
+        if !is_debug_section {
+            crate::thunks::handle_thunk_extensions_for_relocation::<A>(
+                section_part_id,
+                resources,
+                local_symbol_id,
+                symbol_id,
+                r_type,
+            );
         }
 
         layout::check_for_undefined::<A>(
@@ -5087,12 +5156,6 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(secnames::SHSTRTAB_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::GROUP_SECTION_NAME, SectionRuleOutcome::Discard),
     SectionRule::exact(secnames::EH_FRAME_SECTION_NAME, SectionRuleOutcome::EhFrame),
-    SectionRule::exact(
-        secnames::SFRAME_SECTION_NAME,
-        SectionRuleOutcome::Section(crate::layout_rules::SectionOutputInfo::keep(
-            output_section_id::SFRAME,
-        )),
-    ),
     SectionRule::exact(
         secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
         SectionRuleOutcome::NoteGnuProperty,
@@ -5324,5 +5387,14 @@ impl CopyRelocationInfo {
 
         self.symbol_id = symbol_id;
         self.is_weak = false;
+    }
+}
+
+/// Returns the thunk config for the architecture of the given object. This is only needed in
+/// contexts that aren't currently generic over Arch.
+fn thunk_config_for_object(file: &File) -> Option<ThunkConfig> {
+    match file.arch {
+        crate::arch::Architecture::AArch64 => crate::elf_aarch64::ElfAArch64::thunk_config(),
+        _ => None,
     }
 }

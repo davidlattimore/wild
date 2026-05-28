@@ -1,7 +1,6 @@
 use crate::OutputKind;
 use crate::Result;
 use crate::alignment::Alignment;
-use crate::args::DefsymValue;
 use crate::bail;
 use crate::error::Warning;
 use crate::grouping::Group;
@@ -52,6 +51,22 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Configuration for range-extension thunks on architectures that need them.
+/// Returned by `Arch::thunk_config()`; `None` means the architecture never needs thunks.
+pub(crate) struct ThunkConfig {
+    /// PartId for the primary function part (main `.text` alignment bucket). This is the
+    /// alignment used by the vast majority of code and is where per-object thunks are placed.
+    pub(crate) primary_function_part_id: PartId,
+
+    /// Minimum branch range across all range-limited branch relocations for this architecture.
+    /// If the total executable input size is below this, thunks can be disabled entirely.
+    pub(crate) min_branch_range: u64,
+
+    /// Size in bytes of a single thunk. Must be a multiple of the `primary_function_part_id`
+    /// alignment.
+    pub(crate) thunk_size: u64,
+}
+
 /// Represents a supported architecture. Note that implementations are file-format specific.
 pub(crate) trait Arch: Send + Sync + 'static {
     type Relaxation: Relaxation;
@@ -68,7 +83,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
     fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
     /// Make architecture-specific parsing of the relocation types.
-    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
+    fn relocation_from_raw(
+        r_type: <Self::Platform as Platform>::RelocationInfo,
+    ) -> Result<RelocationKindInfo>;
 
     /// Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
@@ -88,7 +105,9 @@ pub(crate) trait Arch: Send + Sync + 'static {
 
     /// Merge e_flags of the input files and provide an error
     /// if the flags are not compatible.
-    fn merge_eflags(eflags: impl Iterator<Item = u32>) -> Result<u32>;
+    fn merge_eflags(
+        eflags: impl Iterator<Item = <Self::Platform as Platform>::FileFlags>,
+    ) -> Result<<Self::Platform as Platform>::FileFlags>;
 
     /// A list of high-part relocations that need to be tracked in a relocation cache
     fn high_part_relocations() -> &'static [u32];
@@ -149,6 +168,21 @@ pub(crate) trait Arch: Send + Sync + 'static {
     ) -> Result {
         bail!(".riscv.attribute section is supported only for riscv64 target");
     }
+
+    /// Returns the thunk configuration for this architecture, or `None` if this architecture
+    /// doesn't need thunks or we just don't support them yet.
+    fn thunk_config() -> Option<ThunkConfig> {
+        None
+    }
+
+    /// Writes a thunk into the supplied buffer that jumps to the given target address. The thunk is
+    /// placed at `thunk_address`. The buffer size equals `ThunkConfig::thunk_size`. The thunk must
+    /// be position-independent (PC-relative).
+    fn write_thunk(_thunk_address: u64, _target_address: u64, _buf: &mut [u8]) {
+        // Should only be called if thunk_config returns Some, in which case this must be
+        // overridden.
+        unimplemented!();
+    }
 }
 
 pub(crate) trait Relaxation: Send + Sync + 'static {
@@ -175,6 +209,7 @@ pub(crate) trait Platform:
     Copy + Send + Sync + Sized + Default + std::fmt::Debug + 'static
 {
     type File<'data>: ObjectFile<'data, Platform = Self>;
+    type FileFlags;
     type SymtabEntry: Symbol;
     type SectionHeader: SectionHeader;
     type SectionFlags: SectionFlags;
@@ -186,6 +221,7 @@ pub(crate) trait Platform:
     type RelocationSections: std::fmt::Debug + Default + Send + Sync + 'static;
     type DynamicEntry: Send + Sync + 'static;
     type DynamicSymbolDefinitionExt: Copy + Send + Sync + std::fmt::Debug + 'static;
+    type RelocationInfo: Copy + Send + Sync + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
     type EpilogueLayoutExt: Send + Sync + 'static;
@@ -202,7 +238,9 @@ pub(crate) trait Platform:
     /// Format-specific properties produced by the layout phase.
     type LayoutExt: Send + Sync + 'static;
 
-    type SectionIterator<'data>: Iterator<Item = &'data Self::SectionHeader>;
+    type SectionIterator<'a>: Iterator<Item = &'a Self::SectionHeader>
+    where
+        Self: 'a;
     type DynamicTagValues<'data>: DynamicTagValues<'data>;
     type RelocationList<'data>: RelocationList<'data>;
     type DynamicLayoutStateExt<'data>: Default + Send + Sync + 'data;
@@ -233,6 +271,12 @@ pub(crate) trait Platform:
         output: &crate::file_writer::Output,
         layout: &Layout<'data, Self>,
     ) -> Result;
+
+    fn maybe_compress_debug_sections<'data, A: Arch<Platform = Self>>(
+        _layout: &mut Layout<'data, Self>,
+    ) -> Result {
+        Ok(())
+    }
 
     /// Possibly initialise a linker plugin if the platform supports it and the arguments specifies
     /// that one should be used.
@@ -337,6 +381,12 @@ pub(crate) trait Platform:
         memory_offsets: &mut OutputSectionPartMap<u64>,
     );
 
+    /// Return the thunk configuration for the given object file, or `None` if range-extension
+    /// thunks are not needed for this file's architecture.
+    fn file_thunk_config<'data>(_file: &Self::File<'data>) -> Option<ThunkConfig> {
+        None
+    }
+
     fn finalise_layout_dynamic<'data>(
         state: &mut layout::DynamicLayoutState<'data, Self>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -362,7 +412,7 @@ pub(crate) trait Platform:
 
     /// Calls `load_section_relocations` on `state` for the relocations in `section`.
     fn load_object_section_relocations<'data, 'scope, A: Arch<Platform = Self>>(
-        state: &layout::ObjectLayoutState<'data, Self>,
+        state: &mut layout::ObjectLayoutState<'data, Self>,
         common: &mut layout::CommonGroupState<'data, Self>,
         queue: &mut layout::LocalWorkQueue,
         resources: &'scope layout::GraphResources<'data, '_, Self>,
@@ -488,6 +538,15 @@ pub(crate) trait Platform:
         args: &Self::Args,
     ) -> Result;
 
+    /// Returns any extra size needed for the part that currently ends last in
+    /// the output file, once its file offset and provisional size are known.
+    fn last_part_size_to_extend(
+        _record: &OutputRecordLayout,
+        _last_part_id: PartId,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     fn finalise_layout_epilogue<'data>(
         epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -558,6 +617,13 @@ pub(crate) trait Platform:
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result;
 
+    fn allocate_thunk_symbol_sizes(
+        _sizes: &mut OutputSectionPartMap<u64>,
+        _symbols: &[SymbolId],
+        _symbol_db: &SymbolDb<Self>,
+    ) {
+    }
+
     fn allocate_internal_symbol(
         symbol_id: SymbolId,
         def_info: &InternalSymDefInfo<Self>,
@@ -599,7 +665,7 @@ pub(crate) trait Platform:
         <Self::RawSymbolName<'data> as RawSymbolName>::parse(name_bytes)
     }
 
-    fn default_layout_rules() -> &'static [SectionRule<'static>];
+    fn default_layout_rules(args: &Self::Args) -> Vec<SectionRule<'static>>;
 
     /// Only called if a linker script that provides custom sections and layout rules is present.
     /// Gives the platform a chance to add extra built-in rules that need to be present even when a
@@ -680,7 +746,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
     ) -> impl Iterator<
         Item = (
             object::SymbolIndex,
-            &'data <Self::Platform as Platform>::SymtabEntry,
+            &<Self::Platform as Platform>::SymtabEntry,
         ),
     > {
         self.symbols_iter()
@@ -688,14 +754,12 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
             .map(|(i, sym)| (object::SymbolIndex(i), sym))
     }
 
-    fn symbols_iter(
-        &self,
-    ) -> impl Iterator<Item = &'data <Self::Platform as Platform>::SymtabEntry>;
+    fn symbols_iter(&self) -> impl Iterator<Item = &<Self::Platform as Platform>::SymtabEntry>;
 
     fn symbol(
         &self,
         index: object::SymbolIndex,
-    ) -> Result<&'data <Self::Platform as Platform>::SymtabEntry>;
+    ) -> Result<&<Self::Platform as Platform>::SymtabEntry>;
 
     fn section_size(&self, header: &<Self::Platform as Platform>::SectionHeader) -> Result<u64>;
 
@@ -704,30 +768,37 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         symbol: &<Self::Platform as Platform>::SymtabEntry,
     ) -> Result<&'data [u8]>;
 
+    // Get the offset of a symbol relative to the section identified by `section_index`.
+    fn symbol_offset_in_section(
+        &self,
+        symbol: &<Self::Platform as Platform>::SymtabEntry,
+        section_index: object::SectionIndex,
+    ) -> Result<u64>;
+
     fn num_sections(&self) -> usize;
 
-    fn section_iter(&self) -> <Self::Platform as Platform>::SectionIterator<'data>;
+    fn section_iter<'a>(&'a self) -> <Self::Platform as Platform>::SectionIterator<'a>;
 
     fn enumerate_sections(
         &self,
     ) -> impl Iterator<
         Item = (
             object::SectionIndex,
-            &'data <Self::Platform as Platform>::SectionHeader,
+            &<Self::Platform as Platform>::SectionHeader,
         ),
     >;
 
     fn section(
         &self,
         index: object::SectionIndex,
-    ) -> Result<&'data <Self::Platform as Platform>::SectionHeader>;
+    ) -> Result<&<Self::Platform as Platform>::SectionHeader>;
 
     fn section_by_name(
         &self,
         name: &str,
     ) -> Option<(
         object::SectionIndex,
-        &'data <Self::Platform as Platform>::SectionHeader,
+        &<Self::Platform as Platform>::SectionHeader,
     )>;
 
     fn symbol_section(
@@ -758,10 +829,7 @@ pub(crate) trait ObjectFile<'data>: Sized + Send + Sync + std::fmt::Debug + 'dat
         state: &mut <Self::Platform as Platform>::DynamicLayoutStateExt<'data>,
     ) -> Result;
 
-    fn section_name(
-        &self,
-        section_header: &'data <Self::Platform as Platform>::SectionHeader,
-    ) -> Result<&'data [u8]>;
+    fn section_name(&self, index: object::SectionIndex) -> Result<&'data [u8]>;
 
     /// Returns the raw section data. Doesn't handle decompression.
     fn raw_section_data(
@@ -909,6 +977,9 @@ pub(crate) trait Symbol: std::fmt::Debug + Copy + Send + Sync + 'static {
     fn size(&self) -> u64;
 
     fn has_name(&self) -> bool;
+
+    /// Returns whether this symbol should be omitted from the output symtab by default.
+    fn is_default_strippable(&self, name: &[u8]) -> bool;
 
     fn debug_string(&self) -> String;
 
@@ -1167,7 +1238,7 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         crate::args::UnresolvedSymbols::ReportAll
     }
 
-    fn defsym(&self) -> &[(String, DefsymValue)] {
+    fn defsym(&self) -> &[(String, String)] {
         &[]
     }
 
@@ -1200,6 +1271,13 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
         None
     }
 
+    /// Returns the address override for a `SEGMENT_START` segment name, as set via
+    /// `-Ttext`, `-Tdata` or `-Tbss` on the command line. Returns `None` if no override
+    /// was provided, in which case `SEGMENT_START` should return its default value.
+    fn segment_start_override(&self, _name: crate::parsing::SegmentName) -> Option<u64> {
+        None
+    }
+
     fn loadable_segment_alignment(&self) -> Alignment;
 
     fn should_merge_sections(&self) -> bool;
@@ -1215,6 +1293,8 @@ pub(crate) trait Args: std::fmt::Debug + Send + Sync + 'static {
     fn relocation_model(&self) -> crate::args::RelocationModel;
 
     fn should_output_executable(&self) -> bool;
+
+    fn is_ignored_flag(&self, _flag: &str) -> bool;
 
     fn warning(&self, message: impl Into<String>) {
         (self.common().warning_callback)(Warning::new(message.into()));

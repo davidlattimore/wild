@@ -9,6 +9,7 @@
 // GNU ld emits a .got section for the shared object, despite it not being
 // necessary.
 //#DiffIgnore:section.got
+//#DiffMatchAny:true
 
 #include "../common/runtime.h"
 

@@ -1,7 +1,11 @@
 use crate::error::Result;
 use crate::input_data::FileId;
+use crate::input_data::InputRef;
+use crate::input_data::LoadedStubLibrary;
 use crate::input_data::MAX_FILES_PER_GROUP;
+use crate::input_section_id::InputSectionId;
 use crate::input_section_id::SectionIdRange;
+use crate::macho_stub_library::DefinedStubLibrary;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
@@ -23,9 +27,10 @@ use std::fmt::Display;
 pub(crate) enum Group<'data, P: Platform> {
     Prelude(Prelude<'data, P>),
     Objects(&'data [SequencedInputObject<'data, P>]),
+    StubLibraries(Vec<SequencedStubLibrary<'data>>),
     LinkerScripts(Vec<SequencedLinkerScript<'data, P>>),
     SyntheticSymbols(SyntheticSymbols),
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     LtoInputs(Vec<crate::linker_plugins::LtoInput<'data>>),
 }
 
@@ -45,12 +50,21 @@ pub(crate) struct SequencedLinkerScript<'data, P: Platform> {
 }
 
 #[derive(Debug)]
+pub(crate) struct SequencedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) file_id: FileId,
+}
+
+#[derive(Debug)]
 pub(crate) enum SequencedInput<'db, 'data, P: Platform> {
     Prelude(&'db Prelude<'data, P>),
     Object(&'data SequencedInputObject<'data, P>),
+    StubLibrary(&'db SequencedStubLibrary<'data>),
     LinkerScript(&'db SequencedLinkerScript<'data, P>),
     SyntheticSymbols(&'db SyntheticSymbols),
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     LtoInput(&'db crate::linker_plugins::LtoInput<'data>),
 }
 
@@ -60,9 +74,10 @@ impl<'data, P: Platform> Group<'data, P> {
         match self {
             Group::Prelude(_) => 0,
             Group::Objects(objects) => objects[0].file_id.group(),
+            Group::StubLibraries(stubs) => stubs[0].file_id.group(),
             Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
             Group::SyntheticSymbols(s) => s.file_id.group(),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(s) => s[0].file_id.group(),
         }
     }
@@ -78,6 +93,10 @@ impl<'data, P: Platform> Group<'data, P> {
                 objects[0].symbol_id_range,
                 objects[objects.len() - 1].symbol_id_range,
             ),
+            Group::StubLibraries(stubs) => SymbolIdRange::covering(
+                stubs[0].symbol_id_range,
+                stubs[stubs.len() - 1].symbol_id_range,
+            ),
             Group::LinkerScripts(scripts) => {
                 if scripts.is_empty() {
                     SymbolIdRange::empty()
@@ -89,7 +108,7 @@ impl<'data, P: Platform> Group<'data, P> {
                 }
             }
             Group::SyntheticSymbols(o) => o.symbol_id_range,
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(objects) => SymbolIdRange::covering(
                 objects[0].symbol_id_range,
                 objects[objects.len() - 1].symbol_id_range,
@@ -105,6 +124,7 @@ impl<'data, P: Platform> Group<'data, P> {
 pub(crate) fn create_groups<'data, P: Platform>(
     symbol_db: &mut SymbolDb<'data, P>,
     parsed_objects: Vec<Box<ParsedInputObject<'data, P>>>,
+    stub_libraries: Vec<LoadedStubLibrary<'data>>,
     linker_scripts: Vec<ProcessedLinkerScript<'data, P>>,
 ) {
     timing_phase!("Group files");
@@ -189,6 +209,27 @@ pub(crate) fn create_groups<'data, P: Platform>(
 
     if !linker_scripts.is_empty() {
         symbol_db.add_group(Group::LinkerScripts(linker_scripts));
+    }
+
+    let stub_libraries: Vec<SequencedStubLibrary<'data>> = stub_libraries
+        .into_iter()
+        .enumerate()
+        .map(|(i, stub)| {
+            let symbol_id_range =
+                SymbolIdRange::input(next_symbol_id, stub.defined_symbols.total_symbols());
+            next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
+
+            SequencedStubLibrary {
+                input: stub.input,
+                defined_symbols: stub.defined_symbols,
+                symbol_id_range,
+                file_id: FileId::new(symbol_db.next_group_index(), i as u32),
+            }
+        })
+        .collect();
+
+    if !stub_libraries.is_empty() {
+        symbol_db.add_group(Group::StubLibraries(stub_libraries));
     }
 
     symbol_db.next_input_section_id = next_input_section_id;
@@ -291,6 +332,19 @@ impl<'data, P: Platform> SequencedInputObject<'data, P> {
         };
         SymbolStrength::of(obj_symbol)
     }
+
+    fn input_section_id_for_symbol(&self, symbol_id: SymbolId) -> Option<InputSectionId> {
+        let symbol_index = self.symbol_id_range.id_to_input(symbol_id);
+        let symtab_entry = self.parsed.object.symbol(symbol_index).ok()?;
+
+        let section_index = self
+            .parsed
+            .object
+            .symbol_section(symtab_entry, symbol_index)
+            .ok()??;
+
+        Some(self.section_id_range.input_to_id(section_index))
+    }
 }
 
 impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
@@ -300,31 +354,70 @@ impl<'data, P: Platform> SequencedLinkerScript<'data, P> {
     }
 }
 
+impl<'data> SequencedStubLibrary<'data> {
+    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
+        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
+        UnversionedSymbolName::new(
+            self.defined_symbols
+                .symbols
+                .get(local_index)
+                .unwrap_or_else(|| {
+                    &self.defined_symbols.weak_symbols
+                        [local_index - self.defined_symbols.symbols.len()]
+                })
+                .as_bytes(),
+        )
+    }
+
+    pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
+        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
+        if local_index < self.defined_symbols.symbols.len() {
+            SymbolStrength::Strong
+        } else {
+            SymbolStrength::Weak
+        }
+    }
+}
+
 impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             SequencedInput::Object(o) => o.symbol_id_range,
+            SequencedInput::StubLibrary(o) => o.symbol_id_range,
             SequencedInput::LinkerScript(o) => o.symbol_id_range,
             SequencedInput::SyntheticSymbols(o) => o.symbol_id_range,
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             SequencedInput::LtoInput(o) => o.symbol_id_range,
         }
     }
 
     pub(crate) fn is_dynamic(&self) -> bool {
-        if let SequencedInput::Object(o) = self {
-            o.is_dynamic()
-        } else {
-            false
+        match self {
+            SequencedInput::Object(o) if o.is_dynamic() => true,
+            SequencedInput::StubLibrary(_) => true,
+            _ => false,
         }
     }
 
     pub(crate) fn symbol_strength(&self, symbol_id: SymbolId) -> SymbolStrength {
-        if let SequencedInput::Object(o) = self {
-            o.symbol_strength(symbol_id)
-        } else {
-            SymbolStrength::Undefined
+        match self {
+            SequencedInput::Object(o) => o.symbol_strength(symbol_id),
+            SequencedInput::StubLibrary(o) => o.symbol_strength(symbol_id),
+            _ => SymbolStrength::Undefined,
+        }
+    }
+
+    /// Returns the ID of the input section in which the specified symbol is defined.
+    pub(crate) fn input_section_id_for_symbol(
+        &self,
+        symbol_id: SymbolId,
+    ) -> Option<InputSectionId> {
+        match self {
+            SequencedInput::Object(sequenced_input_object) => {
+                sequenced_input_object.input_section_id_for_symbol(symbol_id)
+            }
+            _ => None,
         }
     }
 }
@@ -332,6 +425,12 @@ impl<'db, 'data, P: Platform> SequencedInput<'db, 'data, P> {
 impl<'data, P: Platform> std::fmt::Display for SequencedInputObject<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.parsed.input, f)
+    }
+}
+
+impl std::fmt::Display for SequencedStubLibrary<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.input, f)
     }
 }
 
@@ -351,9 +450,10 @@ impl<'data, P: Platform> Display for Group<'data, P> {
                     num_objects = parsed_input_objects.len(),
                 )
             }
+            Group::StubLibraries(stubs) => write!(f, "{} Mach-O stub library(s)", stubs.len()),
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::SyntheticSymbols(_) => write!(f, "<epilogue>"),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(lto_inputs) => write!(f, "<{} lto inputs>", lto_inputs.len()),
         }
     }
@@ -364,9 +464,10 @@ impl<'db, 'data, P: Platform> std::fmt::Display for SequencedInput<'db, 'data, P
         match self {
             SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             SequencedInput::Object(o) => std::fmt::Display::fmt(o, f),
+            SequencedInput::StubLibrary(o) => std::fmt::Display::fmt(o, f),
             SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
             SequencedInput::SyntheticSymbols(_) => std::fmt::Display::fmt("<epilogue>", f),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             SequencedInput::LtoInput(o) => std::fmt::Display::fmt(o, f),
         }
     }

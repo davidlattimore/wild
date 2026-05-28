@@ -9,7 +9,7 @@ permissions: {}
 
 jobs:
   markdown-link-check:
-    if: github.repository_owner == 'davidlattimore'
+    if: github.repository_owner == 'wild-linker'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

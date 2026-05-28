@@ -3,8 +3,8 @@
 #include "../common/runtime.h"
 #include "global_definitions.h"
 
-// Returns the passed value, but don't let the compiler make any assumptions
-// about the returned value.
+// Returns the passed value, but don't let the compiler make any assumptions about the returned
+// value.
 #if defined(__x86_64__)
 int black_box(int input) {
   register int rdi __asm__("rdi") = input;
@@ -40,9 +40,9 @@ void _start() {
   if (global_values[3] != 4) {
     exit_syscall(101);
   }
-  // Without passing our value through a black box, the compiler gets rid of the
-  // if-statement below, treating it as always true, since it figures that an
-  // integer obtained from a pointer can never be equal to 25.
+  // Without passing our value through a black box, the compiler gets rid of the if-statement below,
+  // treating it as always true, since it figures that an integer obtained from a pointer can never
+  // be equal to 25.
   int abs1_value = black_box((size_t)&abs1);
   if (abs1_value != 25) {
     exit_syscall(abs1_value);

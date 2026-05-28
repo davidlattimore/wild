@@ -37,7 +37,7 @@ impl SectionIdRange {
         }
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     pub(crate) fn empty() -> Self {
         Self {
             start_section_id: InputSectionId(0),
@@ -58,7 +58,11 @@ impl SectionIdRange {
     }
 
     pub(crate) fn input_to_id(&self, section_index: object::SectionIndex) -> InputSectionId {
-        debug_assert!(section_index.0 < self.num_sections);
+        debug_assert!(
+            section_index.0 < self.num_sections,
+            "input_to_id({section_index}) with num_sections={}",
+            self.num_sections
+        );
         self.start_section_id.add_usize(section_index.0)
     }
 }

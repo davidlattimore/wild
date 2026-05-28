@@ -1,7 +1,9 @@
-// Test that linker-defined section boundary symbols are not exported to .dynsym
-// in shared objects, matching GNU ld behavior.
-// TODO: Once linker-defined symbol GC is implemented, add a variant that
-// references these symbols and asserts they appear as GLOBAL in .dynsym.
+// Test that linker-defined section boundary symbols are not exported to .dynsym in shared objects,
+// matching GNU ld behavior.
+
+// TODO: Once linker-defined symbol GC is implemented, add a variant that references these symbols
+// and asserts they appear as GLOBAL in .dynsym.
+
 //#LinkArgs:-shared -z now
 //#RunEnabled:false
 //#CompArgs:-fPIC
@@ -16,8 +18,9 @@
 //#NoDynSym:edata
 //#NoDynSym:_edata
 
-// Wild keeps them in .symtab as LOCAL. GNU ld removes them entirely with
-// --gc-sections, so we only assert this for Wild.
+// Wild keeps them in .symtab as LOCAL. GNU ld removes them entirely with --gc-sections, so we only
+// assert this for Wild.
+
 //#SkipLinker:ld
 //#ExpectSym:etext binding=local
 //#ExpectSym:_etext binding=local
@@ -27,8 +30,8 @@
 //#ExpectSym:edata binding=local
 //#ExpectSym:_edata binding=local
 
-// data_var and bss_var ensure .data and .bss sections exist so that
-// edata, _edata, end and _end symbols are emitted by Wild.
+// data_var and bss_var ensure .data and .bss sections exist so that edata, _edata, end and _end
+// symbols are emitted by Wild.
 int data_var = 1;
 int bss_var;
 

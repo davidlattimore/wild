@@ -1,0 +1,5 @@
+SECTIONS {
+	/DISCARD/ : {
+		*(.text)
+    }
+}

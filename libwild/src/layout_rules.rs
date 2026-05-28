@@ -20,6 +20,9 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
+use crate::parsing::Redirect;
+use crate::parsing::RedirectKind;
+use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
 use crate::platform::Platform;
 use crate::platform::SectionHeader;
@@ -128,6 +131,25 @@ impl SectionOutputInfo {
     }
 }
 
+fn loc_for_global_expr(
+    expr: &crate::linker_script::Expression<'_>,
+    section_id: Option<OutputSectionId>,
+) -> SymbolLoc {
+    let mut loc = SymbolLoc::None;
+    expr.visit_expressions(&mut |e| match e {
+        crate::linker_script::Expression::SegmentStart(..) => {
+            if let Some(section_id) = section_id {
+                loc = SymbolLoc::SectionEnd(section_id);
+            } else {
+                loc = SymbolLoc::FirstSection;
+            }
+            false
+        }
+        _ => true,
+    });
+    loc
+}
+
 impl<'data> LayoutRulesBuilder<'data> {
     /// Records information about any sections and symbols declared by the linker script.
     pub(crate) fn process_linker_script<P: Platform>(
@@ -139,21 +161,25 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut assertions = Vec::new();
         let mut memory_regions = Vec::new();
 
+        let mut current_section_id = None;
+
         for cmd in &input.script.commands {
             if let linker_script::Command::Provide(provide) = cmd {
-                let value_str = std::str::from_utf8(provide.value)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in PROVIDE symbol value"))?;
-
-                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: provide.value.clone(),
+                    loc: loc_for_global_expr(&provide.value, current_section_id),
+                });
                 symbol_defs.push(
                     crate::parsing::InternalSymDefInfo::new(placement, provide.name)
                         .with_hidden(provide.hidden),
                 );
             } else if let linker_script::Command::SymbolDefinition { name, value } = cmd {
-                let value_str = std::str::from_utf8(value)
-                    .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
-
-                let placement = crate::parsing::parse_symbol_expression(value_str).to_placement();
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::Script,
+                    expression: value.to_owned(),
+                    loc: loc_for_global_expr(value, current_section_id),
+                });
                 symbol_defs.push(crate::parsing::InternalSymDefInfo::new(placement, name));
             } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
@@ -170,6 +196,22 @@ impl<'data> LayoutRulesBuilder<'data> {
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
+                            if sec.output_section_name == b"/DISCARD/" {
+                                for contents_cmd in &sec.commands {
+                                    match contents_cmd {
+                                        ContentsCommand::Matcher(matcher) => {
+                                            for pattern in &matcher.input_section_name_patterns {
+                                                self.add_section_rule(SectionRule::new(
+                                                    pattern,
+                                                    matcher.input_file_pattern,
+                                                    crate::layout_rules::SectionRuleOutcome::Discard,
+                                                )?);
+                                            }
+                                        }
+                                        _ => crate::bail!("Illegal use of /DISCARD/ section"),
+                                    }
+                                }
+                            }
                             let min_alignment = sec
                                 .alignment
                                 .unwrap_or(alignment::MIN)
@@ -194,6 +236,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                 min_alignment,
                                 section_location,
                             );
+                            current_section_id = Some(primary_section_id);
 
                             let mut last_section_id = None;
 
@@ -233,26 +276,33 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_section_id = Some(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        symbol_defs.push(if let Some(id) = last_section_id {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionEnd(id),
-                                                assignment.name,
-                                            )
+                                        let loc = if let Some(id) = last_section_id {
+                                            SymbolLoc::SectionEnd(id)
                                         } else {
-                                            InternalSymDefInfo::new(
-                                                SymbolPlacement::SectionStart(primary_section_id),
-                                                assignment.name,
-                                            )
+                                            SymbolLoc::SectionStart(primary_section_id)
+                                        };
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: assignment.expr.clone(),
+                                            loc,
                                         });
+                                        symbol_defs.push(InternalSymDefInfo::new(
+                                            placement,
+                                            assignment.name,
+                                        ));
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
                                     ContentsCommand::Provide(provide) => {
-                                        let placement = if let Some(id) = last_section_id {
-                                            SymbolPlacement::SectionEnd(id)
+                                        let loc = if let Some(id) = last_section_id {
+                                            SymbolLoc::SectionEnd(id)
                                         } else {
-                                            SymbolPlacement::SectionStart(primary_section_id)
+                                            SymbolLoc::SectionStart(primary_section_id)
                                         };
-
+                                        let placement = SymbolPlacement::Redirect(Redirect {
+                                            kind: RedirectKind::Script,
+                                            expression: provide.value.clone(),
+                                            loc,
+                                        });
                                         symbol_defs.push(
                                             InternalSymDefInfo::new(placement, provide.name)
                                                 .with_hidden(provide.hidden),
@@ -265,6 +315,22 @@ impl<'data> LayoutRulesBuilder<'data> {
                         SectionCommand::Align(a) => extra_min_alignment = *a,
                         SectionCommand::Assert(assert_cmd) => {
                             assertions.push(assert_cmd.clone());
+                        }
+                        SectionCommand::Provide(provide) => {
+                            let placement = if let Some(id) = current_section_id {
+                                SymbolLoc::SectionEnd(id)
+                            } else {
+                                SymbolLoc::FirstSection
+                            };
+                            let placement = SymbolPlacement::Redirect(Redirect {
+                                kind: RedirectKind::Script,
+                                expression: provide.value.clone(),
+                                loc: placement,
+                            });
+                            symbol_defs.push(
+                                InternalSymDefInfo::new(placement, provide.name)
+                                    .with_hidden(provide.hidden),
+                            );
                         }
                     }
                 }
@@ -287,9 +353,9 @@ impl<'data> LayoutRulesBuilder<'data> {
         })
     }
 
-    pub(crate) fn build<P: Platform>(mut self) -> LayoutRules<'data> {
+    pub(crate) fn build<P: Platform>(mut self, args: &P::Args) -> LayoutRules<'data> {
         let section_rules = if self.rules.is_empty() {
-            SectionRules::from_rules(P::default_layout_rules())
+            SectionRules::from_rules(&P::default_layout_rules(args))
         } else {
             P::linker_script_rules_pre_build(&mut self);
             SectionRules::from_rules(&self.rules)
@@ -518,7 +584,9 @@ pub(crate) fn unnamed_section_output(section_header: &impl SectionHeader) -> Sec
 
 #[test]
 fn test_section_mapping() {
-    let rules = SectionRules::from_rules(crate::elf::Elf::default_layout_rules());
+    let rules = SectionRules::from_rules(&crate::elf::Elf::default_layout_rules(
+        &crate::args::elf::ElfArgs::new().unwrap(),
+    ));
     let header = crate::elf::SectionHeader {
         sh_name: Default::default(),
         sh_type: Default::default(),

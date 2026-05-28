@@ -295,6 +295,11 @@ So in summary, if you think something shouldn't happen, it's fine to panic. Call
 fine. But if you're less sure that it can't happen, or you've observed it happen and need to debug
 why it happened, then switching to returning an error is recommended.
 
+### Logging
+
+Wild uses tracing for logging. To see trace output, run with `WILD_LOG=trace`. You can also filter
+by module. e.g. `WILD_LOG=libwild::grouping`.
+
 ## Building wild with wild
 
 You can add or modify a `.cargo/config.toml` file to change the linker used to build `wild` to be `wild`!

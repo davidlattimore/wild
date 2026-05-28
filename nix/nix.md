@@ -65,7 +65,7 @@ until NixOS 25.11 is branched, unstable Nixpkgs is required.
 ```
 Without flakes (npins shown, but any solution can be used):
 
-Add the dependencies to lockfile with npins: `$ npins add github davidlattimore wild -b main`
+Add the dependencies to lockfile with npins: `$ npins add github wild-linker wild -b main`
 
 ```nix
 let

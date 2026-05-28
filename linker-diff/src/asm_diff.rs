@@ -81,6 +81,7 @@ use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::RelocationTarget;
 use object::SectionKind;
+use object::read::elf::Dyn as _;
 use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
@@ -230,13 +231,17 @@ fn compare_sections<A: Arch>(
             resolutions.push(tester.resolve_group_traced(section_kind, &group));
         }
 
-        // The first resolution (the one from our linker-under-test) must be equal to at least one
-        // of the other resolutions.
+        // The first resolution (the one from our linker-under-test) must be equal to all
+        // of the other resolutions (or at least one if --match-any is set).
         if let Some(first) = resolutions.first() {
             let mut trace = TraceOutput::default();
 
-            let at_least_one_match = crate::diagnostics::trace_scope(&mut trace, || {
-                resolutions[1..].iter().any(|other| first.matches(other))
+            let has_match = crate::diagnostics::trace_scope(&mut trace, || {
+                if report.config.match_any {
+                    resolutions[1..].iter().any(|other| first.matches(other))
+                } else {
+                    resolutions[1..].iter().all(|other| first.matches(other))
+                }
             });
 
             // Ideally we'd successfully match all binaries, however GNU ld when it has PLT
@@ -244,7 +249,7 @@ fn compare_sections<A: Arch>(
             // address. We don't have any good way to match something like that.
             let first_has_match_failure = first.relaxations.is_none() || first.has_error();
 
-            if !at_least_one_match || first_has_match_failure {
+            if !has_match || first_has_match_failure {
                 // Check if the diff key would be ignored
                 let start_offset = group.start_offset();
                 let original_annotations = group.into_original_annotations();
@@ -755,9 +760,9 @@ fn get_original_referent<'data, R: RType>(
         if let Some(section_index) = symbol.section_index() {
             let section = input_file.elf_file.section_by_index(section_index)?;
 
-            let flags = section.elf_section_header().sh_flags(LittleEndian) as u32;
+            let flags = section.elf_section_header().sh_flags(LittleEndian);
 
-            if flags & object::elf::SHF_MERGE != 0 && flags & object::elf::SHF_STRINGS != 0 {
+            if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
                 let section_data = section.data()?;
                 let string_plus_rest = &section_data[symbol.address() as usize..];
                 if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
@@ -851,6 +856,12 @@ fn diff_key_for_res_mismatch<A: Arch>(
             }
             (Indirection::PltGot, Indirection::Direct) => {
                 return "rel.extra-plt-got".to_owned();
+            }
+            (Indirection::ThunkPltGot, Indirection::PltGot) => {
+                return "rel.plt.extra-thunk".to_owned();
+            }
+            (Indirection::PltGot, Indirection::ThunkPltGot) => {
+                return "rel.plt.absent-thunk".to_owned();
             }
             _ => {}
         }
@@ -1471,11 +1482,13 @@ enum Indirection {
     Got,
     PltGot,
     GotPltGot,
+    /// A call that first goes through a range-extension thunk, then through a PLT entry and GOT.
+    ThunkPltGot,
 }
 
 impl Indirection {
     fn is_via_plt(self) -> bool {
-        matches!(self, Indirection::PltGot)
+        matches!(self, Indirection::PltGot | Indirection::ThunkPltGot)
     }
 }
 
@@ -1541,6 +1554,9 @@ impl<'data, R: RType> Reference<'data, R> {
             Indirection::Got => write!(f, "GOT{}", arrow())?,
             Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(), arrow())?,
             Indirection::GotPltGot => write!(f, "GOT{}PLT{}GOT{}", arrow(), arrow(), arrow())?,
+            Indirection::ThunkPltGot => {
+                write!(f, "thunk{}PLT{}GOT{}", arrow(), arrow(), arrow())?;
+            }
         }
 
         self.referent.write_to(f)?;
@@ -1575,6 +1591,13 @@ impl<'data, R: RType> Reference<'data, R> {
         Reference {
             referent: Referent::Unknown,
             indirection: Default::default(),
+        }
+    }
+
+    fn direct(referent: Referent<'data, R>) -> Reference<'data, R> {
+        Reference {
+            referent,
+            indirection: Indirection::Direct,
         }
     }
 }
@@ -1632,6 +1655,11 @@ impl<R: RType> Referent<'_, R> {
                 true
             }
             (Referent::DynamicRelocation(a), Referent::DynamicRelocation(b)) => a.matches(b),
+            (Referent::IFunc(_), Referent::IFunc(_)) => {
+                // Linkers differ as to whether the symbol name is the resolver or the ifunc name.
+                // So we just accept any two ifuncs as being equal.
+                true
+            }
             _ => self == other,
         }
     }
@@ -1683,6 +1711,10 @@ impl<R: RType> DynamicRelocation<'_, R> {
         // TODO: Remove this. We currently don't propagate symbol visibility correctly when emitting
         // dynamic symbols.
         out.entry.is_weak = false;
+
+        // Wild currently seems to set undefined dynamic symbols as STT_IFUNC if they resolved to an
+        // IFUNC in a shared object. Other linkers don't. TODO: Fix this.
+        out.entry.is_ifunc = false;
 
         out
     }
@@ -2137,28 +2169,126 @@ impl<'data> RelaxationTester<'data> {
 
         merged_value = merged_value.wrapping_sub(addend as u64);
 
-        let referent = referent.unwrap_or_else(|| {
-            self.resolve_by_symbol_name::<A>(merged_value, last_match.original_referent, value_kind)
-        });
+        let resolved = if let Some(referent) = referent {
+            Reference {
+                referent,
+                indirection,
+            }
+        } else {
+            let resolved = self.resolve_by_symbol_name_or_thunk::<A>(
+                merged_value,
+                last_match.original_referent,
+                value_kind,
+            );
+            // If resolve_by_symbol_name_or_thunk determined a specific indirection (e.g.
+            // ThunkPltGot), use that; otherwise preserve the indirection already computed above.
+            if resolved.indirection == Indirection::Direct {
+                Reference {
+                    referent: resolved.referent,
+                    indirection,
+                }
+            } else {
+                resolved
+            }
+        };
 
-        Ok(Reference {
-            referent,
-            indirection,
-        })
+        Ok(resolved)
     }
 
-    /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
-    /// isn't, tells us why.
     fn resolve_by_symbol_name<A: Arch>(
         &self,
         mut merged_value: u64,
         original_referent: Referent<'_, <A as Arch>::RType>,
         expected_value_kind: ValueKind,
-    ) -> Referent<'data, <A as Arch>::RType> {
+    ) -> Reference<'data, <A as Arch>::RType> {
+        self.resolve_referent_by_symbol_name::<A>(
+            &mut merged_value,
+            original_referent,
+            expected_value_kind,
+        )
+    }
+
+    /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
+    /// isn't, tells us why. When the symbol is undefined (dynamic-only) and `merged_value` points
+    /// to a range-extension thunk, also tries to follow thunk -> PLT -> GOT to resolve the dynamic
+    /// symbol, returning a `Reference` with `ThunkPltGot` indirection if successful.
+    fn resolve_by_symbol_name_or_thunk<A: Arch>(
+        &self,
+        merged_value: u64,
+        original_referent: Referent<'_, <A as Arch>::RType>,
+        expected_value_kind: ValueKind,
+    ) -> Reference<'data, <A as Arch>::RType> {
+        // If the symbol is undefined in the regular symbol table it may be a dynamic symbol that
+        // is called via a range-extension thunk -> PLT -> GOT.
+        if let Referent::Named(original_name, _) = original_referent
+            && matches!(
+                self.bin.symbol_by_name(original_name.bytes, merged_value),
+                crate::NameLookupResult::Undefined
+            )
+            && let Some(reference) =
+                self.try_follow_thunk_to_dynamic::<A>(merged_value, original_name.bytes)
+        {
+            return reference;
+        }
+
+        self.resolve_by_symbol_name::<A>(merged_value, original_referent, expected_value_kind)
+    }
+
+    /// If `address` is a range-extension thunk that leads to a PLT entry for a dynamic symbol,
+    /// returns a `Reference` describing that path (with `ThunkPltGot` indirection). Returns `None`
+    /// if `address` is not a thunk or the chain cannot be resolved.
+    fn try_follow_thunk_to_dynamic<A: Arch>(
+        &self,
+        address: u64,
+        expected_symbol_name: &[u8],
+    ) -> Option<Reference<'data, <A as Arch>::RType>> {
+        let thunk_target =
+            read_bytes(self.bin.elf_file, address, 16).and_then(|b| A::decode_thunk(b, address))?;
+
+        let got_address = self
+            .bin
+            .address_index
+            .plt_to_got_address::<A>(thunk_target)
+            .ok()??;
+
+        if !self.bin.address_index.is_got_address(got_address) {
+            return None;
+        }
+
+        let referent = self
+            .bin
+            .address_index
+            .dereference_got_address::<A::RType>(
+                got_address,
+                RelocationKind::PltRelative,
+                self.bin,
+                BasicValueKind::Pointer,
+            )
+            .ok()?;
+
+        // Verify that the dynamic relocation's symbol matches what we expected.
+        if let Referent::DynamicRelocation(ref dyn_rel) = referent
+            && dyn_rel.entry.name.bytes != expected_symbol_name
+        {
+            return None;
+        }
+
+        Some(Reference {
+            referent,
+            indirection: Indirection::ThunkPltGot,
+        })
+    }
+
+    fn resolve_referent_by_symbol_name<A: Arch>(
+        &self,
+        merged_value: &mut u64,
+        original_referent: Referent<'_, <A as Arch>::RType>,
+        expected_value_kind: ValueKind,
+    ) -> Reference<'data, <A as Arch>::RType> {
         let reason;
 
         if let Referent::Named(original_name, original_addend) = original_referent {
-            let lookup_result = self.bin.symbol_by_name(original_name.bytes, merged_value);
+            let lookup_result = self.bin.symbol_by_name(original_name.bytes, *merged_value);
 
             match &lookup_result {
                 crate::NameLookupResult::Defined(elf_symbol) => {
@@ -2168,7 +2298,7 @@ impl<'data> RelaxationTester<'data> {
                                 OutputKind::Executable => {
                                     // The value will have been extracted from a u32, but since it's
                                     // expected to be negative, we need to sign-extend it.
-                                    merged_value = i64::from(merged_value as i32) as u64;
+                                    *merged_value = i64::from(*merged_value as i32) as u64;
 
                                     // In executable TLS offsets are negative values that are
                                     // relative to the TCB (thread control block), which is
@@ -2192,7 +2322,7 @@ impl<'data> RelaxationTester<'data> {
                         _ => elf_symbol.address(),
                     };
 
-                    let offset = merged_value.wrapping_sub(expected_value) as i64;
+                    let offset = (*merged_value).wrapping_sub(expected_value) as i64;
 
                     if let Ok(mut bytes) = elf_symbol.name_bytes() {
                         // Strip versions from symbol names, since there are currently
@@ -2215,9 +2345,71 @@ impl<'data> RelaxationTester<'data> {
                                     original_name.bytes,
                                     self.bin,
                                 ) {
-                                    return Referent::Copy(symbol_name, offset);
+                                    return Reference::direct(Referent::Copy(symbol_name, offset));
                                 }
-                                return Referent::Named(symbol_name, offset);
+                                return Reference::direct(Referent::Named(symbol_name, offset));
+                            }
+
+                            // The branch target is too far from the symbol. It may be a
+                            // range-extension thunk. Try to follow the thunk to check whether it
+                            // ultimately jumps to the expected symbol (directly or via PLT->GOT for
+                            // ifuncs / non-interposable symbols).
+                            if let Some(thunk_target) =
+                                read_bytes(self.bin.elf_file, *merged_value, 16)
+                                    .and_then(|b| A::decode_thunk(b, *merged_value))
+                            {
+                                // The thunk may redirect through a PLT entry (e.g. for
+                                // ifuncs or other indirectly-called local symbols). Follow
+                                // PLT->GOT and check whether the resolved referent matches.
+                                // We preserve the full chain in the indirection so that the
+                                // output shows e.g. "thunk->PLT->GOT->IFunc(resolve_ifunc1)"
+                                // rather than just the symbol name.
+                                //
+                                // When `thunk_target == expected_value` the thunk jumps
+                                // directly to the ifunc symbol address (e.g. wild's IPLT
+                                // entry equals the ifunc symbol value). We still try to
+                                // follow the chain so the display is uniform with lld.
+                                if let Ok(Some(got_address)) =
+                                    self.bin.address_index.plt_to_got_address::<A>(thunk_target)
+                                    && self.bin.address_index.is_got_address(got_address)
+                                    && let Ok(got_referent) =
+                                        self.bin.address_index.dereference_got_address::<A::RType>(
+                                            got_address,
+                                            RelocationKind::PltRelative,
+                                            self.bin,
+                                            BasicValueKind::Pointer,
+                                        )
+                                {
+                                    let name_matches = match &got_referent {
+                                        Referent::IFunc(Some(n)) => n.bytes == original_name.bytes,
+                                        Referent::DynamicRelocation(dyn_rel) => {
+                                            dyn_rel.entry.name.bytes == original_name.bytes
+                                        }
+                                        _ => false,
+                                    };
+                                    // For IRELATIVE (IFunc) relocations the resolver's
+                                    // name won't match the ifunc symbol's name, but the
+                                    // IRELATIVE addend equals the ifunc symbol's address.
+                                    let addr_matches = !name_matches
+                                        && matches!(got_referent, Referent::IFunc(_))
+                                        && self
+                                            .bin
+                                            .address_index
+                                            .relocation_at_address(got_address)
+                                            .is_some_and(|rel| {
+                                                rel.addend() as u64 == expected_value
+                                            });
+                                    if name_matches || addr_matches {
+                                        return Reference {
+                                            referent: got_referent,
+                                            indirection: Indirection::ThunkPltGot,
+                                        };
+                                    }
+                                }
+
+                                if thunk_target == expected_value {
+                                    return Reference::direct(Referent::Named(symbol_name, 0));
+                                }
                             }
 
                             reason = "symbol is too far away";
@@ -2238,19 +2430,19 @@ impl<'data> RelaxationTester<'data> {
                 || original_name.bytes.is_empty()
                 || matches!(lookup_result, crate::NameLookupResult::Undefined)
             {
-                return Referent::Undefined(UnmatchedAddress {
-                    address: merged_value,
+                return Reference::direct(Referent::Undefined(UnmatchedAddress {
+                    address: *merged_value,
                     reason,
-                });
+                }));
             }
         } else {
             reason = "original symbol has no name";
         }
 
-        Referent::UnmatchedAddress(UnmatchedAddress {
-            address: merged_value,
+        Reference::direct(Referent::UnmatchedAddress(UnmatchedAddress {
+            address: *merged_value,
             reason,
-        })
+        }))
     }
 
     fn resolve_merged_string<A: Arch>(
@@ -2619,7 +2811,10 @@ fn symbol_versions_by_name<'data>(
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
 fn is_merge_section(section: &ElfSection64<LittleEndian>) -> bool {
-    section.elf_section_header().sh_flags(LittleEndian) as u32 & object::elf::SHF_MERGE != 0
+    section
+        .elf_section_header()
+        .sh_flags(LittleEndian)
+        .contains(object::elf::SHF_MERGE)
 }
 
 /// Returns information about sections where we can uniquely locate that section in each input file
@@ -2755,7 +2950,7 @@ impl<'data> SectionVersions<'data> {
                     existing_sym = String::from_utf8_lossy(self.found_via_symbol),
                     new_sym = String::from_utf8_lossy(symbol_name),
                     section_name = layout.get_elf_section(self.input_section_id)?.name()?,
-                    name = &binaries[file_number],
+                    name = binaries[file_number],
                 );
             }
         }
@@ -2800,6 +2995,7 @@ struct SymtabEntryInfo<'data> {
     name: SymbolName<'data>,
     is_weak: bool,
     visibility: Visibility,
+    is_ifunc: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -3031,7 +3227,7 @@ impl<'data> AddressIndex<'data> {
         while let Some((_verneed, mut aux_iterator)) = verneed_iterator.next()? {
             while let Some(aux) = aux_iterator.next()? {
                 let name = aux.name(e, strings)?;
-                let index = aux.vna_other.get(e) as usize;
+                let index = usize::from(aux.vna_other.get(e));
                 if index >= versions.len() {
                     versions.resize(index + 1, None);
                 }
@@ -3046,7 +3242,7 @@ impl<'data> AddressIndex<'data> {
         &self,
         elf_file: &ElfFile64<'data>,
     ) -> Result<Vec<SymtabEntryInfo<'data>>> {
-        let symbol_version_indexes: Option<&[u16]> = self
+        let symbol_version_indexes: Option<&[object::elf::Versym<LittleEndian>]> = self
             .versym_address
             .and_then(|address| {
                 elf_file
@@ -3064,7 +3260,7 @@ impl<'data> AddressIndex<'data> {
             max_index = max_index.max(sym_index);
             let version_index = symbol_version_indexes
                 .and_then(|indexes| indexes.get(sym_index))
-                .copied();
+                .map(|versym| versym.0.get(LittleEndian).index());
 
             let version: Option<&[u8]> = match version_index {
                 Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
@@ -3078,10 +3274,10 @@ impl<'data> AddressIndex<'data> {
                 }
                 Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
                 Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
-                Some(version_index) if version_index > object::elf::VER_NDX_GLOBAL => self
+                Some(version_index) if !version_index.is_special() => self
                     .verdef
-                    .get(version_index as usize - 1)
-                    .or_else(|| self.verneed.get(version_index as usize))
+                    .get(usize::from(version_index - object::elf::VER_NDX_GLOBAL))
+                    .or_else(|| self.verneed.get(usize::from(version_index)))
                     .copied()
                     .flatten(),
                 _ => None,
@@ -3108,6 +3304,7 @@ impl<'data> AddressIndex<'data> {
                     },
                     is_weak: false,
                     visibility: Visibility::Default,
+                    is_ifunc: false,
                 });
             }
 
@@ -3115,6 +3312,7 @@ impl<'data> AddressIndex<'data> {
                 name,
                 is_weak: sym.is_weak(),
                 visibility,
+                is_ifunc: sym.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC,
             });
         }
 
@@ -3257,7 +3455,7 @@ impl<'data> AddressIndex<'data> {
                     self.versym_address = Some(entry.d_val.get(e));
                 }
                 object::elf::DT_FLAGS_1
-                    if entry.d_val.get(e) & u64::from(object::elf::DF_1_PIE) != 0 =>
+                    if object::elf::DynamicFlags1(entry.val(e)).contains(object::elf::DF_1_PIE) =>
                 {
                     self.bin_attributes.output_kind = OutputKind::Executable;
                 }
@@ -3418,6 +3616,10 @@ impl<'data> GotIndex<'data> {
                     } else {
                         Ok(Referent::UnmatchedTlsOffset(rel.addend()))
                     }
+                }
+                DynamicRelocationKind::JumpSlot if symbol.is_some_and(|s| s.is_ifunc) => {
+                    let symbol = symbol.unwrap();
+                    Ok(Referent::IFunc(Some(symbol.name)))
                 }
                 _ => {
                     let symbol = symbol.with_context(|| format!("{r_type} without symbol"))?;
@@ -3755,7 +3957,7 @@ impl Visibility {
             object::elf::STV_DEFAULT => Visibility::Default,
             object::elf::STV_PROTECTED => Visibility::Protected,
             object::elf::STV_HIDDEN => Visibility::Hidden,
-            other => Visibility::Other(other),
+            other => Visibility::Other(other.0),
         }
     }
 }

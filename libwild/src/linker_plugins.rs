@@ -38,7 +38,9 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use bumpalo_herd::Herd;
 use colosseum::sync::Arena;
@@ -58,6 +60,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Set this environment variable to a directory and we'll write output files produced by the linker
+/// plugin to it. Old outputs will be deleted, but only if the directory looks like one we produced.
+const SAVE_VAR_NAME: &str = "WILD_SAVE_PLUGIN_OUTPUTS";
 
 pub(crate) struct LinkerPlugin<'data> {
     store: Store<'data>,
@@ -124,6 +130,10 @@ struct FileHandle<'data> {
 
     /// This isn't known initially because we allocate file IDs later.
     file_id: AtomicCell<Option<FileId>>,
+
+    fd: RawFd,
+    offset: u64,
+    name: &'data CStr,
 }
 
 #[derive(Default)]
@@ -140,6 +150,13 @@ impl<'data> LinkerPlugin<'data> {
         match args.plugin_path.as_ref() {
             Some(path) => {
                 let wrap_symbols = WrapSymbols::new(&args.wrap, herd)?;
+
+                // When the linker plugin is active, we keep LTO inputs open since the plugin API
+                // needs them. This can cause us to hit our file descriptor limit. To avoid this, we
+                // attempt to increase the limit. Increasing the file limit is best-effort. If we
+                // can't increase the file limit for some reason, continue without warning and hope
+                // we don't need too many open files.
+                let _ = increase_file_limit();
 
                 Ok(Some(LinkerPlugin {
                     path: PathBuf::from(&path),
@@ -197,12 +214,17 @@ impl<'data> LinkerPlugin<'data> {
                 let ctx = AllSymbolsReadContext {
                     symbol_db,
                     resolved_groups: &resolver.resolved_groups,
+                    per_symbol_flags,
                 };
 
                 ctx.set_current_while(|| cb().to_result("all_symbols_read"))?;
             }
             Ok(PLUGIN_OUTPUTS.take())
         })?;
+
+        if let Ok(dir_name) = std::env::var(SAVE_VAR_NAME) {
+            plugin_outputs.save_to(Path::new(&dir_name))?;
+        }
 
         let plugin_loaded =
             file_loader.load_inputs(&plugin_outputs.generated_inputs, symbol_db.args, &mut None)?;
@@ -249,14 +271,22 @@ impl<'data> LinkerPlugin<'data> {
                 wrap_symbols: self.wrap_symbols,
             };
 
+            let name = CString::new(input_ref.file.filename.as_os_str().as_encoded_bytes())?;
+            let name = CStr::from_bytes_with_nul(
+                self.herd.get().alloc_slice_copy(name.as_bytes_with_nul()),
+            )
+            .unwrap();
+
             let handle = FileHandle {
                 data,
+                name,
+                fd,
+                offset,
                 file_id: AtomicCell::new(None),
             };
 
             let handle = self.herd.get().alloc(handle);
 
-            let name = CString::new(input_ref.file.filename.as_os_str().as_encoded_bytes())?;
             let file = LdPluginInputFile {
                 name: name.as_ptr(),
                 fd,
@@ -334,7 +364,9 @@ impl LoadedPlugin {
         // Safety: Truthfully, we don't control the file we're loading. The user gave it to us and
         // there's nothing we can do to guarantee that loading and running it won't trigger UB. The
         // best we can say is that we at least try to conform to the expected plugin API.
-        let lib = unsafe { Library::new(plugin_path) }.context("Failed to open linker plugin")?;
+        let lib = unsafe { Library::new(plugin_path) }
+            .map_err(|e| error!("{}", std::error::Error::source(&e).unwrap_or(&e)))
+            .context("Failed to open linker plugin")?;
 
         timing_phase!("Initialise linker plugin");
 
@@ -522,7 +554,9 @@ impl<'data> LtoInput<'data> {
         symbol_id: crate::symbol_db::SymbolId,
     ) -> crate::symbol_db::Visibility {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        crate::elf::convert_elf_visibility(self.symbols[local_index].visibility)
+        crate::elf::convert_elf_visibility(object::elf::SymbolVisibility(
+            self.symbols[local_index].visibility,
+        ))
     }
 
     pub(crate) fn symbols_iter(&self) -> impl Iterator<Item = (SymbolId, &PluginSymbol<'data>)> {
@@ -537,7 +571,7 @@ impl<'data> LtoInput<'data> {
     }
 
     pub(crate) fn is_optional(&self) -> bool {
-        self.input_ref.has_archive_semantics()
+        self.input_ref.has_archive_semantics() && !self.input_ref.file.modifiers.whole_archive
     }
 }
 
@@ -854,7 +888,13 @@ extern "C" fn get_symbols_v3(
             let symbol_id_range = file.symbol_id_range;
 
             for sym in symbols.iter_mut() {
-                let resolution = get_symbol_resolution(sym, ctx.symbol_db, symbol_id_range);
+                let resolution = get_symbol_resolution(
+                    sym,
+                    ctx.symbol_db,
+                    symbol_id_range,
+                    ctx.per_symbol_flags,
+                );
+
                 sym.resolution = resolution as i32;
             }
 
@@ -867,6 +907,7 @@ fn get_symbol_resolution<'data>(
     sym: &mut RawPluginSymbol,
     symbol_db: &SymbolDb<'data, Elf>,
     symbol_id_range: SymbolIdRange,
+    per_symbol_flags: &PerSymbolFlags,
 ) -> PluginSymbolResolution {
     // It'd be nice if we didn't have to do hashmap lookups for all the symbols again, since we
     // effectively did that when the symbols were added. We could do that if the plugin provided us
@@ -902,8 +943,18 @@ fn get_symbol_resolution<'data>(
             _ => PluginSymbolResolution::ResolvedExec,
         }
     } else if symbol_id_range.contains(symbol_id) {
-        // TODO: Distinguish based on kinds of references.
-        PluginSymbolResolution::PrevailingDef
+        if per_symbol_flags
+            .flags_for_symbol(symbol_id)
+            .contains(ValueFlags::HAS_NON_IR_REF)
+        {
+            PluginSymbolResolution::PrevailingDef
+        } else if symbol_db.output_kind.is_shared_object() {
+            // TODO: Actually determine if the symbol is to be exported rather than just assuming
+            // everything is exported when output is a shared object.
+            PluginSymbolResolution::PrevailingDefIronlyExp
+        } else {
+            PluginSymbolResolution::PrevailingDefIronly
+        }
     } else {
         let defining_file = symbol_db.file(symbol_db.file_id_for_symbol(symbol_id));
         match defining_file {
@@ -913,18 +964,26 @@ fn get_symbol_resolution<'data>(
     }
 }
 
-// We don't currently implement this. The LLVM plugin gives an error if we don't define it, but then
-// it doesn't appear to actually call it. Or maybe we just haven't found a test case that causes it
-// to be called.
-extern "C" fn get_input_file(
-    _handle: *const libc::c_void,
-    _file: *mut LdPluginInputFile,
-) -> Status {
-    Status::Err
+extern "C" fn get_input_file(handle: *const libc::c_void, file: *mut LdPluginInputFile) -> Status {
+    catch_panics(|| {
+        if handle.is_null() || file.is_null() {
+            return Status::Err;
+        }
+        let handle = unsafe { &*(handle as *const FileHandle) };
+        let file = unsafe { &mut *file };
+
+        file.fd = handle.fd;
+        file.offset = handle.offset as i64;
+        file.file_size = handle.data.len() as i64;
+        file.name = handle.name.as_ptr();
+
+        Status::Ok
+    })
 }
 
 extern "C" fn release_input_file(_handle: *const libc::c_void) -> Status {
-    Status::Err
+    // We don't allocate in `get_input_file`, so there's nothing to free here.
+    Status::Ok
 }
 
 extern "C" fn get_view(
@@ -1016,7 +1075,7 @@ extern "C" fn wild_handle_plugin_message(level: libc::c_int, message: *const lib
 
     let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
 
-    println!("Linker plugin {level}: {text}");
+    eprintln!("Linker plugin {level}: {text}");
 
     if level == MessageLevel::Error || level == MessageLevel::Fatal {
         ERROR_MESSAGE.replace(Some(text.into_owned()));
@@ -1062,6 +1121,7 @@ impl ClaimContext<'_> {
 struct AllSymbolsReadContext<'scope, 'data, P: Platform> {
     symbol_db: &'scope SymbolDb<'data, P>,
     resolved_groups: &'scope [ResolvedGroup<'data, P>],
+    per_symbol_flags: &'scope PerSymbolFlags,
 }
 
 impl<'scope, 'data, P: Platform> AllSymbolsReadContext<'scope, 'data, P> {
@@ -1169,6 +1229,56 @@ impl PluginOutputs {
             generated_inputs: Vec::new(),
         }
     }
+
+    fn save_to(&self, dir_path: &Path) -> Result {
+        let args_path = dir_path.join("linker-plugin-extra-args");
+
+        if args_path.exists() {
+            std::fs::remove_dir_all(dir_path)
+                .with_context(|| format!("Failed to delete `{}`", dir_path.display()))?;
+        } else if dir_path.exists() {
+            bail!(
+                "`{}` exists, but doesn't look like the right directory structure",
+                dir_path.display()
+            );
+        }
+
+        std::fs::create_dir_all(dir_path)
+            .with_context(|| format!("Failed to create dir `{}`", dir_path.display()))?;
+
+        let mut args = String::new();
+
+        for input in &self.generated_inputs {
+            match &input.spec {
+                crate::args::InputSpec::File(path) => {
+                    let dest = dir_path.join(path.file_name().context("Missing filename")?);
+
+                    std::fs::copy(path, &dest).with_context(|| {
+                        format!(
+                            "Failed to copy `{}` to `{}`",
+                            path.display(),
+                            dest.display()
+                        )
+                    })?;
+                }
+                crate::args::InputSpec::Lib(lib_name) => {
+                    args.push_str("-l");
+                    args.push_str(lib_name);
+                    args.push('\n');
+                }
+                crate::args::InputSpec::Search(search) => {
+                    args.push_str("-L");
+                    args.push_str(search);
+                    args.push('\n');
+                }
+            }
+        }
+
+        std::fs::write(&args_path, args)
+            .with_context(|| format!("Failed to write `{}`", args_path.display()))?;
+
+        Ok(())
+    }
 }
 
 impl Callbacks {
@@ -1241,11 +1351,23 @@ impl<'data> Store<'data> {
                 let Store::Loaded(loaded) = self else {
                     unreachable!();
                 };
+
                 Ok(*loaded)
             }
             Store::Loaded(loaded_plugin) => Ok(*loaded_plugin),
         }
     }
+}
+
+/// Increase the soft file limit to whatever the hard limit is set to.
+fn increase_file_limit() -> Result {
+    use nix::sys::resource::Resource::RLIMIT_NOFILE;
+
+    let (_, hard_limit) = nix::sys::resource::getrlimit(RLIMIT_NOFILE)?;
+
+    nix::sys::resource::setrlimit(RLIMIT_NOFILE, hard_limit, hard_limit)?;
+
+    Ok(())
 }
 
 pub(crate) fn resolve_lto_symbols<'data, 'scope>(
@@ -1269,7 +1391,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                     let symbol_attributes = SymbolAttributes {
                         name_info,
                         is_local: false,
-                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT,
+                        default_visibility: local_symbol.visibility == object::elf::STV_DEFAULT.0,
                         is_weak: local_symbol.kind
                             == Some(crate::linker_plugins::SymbolKind::WeakUndef),
                     };
@@ -1282,6 +1404,7 @@ pub(crate) fn resolve_lto_symbols<'data, 'scope>(
                         false,
                         obj.file_id,
                         scope,
+                        true,
                     )?;
                 }
 

@@ -1,7 +1,6 @@
-// Verifies that we report undefined symbol errors when there are multiple
-// objects referencing the undefined symbol, but the canonical reference gets
-// GCed. The canonical undefined symbol has at different points been either the
-// first or last reference, so we make sure both get GCed.
+// Verifies that we report undefined symbol errors when there are multiple objects referencing the
+// undefined symbol, but the canonical reference gets GCed. The canonical undefined symbol has at
+// different points been either the first or last reference, so we make sure both get GCed.
 
 //#CompArgs:-ffunction-sections
 //#LinkArgs:--gc-sections

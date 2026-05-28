@@ -10,7 +10,6 @@ use crate::arch::Architecture;
 use crate::args::CommonArgs;
 use crate::args::CopyRelocations;
 use crate::args::CopyRelocationsDisabledReason;
-use crate::args::DefsymValue;
 use crate::args::FileWriteMode;
 use crate::args::Modifiers;
 use crate::args::RelocationModel;
@@ -84,10 +83,16 @@ pub struct ElfArgs {
     pub(crate) plugin_args: Vec<CString>,
 
     /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
-    pub(crate) defsym: Vec<(String, DefsymValue)>,
+    pub(crate) defsym: Vec<(String, String)>,
 
     /// Section start addresses from `--section-start` options. Maps section name to address.
     pub(crate) section_start: HashMap<Vec<u8>, u64>,
+
+    /// Segment start address overrides from `-Ttext`, `-Tdata`, `-Tbss`.
+    /// Used to implement `SEGMENT_START("name", default)` per GNU ld behaviour.
+    pub(crate) ttext: Option<u64>,
+    pub(crate) tdata: Option<u64>,
+    pub(crate) tbss: Option<u64>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -116,12 +121,19 @@ pub struct ElfArgs {
     pub(crate) trace: bool,
     pack_dyn_relocs: PackDynRelocs,
     pub(crate) use_android_relr_tags: bool,
+    pub(crate) discard_sframe: bool,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
     pub(crate) should_output_partial_object: bool,
 
+    pub(crate) nmagic: bool,
+
     rpath_set: IndexSet<String>,
+
+    experimental_sframe: bool,
+
+    pub(crate) debug_compression_kind: Option<CompressionKind>,
 }
 
 #[derive(Debug)]
@@ -157,7 +169,15 @@ pub(crate) enum ExcludeLibs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PackDynRelocs {
     None,
+    Android,
+    AndroidRelr,
     Relr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompressionKind {
+    Zlib,
+    Zstd,
 }
 
 impl ExcludeLibs {
@@ -213,7 +233,7 @@ const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "C",
 ];
 
-pub(super) const IGNORED_FLAGS: &[&str] = &[
+const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
@@ -286,12 +306,18 @@ impl Default for ElfArgs {
             export_list_path: None,
             defsym: Vec::new(),
             section_start: HashMap::new(),
+            ttext: None,
+            tdata: None,
+            tbss: None,
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
             trace: false,
             pack_dyn_relocs: PackDynRelocs::None,
             use_android_relr_tags: false,
+            discard_sframe: false,
+
+            nmagic: false,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -305,6 +331,9 @@ impl Default for ElfArgs {
             rpath_set: Default::default(),
             plugin_path: None,
             plugin_args: Vec::new(),
+
+            experimental_sframe: false,
+            debug_compression_kind: None,
         }
     }
 }
@@ -322,11 +351,15 @@ const fn default_target_arch() -> Architecture {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RISCV64;
+        return Architecture::RiscV64;
     }
     #[cfg(target_arch = "loongarch64")]
     {
         return Architecture::LoongArch64;
+    }
+    #[cfg(all(target_arch = "powerpc64", target_endian = "little"))]
+    {
+        return Architecture::Ppc64;
     }
 
     #[allow(unreachable_code)]
@@ -342,24 +375,14 @@ impl ElfArgs {
     }
 
     pub(crate) fn is_relr_enabled(&self) -> bool {
-        self.z_pack_relative_relocs || self.pack_dyn_relocs == PackDynRelocs::Relr
+        self.z_pack_relative_relocs
+            || self.pack_dyn_relocs == PackDynRelocs::Relr
+            || self.pack_dyn_relocs == PackDynRelocs::AndroidRelr
     }
 }
 
 fn parse_number(s: &str) -> Result<u64> {
     crate::parsing::parse_number(s).map_err(|_| crate::error!("Invalid number: {}", s))
-}
-
-fn parse_defsym_expression(s: &str) -> DefsymValue {
-    use crate::parsing::ParsedSymbolExpression;
-    use crate::parsing::parse_symbol_expression;
-
-    match parse_symbol_expression(s) {
-        ParsedSymbolExpression::Absolute(value) => DefsymValue::Value(value),
-        ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
-            DefsymValue::SymbolWithOffset(sym.to_owned(), offset)
-        }
-    }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
@@ -393,6 +416,28 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
 
     if !args.auxiliary.is_empty() && args.should_output_executable {
         bail!("-f may not be used without -shared");
+    }
+
+    if args.pack_dyn_relocs == PackDynRelocs::Android
+        || args.pack_dyn_relocs == PackDynRelocs::AndroidRelr
+    {
+        args.warn_unsupported("--pack-dyn-relocs=android")?;
+    }
+
+    if args.nmagic {
+        // GNU_RELRO requires segments to start on page boundaries and cover an entire page
+        args.relro = false;
+        if args.max_page_size.is_some() {
+            args.warning("-z max-page-size is incompatible with --nmagic");
+        }
+        args.common_mut()
+            .inputs
+            .iter_mut()
+            .for_each(|input| input.modifiers.allow_shared = false);
+    }
+
+    if !args.experimental_sframe {
+        args.discard_sframe = true;
     }
 
     Ok(())
@@ -501,7 +546,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         })
         .sub_option("elf64lriscv", "RISC-V 64-bit ELF target", |args, _| {
-            args.arch = Architecture::RISCV64;
+            args.arch = Architecture::RiscV64;
             Ok(())
         })
         .sub_option(
@@ -512,6 +557,10 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 Ok(())
             },
         )
+        .sub_option("elf64lppc", "PowerPC64 LE ELF target", |args, _| {
+            args.arch = Architecture::Ppc64;
+            Ok(())
+        })
         .execute(|_args, _modifier_stack, value| {
             bail!("-m {value} is not yet supported");
         });
@@ -663,7 +712,7 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             },
         )
         .execute(|args, _modifier_stack, value| {
-            args.warn_unsupported(&("-z ".to_owned() + value))?;
+            args.warn_unsupported(&(format!("-z {value}")))?;
             Ok(())
         });
 
@@ -810,6 +859,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             match value {
                 "none" => args.pack_dyn_relocs = PackDynRelocs::None,
                 "relr" => args.pack_dyn_relocs = PackDynRelocs::Relr,
+                "android" => args.pack_dyn_relocs = PackDynRelocs::Android,
+                "android+relr" => args.pack_dyn_relocs = PackDynRelocs::AndroidRelr,
                 value => {
                     args.warn_unsupported(&format!("--pack-dyn-relocs={value}"))?;
                 }
@@ -1068,6 +1119,20 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare_with_param()
+        .long("compress-debug-sections")
+        .help("Compress debug sections using zlib or zstd")
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                "none" => args.debug_compression_kind = None,
+                "zlib" => args.debug_compression_kind = Some(CompressionKind::Zlib),
+                "zstd" => args.debug_compression_kind = Some(CompressionKind::Zstd),
+                value => bail!("--compress-debug-sections={value}"),
+            }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
         .long("soname")
         .prefix("h")
         .help("Set shared object name")
@@ -1264,6 +1329,32 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
         .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
+            // -Ttext=ADDR, -Tdata=ADDR, -Tbss=ADDR are segment start overrides,
+            // not linker script paths. Handle them here since they share the -T prefix.
+            // The prefix handler gives us the part after "-T", which may be:
+            //   "text=0x700000"  (from -Ttext=0x700000)
+            // We only handle the "name=ADDR" form here.
+            if let Some(addr) = value.strip_prefix("text=") {
+                args.ttext = Some(
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Ttext"))?,
+                );
+                return Ok(());
+            }
+            if let Some(addr) = value.strip_prefix("data=") {
+                args.tdata = Some(
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Tdata"))?,
+                );
+                return Ok(());
+            }
+            if let Some(addr) = value.strip_prefix("bss=") {
+                args.tbss = Some(
+                    parse_number(addr)
+                        .with_context(|| format!("Invalid address `{addr}` in -Tbss"))?,
+                );
+                return Ok(());
+            }
             args.common_mut().save_dir.handle_file(value);
             args.common_mut().add_script(value);
             Ok(())
@@ -1385,11 +1476,9 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
                 bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
             }
             let symbol_name = parts[0].to_owned();
-            let value_str = parts[1];
+            let value_str = parts[1].to_owned();
 
-            let defsym_value = parse_defsym_expression(value_str);
-
-            args.defsym.push((symbol_name, defsym_value));
+            args.defsym.push((symbol_name, value_str));
             Ok(())
         });
 
@@ -1727,6 +1816,43 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             Ok(())
         });
 
+    parser
+        .declare()
+        .long("wild-experimental-sframe")
+        .help("Enable experimental support for SFrame V2 (this option may be removed at any time)")
+        .execute(|args, _modifier_stack| {
+            args.experimental_sframe = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .short("n")
+        .long("nmagic")
+        .help("Disable page alignment of sections and disable linking against shared libraries")
+        .execute(|args, _modifier_stack| {
+            args.nmagic = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-nmagic")
+        .help("Page align sections (default)")
+        .execute(|args, _modifier_stack| {
+            args.nmagic = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("discard-sframe")
+        .help("Discard SFrame section")
+        .execute(|args, _modifier_stack| {
+            args.discard_sframe = true;
+            Ok(())
+        });
+
     add_silently_ignored_flags(&mut parser);
     add_default_flags(&mut parser);
 
@@ -1848,7 +1974,25 @@ impl platform::Args for ElfArgs {
     }
 
     fn start_address_for_section(&self, section_name: SectionName) -> Option<u64> {
-        self.section_start.get(section_name.bytes()).copied()
+        // --section-start takes precedence over -Ttext/-Tdata/-Tbss.
+        if let Some(&addr) = self.section_start.get(section_name.bytes()) {
+            return Some(addr);
+        }
+        match section_name.bytes() {
+            b".text" => self.ttext,
+            b".data" => self.tdata,
+            b".bss" => self.tbss,
+            _ => None,
+        }
+    }
+
+    fn segment_start_override(&self, name: crate::parsing::SegmentName) -> Option<u64> {
+        match name {
+            crate::parsing::SegmentName::Text => self.ttext,
+            crate::parsing::SegmentName::Data => self.tdata,
+            crate::parsing::SegmentName::Bss => self.tbss,
+            crate::parsing::SegmentName::Rodata | crate::parsing::SegmentName::Other => None,
+        }
     }
 
     fn version_script_path(&self) -> Option<&Path> {
@@ -1859,7 +2003,7 @@ impl platform::Args for ElfArgs {
         self.export_list_path.as_deref()
     }
 
-    fn defsym(&self) -> &[(String, DefsymValue)] {
+    fn defsym(&self) -> &[(String, String)] {
         &self.defsym
     }
 
@@ -1903,6 +2047,10 @@ impl platform::Args for ElfArgs {
         self.unresolved_symbols
     }
 
+    fn is_ignored_flag(&self, flag: &str) -> bool {
+        IGNORED_FLAGS.contains(&flag)
+    }
+
     fn should_export_all_dynamic_symbols(&self) -> bool {
         self.export_all_dynamic_symbols
     }
@@ -1912,6 +2060,10 @@ impl platform::Args for ElfArgs {
     }
 
     fn loadable_segment_alignment(&self) -> Alignment {
+        if self.nmagic {
+            return Alignment { exponent: 0 };
+        }
+
         if let Some(max_page_size) = self.max_page_size {
             return max_page_size;
         }
@@ -1919,8 +2071,9 @@ impl platform::Args for ElfArgs {
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
-            Architecture::RISCV64 => Alignment { exponent: 12 },
+            Architecture::RiscV64 => Alignment { exponent: 12 },
             Architecture::LoongArch64 => Alignment { exponent: 16 },
+            Architecture::Ppc64 => Alignment { exponent: 16 },
             Architecture::Unsupported => unreachable!(),
         }
     }
@@ -2270,5 +2423,98 @@ mod tests {
         for flag in SILENTLY_IGNORED_FLAGS {
             assert!(!flag.starts_with('-'));
         }
+    }
+
+    // Helper: parse a small set of args and return the resulting ElfArgs.
+    fn parse_args<'a>(args: impl IntoIterator<Item = &'a str>) -> ElfArgs {
+        let mut elf_args = ElfArgs::new().unwrap();
+        elf_args.parse(args.into_iter()).unwrap();
+        elf_args
+    }
+
+    // Helper: parse args and expect a parse error.
+    fn parse_args_err<'a>(args: impl IntoIterator<Item = &'a str>) -> crate::error::Error {
+        let mut elf_args = ElfArgs::new().unwrap();
+        elf_args.parse(args.into_iter()).unwrap_err()
+    }
+
+    #[test]
+    fn test_ttext_hex_round_trip() {
+        use crate::output_section_id::SectionName;
+        let args = parse_args(["-Ttext=0x700000"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".text")),
+            Some(0x700000)
+        );
+    }
+
+    #[test]
+    fn test_ttext_decimal_round_trip() {
+        use crate::output_section_id::SectionName;
+        // 7340032 == 0x700000
+        let args = parse_args(["-Ttext=7340032"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".text")),
+            Some(0x700000)
+        );
+    }
+
+    #[test]
+    fn test_tdata_hex_round_trip() {
+        use crate::output_section_id::SectionName;
+        let args = parse_args(["-Tdata=0x800000"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".data")),
+            Some(0x800000)
+        );
+    }
+
+    #[test]
+    fn test_tdata_decimal_round_trip() {
+        use crate::output_section_id::SectionName;
+        // 8388608 == 0x800000
+        let args = parse_args(["-Tdata=8388608"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".data")),
+            Some(0x800000)
+        );
+    }
+
+    #[test]
+    fn test_tbss_hex_round_trip() {
+        use crate::output_section_id::SectionName;
+        let args = parse_args(["-Tbss=0x900000"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".bss")),
+            Some(0x900000)
+        );
+    }
+
+    #[test]
+    fn test_tbss_decimal_round_trip() {
+        use crate::output_section_id::SectionName;
+        // 9437184 == 0x900000
+        let args = parse_args(["-Tbss=9437184"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".bss")),
+            Some(0x900000)
+        );
+    }
+
+    #[test]
+    fn test_ttext_invalid_address() {
+        // Parsing a non-numeric address should return an error.
+        parse_args_err(["-Ttext=notanumber"]);
+    }
+
+    #[test]
+    fn test_section_start_takes_precedence_over_ttext() {
+        use crate::output_section_id::SectionName;
+        // --section-start=.text=0x600000 should win over -Ttext=0x700000
+        let args = parse_args(["--section-start=.text=0x600000", "-Ttext=0x700000"]);
+        assert_eq!(
+            args.start_address_for_section(SectionName(b".text")),
+            Some(0x600000)
+        );
     }
 }

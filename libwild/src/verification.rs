@@ -88,7 +88,13 @@ impl OffsetVerifier {
 
 fn should_ignore_alignment(part_id: PartId) -> bool {
     part_id.should_pack()
-        || [part_id::GNU_HASH, part_id::EH_FRAME, part_id::GNU_VERSION_D].contains(&part_id)
+        || [
+            part_id::GNU_HASH,
+            part_id::EH_FRAME,
+            part_id::GNU_VERSION_D,
+            part_id::CODE_SIGNATURE,
+        ]
+        .contains(&part_id)
 }
 
 /// Clear offsets for sections where we never take the address of a section offset during
@@ -119,6 +125,9 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::ENTRY_POINT,
         part_id::DYLD_CHAINED_FIXUPS,
         part_id::CHAINED_FIXUP_TABLE,
+        part_id::SYMTAB_COMMAND,
+        part_id::CODE_SIGNATURE,
+        part_id::CODE_SIGNATURE_COMMAND,
     ];
 
     for part_id in IGNORED {

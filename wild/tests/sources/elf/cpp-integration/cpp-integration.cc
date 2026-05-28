@@ -10,6 +10,7 @@
 // Wild doesn't output this symbol.
 //#DiffIgnore:version._ZSt21ios_base_library_initv
 //#Object:cpp-integration-2.cc
+//#DiffMatchAny:true
 
 //#Config:pie:default
 //#CompArgs:-fpie -fmerge-constants

@@ -21,6 +21,12 @@ follows:
 cargo binstall wild-linker
 ```
 
+### Brew
+
+```sh
+brew install wild-linker/wild/wild
+```
+
 ### Build latest release from crates.io
 
 ```sh
@@ -71,16 +77,24 @@ after adding the `ld.wild` symlink:
 ```
 export LDFLAGS="${LDFLAGS} -fuse-ld=wild"
 ```
-GCC doesn't have [native](https://sourceware.org/pipermail/binutils/2025-November/145870.html) support for `wild` in any released version yet. You can make it force use it with the [-Bprefix](https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html#index-B) option. Create a symlink `ld` pointing to `wild` and pass the directory containing it to gcc. For example you can do the following:
-```
+
+Starting with GCC **16.1**, use `-fuse-ld=wild`.
+
+For older GCC releases, you can make it force use it with the [-Bprefix](https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html#index-B) option.
+Create a symlink `ld` pointing to `wild` and pass the directory containing it to gcc. For example you can do the following:
+
+```sh
 ln -s /usr/bin/wild /tmp/ld
 ```
-And when compiling C/C++ code pass the directory containing `ld` to your CFLAGS,CXXFLAGS and LDFLAGS:
-```
+
+And when compiling C/C++ code pass the directory containing `ld` to your `CFLAGS`, `CXXFLAGS`, and `LDFLAGS`:
+
+```sh
 export CFLAGS="${CFLAGS} -B/tmp"
 export CXXFLAGS="${CXXFLAGS} -B/tmp"
 export LDFLAGS="${LDFLAGS} -B/tmp"
 ```
+
 Afterwards you can check if wild was used for linking with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary)
 
 On Illumos:
@@ -116,6 +130,7 @@ The following platforms / architectures are currently supported:
 * ARM64 on Linux
 * RISC-V (riscv64gc) on Linux
 * LoongArch64 on Linux (initial support)
+* PPC64LE on Linux (initial support)
 
 The following is working with the caveat that there may be bugs:
 
@@ -128,20 +143,16 @@ The following is working with the caveat that there may be bugs:
 * Debug info
 * GNU jobserver support
 * Partial linker script support. See the [linker script support matrix](LINKER_SCRIPT_SUPPORT.md) for details.
+* Linker plugin LTO - [known issues](https://github.com/wild-linker/wild/issues?q=is%3Aissue%20state%3Aopen%20label%3ALTO)
 
 ### What isn't yet supported?
 
-Lots of stuff. Here are some of the larger things that aren't yet done, roughly sorted by current
-priority:
+Here are some of the larger things that aren't yet done, roughly sorted by current priority:
 
 * Incremental linking
-* Support for more architectures
-* Support for a wider range of linker flags
 * More complex linker scripts
-* Mac support
+* Mach-O support
 * Windows support
-* Linker plugin LTO (initial experimental support is behind `--features=plugins` but it doesn't yet
-  work very well).
 
 ### How can I verify that Wild was used to link a binary?
 

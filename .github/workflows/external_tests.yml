@@ -20,10 +20,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ubuntu:25.04"
+      image: "ubuntu:26.04"
     steps:
       - run: |
-          apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap git zstd qemu-user gdb dwarfdump perl wget xz-utils \
+          apt-get update && apt-get -y install gcc g++ clang llvm lld curl bubblewrap git zstd qemu-user gdb dwarfdump perl wget xz-utils \
               binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu binutils-loongarch64-linux-gnu \
               gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu \
               g++-aarch64-linux-gnu g++-riscv64-linux-gnu g++-loongarch64-linux-gnu \

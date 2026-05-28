@@ -2,6 +2,7 @@
 //#Object:runtime.c
 //#Object:ptr_black_box.c
 //#EnableLinker:lld
+//#DiffMatchAny:true
 
 //#Config:no-pie:default
 //#LinkArgs:-no-pie -znow

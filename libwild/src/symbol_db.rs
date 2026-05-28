@@ -28,8 +28,11 @@ use crate::output_section_id::OutputSections;
 use crate::parsing;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
+use crate::parsing::Redirect;
+use crate::parsing::SymbolLoc;
 use crate::parsing::SymbolPlacement;
 use crate::parsing::SyntheticSymbols;
+use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
 use crate::platform::Args;
@@ -407,10 +410,15 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
                 .push(Group::Prelude(crate::parsing::Prelude::new(
                     self.args,
                     self.output_kind,
-                )));
+                )?));
         }
 
-        grouping::create_groups(self, parsed_objects, processed_linker_scripts);
+        grouping::create_groups(
+            self,
+            parsed_objects,
+            loaded.stub_libraries,
+            processed_linker_scripts,
+        );
 
         self.create_lto_input_groups(loaded.lto_objects)?;
 
@@ -469,7 +477,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     fn create_lto_input_groups(
         &mut self,
         lto_objects: Vec<Result<Box<crate::linker_plugins::LtoInputInfo<'data>>>>,
@@ -510,7 +518,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         Ok(())
     }
 
-    #[cfg(not(feature = "plugins"))]
+    #[cfg(not(all(feature = "plugins", unix)))]
     #[allow(
         clippy::unused_self,
         clippy::needless_pass_by_value,
@@ -622,9 +630,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
                 obj_symbol.visibility()
             }
+            Group::StubLibraries(_) => Visibility::Default,
             Group::LinkerScripts(_) => Visibility::Default,
             Group::SyntheticSymbols(_) => Visibility::Default,
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(lto_objects) => {
                 lto_objects[file_id.file()].symbol_visibility(symbol_id)
             }
@@ -658,11 +667,12 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::Objects(parsed_input_objects) => {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
+            Group::StubLibraries(stubs) => Ok(stubs[file_id.file()].symbol_name(symbol_id)),
             Group::LinkerScripts(scripts) => Ok(scripts[file_id.file()].symbol_name(symbol_id)),
             Group::SyntheticSymbols(syn) => {
                 Ok(self.start_stop_symbol_names[syn.symbol_id_range.id_to_offset(symbol_id)])
             }
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(lto_objects) => Ok(lto_objects[file_id.file()].symbol_name(symbol_id)),
         }
     }
@@ -706,7 +716,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups
             .iter()
             .map(|group| match group {
-                #[cfg(feature = "plugins")]
+                #[cfg(all(feature = "plugins", unix))]
                 Group::LtoInputs(objects) => objects.len(),
                 _ => 0,
             })
@@ -790,9 +800,10 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             Group::Objects(parsed_input_objects) => {
                 SequencedInput::Object(&parsed_input_objects[file_id.file()])
             }
+            Group::StubLibraries(stubs) => SequencedInput::StubLibrary(&stubs[file_id.file()]),
             Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
             Group::SyntheticSymbols(syn) => SequencedInput::SyntheticSymbols(syn),
-            #[cfg(feature = "plugins")]
+            #[cfg(all(feature = "plugins", unix))]
             Group::LtoInputs(lto_objects) => SequencedInput::LtoInput(&lto_objects[file_id.file()]),
         }
     }
@@ -861,7 +872,8 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         match &resolved[file_id.group()].files[file_id.file()] {
             ResolvedFile::Object(obj) => obj.common.symbol_strength(symbol_id),
             ResolvedFile::Dynamic(obj) => obj.common.symbol_strength(symbol_id),
-            #[cfg(feature = "plugins")]
+            ResolvedFile::StubLibrary(stub) => stub.symbol_strength(symbol_id),
+            #[cfg(all(feature = "plugins", unix))]
             ResolvedFile::LtoInput(obj) => {
                 use crate::linker_plugins::SymbolKind;
 
@@ -912,31 +924,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
     pub(crate) fn entry_symbol_name(&self) -> &[u8] {
         self.args.entry_symbol_name(self.entry)
-    }
-
-    pub(crate) fn defsym_defined_via_cli_option(&self, symbol_name: &[u8]) -> bool {
-        self.args
-            .defsym()
-            .iter()
-            .any(|(name, _)| name.as_bytes() == symbol_name)
-    }
-
-    pub(crate) fn missing_defsym_target_error(
-        &self,
-        symbol_name: &[u8],
-        target_name: &str,
-    ) -> Error {
-        if self.defsym_defined_via_cli_option(symbol_name) {
-            crate::error!(
-                "Symbol '{}' referenced by --defsym does not exist",
-                target_name
-            )
-        } else {
-            crate::error!(
-                "Undefined symbol '{}' referenced in expression",
-                target_name
-            )
-        }
     }
 
     fn apply_linker_script(&mut self, script: &InputLinkerScript<'data>) {
@@ -1002,7 +989,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         self.groups.push(group);
     }
 
-    #[cfg(feature = "plugins")]
+    #[cfg(all(feature = "plugins", unix))]
     pub(crate) fn disable_lto_inputs(&mut self) {
         for group in &mut self.groups {
             if let Group::LtoInputs(objects) = group {
@@ -1018,6 +1005,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         match &self.groups[file_id.group()] {
             Group::Objects(objects) => {
                 let file = &objects[file_id.file()];
+
                 let local_index = file.symbol_id_range.id_to_input(symbol_id);
                 file.parsed
                     .object
@@ -1032,6 +1020,18 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
     pub(crate) fn warning(&self, message: impl Into<String>) {
         self.args.warning(message);
+    }
+
+    pub(crate) fn part_id_for_symbol(&self, symbol_id: SymbolId) -> PartId {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        let file = self.file(file_id);
+        if file.is_dynamic() {
+            return part_id::UNMAPPED;
+        }
+        let Some(input_section_id) = file.input_section_id_for_symbol(symbol_id) else {
+            return part_id::UNMAPPED;
+        };
+        self.section_part_ids[input_section_id.as_usize()]
     }
 }
 
@@ -1505,6 +1505,11 @@ fn read_symbols_for_group<'data, P: Platform>(
                 .with_context(|| format!("Failed to load symbols from `{}`", obj.parsed.input))?;
             }
         }
+        Group::StubLibraries(stubs) => {
+            for stub in stubs {
+                load_stub_library_symbols(stub, shard, &mut outputs);
+            }
+        }
         Group::LinkerScripts(scripts) => {
             for script in scripts {
                 load_linker_script_symbols(script, shard, &mut outputs);
@@ -1513,7 +1518,7 @@ fn read_symbols_for_group<'data, P: Platform>(
         Group::SyntheticSymbols(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
-        #[cfg(feature = "plugins")]
+        #[cfg(all(feature = "plugins", unix))]
         Group::LtoInputs(lto_objects) => {
             for obj in lto_objects {
                 load_lto_symbols(shard, &mut outputs, obj);
@@ -1524,7 +1529,25 @@ fn read_symbols_for_group<'data, P: Platform>(
     Ok(outputs)
 }
 
-#[cfg(feature = "plugins")]
+fn load_stub_library_symbols<'data, P: Platform>(
+    stub: &crate::grouping::SequencedStubLibrary<'data>,
+    symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
+    outputs: &mut SymbolLoadOutputs<'data>,
+) {
+    for (offset, symbol_name) in stub
+        .defined_symbols
+        .symbols
+        .iter()
+        .chain(stub.defined_symbols.weak_symbols.iter())
+        .enumerate()
+    {
+        let symbol_id = stub.symbol_id_range.offset_to_id(offset);
+        outputs.add_non_versioned(PendingSymbol::new(symbol_id, symbol_name.as_bytes()));
+        symbols_out.set_next(ValueFlags::DYNAMIC, symbol_id, stub.file_id);
+    }
+}
+
+#[cfg(all(feature = "plugins", unix))]
 fn load_lto_symbols<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
@@ -1914,13 +1937,16 @@ impl<'a, 'data, P: Platform> std::fmt::Display for SymbolDebug<'a, 'data, P> {
                         write!(f, "<unnamed symbol>")?;
                     }
                 }
+                SequencedInput::StubLibrary(s) => {
+                    write!(f, "<unnamed Mach-O stub library symbol from `{}`>", s.input)?;
+                }
                 SequencedInput::LinkerScript(s) => {
                     write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
                 }
                 SequencedInput::SyntheticSymbols(_) => {
                     write!(f, "<unnamed custom-section symbol>")?;
                 }
-                #[cfg(feature = "plugins")]
+                #[cfg(all(feature = "plugins", unix))]
                 SequencedInput::LtoInput(_) => write!(f, "<unnamed symbol from LTO object>")?,
             }
         } else {
@@ -2016,21 +2042,24 @@ impl<'data, P: Platform> Prelude<'data, P> {
     ) {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
-            let mut flags = match definition.placement {
+            let mut flags = match &definition.placement {
                 SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
                     ValueFlags::ABSOLUTE
-                }
-                SymbolPlacement::DefsymAbsolute(_) => {
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
                 }
                 SymbolPlacement::SectionStart(_)
                 | SymbolPlacement::SectionEnd(_)
                 | SymbolPlacement::SectionGroupEnd(_)
-                | SymbolPlacement::DefsymSymbol(_, _)
                 | SymbolPlacement::LoadBaseAddress => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
+                }
+                SymbolPlacement::Redirect(redirect) => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
+                    if matches!(redirect.loc, SymbolLoc::None) {
+                        ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
+                    } else {
+                        ValueFlags::NON_INTERPOSABLE
+                    }
                 }
             };
             if definition.symbol.is_hidden() {
@@ -2048,12 +2077,15 @@ impl std::fmt::Display for SymbolId {
 }
 
 impl<P: Platform> InternalSymDefInfo<'_, P> {
-    pub(crate) fn section_id(self) -> Option<OutputSectionId> {
+    pub(crate) fn section_id(&self) -> Option<OutputSectionId> {
         match self.placement {
+            SymbolPlacement::Redirect(Redirect {
+                loc: SymbolLoc::SectionEnd(i) | SymbolLoc::SectionStart(i),
+                ..
+            }) => Some(i),
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
-            | SymbolPlacement::DefsymAbsolute(_)
-            | SymbolPlacement::DefsymSymbol(_, _) => None,
+            | SymbolPlacement::Redirect(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
             SymbolPlacement::SectionGroupEnd(i) => Some(i),

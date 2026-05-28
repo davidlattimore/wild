@@ -18,7 +18,6 @@ use crate::error::Context;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
-use elf::IGNORED_FLAGS;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use itertools::Itertools;
@@ -32,6 +31,7 @@ use std::path::PathBuf;
 
 pub mod elf;
 pub mod macho;
+pub mod wasm;
 
 use crate::error::Warning;
 use crate::platform;
@@ -92,6 +92,8 @@ pub struct CommonArgs {
 
     /// The version of the linker being used.
     pub(crate) version: std::borrow::Cow<'static, str>,
+
+    has_flavor: bool,
 }
 
 pub type WarningCallback = dyn Fn(Warning) + Send + Sync + 'static;
@@ -109,15 +111,34 @@ impl Args {
     {
         let mut input = input();
 
-        // TODO: Select platform based on executable name and/or the first argument.
-        let _executable_name = input
-            .next()
-            .ok_or_else(|| crate::error!("Failed to determine executable name"))?;
+        let prog_name = input.next().context("Missing argument 0 (program name)")?;
 
-        match PlatformKind::host() {
-            PlatformKind::Elf => Ok(Args::Elf(elf::ElfArgs::new()?)),
-            PlatformKind::MachO => Ok(Args::MachO(macho::MachOArgs::new()?)),
-        }
+        let mut has_flavor = false;
+
+        let platform = if input.next().is_some_and(|arg| arg.as_ref() == "-flavor") {
+            has_flavor = true;
+
+            let flavor = input
+                .next()
+                .context("-flavor requires an argument (gnu, darwin, or link)")?;
+
+            PlatformKind::from_flavor(flavor.as_ref())?
+        } else if let Some(platform) = PlatformKind::from_executable_name(prog_name.as_ref()) {
+            platform
+        } else {
+            PlatformKind::host()
+        };
+
+        let mut args = match platform {
+            PlatformKind::Elf => Args::Elf(elf::ElfArgs::new()?),
+            PlatformKind::MachO => Args::MachO(macho::MachOArgs::new()?),
+            PlatformKind::Wasm => Args::Wasm(wasm::WasmArgs::new()?),
+        };
+
+        // Store whether we got a flavor arg to make parsing simpler.
+        args.common_mut().has_flavor = has_flavor;
+
+        Ok(args)
     }
 
     /// Parse CLI arguments. Runs format-specific parser based on the host target.
@@ -134,9 +155,15 @@ impl Args {
         // Skip the program name.
         input.next();
 
+        if self.common().has_flavor {
+            input.next();
+            input.next();
+        }
+
         match self {
             Args::Elf(args) => args.parse(input),
             Args::MachO(args) => args.parse(input),
+            Args::Wasm(args) => args.parse(input),
         }
     }
 
@@ -158,6 +185,7 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &elf_args.common,
             Args::MachO(macho_args) => &macho_args.common,
+            Args::Wasm(wasm_args) => &wasm_args.common,
         }
     }
 
@@ -165,6 +193,7 @@ impl Args {
         match self {
             Args::Elf(elf_args) => &mut elf_args.common,
             Args::MachO(macho_args) => &mut macho_args.common,
+            Args::Wasm(wasm_args) => &mut wasm_args.common,
         }
     }
 }
@@ -172,6 +201,7 @@ impl Args {
 enum PlatformKind {
     Elf,
     MachO,
+    Wasm,
 }
 
 impl PlatformKind {
@@ -180,6 +210,30 @@ impl PlatformKind {
             PlatformKind::MachO
         } else {
             PlatformKind::Elf
+        }
+    }
+
+    fn from_flavor(flavor: &str) -> Result<Self> {
+        match flavor {
+            "gnu" | "ld" => Ok(PlatformKind::Elf),
+            "darwin" | "ld64" => Ok(PlatformKind::MachO),
+            "link" => bail!("Windows (link flavor) is not yet supported"),
+            "wasm" | "ld-wasm" => Ok(PlatformKind::Wasm),
+            _ => bail!(
+                "Unknown flavor '{}'. Valid flavors: gnu, darwin, link",
+                flavor
+            ),
+        }
+    }
+
+    fn from_executable_name(name: &str) -> Option<Self> {
+        let base_name = Path::new(name).file_stem().and_then(|n| n.to_str())?;
+
+        match base_name {
+            "ld" => Some(PlatformKind::Elf),
+            "ld64" => Some(PlatformKind::MachO),
+            "ld-wasm" | "wasm-ld" => Some(PlatformKind::Wasm),
+            _ => None,
         }
     }
 }
@@ -244,6 +298,7 @@ impl Default for CommonArgs {
             time_phase_options: None,
             warning_callback: Box::new(default_warning_callback),
             version: std::borrow::Cow::Borrowed("unknown version"),
+            has_flavor: false,
         }
     }
 }
@@ -278,15 +333,18 @@ impl CommonArgs {
                 }
                 tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
                 // Our parent "holds" one jobserver token, add it.
-                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+                NonZeroUsize::new(tokens.len() + 1).unwrap()
             } else {
                 std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
             }
         });
 
         // The pool might be already initialized, suppress the error intentionally.
-        if self.available_threads.get() <= 1 {
-            let _ = ThreadPoolBuilder::new().use_current_thread().build_global();
+        if self.available_threads.get() == 1 {
+            let _ = ThreadPoolBuilder::new()
+                .use_current_thread()
+                .num_threads(1)
+                .build_global();
         } else {
             let _ = ThreadPoolBuilder::new()
                 .num_threads(self.available_threads.get())
@@ -426,6 +484,7 @@ pub struct ThreadPool {
 pub enum Args {
     Elf(elf::ElfArgs),
     MachO(macho::MachOArgs),
+    Wasm(wasm::WasmArgs),
 }
 
 impl std::fmt::Debug for Args {
@@ -433,6 +492,7 @@ impl std::fmt::Debug for Args {
         match self {
             Args::Elf(args) => args.fmt(f),
             Args::MachO(args) => args.fmt(f),
+            Args::Wasm(args) => args.fmt(f),
         }
     }
 }
@@ -527,14 +587,6 @@ pub(crate) enum BSymbolicKind {
     NonWeak,
 }
 
-#[derive(Debug)]
-pub(crate) enum DefsymValue {
-    /// A numeric value (address)
-    Value(u64),
-    /// Reference to another symbol with an optional offset
-    SymbolWithOffset(String, i64),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum UnresolvedSymbols {
     /// Report all unresolved symbols.
@@ -596,6 +648,18 @@ impl<T: platform::Args> ArgumentParser<T> {
         }
     }
 
+    fn declare_with_three_params(&mut self) -> OptionDeclaration<'_, T, WithThreeParams> {
+        OptionDeclaration {
+            parser: self,
+            long_names: Vec::new(),
+            short_names: Vec::new(),
+            prefixes: Vec::new(),
+            sub_options: HashMap::new(),
+            help_text: "",
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
     fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, T, WithOptionalParam> {
         OptionDeclaration {
             parser: self,
@@ -615,8 +679,6 @@ impl<T: platform::Args> ArgumentParser<T> {
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
-        let common = args.common_mut();
-
         // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
@@ -637,6 +699,9 @@ impl<T: platform::Args> ArgumentParser<T> {
                 if let Some(handler) = self.options.get(option_name) {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
+                        OptionHandlerFn::WithThreeParams(_) => {
+                            bail!("multi-argument option cannot use the '=' syntax")
+                        }
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
                         OptionHandlerFn::NoParam(_) => return Ok(()),
                     }
@@ -659,6 +724,24 @@ impl<T: platform::Args> ArgumentParser<T> {
                                 input.next().context(format!("Missing argument to {arg}"))?;
                             f(args, modifier_stack, next_arg.as_ref())?;
                         }
+                        OptionHandlerFn::WithThreeParams(f) => {
+                            let first_arg = input
+                                .next()
+                                .context(format!("Missing first argument to {arg}"))?;
+                            let second_arg = input
+                                .next()
+                                .context(format!("Missing second argument to {arg}"))?;
+                            let third_arg = input
+                                .next()
+                                .context(format!("Missing third argument to {arg}"))?;
+                            f(
+                                args,
+                                modifier_stack,
+                                first_arg.as_ref(),
+                                second_arg.as_ref(),
+                                third_arg.as_ref(),
+                            )?;
+                        }
                         OptionHandlerFn::OptionalParam(f) => {
                             f(args, modifier_stack, None)?;
                         }
@@ -677,6 +760,24 @@ impl<T: platform::Args> ArgumentParser<T> {
                         let next_arg =
                             input.next().context(format!("Missing argument to {arg}"))?;
                         f(args, modifier_stack, next_arg.as_ref())?;
+                    }
+                    OptionHandlerFn::WithThreeParams(f) => {
+                        let first_arg = input
+                            .next()
+                            .context(format!("Missing first argument to {arg}"))?;
+                        let second_arg = input
+                            .next()
+                            .context(format!("Missing second argument to {arg}"))?;
+                        let third_arg = input
+                            .next()
+                            .context(format!("Missing third argument to {arg}"))?;
+                        f(
+                            args,
+                            modifier_stack,
+                            first_arg.as_ref(),
+                            second_arg.as_ref(),
+                            third_arg.as_ref(),
+                        )?;
                     }
                     OptionHandlerFn::OptionalParam(f) => {
                         f(args, modifier_stack, None)?;
@@ -732,16 +833,17 @@ impl<T: platform::Args> ArgumentParser<T> {
 
         if arg.starts_with('-') {
             if let Some(stripped) = strip_option(arg)
-                && IGNORED_FLAGS.contains(&stripped)
+                && args.is_ignored_flag(stripped)
             {
                 args.warn_unsupported(arg)?;
                 return Ok(());
             }
 
-            common.unrecognized_options.push(arg.to_owned());
+            args.common_mut().unrecognized_options.push(arg.to_owned());
             return Ok(());
         }
 
+        let common = args.common_mut();
         common.save_dir.handle_file(arg);
         common.inputs.push(Input {
             spec: InputSpec::File(Box::from(Path::new(arg))),
@@ -878,11 +980,13 @@ struct PrefixOptionHandler<T> {
 }
 
 type OptionalParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, Option<&str>) -> Result<()>;
+type ThreeParamHandler<T> = fn(&mut T, &mut Vec<Modifiers>, &str, &str, &str) -> Result<()>;
 
 #[allow(clippy::enum_variant_names)]
 enum OptionHandlerFn<T> {
     NoParam(fn(&mut T, &mut Vec<Modifiers>) -> Result<()>),
     WithParam(fn(&mut T, &mut Vec<Modifiers>, &str) -> Result<()>),
+    WithThreeParams(ThreeParamHandler<T>),
     OptionalParam(OptionalParamHandler<T>),
 }
 
@@ -899,6 +1003,7 @@ impl<T> OptionHandlerFn<T> {
         match self {
             OptionHandlerFn::NoParam(_) => "",
             OptionHandlerFn::WithParam(_) => "=<VALUE>",
+            OptionHandlerFn::WithThreeParams(_) => "=<VALUE> <VALUE> <VALUE>",
             OptionHandlerFn::OptionalParam(_) => "[=<VALUE>]",
         }
     }
@@ -907,6 +1012,7 @@ impl<T> OptionHandlerFn<T> {
         match self {
             OptionHandlerFn::NoParam(_) => "",
             OptionHandlerFn::WithParam(_) => " <VALUE>",
+            OptionHandlerFn::WithThreeParams(_) => " <VALUE> <VALUE> <VALUE>",
             OptionHandlerFn::OptionalParam(_) => " [<VALUE>]",
         }
     }
@@ -924,6 +1030,7 @@ struct OptionDeclaration<'a, T, S> {
 
 struct NoParam;
 struct WithParam;
+struct WithThreeParams;
 struct WithOptionalParam;
 
 enum SubOptionHandler<T> {
@@ -1072,6 +1179,26 @@ impl<'a, T> OptionDeclaration<'a, T, WithParam> {
     }
 }
 
+impl<'a, T> OptionDeclaration<'a, T, WithThreeParams> {
+    fn execute(self, handler: ThreeParamHandler<T>) {
+        let option_handler = OptionHandler {
+            help_text: self.help_text,
+            handler: OptionHandlerFn::WithThreeParams(handler),
+            short_names: self.short_names.clone(),
+        };
+
+        for name in self.long_names {
+            self.parser.options.insert(name, option_handler.clone());
+        }
+
+        for option in self.short_names {
+            self.parser
+                .short_options
+                .insert(option, option_handler.clone());
+        }
+    }
+}
+
 impl<'a, T> OptionDeclaration<'a, T, WithOptionalParam> {
     fn execute(self, handler: OptionalParamHandler<T>) {
         let option_handler = OptionHandler {
@@ -1187,5 +1314,38 @@ impl std::str::FromStr for CounterKind {
             "l1d-miss" => CounterKind::L1dMiss,
             other => bail!("Unsupported performance counter `{other}`"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flavor() {
+        let args = Args::new(|| ["ld.wild"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+
+        let args = Args::new(|| ["ld64.wild"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        let mut args = Args::new(|| ["wild", "-flavor", "gnu"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+        args.parse(|| ["wild", "-flavor", "gnu"].into_iter())
+            .unwrap();
+        assert!(args.common().inputs.is_empty());
+
+        let args = Args::new(|| ["wild", "-flavor", "darwin"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        // -flavor has priority
+        let args = Args::new(|| ["ld.wild", "-flavor", "darwin"].into_iter()).unwrap();
+        assert!(matches!(args, Args::MachO(_)));
+
+        let args = Args::new(|| ["ld64.wild", "-flavor", "gnu"].into_iter()).unwrap();
+        assert!(matches!(args, Args::Elf(_)));
+
+        assert!(Args::new(|| ["ld.wild", "-flavor", "invalid"].into_iter()).is_err());
+        assert!(Args::new(|| ["ld.wild", "-flavor"].into_iter()).is_err());
     }
 }

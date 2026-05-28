@@ -108,8 +108,10 @@ impl crate::platform::Arch for ElfX86_64 {
         }
     }
 
-    fn merge_eflags(_eflags: impl Iterator<Item = u32>) -> Result<u32> {
-        Ok(0)
+    fn merge_eflags(
+        _eflags: impl Iterator<Item = object::elf::FileFlags>,
+    ) -> Result<object::elf::FileFlags> {
+        Ok(object::elf::FileFlags(0))
     }
 
     fn high_part_relocations() -> &'static [u32] {

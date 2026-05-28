@@ -3,7 +3,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use bitflags::bitflags;
 use std::sync::atomic;
-use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -13,7 +13,7 @@ use zerocopy::transmute_mut;
 /// `FromBytes` and `IntoBytes`.
 #[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, Hash, FromBytes, IntoBytes)]
 #[debug("{}", ValueFlags::from_bits_retain(*_0))]
-pub(crate) struct RawFlags(u16);
+pub(crate) struct RawFlags(u32);
 
 /// Flags for each symbol.
 #[derive(Debug)]
@@ -31,7 +31,7 @@ bitflags! {
     /// that defined the symbol or section and some is computed based on what kinds of references we
     /// encounter to it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub(crate) struct ValueFlags: u16 {
+    pub(crate) struct ValueFlags: u32 {
         /// An absolute value that won't change depending on load address. This could be a symbol
         /// with an absolute value or an undefined symbol, which needs to always resolve to 0
         /// regardless of load address.
@@ -99,11 +99,19 @@ bitflags! {
         /// contains the PLT stub address (for address equality), rather than the IRELATIVE GOT
         /// entry which will be resolved to the actual function address at runtime.
         const IFUNC_GOT_FOR_ADDRESS = 1 << 14;
+
+        /// Set on a local symbol (i.e. the symbol reference in the calling object) when the symbol
+        /// is the target of a range-limited relocation in a primary-part section that may need a
+        /// range-extension thunk.
+        const HAS_RANGE_LIMITED_REL = 1 << 15;
+
+        /// Whether the symbol has a reference from non-IR code.
+        const HAS_NON_IR_REF = 1 << 16;
     }
 }
 
 #[derive(FromBytes, IntoBytes)]
-pub(crate) struct AtomicValueFlags(AtomicU16);
+pub(crate) struct AtomicValueFlags(AtomicU32);
 
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly

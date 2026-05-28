@@ -13,8 +13,7 @@ typedef size_t (*ifunc_resolve_fn_t)(void);
 
 const uint64_t R_X86_64_IRELATIVE = 37;
 
-// Initialises ifuncs in a similar way to how glibc would do it if we were
-// linking against it.
+// Initialises ifuncs in a similar way to how glibc would do it if we were linking against it.
 int init_ifuncs(void) {
   extern const struct Rela __rela_iplt_start[];
   extern const struct Rela __rela_iplt_end[];

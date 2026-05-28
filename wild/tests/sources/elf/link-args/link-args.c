@@ -57,7 +57,7 @@
 //#Object:runtime.c
 //#LinkArgs:--sym-info=this_function_is_not_used
 //#ExpectMessage:Global name `this_function_is_not_used` refers to: Some\(sym-[0-9]+\)
-//#ExpectMessage:Definitions / references with name `this_function_is_not_used`:
+//#ExpectMessage:Matching/related names
 //#ExpectMessage:[0-9]+: Global Func: NON_INTERPOSABLE | DIRECT
 //#ExpectMessage:this_function_is_not_used
 //#ExpectMessage:#[0-9]+ in File #256 \(1/0\) .* \(LOADED\)

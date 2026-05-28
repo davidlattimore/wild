@@ -8,6 +8,7 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::bail;
+use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -15,6 +16,8 @@ use crate::file_kind::FileKind;
 use crate::linker_plugins::LinkerPlugin;
 use crate::linker_plugins::LtoInputInfo;
 use crate::linker_script::LinkerScript;
+use crate::macho_stub_library::DefinedStubLibrary;
+use crate::macho_stub_library::parse_defined_library;
 use crate::parsing::ParsedInputObject;
 use crate::platform;
 use crate::platform::Args;
@@ -59,7 +62,14 @@ pub(crate) struct LoadedInputs<'data, P: Platform> {
 
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
 
+    pub(crate) stub_libraries: Vec<LoadedStubLibrary<'data>>,
+
     pub(crate) lto_objects: Vec<Result<Box<LtoInputInfo<'data>>>>,
+}
+
+pub(crate) struct LoadedStubLibrary<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) defined_symbols: DefinedStubLibrary<'data>,
 }
 
 pub(crate) struct InputBytes<'data> {
@@ -189,6 +199,7 @@ enum LoadedFileState<'data, P: Platform> {
     Archive(&'data InputFile, Vec<InputRecord<'data, P>>),
     ThinArchive(Vec<&'data InputFile>, Vec<InputRecord<'data, P>>),
     LinkerScript(LoadedLinkerScriptState<'data>),
+    StubLibrary(&'data InputFile, DefinedStubLibrary<'data>),
     Error(Error),
 }
 
@@ -388,6 +399,7 @@ impl<'data> FileLoader<'data> {
         let mut loaded = LoadedInputs {
             objects: Vec::with_capacity(files.len()),
             linker_scripts: Vec::new(),
+            stub_libraries: Vec::new(),
             lto_objects: Vec::new(),
         };
 
@@ -433,6 +445,17 @@ impl<'data> FileLoader<'data> {
                 for i in loaded_linker_script_state.file_indexes {
                     self.extract_file(i, files, loaded, plugin)?;
                 }
+            }
+            Some(LoadedFileState::StubLibrary(input_file, defined_stub_library)) => {
+                self.has_dynamic = true;
+                loaded.stub_libraries.push(LoadedStubLibrary {
+                    input: InputRef {
+                        file: input_file,
+                        entry: None,
+                    },
+                    defined_symbols: defined_stub_library,
+                });
+                self.loaded_files.push(input_file);
             }
             Some(LoadedFileState::Error(error)) => {
                 // For now, we just report the first error that we come to.
@@ -637,6 +660,12 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                     script: script.script,
                 }))
             }
+            FileKind::MachOStubLibrary => {
+                let defined_library = parse_defined_library(str::from_utf8(input_file.data())?)?;
+                tracing::debug!(file = ?input_file.filename, symbols = defined_library.symbols.len(),
+                    weak_symbols = defined_library.weak_symbols.len(), "loaded TBD library");
+                Ok(LoadedFileState::StubLibrary(input_file, defined_library))
+            }
             _ => {
                 let parsed = self.process_input(input_ref, &Arc::new(file), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
@@ -710,6 +739,10 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
+        ensure!(
+            kind != FileKind::FatMachOObject,
+            "Fat object file is not supported yet: {input_ref}"
+        );
 
         let input_bytes = InputBytes {
             kind,
@@ -718,9 +751,16 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
             modifiers: input_ref.file.modifiers,
         };
 
-        let object = ParsedInputObject::new(&input_bytes, self.args);
+        let object = InputRecord::Object(ParsedInputObject::new(&input_bytes, self.args));
 
-        Ok(InputRecord::Object(object))
+        if object.is_dynamic_object() && !input_ref.file.modifiers.allow_shared {
+            bail!(
+                "Attempted static link of dynamic object {}",
+                input_ref.file.filename.display()
+            );
+        }
+
+        Ok(object)
     }
 }
 
@@ -776,6 +816,17 @@ impl Input {
                     }
                 }
                 let filename = format!("lib{lib_name}.a");
+                if let Some(path) = search_for_file(
+                    args.lib_search_path(),
+                    self.search_first.as_ref(),
+                    &filename,
+                ) {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(&path)?,
+                        original: PathBuf::from(filename),
+                    });
+                }
+                let filename = format!("lib{lib_name}.tbd");
                 if let Some(path) = search_for_file(
                     args.lib_search_path(),
                     self.search_first.as_ref(),

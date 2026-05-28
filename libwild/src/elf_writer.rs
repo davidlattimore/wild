@@ -30,7 +30,6 @@ use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::VersionDef;
 use crate::elf::Versym;
-use crate::elf::write_relocation_to_buffer;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
@@ -56,6 +55,7 @@ use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::compute_allocations;
+use crate::linker_script::Expression;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -65,6 +65,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
+use crate::parsing::SymbolLoc;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::platform;
@@ -87,6 +88,7 @@ use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::thunks::ThunkBlockId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
@@ -126,11 +128,14 @@ use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::ParallelBridge;
-use rayon::iter::ParallelIterator;
-use rayon::slice::ParallelSliceMut;
+use rayon::iter::IntoParallelIterator as _;
+use rayon::iter::IntoParallelRefMutIterator as _;
+use rayon::iter::ParallelBridge as _;
+use rayon::iter::ParallelIterator as _;
+use rayon::slice::ParallelSliceMut as _;
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::io::Cursor;
 use std::io::Write;
@@ -161,12 +166,12 @@ struct RelocationCache<R> {
 #[derive(Clone, Copy)]
 enum SymbolSection {
     /// One of the SHN values.
-    Raw(u16),
+    Raw(object::elf::SymbolSection),
     Index(u32),
 }
 
-impl From<u16> for SymbolSection {
-    fn from(value: u16) -> Self {
+impl From<object::elf::SymbolSection> for SymbolSection {
+    fn from(value: object::elf::SymbolSection) -> Self {
         SymbolSection::Raw(value)
     }
 }
@@ -180,7 +185,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
     if layout.args().should_write_eh_frame_hdr {
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
@@ -212,7 +217,7 @@ fn write_gnu_build_id_note(
         BuildIdOption::None => return Ok(()),
     };
 
-    let mut buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let mut buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     let e = LittleEndian;
     let (note_header, mut rest) =
         from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
@@ -241,7 +246,9 @@ fn write_file_contents<'data, A: Arch<Platform = Elf>>(
     layout: &ElfLayout<'data>,
 ) -> Result {
     timing_phase!("Write data to file");
-    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let (mut section_buffers, mut padding) =
+        split_output_into_sections(layout, &mut sized_output.out);
+    padding.fill_zero();
 
     let sym_index_map = if layout.args().should_output_partial_object() {
         build_sym_index_map(layout)
@@ -307,7 +314,7 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {
-    if sframe_buffer.is_empty() {
+    if layout.args().discard_sframe || sframe_buffer.is_empty() {
         return Ok(());
     }
 
@@ -365,9 +372,7 @@ fn write_program_headers(
         let e = LittleEndian;
         let segment_details = layout.program_segments.segment_def(segment_id);
 
-        segment_header
-            .p_type
-            .set(e, segment_details.segment_type.raw());
+        segment_header.p_type.set(e, segment_details.segment_type);
 
         // Support executable stack (Wild defaults to non-executable stack)
         let mut segment_flags = segment_details.segment_flags;
@@ -375,7 +380,7 @@ fn write_program_headers(
             segment_flags |= pf::EXECUTABLE;
         }
 
-        segment_header.p_flags.set(e, segment_flags.raw());
+        segment_header.p_flags.set(e, segment_flags);
         segment_header
             .p_offset
             .set(e, segment_sizes.file_offset as u64);
@@ -407,13 +412,13 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header.e_ident.magic = object::elf::ELFMAG;
     header.e_ident.class = object::elf::ELFCLASS64;
     header.e_ident.data = object::elf::ELFDATA2LSB; // Little endian
-    header.e_ident.version = 1;
+    header.e_ident.version = object::elf::EV_CURRENT;
     header.e_ident.os_abi = object::elf::ELFOSABI_NONE;
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty);
     header.e_machine.set(e, A::arch_identifier());
-    header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
+    header.e_version.set(e, object::elf::EV_CURRENT.0.into());
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(
         e,
@@ -429,7 +434,7 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     );
     header
         .e_flags
-        .set(e, layout.properties_and_attributes.eflags.0);
+        .set(e, layout.properties_and_attributes.eflags);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(
         e,
@@ -456,14 +461,9 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
         .output_sections
         .output_index_of_section(output_section_id::SHSTRTAB)
         .expect("we always write .shstrtab");
-    header.e_shstrndx.set(
-        e,
-        if shstrndx >= u32::from(object::elf::SHN_LORESERVE) {
-            object::elf::SHN_XINDEX
-        } else {
-            shstrndx as u16
-        },
-    );
+    header
+        .e_shstrndx
+        .set(e, object::elf::SymbolSection::new(shstrndx));
     Ok(())
 }
 
@@ -511,12 +511,12 @@ impl<'out> VersionWriter<'out> {
         }
     }
 
-    fn set_next_symbol_version(&mut self, index: u16) -> Result {
+    fn set_next_symbol_version(&mut self, index: object::elf::VersionIndex) -> Result {
         if let Some(versym_table) = self.versym.as_mut() {
             let versym = versym_table
                 .split_off_first_mut()
                 .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
-            versym.0.set(LittleEndian, index);
+            versym.0.set(LittleEndian, index.into());
         }
         Ok(())
     }
@@ -1314,6 +1314,11 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     }
 
     #[inline(always)]
+    fn undefined_symbol(&mut self, is_local: bool, name: &[u8]) -> Result<&mut SymtabEntry> {
+        self.define_symbol(is_local, object::elf::SHN_UNDEF.into(), 0, 0, name)
+    }
+
+    #[inline(always)]
     fn define_symbol(
         &mut self,
         is_local: bool,
@@ -1367,10 +1372,14 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
 
         let (index, shndx) = match section {
             SymbolSection::Raw(shndx) => (0, shndx),
-            SymbolSection::Index(index) if index >= u32::from(object::elf::SHN_LORESERVE) => {
-                (index, object::elf::SHN_XINDEX)
+            SymbolSection::Index(index) => {
+                let shndx = object::elf::SymbolSection::new(index);
+                if shndx == object::elf::SHN_XINDEX {
+                    (index, shndx)
+                } else {
+                    (0, shndx)
+                }
             }
-            SymbolSection::Index(index) => (0, index as u16),
         };
         if let Some(s) = symtab_shndx_entries {
             *s = index;
@@ -1381,8 +1390,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
         entry.st_name.set(e, string_offset);
-        entry.st_info = 0;
-        entry.st_other = 0;
+        entry.st_info = object::elf::SymbolInfo(0);
+        entry.st_other = object::elf::SymbolOther(0);
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
         entry.st_size.set(e, size);
@@ -1537,6 +1546,86 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     } else if !layout.args().should_strip_all() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
+    if object.owns_thunk_block
+        && let Some(addresses) = layout
+            .thunk_block_addresses
+            .get(object.thunk_block_id.as_usize())
+    {
+        write_thunks::<A>(
+            addresses,
+            buffers,
+            layout,
+            &mut table_writer.debug_symbol_writer,
+        )?;
+    }
+    Ok(())
+}
+
+/// Write thunk instructions for a set of (SymbolId -> thunk_address) mappings.
+///
+/// Thunks are sorted by SymbolId for determinism and written consecutively into the primary
+/// function part buffer. Space must already have been reserved during `finalise_sizes`.
+fn write_thunks<'data, A: Arch<Platform = Elf>>(
+    thunk_addresses: &BTreeMap<crate::symbol_db::SymbolId, u64>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &ElfLayout<'data>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+) -> Result {
+    if thunk_addresses.is_empty() {
+        return Ok(());
+    }
+
+    let config = A::thunk_config().expect("write_thunks called without thunk config");
+    let thunk_size = config.thunk_size as usize;
+    let primary_part_id = config.primary_function_part_id;
+    let emit_symbols = !layout.args().should_strip_all();
+
+    let text_section_id = primary_part_id.output_section_id();
+    let text_shndx = layout
+        .output_sections
+        .output_index_of_section(text_section_id)
+        .unwrap_or(0);
+
+    for (symbol_id, &thunk_address) in thunk_addresses {
+        debug_assert_ne!(thunk_address, 0, "Thunk address should have been assigned");
+
+        let res = layout
+            .merged_symbol_resolution(*symbol_id)
+            .with_context(|| {
+                format!(
+                    "No resolution for symbol {} needed by thunk",
+                    layout.symbol_db.symbol_name_for_display(*symbol_id)
+                )
+            })?;
+
+        let target_address = res.plt_address().unwrap_or(res.raw_value);
+
+        let buf = buffers.get_mut(primary_part_id);
+        let thunk_buf = buf
+            .split_off_mut(..thunk_size)
+            .ok_or_else(|| crate::file_writer::insufficient_allocation("thunk space in .text"))?;
+
+        A::write_thunk(thunk_address, target_address, thunk_buf);
+
+        if emit_symbols {
+            let orig_name = layout
+                .symbol_db
+                .symbol_name(*symbol_id)
+                .map(|n| n.bytes().to_vec())
+                .unwrap_or_default();
+            let mut thunk_name = crate::elf::THUNK_SYMBOL_PREFIX.as_bytes().to_vec();
+            thunk_name.extend_from_slice(&orig_name);
+            let entry = symbol_writer.define_symbol(
+                true,
+                SymbolSection::Index(text_shndx),
+                thunk_address,
+                thunk_size as u64,
+                &thunk_name,
+            )?;
+            entry.set_st_info(object::elf::STB_LOCAL, object::elf::STT_FUNC);
+        }
+    }
+
     Ok(())
 }
 
@@ -1668,7 +1757,7 @@ fn write_rela_sections<'data>(
     let e = LittleEndian;
 
     for (sec_idx, header) in object.object.enumerate_sections() {
-        let section_name = object.object.section_name(header).unwrap_or_default();
+        let section_name = object.object.section_name(sec_idx).unwrap_or_default();
         if !section_name.starts_with(b".rela") && !section_name.starts_with(b".crel") {
             continue;
         }
@@ -1914,6 +2003,14 @@ fn write_debug_section<'data, A: Arch<Platform = Elf>>(
     section_index: object::SectionIndex,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
+    let part_id = object.section_part_id(section_index, &layout.symbol_db.section_part_ids);
+    let section_id = part_id.output_section_id();
+
+    if layout.compressed_debug_sections.get(section_id).is_some() {
+        // Compressed debug sections are written by the epilogue.
+        return Ok(());
+    }
+
     let out = write_section_raw(object, layout, section, section_index, buffers)?;
     let relocations = object.relocations(section_index)?;
     let result = match relocations {
@@ -2116,7 +2213,7 @@ fn write_symbols<'data>(
             }
             let name = RawSymbolName::parse(name).name;
             let entry = symbol_writer
-                .define_symbol(false, object::elf::SHN_UNDEF.into(), 0, 0, name)
+                .undefined_symbol(false, name)
                 .with_context(|| {
                     format!(
                         "Failed to write undefined symbol `{}` for partial link",
@@ -2149,7 +2246,7 @@ fn apply_relocations<
         .address()
         .context("Attempted to apply relocations to a section that we didn't load")?;
     let object_section = object.object.section(section_index)?;
-    let section_flags = SectionFlags::from_header(object_section);
+    let section_flags = object_section.sh_flags(LittleEndian);
     let mut modifier = RelocationModifier::Normal;
 
     let mut relocation_count = 0;
@@ -2187,6 +2284,7 @@ fn apply_relocations<
                 section_address,
                 is_writable: object_section.is_writable(),
                 section_flags,
+                part_id: object.section_part_id(section_index, &layout.symbol_db.section_part_ids),
             },
             layout,
             out,
@@ -2216,7 +2314,7 @@ fn apply_relocations<
     Ok(())
 }
 
-fn apply_debug_relocations<
+pub(crate) fn apply_debug_relocations<
     'data,
     A: Arch<Platform = Elf>,
     R: Relocation,
@@ -2228,8 +2326,7 @@ fn apply_debug_relocations<
     relocations: I,
     layout: &ElfLayout<'data>,
 ) -> Result {
-    let object_section = object.object.section(section_index)?;
-    let section_name = object.object.section_name(object_section)?;
+    let section_name = object.object.section_name(section_index)?;
 
     // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
     // However, the change is premature as consumers of the DWARF format don't fully support
@@ -2318,7 +2415,7 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let section_flags = SectionFlags::from_header(eh_frame_section);
+    let section_flags = eh_frame_section.sh_flags(LittleEndian);
     let mut relocations = relocations.peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
@@ -2431,6 +2528,9 @@ fn write_eh_frame_relocations<'data, A: Arch<Platform = Elf>, R: Relocation>(
                         section_address: output_pos as u64 + table_writer.eh_frame_start_address,
                         is_writable: false,
                         section_flags,
+                        // .eh_frame relocations never need thunks; use the eh_frame section's
+                        // base part as a placeholder so the thunk lookup always misses.
+                        part_id: output_section_id::EH_FRAME.base_part_id(),
                     },
                     layout,
                     entry_out,
@@ -2529,6 +2629,7 @@ struct SectionInfo<S: platform::SectionFlags> {
     section_address: u64,
     is_writable: bool,
     section_flags: S,
+    part_id: crate::part_id::PartId,
 }
 
 fn get_resolution<'data, R: Relocation>(
@@ -3145,7 +3246,6 @@ fn apply_relocation<
         });
         tracing::trace!(
             %flags,
-            %flags,
             relaxation_kind = ?relaxation.debug_kind(),
             ?rel_info.kind,
             %rel_info.size,
@@ -3173,9 +3273,92 @@ fn apply_relocation<
             "relocation applied");
     }
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
+    if let Some(thunked_value) = maybe_get_thunk_for_relocation::<A>(
+        object_layout,
+        section_info,
+        layout,
+        rel_info,
+        local_symbol_id,
+        place,
+        value,
+    )? {
+        value = thunked_value;
+    };
+
+    rel_info.write_to_buffer(value, &mut out[offset_in_section..])?;
 
     Ok(next_modifier)
+}
+
+/// Checks if we need to use a thunk for a relocation and if we do, return the value to use for the
+/// thunk.
+fn maybe_get_thunk_for_relocation<A: Arch<Platform = Elf>>(
+    object_layout: &ObjectLayout<Elf>,
+    section_info: SectionInfo<SectionFlags>,
+    layout: &Layout<Elf>,
+    rel_info: RelocationKindInfo,
+    local_symbol_id: SymbolId,
+    place: u64,
+    value: u64,
+) -> Result<Option<u64>> {
+    let Some(config) = A::thunk_config() else {
+        return Ok(None);
+    };
+
+    if !rel_info.thunkable {
+        return Ok(None);
+    }
+
+    if rel_info.range.contains(value as i64) {
+        return Ok(None);
+    }
+
+    let canonical_id = layout.symbol_db.definition(local_symbol_id);
+
+    let thunk_id = if section_info.part_id == config.primary_function_part_id {
+        object_layout.thunk_block_id
+    } else {
+        ThunkBlockId::FIRST
+    };
+
+    let thunk_address_opt = layout
+        .thunk_block_addresses
+        .get(thunk_id.as_usize())
+        .and_then(|m| m.get(&canonical_id))
+        .copied();
+
+    if let Some(thunk_address) = thunk_address_opt {
+        if thunk_address == 0 {
+            bail!(
+                "Thunk address not yet allocated for symbol {}",
+                layout.symbol_db.symbol_name_for_display(local_symbol_id)
+            );
+        }
+
+        let mask = get_page_mask(rel_info.mask);
+        let new_value = thunk_address
+            .wrapping_add(rel_info.bias)
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(place.bitand(mask.place));
+
+        tracing::trace!(
+            old_value = value,
+            new_value,
+            thunk_address,
+            "Using thunk instead of out-of-range branch"
+        );
+
+        return Ok(Some(new_value));
+    }
+
+    bail!(
+        "Branch relocation out of range by {over} for symbol {sym} \
+         but no thunk allocated. Part: {part}. Offset: {offset}",
+        over = rel_info.range.overrun(value as i64),
+        sym = layout.symbol_db.symbol_name_for_display(local_symbol_id),
+        part = layout.output_sections.part_debug(section_info.part_id),
+        offset = value as i64,
+    );
 }
 
 fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
@@ -3301,7 +3484,7 @@ fn apply_debug_relocation<'data, A: Arch<Platform = Elf>, R: Relocation>(
         section_tombstone_value
     };
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
+    rel_info.write_to_buffer(value, &mut out[offset_in_section as usize..])?;
 
     Ok(())
 }
@@ -3418,9 +3601,7 @@ fn write_prelude<'data, A: Arch<Platform = Elf>>(
 
     // Define the null dynamic symbol.
     if layout.symbol_db.output_kind.needs_dynsym() {
-        table_writer
-            .dynsym_writer
-            .define_symbol(false, 0.into(), 0, 0, &[])?;
+        table_writer.dynsym_writer.undefined_symbol(false, &[])?;
     }
 
     Ok(())
@@ -3443,17 +3624,7 @@ fn write_merged_strings(
         if merged.len() > 0 {
             let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
 
-            merged
-                .buckets
-                .iter()
-                .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
-                .par_bridge()
-                .for_each(|(bucket, mut buffer)| {
-                    for string in &bucket.strings {
-                        let dest = buffer.split_off_mut(..string.len()).unwrap();
-                        dest.copy_from_slice(string);
-                    }
-                });
+            write_merged_strings_to_buffer(merged, buffer);
         }
     });
 
@@ -3466,6 +3637,23 @@ fn write_merged_strings(
             .unwrap()
             .copy_from_slice(prelude.identity.as_bytes());
     }
+}
+
+pub(crate) fn write_merged_strings_to_buffer(
+    merged: &crate::string_merging::MergedStringsSection,
+    buffer: &mut &mut [u8],
+) {
+    merged
+        .buckets
+        .iter()
+        .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
+        .par_bridge()
+        .for_each(|(bucket, mut buffer)| {
+            for string in &bucket.strings {
+                let dest = buffer.split_off_mut(..string.len()).unwrap();
+                dest.copy_from_slice(string);
+            }
+        });
 }
 
 fn write_plt_got_entries<'data, A: Arch<Platform = Elf>>(
@@ -3525,7 +3713,7 @@ fn write_symbol_table_entries(
     layout: &ElfLayout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    symbol_writer.define_symbol(true, 0.into(), 0, 0, &[])?;
+    symbol_writer.undefined_symbol(true, &[])?;
 
     if layout.args().should_output_partial_object() {
         write_section_symbols(symbol_writer, layout)?;
@@ -3603,12 +3791,17 @@ fn write_verdef(
 
         verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
         // Mark first entry as base version
-        verdef_out
-            .vd_flags
-            .set(e, if i == 0 { object::elf::VER_FLG_BASE } else { 0 });
+        verdef_out.vd_flags.set(
+            e,
+            if i == 0 {
+                object::elf::VER_FLG_BASE
+            } else {
+                object::elf::VersionFlags(0)
+            },
+        );
         verdef_out
             .vd_ndx
-            .set(e, i as u16 + object::elf::VER_NDX_GLOBAL);
+            .set(e, object::elf::VER_NDX_GLOBAL + i as u16);
         let aux_count = if verdef.parent_index.is_some() { 2 } else { 1 };
         verdef_out.vd_cnt.set(e, aux_count);
         verdef_out.vd_hash.set(e, object::elf::hash(name));
@@ -3807,9 +4000,34 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
         }
     }
 
+    write_compressed_debug_sections(layout, buffers);
     Ok(())
 }
 
+fn write_compressed_debug_sections(
+    layout: &ElfLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) {
+    verbose_timing_phase!("Write compressed debug sections");
+
+    let mut work = Vec::new();
+
+    for (section_id, _section_info) in layout.output_sections.ids_with_info() {
+        if let Some(compressed_section) = layout.compressed_debug_sections.get(section_id) {
+            let part_id = section_id.part_id_with_alignment(alignment::MIN);
+            let buffer = buffers.get_mut(part_id);
+            for chunk in &compressed_section.compressed_chunks {
+                let out = buffer.split_off_mut(..chunk.len()).unwrap();
+                work.push((out, chunk));
+            }
+        }
+    }
+
+    work.par_iter_mut().for_each(|(out, chunk)| {
+        verbose_timing_phase!("Copy compressed chunk");
+        out.copy_from_slice(chunk);
+    });
+}
 
 fn write_gnu_property_notes(
     layout: &ElfLayout,
@@ -3833,7 +4051,7 @@ fn write_gnu_property_notes(
     for note in &layout.properties_and_attributes.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
-        property.pr_type = note.ptype;
+        property.pr_type = note.ptype.0;
         property.pr_datasz = size_of_val(&property.pr_data) as u32;
         property.pr_data = note.data;
         property.pr_padding = 0;
@@ -4135,40 +4353,34 @@ fn write_linker_script_dynsym(
 
 /// Get the section index and type for a symbol.
 /// This is used to copy attributes from a target symbol to a defsym alias.
-fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(SymbolSection, u8)> {
+fn get_symbol_attributes(
+    layout: &ElfLayout,
+    symbol_id: SymbolId,
+) -> Result<(SymbolSection, object::elf::SymbolType)> {
     let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-    let file = layout.symbol_db.file(file_id);
 
-    match file {
-        crate::grouping::SequencedInput::Object(obj) => {
+    match layout.file_layout(file_id) {
+        FileLayout::Object(obj) => {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let sym = obj.parsed.object.symbol(local_index)?;
+            let sym = obj.object.symbol(local_index)?;
 
             let shndx = obj
-                .parsed
                 .object
                 .symbol_section(sym, local_index)?
-                .and_then(|section_index| match layout.file_layout(file_id) {
-                    FileLayout::Object(obj_layout) => obj_layout
-                        .sections
-                        .get(section_index.0)
-                        .and_then(|slot| match slot {
-                            SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => Some(
-                                obj_layout
-                                    .section_part_id(
-                                        section_index,
-                                        &layout.symbol_db.section_part_ids,
-                                    )
-                                    .output_section_id(),
-                            ),
-                            _ => None,
-                        })
-                        .and_then(|output_section_id| {
+                .and_then(|section_index| {
+                    let slot = &obj.sections[section_index.0];
+                    match slot {
+                        SectionSlot::Loaded(_) | SectionSlot::MergeStrings(_) => {
+                            let output_section_id = obj
+                                .section_part_id(section_index, &layout.symbol_db.section_part_ids)
+                                .output_section_id();
+
                             layout
                                 .output_sections
                                 .output_index_of_section(output_section_id)
-                        }),
-                    _ => None,
+                        }
+                        _ => None,
+                    }
                 })
                 .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
 
@@ -4176,13 +4388,10 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
 
             Ok((shndx, st_type))
         }
-        crate::grouping::SequencedInput::LinkerScript(script) => {
+        FileLayout::LinkerScript(script) => {
             let local_index = symbol_id.to_input(script.symbol_id_range);
-            let shndx = script
-                .parsed
-                .symbol_defs
-                .get(local_index.0)
-                .and_then(|def_info| def_info.section_id())
+            let shndx = script.internal_symbols.symbol_definitions[local_index.0]
+                .section_id()
                 .and_then(|section_id| {
                     let section_id = layout.output_sections.primary_output_section(section_id);
                     layout.output_sections.output_index_of_section(section_id)
@@ -4191,11 +4400,9 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
 
             Ok((shndx, object::elf::STT_NOTYPE))
         }
-        crate::grouping::SequencedInput::Prelude(prelude) => {
+        FileLayout::Prelude(prelude) => {
             let offset = symbol_id.offset_from(SymbolId::undefined());
-            let def_info = prelude.symbol_definitions.get(offset).with_context(|| {
-                format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id))
-            })?;
+            let def_info = &prelude.internal_symbols.symbol_definitions[offset];
             let shndx = def_info
                 .section_id()
                 .and_then(|section_id| {
@@ -4205,14 +4412,50 @@ fn get_symbol_attributes(layout: &ElfLayout, symbol_id: SymbolId) -> Result<(Sym
                 .map_or(object::elf::SHN_ABS.into(), SymbolSection::Index);
             Ok((shndx, def_info.symbol.st_type()))
         }
-        crate::grouping::SequencedInput::SyntheticSymbols(_) => {
+        FileLayout::SyntheticSymbols(_) => {
             // For other non-object files (e.g. epilogue), default to ABS
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
-        #[cfg(feature = "plugins")]
-        crate::grouping::SequencedInput::LtoInput(_) => {
+        FileLayout::Dynamic(_) | FileLayout::Epilogue(_) | FileLayout::NotLoaded => {
             Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE))
         }
+    }
+}
+
+fn get_defsym_attributes(
+    layout: &ElfLayout,
+    def_info: &crate::parsing::InternalSymDefInfo<Elf>,
+) -> Result<(SymbolSection, object::elf::SymbolType), error::Error> {
+    let crate::parsing::SymbolPlacement::Redirect(redirect) = &def_info.placement else {
+        unreachable!()
+    };
+    if let Expression::Symbol(target_name) = redirect.expression {
+        let target_symbol_id =
+            layout
+                .symbol_db
+                .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
+                    target_name,
+                ));
+
+        if let Some(target_id) = target_symbol_id {
+            let canonical_id = layout.symbol_db.definition(target_id);
+            get_symbol_attributes(layout, canonical_id)
+        } else {
+            Err(redirect.missing_target(target_name))
+        }
+    } else {
+        let shndx = match redirect.loc {
+            SymbolLoc::SectionStart(os) | SymbolLoc::SectionEnd(os) => {
+                let os = layout.output_sections.primary_output_section(os);
+                layout
+                    .output_sections
+                    .output_index_of_section(os)
+                    .unwrap_or(0)
+            }
+            SymbolLoc::FirstSection => 1,
+            SymbolLoc::None => return Ok((object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)),
+        };
+        Ok((SymbolSection::Index(shndx), object::elf::STT_NOTYPE))
     }
 }
 
@@ -4239,8 +4482,7 @@ fn write_internal_dynsym(
 ) -> Result {
     if matches!(
         def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+        crate::parsing::SymbolPlacement::Redirect(_)
     ) {
         return write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info);
     }
@@ -4282,40 +4524,13 @@ fn write_defsym_dynsym(
     symbol_id: SymbolId,
     def_info: &crate::parsing::InternalSymDefInfo<Elf>,
 ) -> Result {
-    debug_assert!(matches!(
-        def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_, _)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ));
+    let (shndx, st_type) = get_defsym_attributes(layout, def_info)?;
 
     let resolution = layout
         .local_symbol_resolution(symbol_id)
         .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
     let address = resolution.raw_value;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
-
-    // For DefsymSymbol, try to get the attributes (section, type) from the target symbol
-    let (shndx, st_type) =
-        if let crate::parsing::SymbolPlacement::DefsymSymbol(target_name, _offset) =
-            def_info.placement
-        {
-            let target_symbol_id =
-                layout
-                    .symbol_db
-                    .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        target_name.as_bytes(),
-                    ));
-
-            if let Some(target_id) = target_symbol_id {
-                get_symbol_attributes(layout, target_id)?
-            } else {
-                return Err(layout
-                    .symbol_db
-                    .missing_defsym_target_error(def_info.name, target_name));
-            }
-        } else {
-            (object::elf::SHN_ABS.into(), object::elf::STT_NOTYPE)
-        };
 
     let entry = dynsym_writer
         .define_symbol(false, shndx, address, 0, name.bytes())
@@ -4504,26 +4719,12 @@ fn write_internal_symbols(
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
 
-        // For DefsymSymbol, get attributes from the target symbol
-        let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(
-            target_name,
-            _offset,
-        ) = def_info.placement
-        {
-            let target_symbol_id =
-                layout
-                    .symbol_db
-                    .get_unversioned(&crate::symbol::UnversionedSymbolName::prehashed(
-                        target_name.as_bytes(),
-                    ));
-
-            if let Some(target_id) = target_symbol_id {
-                get_symbol_attributes(layout, target_id)?
-            } else {
-                return Err(layout
-                    .symbol_db
-                    .missing_defsym_target_error(def_info.name, target_name));
-            }
+        // For Redirect, get attributes from the target symbol
+        let (mut shndx, st_type) = if matches!(
+            def_info.placement,
+            crate::parsing::SymbolPlacement::Redirect(_)
+        ) {
+            get_defsym_attributes(layout, def_info)?
         } else {
             let shndx = def_info
                 .section_id()
@@ -4756,7 +4957,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(
         object::elf::DT_PLTREL,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
-        |_| object::elf::DT_RELA as u64,
+        |_| object::elf::DT_RELA.0 as u64,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTRELSZ,
@@ -4839,35 +5040,32 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
-        |inputs| inputs.args.enable_new_dtags && inputs.dt_flags() != 0,
-        |inputs| inputs.dt_flags(),
+        |inputs| inputs.args.enable_new_dtags && inputs.dt_flags().0 != 0,
+        |inputs| inputs.dt_flags().0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS_1,
-        |inputs| inputs.dt_flags_1() != 0,
-        |inputs| inputs.dt_flags_1(),
+        |inputs| inputs.dt_flags_1().0 != 0,
+        |inputs| inputs.dt_flags_1().0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_BIND_NOW,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_BIND_NOW)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_BIND_NOW)
         },
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_SYMBOLIC,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_SYMBOLIC)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_SYMBOLIC)
         },
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_TEXTREL,
         |inputs| {
-            !inputs.args.enable_new_dtags
-                && (inputs.dt_flags() & u64::from(object::elf::DF_TEXTREL)) != 0
+            !inputs.args.enable_new_dtags && inputs.dt_flags().contains(object::elf::DF_TEXTREL)
         },
         |_inputs| 0,
     ),
@@ -4878,14 +5076,14 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_RISCV_VARIANT_CC,
-        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RISCV64,
+        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RiscV64,
         |_inputs| 0,
     ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),
 ];
 
 struct DynamicEntryWriter {
-    tag: i64,
+    tag: object::elf::DynamicTag,
     is_present_cb: fn(&DynamicEntryInputs) -> bool,
     cb: fn(&DynamicEntryInputs) -> u64,
 }
@@ -4901,8 +5099,8 @@ struct DynamicEntryInputs<'layout> {
 }
 
 impl DynamicEntryInputs<'_> {
-    fn dt_flags(&self) -> u64 {
-        let mut flags = 0;
+    fn dt_flags(&self) -> object::elf::DynamicFlags {
+        let mut flags = object::elf::DynamicFlags(0);
         flags |= object::elf::DF_BIND_NOW;
 
         if !self.output_kind.is_executable() && self.has_static_tls {
@@ -4913,11 +5111,11 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_ORIGIN;
         }
 
-        u64::from(flags)
+        flags
     }
 
-    fn dt_flags_1(&self) -> u64 {
-        let mut flags = 0;
+    fn dt_flags_1(&self) -> object::elf::DynamicFlags1 {
+        let mut flags = object::elf::DynamicFlags1(0);
         flags |= object::elf::DF_1_NOW;
 
         if self.output_kind.is_executable() && self.output_kind.is_relocatable() {
@@ -4938,7 +5136,7 @@ impl DynamicEntryInputs<'_> {
             }
         }
 
-        u64::from(flags)
+        flags
     }
 
     fn vma_of_section(&self, section_id: OutputSectionId) -> u64 {
@@ -4955,7 +5153,10 @@ impl DynamicEntryInputs<'_> {
 }
 
 impl DynamicEntryWriter {
-    const fn new(tag: i64, cb: fn(&DynamicEntryInputs) -> u64) -> DynamicEntryWriter {
+    const fn new(
+        tag: object::elf::DynamicTag,
+        cb: fn(&DynamicEntryInputs) -> u64,
+    ) -> DynamicEntryWriter {
         DynamicEntryWriter {
             tag,
             is_present_cb: |_| true,
@@ -4964,7 +5165,7 @@ impl DynamicEntryWriter {
     }
 
     const fn optional(
-        tag: i64,
+        tag: object::elf::DynamicTag,
         is_present_cb: fn(&DynamicEntryInputs) -> bool,
         cb: fn(&DynamicEntryInputs) -> u64,
     ) -> DynamicEntryWriter {
@@ -4999,7 +5200,7 @@ impl<'out> DynamicEntriesWriter<'out> {
         }
     }
 
-    fn write(&mut self, tag: i64, value: u64) -> Result {
+    fn write(&mut self, tag: object::elf::DynamicTag, value: u64) -> Result {
         let entry = self
             .out
             .split_off_first_mut()
@@ -5018,7 +5219,7 @@ impl<'out> DynamicEntriesWriter<'out> {
                 return;
             };
             let e = LittleEndian;
-            entry.d_tag.set(e, 0);
+            entry.d_tag.set(e, object::elf::DT_NULL);
             entry.d_val.set(e, 0);
         }
     }
@@ -5103,18 +5304,19 @@ fn write_section_headers(out: &mut [u8], layout: &ElfLayout) -> Result {
         let sh_type = if layout.args().use_android_relr_tags && section_type == sht::RELR {
             object::elf::SHT_ANDROID_RELR
         } else {
-            section_type.raw()
+            section_type
         };
         entry.sh_type.set(e, sh_type);
 
-        // TODO: Sections are always uncompressed and the output compression is not supported yet.
-        entry.sh_flags.set(
-            e,
-            output_sections
-                .section_flags(section_id)
-                .without(shf::COMPRESSED)
-                .raw(),
-        );
+        let mut flags = output_sections.section_flags(section_id);
+
+        if layout.compressed_debug_sections.get(section_id).is_some() {
+            flags = flags.with(shf::COMPRESSED);
+        } else {
+            flags = flags.without(shf::COMPRESSED);
+        }
+
+        entry.sh_flags.set(e, flags);
 
         let name = layout.output_sections.name(section_id).with_context(|| {
             format!(
@@ -5292,10 +5494,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                     ValueFlags::empty(),
                 )?;
             } else {
-                let entry =
-                    table_writer
-                        .dynsym_writer
-                        .define_symbol(false, 0.into(), 0, 0, name)?;
+                let entry = table_writer.dynsym_writer.undefined_symbol(false, name)?;
 
                 // Note, we copy st_info, but not st_other since we don't want to copy the
                 // visibility. We want to emit the symbol with default visibility, otherwise the
@@ -5350,7 +5549,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
         while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
             let input_version = verdef.vd_ndx.get(e);
             let flags = verdef.vd_flags.get(e);
-            let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+            let is_base = flags.contains(object::elf::VER_FLG_BASE);
 
             if is_base {
                 let name_offset = table_writer
@@ -5362,18 +5561,18 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 continue;
             }
 
-            if input_version == 0 {
+            if input_version.is_local() {
                 bail!("Invalid version index");
             }
 
             let output_version = object
                 .format_specific_layout
                 .version_mapping
-                .get(usize::from(input_version - 1))
+                .get(usize::from(input_version - object::elf::VER_NDX_GLOBAL))
                 .copied()
                 .unwrap_or_default();
 
-            if output_version != object::elf::VER_NDX_GLOBAL {
+            if !output_version.is_global() {
                 // Every VERDEF entry should have at least one AUX entry.
                 let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                 let name = aux_in.name(e, strings)?;
@@ -5395,7 +5594,7 @@ fn write_dynamic_file<'data, A: Arch<Platform = Elf>>(
                 aux_out.vna_other.set(e, output_version);
                 aux_out.vna_name.set(e, name_offset);
                 aux_out.vna_hash.set(e, sysv_name_hash);
-                aux_out.vna_flags.set(e, 0);
+                aux_out.vna_flags.set(e, object::elf::VersionFlags(0));
                 aux_index += 1;
             }
         }
@@ -5459,25 +5658,28 @@ fn write_copy_relocation_for_symbol<A: Arch<Platform = Elf>>(
 fn copy_symbol_version(
     versym_in: &[Versym],
     local_symbol_index: usize,
-    version_mapping: &[u16],
+    version_mapping: &[object::elf::VersionIndex],
     versym_out: &mut &mut [Versym],
 ) -> Result {
     let output_version =
         versym_in
             .get(local_symbol_index)
             .map_or(object::elf::VER_NDX_GLOBAL, |versym| {
-                let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-                if input_version <= object::elf::VER_NDX_GLOBAL {
+                let input_version = versym.0.get(LittleEndian).index();
+                if input_version.is_special() {
                     input_version
                 } else {
-                    version_mapping[usize::from(input_version) - 1]
+                    version_mapping[usize::from(input_version - object::elf::VER_NDX_GLOBAL)]
                 }
             });
 
-    write_symbol_version(versym_out, output_version)
+    write_symbol_version(versym_out, output_version.into())
 }
 
-fn write_symbol_version(versym_out: &mut &mut [Versym], version: u16) -> Result {
+fn write_symbol_version(
+    versym_out: &mut &mut [Versym],
+    version: object::elf::VersymIndex,
+) -> Result {
     versym_out
         .split_off_first_mut()
         .context("Insufficient .gnu.version allocation")?
@@ -5599,14 +5801,12 @@ fn should_reverse_contents(
         return false;
     }
 
-    file.section(section_index)
-        .and_then(|header| file.section_name(header))
-        .is_ok_and(|section_name| {
-            // .ctors and .dtors sections need their contents reversed when merged into
-            // .init_array/.fini_array
-            section_name.starts_with(secnames::CTORS_SECTION_NAME)
-                || section_name.starts_with(secnames::DTORS_SECTION_NAME)
-        })
+    file.section_name(section_index).is_ok_and(|section_name| {
+        // .ctors and .dtors sections need their contents reversed when merged into
+        // .init_array/.fini_array
+        section_name.starts_with(secnames::CTORS_SECTION_NAME)
+            || section_name.starts_with(secnames::DTORS_SECTION_NAME)
+    })
 }
 
 fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {

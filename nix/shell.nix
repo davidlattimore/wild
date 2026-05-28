@@ -10,6 +10,7 @@ pkgs.mkShell {
     pkgs.cargo-chef
     pkgs.llvmPackages_20.clang
     pkgs.clang-tools
+    pkgs.taplo
     pkgs.lld
     pkgs.glibc.out
     pkgs.glibc.static

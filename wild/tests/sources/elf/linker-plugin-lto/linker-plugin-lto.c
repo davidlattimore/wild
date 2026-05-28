@@ -5,6 +5,7 @@
 //#RequiresLinkerPlugin:true
 
 //#AbstractConfig:error
+//#RequiresLinkerPlugin:true
 
 //#Config:gcc:default
 //#CompArgs:-flto
@@ -18,6 +19,15 @@
 //#CompArgs:-flto
 //#LinkerDriver:clang
 //#LinkArgs:-Wl,-znow -flto -nostdlib -O0
+//#Object:runtime.c
+//#Object:linker-plugin-lto-2.c
+//#DiffIgnore:section.eh_frame.type
+
+//#Config:clang-thin:default
+//#Compiler:clang
+//#CompArgs:-flto=thin
+//#LinkerDriver:clang
+//#LinkArgs:-Wl,-znow -flto=thin -nostdlib -O0
 //#Object:runtime.c
 //#Object:linker-plugin-lto-2.c
 //#DiffIgnore:section.eh_frame.type
@@ -43,8 +53,8 @@
 //#ExpectError:(contains GCC-IR, but the linker plugin|Wild was compiled without linker-plugin support)
 //#Cross:false
 
-// LTO, but no linker plugin was supplied by the compiler. We could try to find
-// the plugin ourselves, but we don't currently support that.
+// LTO, but no linker plugin was supplied by the compiler. We could try to find the plugin
+// ourselves, but we don't currently support that.
 //#Config:clang-no-plugin:error
 //#Compiler:clang
 //#CompArgs:-flto
@@ -82,7 +92,13 @@
 //#SkipLinker:ld
 //#LinkArgs:-Wl,-znow -flto -nostdlib -Wl,-plugin-opt=jobs=foo
 //#Archive:empty.c:-flto
-//#ExpectError:(Error from linker plugin: Invalid parallelism level: foo|Wild was compiled without linker-plugin support)
+//#ExpectError:Error from linker plugin: Invalid parallelism level: foo
+
+//#Config:plugin-not-found:error
+//#Compiler:clang
+//#CompArgs:-flto
+//#LinkArgs:--plugin=/does/not/exist
+//#ExpectError:No such file or directory
 
 #include "../common/runtime.h"
 

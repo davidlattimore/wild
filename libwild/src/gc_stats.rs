@@ -94,10 +94,10 @@ fn write_gc_stats<'data, P: Platform>(
             let mut file_discarded = 0;
             let obj_part_ids = &section_part_ids[obj.section_id_range.as_usize()];
 
-            for ((slot, section), part_id) in obj
+            for ((slot, (sec_idx, section)), part_id) in obj
                 .sections
                 .iter()
-                .zip(obj.object.section_iter())
+                .zip(obj.object.enumerate_sections())
                 .zip(obj_part_ids)
             {
                 let output_section_id = part_id.output_section_id();
@@ -108,7 +108,7 @@ fn write_gc_stats<'data, P: Platform>(
                         if args.verbose_gc_stats() {
                             file_record
                                 .discarded_names
-                                .push(obj.object.section_name(section)?);
+                                .push(obj.object.section_name(sec_idx)?);
                         }
                     }
                     SectionSlot::Loaded(_) if output_section_id == output_section_id::TEXT => {

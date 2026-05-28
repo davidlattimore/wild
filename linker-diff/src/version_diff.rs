@@ -8,10 +8,7 @@ use object::Object;
 use object::ObjectSymbol;
 use object::elf;
 use object::elf::VER_FLG_BASE;
-use object::elf::VERSYM_HIDDEN;
-use object::elf::VERSYM_VERSION;
 use object::read::elf::Sym;
-use object::read::elf::VersionIndex;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
     report.add_diffs(crate::header_diff::diff_fields(
@@ -52,7 +49,7 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
             .strings(e, bin.elf_file.data(), strings_index)?;
 
     while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
-        let verdef_index = verdef.vd_ndx.get(e);
+        let verdef_index = verdef.vd_ndx.get(e).0;
         let mut verdef_version = String::new();
 
         if let Some(aux) = aux_iterator.next()? {
@@ -63,7 +60,7 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
         // The base version points to the name of the binary, which is problematic for integration
         // tests. They will add `.<linker_name>` or `.<linker_name>.so` to the output name.
         // Thus, we strip it here.
-        if verdef.vd_flags.get(e) & VER_FLG_BASE != 0 {
+        if verdef.vd_flags.get(e).contains(VER_FLG_BASE) {
             verdef_version = verdef_version.trim_end_matches(".so").to_string();
             if let Some(pos) = verdef_version.rfind(".") {
                 verdef_version.truncate(pos);
@@ -117,17 +114,14 @@ fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
         };
 
         let version_index_raw = versym.0.get(e);
-        let version_index = version_index_raw & VERSYM_VERSION;
-        let hidden = version_index_raw & VERSYM_HIDDEN == VERSYM_HIDDEN;
+        let version_index = version_index_raw.index();
+        let hidden = version_index_raw.is_hidden();
 
         // TODO: Currently Wild doesn't differentiate between local and global symbols.
-        let version_name = if version_index <= 1 {
+        let version_name = if version_index.is_special() {
             b"local or global"
         } else {
-            versions
-                .version(VersionIndex(version_index))?
-                .unwrap()
-                .name()
+            versions.version(version_index)?.unwrap().name()
         };
 
         // GNU ld creates an empty symbol for each version, Wild doesn't, so we skip it.

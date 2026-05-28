@@ -1,4 +1,3 @@
-use crate::args::WarningCallback;
 /// Evaluation of linker script ASSERT commands after layout is complete.
 ///
 /// NOTE: ASSERT expression evaluation currently supports a subset of GNU ld expression
@@ -7,15 +6,19 @@ use crate::args::WarningCallback;
 use crate::bail;
 use crate::error::Context;
 use crate::error::Result;
-use crate::error::Warning;
 use crate::grouping::Group;
 use crate::layout::OutputRecordLayout;
+use crate::layout::Resolution;
 use crate::linker_script::Expression;
 use crate::linker_script::MemoryRegion;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
+use crate::parsing::SymbolLoc;
+use crate::platform::Args;
 use crate::platform::Platform;
+use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::SymbolDb;
 
 /// Compute 1-based line number by counting newlines before `remainder` in `file_bytes`.
 fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
@@ -27,12 +30,12 @@ fn line_number(file_bytes: &[u8], remainder: &[u8]) -> u32 {
 /// Evaluate all ASSERT commands from all processed linker scripts.
 /// Must be called after layout is complete so section sizes/addresses are known.
 pub(crate) fn evaluate_assertions<'data, P: Platform>(
-    groups: &[Group<'data, P>],
+    symbol_db: &SymbolDb<'data, P>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
-    warning_callback: &WarningCallback,
+    resolutions: &[Option<Resolution<P>>],
 ) -> Result {
-    for group in groups {
+    for group in &symbol_db.groups {
         let Group::LinkerScripts(scripts) = group else {
             continue;
         };
@@ -42,10 +45,26 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
                 let line = line_number(parsed.file_bytes, assertion.remainder);
                 let result = evaluate_expression(
                     &assertion.expression,
+                    SymbolLoc::None,
                     section_layouts,
                     output_sections,
-                    warning_callback,
                     &parsed.memory_regions,
+                    symbol_db,
+                    &|name| {
+                        let Some(target_symbol_id) =
+                            symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name))
+                        else {
+                            bail!(
+                                "Undefined symbol '{}' referenced in expression",
+                                String::from_utf8_lossy(name)
+                            );
+                        };
+
+                        let canonical_target_id = symbol_db.definition(target_symbol_id);
+                        Ok(resolutions[canonical_target_id.as_usize()]
+                            .as_ref()
+                            .map_or(0, |r| r.raw_value))
+                    },
                 )
                 .with_context(|| format!("{}:{}: Failed to evaluate ASSERT", parsed.input, line))?;
 
@@ -59,21 +78,25 @@ pub(crate) fn evaluate_assertions<'data, P: Platform>(
     Ok(())
 }
 
-fn evaluate_expression<'data, P: Platform>(
+pub(crate) fn evaluate_expression<'data, P: Platform>(
     expr: &Expression<'data>,
+    expr_loc: SymbolLoc,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections<'data, P>,
-    warning_callback: &WarningCallback,
     memory_regions: &[MemoryRegion<'data>],
+    symbol_db: &SymbolDb<'data, P>,
+    symbol_resolution_callback: &dyn Fn(&[u8]) -> Result<u64>,
 ) -> Result<u64> {
     macro_rules! eval {
         ($e:expr) => {
             evaluate_expression(
                 $e,
+                expr_loc,
                 section_layouts,
                 output_sections,
-                warning_callback,
                 memory_regions,
+                symbol_db,
+                symbol_resolution_callback,
             )
         };
     }
@@ -81,19 +104,16 @@ fn evaluate_expression<'data, P: Platform>(
     match expr {
         Expression::Number(n) => Ok(*n),
 
-        // '.' is not meaningful outside of section layout context; treat as 0
-        Expression::LocationCounter => Ok(0),
+        Expression::LocationCounter => match expr_loc {
+            SymbolLoc::SectionStart(id) => Ok(section_layouts.get(id).mem_offset),
+            SymbolLoc::SectionEnd(id) => {
+                let layout = section_layouts.get(id);
+                Ok(layout.mem_offset + layout.mem_size)
+            }
+            SymbolLoc::FirstSection | SymbolLoc::None => Ok(0),
+        },
 
-        Expression::Symbol(name) => {
-            // Symbol resolution in ASSERT is not yet implemented. Rather than failing the
-            // link (which would be our fault, not the user's), emit a warning and skip the
-            // assertion by returning 1 (true).
-            warning_callback(Warning::new(format!(
-                "ASSERT: symbol references not yet supported ('{}'), skipping assertion",
-                String::from_utf8_lossy(name)
-            )));
-            Ok(1)
-        }
+        Expression::Symbol(name) => symbol_resolution_callback(name),
 
         Expression::Add(l, r) => Ok(eval!(l)?.wrapping_add(eval!(r)?)),
         Expression::Subtract(l, r) => Ok(eval!(l)?.wrapping_sub(eval!(r)?)),
@@ -173,6 +193,13 @@ fn evaluate_expression<'data, P: Platform>(
                 })?;
             eval!(&region.length)
         }
+        Expression::SegmentStart(name, default_expr) => {
+            if let Some(val) = symbol_db.args.segment_start_override(*name) {
+                Ok(val)
+            } else {
+                eval!(default_expr)
+            }
+        }
     }
 }
 
@@ -226,22 +253,41 @@ mod tests {
     use crate::grouping::SequencedLinkerScript;
     use crate::input_data::FileId;
     use crate::linker_script::AssertCommand;
-    use crate::output_section_id::OutputSections;
     use crate::parsing::ProcessedLinkerScript;
+    use crate::symbol_db::SymbolDb;
     use crate::symbol_db::SymbolIdRange;
+    use colosseum::sync::Arena;
 
-    fn dummy_context() -> (
-        OutputSectionMap<OutputRecordLayout>,
-        OutputSections<'static, Elf>,
-    ) {
+    fn with_dummy_context<R>(
+        f: impl for<'test> FnOnce(
+            &OutputSectionMap<OutputRecordLayout>,
+            &OutputSections<'test, Elf>,
+            &mut SymbolDb<'test, Elf>,
+        ) -> R,
+    ) -> R {
         let sections = OutputSections::<Elf>::for_testing();
         let layouts = sections.new_section_map::<OutputRecordLayout>();
-        (layouts, sections)
+        let args = crate::args::elf::ElfArgs::new().unwrap();
+        let output_kind = crate::output_kind::OutputKind::Relocatable;
+        let arena = Arena::new();
+        let auxiliary = crate::input_data::AuxiliaryFiles::new(&args, &arena).unwrap();
+        let herd = Default::default();
+        let mut symbol_db = SymbolDb::<Elf>::new(&args, output_kind, &auxiliary, &herd).unwrap();
+        f(&layouts, &sections, &mut symbol_db)
     }
 
     fn eval_const(expr: &Expression<'static>) -> Result<u64> {
-        let (layouts, sections) = dummy_context();
-        evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &[])
+        with_dummy_context(|layouts, sections, symbol_db| {
+            evaluate_expression::<Elf>(
+                expr,
+                SymbolLoc::None,
+                layouts,
+                sections,
+                &[],
+                symbol_db,
+                &|_| Ok(1),
+            )
+        })
     }
 
     #[test]
@@ -536,12 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn test_symbol_skips_with_ok() {
-        // Symbol references are not yet supported; should return Ok(1) (skip, not fail)
-        assert_eq!(eval_const(&Expression::Symbol(b"__bss_start")).unwrap(), 1);
-    }
-
-    #[test]
     fn test_alignof_evaluation() {
         // Test that evaluating ALIGNOF for a non-existent section returns 0
         assert_eq!(
@@ -550,7 +590,7 @@ mod tests {
         );
     }
 
-    fn make_group(assertions: Vec<AssertCommand<'static>>) -> Group<'static, Elf> {
+    fn make_group<'data>(assertions: Vec<AssertCommand<'static>>) -> Group<'data, Elf> {
         static DUMMY_FILE: std::sync::OnceLock<crate::input_data::InputFile> =
             std::sync::OnceLock::new();
         let file = DUMMY_FILE.get_or_init(crate::input_data::InputFile::for_testing);
@@ -570,58 +610,71 @@ mod tests {
 
     #[test]
     fn test_evaluate_assertions_passes() {
-        let (layouts, sections) = dummy_context();
-        let group = make_group(vec![AssertCommand {
-            expression: Expression::Equal(
-                Box::new(Expression::Number(1)),
-                Box::new(Expression::Number(1)),
-            ),
-            message: b"should pass",
-            remainder: b"",
-        }]);
-        assert!(evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).is_ok(),);
+        with_dummy_context(|layouts, sections, symbol_db| {
+            let group = make_group(vec![AssertCommand {
+                expression: Expression::Equal(
+                    Box::new(Expression::Number(1)),
+                    Box::new(Expression::Number(1)),
+                ),
+                message: b"should pass",
+                remainder: b"",
+            }]);
+            symbol_db.add_group(group);
+            assert!(evaluate_assertions::<Elf>(symbol_db, layouts, sections, &[]).is_ok());
+        });
     }
 
     #[test]
     fn test_evaluate_assertions_fails() {
-        let (layouts, sections) = dummy_context();
-        let group = make_group(vec![AssertCommand {
-            expression: Expression::Number(0),
-            message: b"intentional failure",
-            remainder: b"",
-        }]);
-        let err = evaluate_assertions::<Elf>(&[group], &layouts, &sections, &|_| {}).unwrap_err();
-        assert!(err.to_string().contains("intentional failure"));
+        with_dummy_context(|layouts, sections, symbol_db| {
+            let group = make_group(vec![AssertCommand {
+                expression: Expression::Number(0),
+                message: b"intentional failure",
+                remainder: b"",
+            }]);
+            symbol_db.add_group(group);
+            let err = evaluate_assertions::<Elf>(symbol_db, layouts, sections, &[]).unwrap_err();
+            assert!(err.to_string().contains("intentional failure"));
+        });
     }
 
     #[test]
     fn test_memory_functions_evaluation() {
-        let (layouts, sections) = dummy_context();
-        let regions = [
-            MemoryRegion {
-                name: b"rom",
-                origin: Expression::Number(0x08000000),
-                length: Expression::Number(0x100000),
-            },
-            MemoryRegion {
-                name: b"ram",
-                origin: Expression::Number(0x20000000),
-                length: Expression::Number(0x40000),
-            },
-        ];
-        let eval = |expr: &Expression| {
-            evaluate_expression::<Elf>(expr, &layouts, &sections, &|_| {}, &regions)
-        };
-        assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);
-        assert_eq!(eval(&Expression::Length(b"rom")).unwrap(), 0x100000);
-        assert_eq!(eval(&Expression::Origin(b"ram")).unwrap(), 0x20000000);
-        assert_eq!(eval(&Expression::Length(b"ram")).unwrap(), 0x40000);
-        // end of rom = origin + length
-        let end = Expression::Add(
-            Box::new(Expression::Origin(b"rom")),
-            Box::new(Expression::Length(b"rom")),
-        );
-        assert_eq!(eval(&end).unwrap(), 0x08100000);
-        assert!(eval(&Expression::Origin(b"flash")).is_err());
+        with_dummy_context(|layouts, sections, symbol_db| {
+            let regions = [
+                MemoryRegion {
+                    name: b"rom",
+                    origin: Expression::Number(0x08000000),
+                    length: Expression::Number(0x100000),
+                },
+                MemoryRegion {
+                    name: b"ram",
+                    origin: Expression::Number(0x20000000),
+                    length: Expression::Number(0x40000),
+                },
+            ];
+            let eval = |expr: &Expression<'static>| {
+                evaluate_expression::<Elf>(
+                    expr,
+                    SymbolLoc::None,
+                    layouts,
+                    sections,
+                    &regions,
+                    symbol_db,
+                    &|_| Ok(0),
+                )
+            };
+            assert_eq!(eval(&Expression::Origin(b"rom")).unwrap(), 0x08000000);
+            assert_eq!(eval(&Expression::Length(b"rom")).unwrap(), 0x100000);
+            assert_eq!(eval(&Expression::Origin(b"ram")).unwrap(), 0x20000000);
+            assert_eq!(eval(&Expression::Length(b"ram")).unwrap(), 0x40000);
+            // end of rom = origin + length
+            let end = Expression::Add(
+                Box::new(Expression::Origin(b"rom")),
+                Box::new(Expression::Length(b"rom")),
+            );
+            assert_eq!(eval(&end).unwrap(), 0x08100000);
+            assert!(eval(&Expression::Origin(b"flash")).is_err());
+        });
     }
 }

@@ -79,7 +79,17 @@ impl Alignment {
         })
     }
 
-    pub(crate) fn value(self) -> u64 {
+    pub(crate) fn from_exponent(exponent: u32) -> Result<Self> {
+        if exponent > u32::from(MAX.exponent) {
+            bail!("Unsupported alignment 2^{exponent}");
+        }
+
+        Ok(Alignment {
+            exponent: exponent as u8,
+        })
+    }
+
+    pub(crate) const fn value(self) -> u64 {
         1 << self.exponent
     }
 

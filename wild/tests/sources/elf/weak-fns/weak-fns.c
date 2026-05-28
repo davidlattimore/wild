@@ -64,6 +64,7 @@ void _start() {
   // 8:  Functions weakly defined in other file
   // 16: Functions undefined in second file
 
+  // clang-format off
   int expected[24] = {
       //#Config:0:default
       //#Variant: 0
@@ -130,7 +131,9 @@ void _start() {
       // 22
       0,
       // 23
-      0};
+      0
+  };
+  // clang-format on
 
   if (value == 42) {
     value = 127;

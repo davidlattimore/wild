@@ -2,6 +2,7 @@ use crate::bail;
 use crate::error::Result;
 use object::elf::EM_AARCH64;
 use object::elf::EM_LOONGARCH;
+use object::elf::EM_PPC64;
 use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::fmt::Display;
@@ -10,20 +11,22 @@ use std::fmt::Display;
 pub(crate) enum Architecture {
     X86_64,
     AArch64,
-    RISCV64,
+    RiscV64,
     LoongArch64,
+    Ppc64,
     Unsupported,
 }
 
-impl TryFrom<u16> for Architecture {
+impl TryFrom<object::elf::Machine> for Architecture {
     type Error = crate::error::Error;
 
-    fn try_from(arch: u16) -> Result<Self, Self::Error> {
+    fn try_from(arch: object::elf::Machine) -> Result<Self, Self::Error> {
         match arch {
             EM_X86_64 => Ok(Self::X86_64),
             EM_AARCH64 => Ok(Self::AArch64),
-            EM_RISCV => Ok(Self::RISCV64),
+            EM_RISCV => Ok(Self::RiscV64),
             EM_LOONGARCH => Ok(Self::LoongArch64),
+            EM_PPC64 => Ok(Self::Ppc64),
             _ => bail!("Unsupported architecture: 0x{:x}", arch),
         }
     }
@@ -34,8 +37,9 @@ impl Display for Architecture {
         let arch = match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64",
-            Architecture::RISCV64 => "riscv64",
+            Architecture::RiscV64 => "riscv64",
             Architecture::LoongArch64 => "loongarch64",
+            Architecture::Ppc64 => "ppc64",
             Architecture::Unsupported => "unsupported",
         };
         write!(f, "{arch}")

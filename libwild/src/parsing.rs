@@ -1,6 +1,5 @@
 use crate::OutputKind;
 use crate::OutputSections;
-use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -9,6 +8,7 @@ use crate::input_data::InputBytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
+use crate::linker_script::Expression;
 use crate::output_section_id::OutputSectionId;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
@@ -62,7 +62,7 @@ pub(crate) struct SyntheticSymbols {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
-#[derive(Clone, Copy, derive_more::Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub(crate) struct InternalSymDefInfo<'data, P: Platform> {
     pub(crate) symbol: P::SymtabEntry,
     pub(crate) placement: SymbolPlacement<'data>,
@@ -70,7 +70,7 @@ pub(crate) struct InternalSymDefInfo<'data, P: Platform> {
     pub(crate) name: &'data [u8],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum SymbolPlacement<'data> {
     /// Symbol 0 - the undefined symbol.
     Undefined,
@@ -89,75 +89,54 @@ pub(crate) enum SymbolPlacement<'data> {
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
     ForceUndefined,
 
-    /// A symbol defined via --defsym with an absolute address.
-    DefsymAbsolute(u64),
-
-    /// A symbol defined via --defsym that references another symbol.
-    /// Stores the name of the target symbol and an optional offset to add to its value.
-    DefsymSymbol(&'data str, i64),
+    /// A symbol that redirects to some other symbol.
+    Redirect(Redirect<'data>),
 
     /// Symbol will point to the start of the first loadable segment.
     LoadBaseAddress,
 }
 
-/// Result of parsing a defsym-style expression like "0x1000", "symbol", or "symbol+0x40".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SymbolLoc {
+    SectionStart(OutputSectionId),
+    SectionEnd(OutputSectionId),
+    FirstSection,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Redirect<'data> {
+    pub(crate) kind: RedirectKind,
+    pub(crate) expression: Expression<'data>,
+    pub(crate) loc: SymbolLoc,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ParsedSymbolExpression<'a> {
-    /// An absolute numeric value.
-    Absolute(u64),
-    /// A symbol reference with an optional offset.
-    SymbolWithOffset(&'a str, i64),
+pub(crate) enum RedirectKind {
+    DefSym,
+    Script,
 }
 
-impl<'a> ParsedSymbolExpression<'a> {
-    pub(crate) fn to_placement(self) -> SymbolPlacement<'a> {
-        match self {
-            ParsedSymbolExpression::Absolute(value) => SymbolPlacement::DefsymAbsolute(value),
-            ParsedSymbolExpression::SymbolWithOffset(sym, offset) => {
-                SymbolPlacement::DefsymSymbol(sym, offset)
-            }
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SegmentName {
+    Text,
+    Rodata,
+    Data,
+    Bss,
+    /// Any segment name not in the known set. Wild has no `-T` override for
+    /// these, so they always resolve to the default value.
+    Other,
 }
 
-pub fn parse_symbol_expression(s: &str) -> ParsedSymbolExpression<'_> {
-    let mut symbol = None;
-    let mut offset: i64 = 0;
-    let mut token_start = 0;
-    let mut current_sign: i64 = 1;
-
-    // Handle leading sign
-    if s.starts_with('-') {
-        current_sign = -1;
-        token_start = 1;
-    } else if s.starts_with('+') {
-        token_start = 1;
-    }
-
-    for (i, ch) in s.bytes().enumerate().skip(token_start) {
-        if ch == b'+' || ch == b'-' {
-            let token = s[token_start..i].trim();
-            if let Ok(val) = parse_number(token) {
-                offset = offset.wrapping_add(current_sign * val as i64);
-            } else if symbol.is_none() && !token.is_empty() {
-                symbol = Some(token);
-            }
-            current_sign = if ch == b'+' { 1 } else { -1 };
-            token_start = i + 1;
+impl SegmentName {
+    pub(crate) fn from_bytes(name: &[u8]) -> Self {
+        match name {
+            b"text" => Self::Text,
+            b"rodata" => Self::Rodata,
+            b"data" => Self::Data,
+            b"bss" => Self::Bss,
+            _ => Self::Other,
         }
-    }
-
-    // Process the last token
-    let token = s[token_start..].trim();
-    if let Ok(val) = parse_number(token) {
-        offset = offset.wrapping_add(current_sign * val as i64);
-    } else if symbol.is_none() && !token.is_empty() {
-        symbol = Some(token);
-    }
-
-    match symbol {
-        Some(sym) => ParsedSymbolExpression::SymbolWithOffset(sym, offset),
-        None => ParsedSymbolExpression::Absolute(offset as u64),
     }
 }
 
@@ -221,7 +200,7 @@ impl<'data, P: Platform> ParsedInputObject<'data, P> {
 }
 
 impl<'data, P: Platform> Prelude<'data, P> {
-    pub(crate) fn new(args: &'data P::Args, output_kind: OutputKind) -> Self {
+    pub(crate) fn new(args: &'data P::Args, output_kind: OutputKind) -> Result<Self> {
         verbose_timing_phase!("Construct prelude");
 
         let mut symbols = InternalSymbolsBuilder::default();
@@ -236,19 +215,25 @@ impl<'data, P: Platform> Prelude<'data, P> {
         });
 
         // Add symbols defined via the command line.
-        args.defsym().iter().for_each(|(name, value)| {
-            let placement = match value {
-                DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
-                DefsymValue::SymbolWithOffset(target, offset) => {
-                    SymbolPlacement::DefsymSymbol(target.as_str(), *offset)
-                }
-            };
-            symbols.add_symbol(InternalSymDefInfo::new(placement, name.as_bytes()));
-        });
+        args.defsym()
+            .iter()
+            .try_for_each(|(name, value)| -> Result<()> {
+                let mut value = winnow::BStr::new(value);
+                let expr = crate::linker_script::parse_expression(&mut value)
+                    .with_context(|| format!("Failed to parse --defsym {name}={value}"))?;
 
-        Self {
+                let placement = SymbolPlacement::Redirect(Redirect {
+                    kind: RedirectKind::DefSym,
+                    expression: expr,
+                    loc: SymbolLoc::None,
+                });
+                symbols.add_symbol(InternalSymDefInfo::new(placement, name.as_bytes()));
+                Ok(())
+            })?;
+
+        Ok(Self {
             symbol_definitions: symbols.symbol_definitions,
-        }
+        })
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
@@ -321,5 +306,32 @@ impl<'data, P: Platform> std::fmt::Display for ParsedInputObject<'data, P> {
 impl<'data, P: Platform> std::fmt::Display for ProcessedLinkerScript<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
+impl Redirect<'_> {
+    pub(crate) fn missing_target(&self, target_name: &[u8]) -> crate::error::Error {
+        crate::error!(
+            "Symbol '{name}' referenced by {kind} does not exist",
+            name = String::from_utf8_lossy(target_name),
+            kind = self.kind.message_text(),
+        )
+    }
+
+    pub(crate) fn missing_resolution(&self, target_name: &[u8]) -> crate::error::Error {
+        crate::error!(
+            "Symbol '{name}' referenced by {kind} has no resolution.",
+            name = String::from_utf8_lossy(target_name),
+            kind = self.kind.message_text(),
+        )
+    }
+}
+
+impl RedirectKind {
+    fn message_text(self) -> &'static str {
+        match self {
+            RedirectKind::DefSym => "--defsym",
+            RedirectKind::Script => "linker script",
+        }
     }
 }

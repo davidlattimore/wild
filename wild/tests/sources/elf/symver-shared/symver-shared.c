@@ -1,7 +1,6 @@
-// This test has two shared objects. One contains an undefined symbol
-// foo@@VER_1.0, the other contains the definition foo@VER_1.0. Note that the
-// definition with a single '@' is not the default version. i.e. it doesn't bind
-// 'foo'.
+// This test has two shared objects. One contains an undefined symbol foo@@VER_1.0, the other
+// contains the definition foo@VER_1.0. Note that the definition with a single '@' is not the
+// default version. i.e. it doesn't bind 'foo'.
 
 //#Object:runtime.c
 //#Shared:symver-shared-1.c

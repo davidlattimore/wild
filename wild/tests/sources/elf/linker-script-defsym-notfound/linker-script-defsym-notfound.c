@@ -1,6 +1,6 @@
 //#RunEnabled:false
 //#SkipLinker:ld
 //#LinkArgs:-T ./linker-script-defsym-notfound.ld
-//#ExpectError:Undefined symbol 'non_existent_symbol'
+//#ExpectError:Symbol 'non_existent_symbol' referenced by linker script does not exist
 
 void _start() {}
