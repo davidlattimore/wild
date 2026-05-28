@@ -9,7 +9,7 @@
 //#Config:gcc:default
 //#LinkerDriver:gcc
 //#Object:lto-dead-code-undef-1.c
-//#LinkArgs:-flto -O1 -nostdlib
+//#LinkArgs:-flto -O1 -nostdlib -Wl,-z,now
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.got
 
