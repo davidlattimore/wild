@@ -285,6 +285,7 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
     for (name, entries) in &mut symbol_map {
         entries.sort_unstable();
         entries.dedup();
+        // 4 bytes for the entry count, then 4 bytes per entry.
         cv_bytes += 4 + entries.len() * 4;
         str_bytes += name.len() + 1;
     }
