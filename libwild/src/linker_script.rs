@@ -1117,11 +1117,11 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
 
 fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
     // Handling SORT(...) wrapper: SORT is an alias for SORT_BY_NAME in GNU ld.
-    if input.starts_with(b"SORT") {
-        // Consume "SORT"
-        "SORT".parse_next(input)?;
+    use winnow::combinator::opt;
+    use winnow::token::literal;
+    if opt(literal(b"SORT")).parse_next(input)?.is_some() {
         skip_comments_and_whitespace(input)?;
-        // Expect '('
+
         '('.parse_next(input)?;
         skip_comments_and_whitespace(input)?;
 
@@ -1134,7 +1134,6 @@ fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPatt
 
         Ok(SectionPattern { name, sorted: true })
     } else {
-        // Original behavior: bare pattern
         let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         Ok(SectionPattern {

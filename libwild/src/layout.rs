@@ -327,7 +327,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         harvested_sections_registry.push(sec.clone());
     }
 
-    // Crucial: We MUST sort by the IDs here, otherwise the Binary Search in Step 3 will fail.
     harvested_sections_registry.sort_unstable_by_key(|s| (s.file_id, s.section_index.0));
 
     let mut symbol_resolutions = SymbolResolutions {
@@ -1227,7 +1226,6 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// and later transferred to `ObjectLayout`.
     section_relax_deltas: RelaxDeltaMap,
 
-    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search.
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
 
     /// Which ThunkBlock handles primary-part thunks for this object.
@@ -5517,20 +5515,21 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
     for group in group_states.iter_mut() {
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
-                for note in &obj.script_sorted_sections {
-                    if let SectionSlot::Loaded(sec) = &obj.sections[note.index.0] {
-                        let part_id = obj.section_part_id(note.index, section_part_ids);
+                for section_req in &obj.script_sorted_sections {
+                    //for section_req in &obj.script_sorted_sections {
+                    if let SectionSlot::Loaded(sec) = &obj.sections[section_req.index.0] {
+                        let part_id = obj.section_part_id(section_req.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
                         temp.push((
-                            note.name,
+                            section_req.name,
                             HarvestedSortedSection {
                                 file_id: obj.file_id,
-                                section_index: note.index,
+                                section_index: section_req.index,
                                 part_id,
                                 size: capacity,
                                 alignment: part_id.alignment(output_sections),
                                 mem_offset: 0,
-                                _name: note.name, // pointer
+                                _name: section_req.name, // pointer
                             },
                         ));
                     }
@@ -5539,6 +5538,6 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         }
     }
 
-    temp.sort_by(|a, b| a.0.cmp(b.0));
+    temp.sort_by_key(|a| a.0);
     temp.into_iter().map(|(_, harvested)| harvested).collect()
 }

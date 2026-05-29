@@ -1463,17 +1463,9 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
-    // Fast O(1) lookup to skip harvested sections
-    let epilogue = layout
-        .group_layouts
-        .iter()
-        .find_map(|g| {
-            g.files.iter().find_map(|f| match f {
-                FileLayout::Epilogue(e) => Some(e),
-                _ => None,
-            })
-        })
-        .unwrap();
+    let FileLayout::Epilogue(epilogue) = &layout.group_layouts.last().unwrap().files[0] else {
+        unreachable!("Epilogue is broken and must be the first file in the final layout group");
+    };
 
     let mut is_harvested = vec![false; object.sections.len()];
     for h in &epilogue.script_sorted_sections {
@@ -3990,7 +3982,6 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
             &epilogue_offsets,
         )?;
     }
-
     // The actual build-id will be filled in later once all writing has completed. It's important
     // that we fill it with zeros now however, since if we're overwriting an existing file, there
     // might be other data there and we don't zero it, then the build ID will be hashing that data.
