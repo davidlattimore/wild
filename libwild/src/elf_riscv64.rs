@@ -109,6 +109,10 @@ impl crate::platform::Arch for ElfRiscV64 {
         eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
         let eflags = eflags.collect_vec();
+        if eflags.is_empty() {
+            return Ok(object::elf::FileFlags(0));
+        }
+
         let or_eflags = eflags
             .iter()
             .fold(object::elf::FileFlags(0), |acc, x| acc | *x);
@@ -116,8 +120,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.riscv_float_abi())
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "Float ABI flag mismatch"
         );
@@ -125,8 +128,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.contains(EF_RISCV_RVE))
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "RVE flag mismatch"
         );
@@ -134,8 +136,7 @@ impl crate::platform::Arch for ElfRiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag.contains(EF_RISCV_RV64ILP32))
-                .unique()
-                .exactly_one()
+                .all_equal_value()
                 .is_ok(),
             "RV64ILP32 flag mismatch"
         );

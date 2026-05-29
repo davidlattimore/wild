@@ -88,9 +88,13 @@ impl crate::platform::Arch for ElfLoongArch64 {
     fn merge_eflags(
         mut eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
-        eflags
-            .all_equal_value()
-            .map_err(|_e| error!("non-unique e_flags"))
+        let res = eflags.all_equal_value();
+        match res {
+            Ok(flags) => Ok(flags),
+            // no items, return blank flags
+            Err(None) => Ok(object::elf::FileFlags(0)),
+            Err(Some((a, b))) => Err(error!("non-unique e_flags: {a}, {b}")),
+        }
     }
 
     fn high_part_relocations() -> &'static [u32] {
