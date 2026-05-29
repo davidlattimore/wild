@@ -5489,7 +5489,7 @@ pub(crate) struct HarvestedSortedSection<'data> {
     pub(crate) size: u64,
     pub(crate) alignment: Alignment,
     pub(crate) mem_offset: u64,
-    pub(crate) name: &'data [u8],
+    pub(crate) _name: &'data [u8],
 }
 
 fn harvest_and_sort_script_sections<'data, P: Platform>(
@@ -5530,7 +5530,7 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                                 size: capacity,
                                 alignment: part_id.alignment(output_sections),
                                 mem_offset: 0,
-                                name: note.name, // Zero-copy pointer
+                                _name: note.name, // pointer
                             },
                         ));
                     }
@@ -5539,6 +5539,6 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         }
     }
 
-    temp.sort_by(|a, b| a.0.cmp(&b.0));
+    temp.sort_by(|a, b| a.0.cmp(b.0));
     temp.into_iter().map(|(_, harvested)| harvested).collect()
 }

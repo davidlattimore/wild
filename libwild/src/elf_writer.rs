@@ -4008,7 +4008,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
             write_object_section::<A>(
                 object,
                 layout,
-                &sec,
+                sec,
                 harvested.section_index,
                 buffers,
                 table_writer,
@@ -5832,4 +5832,3 @@ fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
         .map(|def| def.link)
         .unwrap_or_default()
 }
-
