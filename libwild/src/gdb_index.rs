@@ -16,6 +16,8 @@ use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
 use linker_utils::bit_misc::BitExtraction;
+use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
+use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
 use std::mem::size_of;
@@ -237,7 +239,7 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
             };
             let object = obj.object;
 
-            let boundaries = raw_section_by_name(object, ".debug_info")
+            let boundaries = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)
                 .map(parse_cu_boundaries)
                 .unwrap_or_default();
             if boundaries.is_empty() {
@@ -396,7 +398,7 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
 fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Vec<GdbIndexCuEntry> {
     let Some(id) = layout
         .output_sections
-        .section_id_by_name(SectionName(b".debug_info"))
+        .section_id_by_name(SectionName(DEBUG_INFO_SECTION_NAME))
     else {
         return Vec::new();
     };
@@ -441,7 +443,7 @@ fn build_address_and_symbol_tables<'data>(
             };
             let object = obj.object;
 
-            let boundaries = raw_section_by_name(object, ".debug_info")
+            let boundaries = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)
                 .map(parse_cu_boundaries)
                 .unwrap_or_default();
             if boundaries.is_empty() {

@@ -326,6 +326,8 @@ pub mod secnames {
     pub const RELRO_PADDING_SECTION_NAME: &[u8] = RELRO_PADDING_SECTION_NAME_STR.as_bytes();
     pub const SYMTAB_SHNDX_SECTION_NAME_STR: &str = ".symtab_shndx";
     pub const SYMTAB_SHNDX_SECTION_NAME: &[u8] = SYMTAB_SHNDX_SECTION_NAME_STR.as_bytes();
+    pub const DEBUG_INFO_SECTION_NAME_STR: &str = ".debug_info";
+    pub const DEBUG_INFO_SECTION_NAME: &[u8] = DEBUG_INFO_SECTION_NAME_STR.as_bytes();
     pub const GDB_INDEX_SECTION_NAME_STR: &str = ".gdb_index";
     pub const GDB_INDEX_SECTION_NAME: &[u8] = GDB_INDEX_SECTION_NAME_STR.as_bytes();
 
