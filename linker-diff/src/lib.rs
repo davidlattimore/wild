@@ -24,10 +24,10 @@ use itertools::Itertools as _;
 use linker_utils::elf::secnames::*;
 use linker_utils::utils::slice_from_all_bytes;
 use object::Endianness;
+use object::File;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
-use object::read::elf::ElfSection64;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
 use std::fmt::Display;
@@ -58,12 +58,13 @@ mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, Endianness>;
-type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, Endianness>;
 
 use arch::Arch;
 use arch::ArchKind;
 use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
+use object::Section;
+use object::Symbol;
 use section_map::InputSectionId;
 use section_map::OwnedFileIdentifier;
 
@@ -122,7 +123,7 @@ pub enum Colour {
 pub struct Binary<'data> {
     name: String,
     path: PathBuf,
-    elf_file: &'data ElfFile64<'data>,
+    file: &'data File<'data>,
     address_index: AddressIndex<'data>,
     name_index: NameIndex<'data>,
     indexed_layout: Option<IndexedLayout<'data>>,
@@ -410,16 +411,16 @@ impl Config {
 
 impl<'data> Binary<'data> {
     pub(crate) fn new(
-        elf_file: &'data ElfFile64<'data>,
+        file: &'data File<'data>,
         name: String,
         path: PathBuf,
         layout_and_files: Option<&'data LayoutAndFiles>,
     ) -> Result<Self> {
-        let address_index = AddressIndex::new(elf_file);
+        let address_index = AddressIndex::new(file);
         let indexed_layout = layout_and_files.map(IndexedLayout::new).transpose()?;
         let trace = trace::Trace::for_path(&path)?;
 
-        let sections_by_name = elf_file
+        let sections_by_name = file
             .sections()
             .map(|section| {
                 Ok((
@@ -434,10 +435,10 @@ impl<'data> Binary<'data> {
 
         Ok(Self {
             name,
-            elf_file,
+            file,
             path,
             address_index,
-            name_index: NameIndex::new(elf_file),
+            name_index: NameIndex::new(file),
             indexed_layout,
             trace,
             sections_by_name,
@@ -469,7 +470,7 @@ impl<'data> Binary<'data> {
 
         if indexes.len() >= 2 {
             for sym_index in indexes {
-                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index)
+                if let Ok(sym) = self.file.symbol_by_index(*sym_index)
                     && sym.address() == hint_address
                 {
                     return NameLookupResult::Defined(sym);
@@ -481,7 +482,7 @@ impl<'data> Binary<'data> {
         }
 
         if let Some(symbol_index) = indexes.first() {
-            if let Ok(sym) = self.elf_file.symbol_by_index(*symbol_index) {
+            if let Ok(sym) = self.file.symbol_by_index(*symbol_index) {
                 NameLookupResult::Defined(sym)
             } else {
                 NameLookupResult::Undefined
@@ -491,26 +492,23 @@ impl<'data> Binary<'data> {
         }
     }
 
-    fn section_by_name<'file: 'data>(
-        &'file self,
-        name: &str,
-    ) -> Option<ElfSection64<'data, 'file, Endianness>> {
+    fn section_by_name<'file: 'data>(&'file self, name: &str) -> Option<Section<'data, 'file>> {
         self.section_by_name_bytes(name.as_bytes())
     }
 
     fn section_by_name_bytes<'file: 'data>(
         &'file self,
         name: &[u8],
-    ) -> Option<ElfSection64<'data, 'file, Endianness>> {
+    ) -> Option<Section<'data, 'file>> {
         let index = self.sections_by_name.get(name)?.index;
-        self.elf_file.section_by_index(index).ok()
+        self.file.section_by_index(index).ok()
     }
 
     fn section_containing_address<'file: 'data>(
         &'file self,
         address: u64,
-    ) -> Option<ElfSection64<'file, 'data, Endianness>> {
-        self.elf_file
+    ) -> Option<Section<'file, 'data>> {
+        self.file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))
     }
@@ -527,7 +525,7 @@ impl<'data> Binary<'data> {
 enum NameLookupResult<'data, 'file> {
     Undefined,
     Duplicate,
-    Defined(ElfSymbol64<'data, 'file>),
+    Defined(Symbol<'data, 'file>),
 }
 
 fn validate_objects(
@@ -611,9 +609,9 @@ impl Report {
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
 
-        let elf_files = file_bytes
+        let files = file_bytes
             .iter()
-            .map(|bytes| -> Result<ElfFile64> { Ok(ElfFile64::parse(bytes.as_slice())?) })
+            .map(|bytes| -> Result<object::File> { Ok(object::File::parse(bytes.as_slice())?) })
             .collect::<Result<Vec<_>>>()?;
 
         let layouts = config
@@ -621,13 +619,13 @@ impl Report {
             .map(|p| LayoutAndFiles::from_base_path(p))
             .collect::<Result<Vec<_>>>()?;
 
-        let objects = elf_files
+        let objects = files
             .iter()
             .zip(display_names)
             .zip(config.filenames())
             .zip(&layouts)
-            .map(|(((elf_file, name), path), layout)| -> Result<Binary> {
-                Binary::new(elf_file, name, path.clone(), layout.as_ref())
+            .map(|(((file, name), path), layout)| -> Result<Binary> {
+                Binary::new(file, name, path.clone(), layout.as_ref())
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -922,12 +920,12 @@ fn first_equals_any<T: PartialEq>(mut inputs: impl Iterator<Item = T>) -> bool {
 }
 
 impl<'data> NameIndex<'data> {
-    fn new(elf_file: &ElfFile64<'data>) -> NameIndex<'data> {
+    fn new(file: &File<'data>) -> NameIndex<'data> {
         let mut globals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut locals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut dynamic_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
 
-        for sym in elf_file.symbols() {
+        for sym in file.symbols() {
             // We only index symbols that have a section. Note this is different than the object
             // crate's `is_defined`, which imposes additional requirements that we don't want.
             if sym.section_index().is_none() {
@@ -960,7 +958,7 @@ impl<'data> NameIndex<'data> {
             }
         }
 
-        for sym in elf_file.dynamic_symbols() {
+        for sym in file.dynamic_symbols() {
             if let Ok(name) = sym.name_bytes() {
                 dynamic_by_name.entry(name).or_default().push(sym.index());
             }

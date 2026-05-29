@@ -275,14 +275,18 @@ pub(crate) enum PltEntry {
 
 impl ArchKind {
     pub(crate) fn from_objects(bins: &[Binary]) -> Result<ArchKind> {
-        let binary = &bins[0];
-        let e = binary.elf_file.endian();
-        match binary.elf_file.elf_header().e_machine(e) {
-            object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
-            object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
-            object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
-            object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
-            other => bail!("Unsupported object architecture {other}",),
+        match &bins[0].file {
+            object::File::Elf64(file) => {
+                let e = file.endian();
+                match file.elf_header().e_machine(e) {
+                    object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
+                    object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
+                    object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
+                    object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
+                    other => bail!("Unsupported ELF architecture {other}",),
+                }
+            }
+            other => bail!("Unsupported file format: {:?}", other.format()),
         }
     }
 }

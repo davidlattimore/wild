@@ -10,6 +10,7 @@ use hashbrown::HashMap;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
 use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
 use object::Endianness;
+use object::File;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -31,7 +32,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 }
 
 fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
-    let e = object.elf_file.endian();
+    let e = object.file.endianness();
     let mut values = FieldValues::default();
 
     let Some(segment_hdr) = eh_frame_segment(object, e) else {
@@ -112,7 +113,7 @@ fn verify_frames(
     header_base: u64,
 ) -> Result {
     let mut functions_without_frame_info = HashMap::new();
-    for sym in object.elf_file.symbols() {
+    for sym in object.file.symbols() {
         if sym.kind() == SymbolKind::Text {
             functions_without_frame_info.insert(sym.address(), sym);
         }
@@ -188,7 +189,10 @@ fn verify_frames(
 }
 
 fn eh_frame_segment(object: &crate::Binary, e: Endianness) -> Option<ProgramHeader64<Endianness>> {
-    for hdr in object.elf_file.elf_program_headers() {
+    let File::Elf64(elf_file) = object.file else {
+        return None;
+    };
+    for hdr in elf_file.elf_program_headers() {
         if hdr.p_type.get(e) == object::elf::PT_GNU_EH_FRAME {
             return Some(*hdr);
         }

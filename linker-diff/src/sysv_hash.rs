@@ -5,19 +5,17 @@ use anyhow::bail;
 use anyhow::ensure;
 use itertools::Itertools;
 use linker_utils::elf::secnames::HASH_SECTION_NAME_STR;
-use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::ObjectSymbolTable;
 use object::SymbolIndex;
-use object::elf::FileHeader64;
-use object::read::elf::ElfSymbolTable;
+use object::SymbolTable;
 use std::convert::TryInto;
 
 pub(crate) fn check_object(obj: &Binary) -> Result {
     let num_symbols = obj
-        .elf_file
+        .file
         .dynamic_symbols()
         .map(|s| s.index().0)
         .max()
@@ -28,12 +26,12 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
     }
 
     let dynsym = obj
-        .elf_file
+        .file
         .dynamic_symbol_table()
         .context("Missing dynamic symbol table")?;
 
     let hash_section = obj
-        .elf_file
+        .file
         .section_by_name(HASH_SECTION_NAME_STR)
         .context("Missing .hash")?;
 
@@ -75,14 +73,14 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
         .collect_vec();
 
-    for sym in obj.elf_file.dynamic_symbols() {
+    for sym in obj.file.dynamic_symbols() {
         if !sym.is_definition() {
             continue;
         }
 
         let name = sym.name()?;
         let name_bytes = sym.name_bytes()?;
-        let symbol_index = lookup_symbol(name_bytes, &buckets, &chains, dynsym)
+        let symbol_index = lookup_symbol(name_bytes, &buckets, &chains, &dynsym)
             .with_context(|| format!("Hash lookup of symbol `{name}` failed"))?;
         if symbol_index != sym.index().0 {
             bail!(
@@ -101,7 +99,7 @@ fn lookup_symbol(
     sym_name: &[u8],
     buckets: &[u32],
     chains: &[u32],
-    dynsym: ElfSymbolTable<FileHeader64<Endianness>>,
+    dynsym: &SymbolTable,
 ) -> Result<usize> {
     if buckets.is_empty() {
         bail!("Empty .hash bucket table");

@@ -1,4 +1,3 @@
-use crate::ElfFile64;
 use crate::Result;
 use anyhow::Context;
 use anyhow::bail;
@@ -130,10 +129,10 @@ impl<'data> IndexedLayout<'data> {
                 &mmap[..]
             };
 
-            let elf_file = crate::ElfFile64::parse(object_bytes)?;
+            let object = object::File::parse(object_bytes)?;
             let mut functions_by_section = vec![Vec::new(); file.sections.len()];
 
-            for symbol in elf_file.symbols() {
+            for symbol in object.symbols() {
                 let Some(section_index) = symbol.section_index() else {
                     continue;
                 };
@@ -156,13 +155,15 @@ impl<'data> IndexedLayout<'data> {
                         occupied_entry.insert(None);
                     }
                     hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
+                        let is_ifunc = is_ifunc(&object, &symbol);
+
                         vacant_entry.insert(Some(SymbolInfo {
                             section_id: InputSectionId {
                                 file_index,
                                 section_index,
                             },
                             offset_in_section: symbol.address(),
-                            is_ifunc: symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC,
+                            is_ifunc,
                         }));
                     }
                 }
@@ -180,7 +181,7 @@ impl<'data> IndexedLayout<'data> {
                     filename: file.path.as_path(),
                     archive_entry: file.archive_entry.as_ref(),
                 },
-                elf_file,
+                file: object,
                 sections: file
                     .sections
                     .iter()
@@ -255,9 +256,11 @@ impl<'data> IndexedLayout<'data> {
         &self,
         section_id: InputSectionId,
     ) -> Result<ElfSection64<'data, '_, Endianness>> {
-        Ok(self.files[section_id.file_index]
-            .elf_file
-            .section_by_index(section_id.section_index)?)
+        let object::File::Elf64(elf_file) = &self.files[section_id.file_index].file else {
+            bail!("get_elf_section called for non-ELF file");
+        };
+
+        Ok(elf_file.section_by_index(section_id.section_index)?)
     }
 
     pub(crate) fn input_file_for_section(&self, section_id: InputSectionId) -> &InputFile<'data> {
@@ -290,6 +293,18 @@ impl<'data> IndexedLayout<'data> {
     }
 }
 
+fn is_ifunc(object: &object::File, symbol: &object::Symbol) -> bool {
+    match object {
+        object::File::Elf64(elf_file) => {
+            let Ok(elf_symbol) = elf_file.symbol_by_index(symbol.index()) else {
+                return false;
+            };
+            elf_symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC
+        }
+        _ => false,
+    }
+}
+
 pub(crate) struct InputSectionDisplay<'layout, 'data> {
     layout: &'layout IndexedLayout<'data>,
     section_id: InputSectionId,
@@ -300,7 +315,7 @@ impl Display for InputSectionDisplay<'_, '_> {
         let file = &self.layout.files[self.section_id.file_index];
         write!(f, "{file} ")?;
         if let Ok(section_name) = file
-            .elf_file
+            .file
             .section_by_index(self.section_id.section_index)
             .and_then(|sec| sec.name_bytes())
         {
@@ -332,7 +347,7 @@ impl Display for DisplaySection<'_> {
 
         if let Ok(section_name) = self
             .file
-            .elf_file
+            .file
             .section_by_index(self.info.index())
             .and_then(|section| section.name())
         {
@@ -355,7 +370,7 @@ pub(crate) struct SectionInfo<'data> {
 
 pub(crate) struct InputFile<'data> {
     pub(crate) identifier: FileIdentifier<'data>,
-    pub(crate) elf_file: ElfFile64<'data>,
+    pub(crate) file: object::File<'data>,
     sections: Vec<Option<SectionInfo<'data>>>,
 }
 
@@ -401,7 +416,7 @@ impl<'data> SectionInfo<'data> {
             Err(0) => {
                 let input_file = &layout.files[self.section_id.file_index];
                 let elf_section = input_file
-                    .elf_file
+                    .file
                     .section_by_index(self.section_id.section_index)?;
                 let section_name = String::from_utf8_lossy(elf_section.name_bytes()?);
 

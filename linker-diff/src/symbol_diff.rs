@@ -17,7 +17,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, bins: &[crate::Binary]) {
 fn read_dynsym(bin: &crate::Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
 
-    for sym in bin.elf_file.dynamic_symbols() {
+    for sym in bin.file.dynamic_symbols() {
         let Ok(name) = sym.name_bytes() else {
             continue;
         };
@@ -37,7 +37,7 @@ fn read_dynsym(bin: &crate::Binary) -> Result<FieldValues> {
 
         // TODO: Diff type, binding and visibility. Also, diff undefined symbols.
         if let Some(section_index) = sym.section_index() {
-            let section = bin.elf_file.section_by_index(section_index)?;
+            let section = bin.file.section_by_index(section_index)?;
             let section_name = String::from_utf8_lossy(section.name_bytes()?).into_owned();
 
             values.insert_string_owned(

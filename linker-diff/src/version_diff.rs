@@ -3,6 +3,7 @@ use crate::header_diff::FieldValues;
 use anyhow::Result;
 use linker_utils::elf::secnames::GNU_VERSION_D_SECTION_NAME_STR;
 use linker_utils::elf::secnames::GNU_VERSION_SECTION_NAME_STR;
+use object::File;
 use object::Object;
 use object::ObjectSymbol;
 use object::elf;
@@ -27,13 +28,16 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 // Reads version names defined in the binary's version_d section and their parent name to find
 // whether all the versions are present.
 fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = bin.elf_file.endian();
+    let e = bin.file.endianness();
     let mut values = FieldValues::default();
 
-    let Some((mut verdef_iterator, strings_index)) = bin
-        .elf_file
+    let File::Elf64(elf_file) = bin.file else {
+        return Ok(values);
+    };
+
+    let Some((mut verdef_iterator, strings_index)) = elf_file
         .elf_section_table()
-        .gnu_verdef(e, bin.elf_file.data())?
+        .gnu_verdef(e, elf_file.data())?
     else {
         values.insert_string_owned(
             GNU_VERSION_D_SECTION_NAME_STR.to_owned(),
@@ -42,10 +46,9 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
         return Ok(values);
     };
 
-    let strings =
-        bin.elf_file
-            .elf_section_table()
-            .strings(e, bin.elf_file.data(), strings_index)?;
+    let strings = elf_file
+        .elf_section_table()
+        .strings(e, elf_file.data(), strings_index)?;
 
     while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
         let verdef_index = verdef.vd_ndx.get(e).0;
@@ -83,13 +86,16 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
 // Reads dynamic symbol names and their corresponding version names to find whether all dynamic
 // symbols have the correct version.
 fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = bin.elf_file.endian();
+    let e = bin.file.endianness();
     let mut values = FieldValues::default();
 
-    let Some((versyms, _)) = bin
-        .elf_file
+    let File::Elf64(elf_file) = bin.file else {
+        return Ok(values);
+    };
+
+    let Some((versyms, _)) = elf_file
         .elf_section_table()
-        .gnu_versym(e, bin.elf_file.data())?
+        .gnu_versym(e, elf_file.data())?
     else {
         values.insert_string_owned(
             GNU_VERSION_SECTION_NAME_STR.to_owned(),
@@ -98,13 +104,12 @@ fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
         return Ok(values);
     };
 
-    let versions = bin
-        .elf_file
+    let versions = elf_file
         .elf_section_table()
-        .versions(e, bin.elf_file.data())?
+        .versions(e, elf_file.data())?
         .unwrap();
 
-    let dynsym_iter = bin.elf_file.dynamic_symbols();
+    let dynsym_iter = elf_file.dynamic_symbols();
 
     // dynsym_iter skips the first symbol, make versym the same.
     for (versym, dynsym) in versyms.iter().skip(1).zip(dynsym_iter) {

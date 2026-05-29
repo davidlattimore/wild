@@ -45,6 +45,7 @@ use crate::Binary;
 use crate::Diff;
 use crate::DiffValues;
 use crate::ElfFile64;
+use crate::File;
 use crate::Report;
 use crate::Result;
 use crate::SectionCoverage;
@@ -754,29 +755,34 @@ fn get_original_referent<'data, R: RType>(
     rel: &object::Relocation,
     input_file: &crate::section_map::InputFile<'data>,
 ) -> Result<Referent<'data, R>> {
-    let e = input_file.elf_file.endian();
+    let e = input_file.file.endianness();
     if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-        let symbol = input_file.elf_file.symbol_by_index(symbol_index)?;
+        let symbol = input_file.file.symbol_by_index(symbol_index)?;
 
         if let Some(section_index) = symbol.section_index() {
-            let section = input_file.elf_file.section_by_index(section_index)?;
+            match &input_file.file {
+                File::Elf64(elf_file) => {
+                    let section = elf_file.section_by_index(section_index)?;
 
-            let flags = section.elf_section_header().sh_flags(e);
+                    let flags = section.elf_section_header().sh_flags(e);
 
-            if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
-                let section_data = section.data()?;
-                let string_plus_rest = &section_data[symbol.address() as usize..];
-                if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
-                    let addend = symbol
-                        .name_bytes()
-                        .is_ok_and(|name| !name.is_empty())
-                        .then(|| rel.addend());
+                    if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
+                        let section_data = section.data()?;
+                        let string_plus_rest = &section_data[symbol.address() as usize..];
+                        if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
+                            let addend = symbol
+                                .name_bytes()
+                                .is_ok_and(|name| !name.is_empty())
+                                .then(|| rel.addend());
 
-                    return Ok(Referent::MergedString(MergedStringRef {
-                        data: &string_plus_rest[..end_offset],
-                        named_symbol_addend: addend,
-                    }));
+                            return Ok(Referent::MergedString(MergedStringRef {
+                                data: &string_plus_rest[..end_offset],
+                                named_symbol_addend: addend,
+                            }));
+                        }
+                    }
                 }
+                _ => {}
             }
         }
 
@@ -1809,7 +1815,7 @@ impl<'data> RelaxationTester<'data> {
                 section_bytes = None;
             }
             _ => {
-                section_bytes = read_bytes(bin.elf_file, section_address, section_len);
+                section_bytes = read_bytes(bin.file, section_address, section_len);
 
                 if section_bytes.is_none() {
                     bail!(
@@ -2244,7 +2250,7 @@ impl<'data> RelaxationTester<'data> {
         expected_symbol_name: &[u8],
     ) -> Option<Reference<'data, <A as Arch>::RType>> {
         let thunk_target =
-            read_bytes(self.bin.elf_file, address, 16).and_then(|b| A::decode_thunk(b, address))?;
+            read_bytes(self.bin.file, address, 16).and_then(|b| A::decode_thunk(b, address))?;
 
         let got_address = self
             .bin
@@ -2355,9 +2361,8 @@ impl<'data> RelaxationTester<'data> {
                             // range-extension thunk. Try to follow the thunk to check whether it
                             // ultimately jumps to the expected symbol (directly or via PLT->GOT for
                             // ifuncs / non-interposable symbols).
-                            if let Some(thunk_target) =
-                                read_bytes(self.bin.elf_file, *merged_value, 16)
-                                    .and_then(|b| A::decode_thunk(b, *merged_value))
+                            if let Some(thunk_target) = read_bytes(self.bin.file, *merged_value, 16)
+                                .and_then(|b| A::decode_thunk(b, *merged_value))
                             {
                                 // The thunk may redirect through a PLT entry (e.g. for
                                 // ifuncs or other indirectly-called local symbols). Follow
@@ -2460,7 +2465,7 @@ impl<'data> RelaxationTester<'data> {
             merged_value
         };
 
-        let bytes = read_bytes_starting_at(self.bin.elf_file, string_address)
+        let bytes = read_bytes_starting_at(self.bin.file, string_address)
             .with_context(|| format!("Failed to read bytes starting at 0x{string_address:x}"))?;
         let null_offset = memchr::memchr(0, bytes).with_context(|| {
             format!("Missing null-terminator for merged string starting at 0x{string_address:x}")
@@ -2756,7 +2761,7 @@ fn symbol_versions_by_name<'data>(
     binaries: &'data [Binary<'data>],
     layout: &IndexedLayout<'data>,
 ) -> HashMap<&'data [u8], SymbolVersions> {
-    let e = binaries[0].elf_file.endian();
+    let e = binaries[0].file.endianness();
 
     // Populate our map with eligible unique symbols from the input files.
     let mut by_name: HashMap<&[u8], SymbolVersions> = layout
@@ -2785,7 +2790,7 @@ fn symbol_versions_by_name<'data>(
 
     // Try to find those same symbols in all the output files.
     for (object_index, obj) in binaries.iter().enumerate() {
-        for sym in obj.elf_file.symbols() {
+        for sym in obj.file.symbols() {
             let Ok(name) = sym.name_bytes() else { continue };
 
             if let hashbrown::hash_map::Entry::Occupied(mut entry) = by_name.entry(name) {
@@ -3126,14 +3131,14 @@ impl PltIndex<'_> {
 }
 
 impl<'data> AddressIndex<'data> {
-    pub(crate) fn new(elf_file: &'data ElfFile64<'data>) -> Self {
+    pub(crate) fn new(file: &'data object::File<'data>) -> Self {
         let mut info = Self {
             index_error: None,
             jmprel_address: None,
             versym_address: None,
             dynamic_segment_address: None,
             got_base_address: None,
-            tls_segment_size: get_tls_segment_size(elf_file),
+            tls_segment_size: get_tls_segment_size(file),
             plt_indexes: Default::default(),
             got_tables: Default::default(),
             verdef: Default::default(),
@@ -3143,7 +3148,7 @@ impl<'data> AddressIndex<'data> {
             dynamic_relocations_by_address: Default::default(),
             bin_attributes: BinAttributes {
                 // These may be overridden in `index_dynamic`.
-                output_kind: if elf_file.kind() == ObjectKind::Executable {
+                output_kind: if file.kind() == ObjectKind::Executable {
                     OutputKind::Executable
                 } else {
                     OutputKind::SharedObject
@@ -3152,23 +3157,25 @@ impl<'data> AddressIndex<'data> {
                 link_type: LinkType::Static,
             },
             dynamic_relocations_by_symbol_index: Default::default(),
-            symbols_by_address: index_symbols_by_address(elf_file),
+            symbols_by_address: index_symbols_by_address(file),
         };
 
-        if let Err(error) = info.build_indexes(elf_file) {
+        if let Err(error) = info.build_indexes(file) {
             info.index_error = Some(error);
         }
         info
     }
 
-    fn build_indexes(&mut self, elf_file: &ElfFile64<'data>) -> Result {
-        self.index_dynamic(elf_file);
-        self.verdef = Self::index_verdef(elf_file)?;
-        self.verneed = Self::index_verneed(elf_file)?;
-        self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
-        self.index_got_tables(elf_file).unwrap();
-        self.index_relocations(elf_file);
-        self.index_plt_sections(elf_file)?;
+    fn build_indexes(&mut self, file: &File<'data>) -> Result {
+        if let object::File::Elf64(elf_file) = file {
+            self.index_dynamic(elf_file);
+            self.verdef = Self::index_verdef(elf_file)?;
+            self.verneed = Self::index_verneed(elf_file)?;
+            self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
+            self.index_got_tables(elf_file).unwrap();
+            self.index_relocations(elf_file);
+            self.index_plt_sections(elf_file)?;
+        }
         Ok(())
     }
 
@@ -3517,20 +3524,27 @@ impl<'data> AddressIndex<'data> {
     }
 }
 
-fn get_tls_segment_size(elf_file: &ElfFile64) -> u64 {
-    let e = elf_file.endian();
+fn get_tls_segment_size(file: &object::File) -> u64 {
+    match file {
+        object::File::Elf64(elf_file) => {
+            let e = elf_file.endian();
 
-    elf_file
-        .elf_program_headers()
-        .iter()
-        .find_map(|header| (header.p_type(e) == object::elf::PT_TLS).then(|| header.p_memsz(e)))
-        .unwrap_or(0)
+            elf_file
+                .elf_program_headers()
+                .iter()
+                .find_map(|header| {
+                    (header.p_type(e) == object::elf::PT_TLS).then(|| header.p_memsz(e))
+                })
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
 }
 
-fn index_symbols_by_address(elf_file: &ElfFile64) -> HashMap<u64, Vec<object::SymbolIndex>> {
+fn index_symbols_by_address(file: &object::File) -> HashMap<u64, Vec<object::SymbolIndex>> {
     let mut out: HashMap<u64, Vec<object::SymbolIndex>> = HashMap::new();
 
-    for sym in elf_file.symbols() {
+    for sym in file.symbols() {
         out.entry(sym.address()).or_default().push(sym.index());
     }
 
@@ -3604,7 +3618,7 @@ impl<'data> GotIndex<'data> {
                             // TLS variable within the current DSO. Read
                             // the next word of data to get the offset.
                             let tls_offset =
-                                read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)
+                                read_word_at(bin.file, got_address + size_of::<u64>() as u64)
                                     .context("Short read after DTPMOD")?
                                     as i64;
                             Ok(Referent::UnmatchedTlsOffset(tls_offset))
@@ -3700,7 +3714,10 @@ fn determine_ifunc_name<'data>(address: u64, bin: &Binary<'data>) -> Option<Symb
         .symbols_at_address(address)
         .iter()
         .filter_map(|symbol_index| {
-            let symbol = bin.elf_file.symbol_by_index(*symbol_index).ok()?;
+            let File::Elf64(elf_file) = &bin.file else {
+                return None;
+            };
+            let symbol = elf_file.symbol_by_index(*symbol_index).ok()?;
 
             // We're likely to get symbols of type STT_GNU_IFUNC. The resolver should be just a
             // regular function and that's what we want.
@@ -3724,7 +3741,14 @@ struct DynamicRelocation<'data, R: RType> {
 }
 
 /// Attempts to read some data starting at `address` up to the end of the segment.
-fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
+fn read_segment<'data>(file: &File<'data>, address: u64) -> Option<Data<'data>> {
+    match file {
+        File::Elf64(elf_file) => read_segment_elf(elf_file, address),
+        _ => unimplemented!(),
+    }
+}
+
+fn read_segment_elf<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
     let e = elf_file.endian();
     for raw_seg in elf_file.elf_program_headers() {
@@ -3756,14 +3780,14 @@ fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data
     None
 }
 
-fn read_word_at(elf_file: &ElfFile64, address: u64) -> Option<u64> {
-    let bytes = read_bytes(elf_file, address, size_of::<u64>() as u64)?;
+fn read_word_at(file: &File, address: u64) -> Option<u64> {
+    let bytes = read_bytes(file, address, size_of::<u64>() as u64)?;
     let chunk = bytes.first_chunk()?;
     Some(u64::from_le_bytes(*chunk))
 }
 
-fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address).and_then(|data| match data {
+fn read_bytes<'data>(file: &File<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
+    read_segment(file, address).and_then(|data| match data {
         Data::Bytes(bytes) => bytes.get(..len as usize),
         Data::Bss => None,
     })
@@ -3771,8 +3795,8 @@ fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Opt
 
 /// Returns bytes starting at `address` up to the end of the containing segment. This is useful when
 /// you don't know what length you need to read, e.g. when reading a null-terminated string.
-fn read_bytes_starting_at<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address).and_then(|data| match data {
+fn read_bytes_starting_at<'data>(file: &File<'data>, address: u64) -> Option<&'data [u8]> {
+    read_segment(file, address).and_then(|data| match data {
         Data::Bytes(bytes) => Some(bytes),
         Data::Bss => None,
     })

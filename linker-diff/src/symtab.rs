@@ -16,24 +16,31 @@ pub(crate) fn validate_dynamic(object: &Binary) -> Result {
 }
 
 fn validate(object: &Binary, dynamic: bool) -> Result {
-    let e = object.elf_file.endian();
-    let mut symtab_info = 0;
-    let (symtab_section_type, mut symbols) = if dynamic {
-        (sht::DYNSYM, object.elf_file.dynamic_symbols())
-    } else {
-        (sht::SYMTAB, object.elf_file.symbols())
-    };
-    for section in object.elf_file.elf_section_table().iter() {
-        if section.sh_type(e) == symtab_section_type {
-            symtab_info = section.sh_info(e);
-        }
-    }
-    let first_non_local = symbols.find_map(|sym| sym.is_local().not().then(|| sym.index()));
-    if let Some(first_non_local) = first_non_local
-        && first_non_local.0 != symtab_info as usize
-    {
-        bail!("info={symtab_info}, but first non-local is {first_non_local}")
-    }
+    let e = object.file.endianness();
 
+    match object.file {
+        object::File::Elf64(elf_file) => {
+            let mut symtab_info = 0;
+            let (symtab_section_type, mut symbols) = if dynamic {
+                (sht::DYNSYM, object.file.dynamic_symbols())
+            } else {
+                (sht::SYMTAB, object.file.symbols())
+            };
+
+            for section in elf_file.elf_section_table().iter() {
+                if section.sh_type(e) == symtab_section_type {
+                    symtab_info = section.sh_info(e);
+                }
+            }
+
+            let first_non_local = symbols.find_map(|sym| sym.is_local().not().then(|| sym.index()));
+            if let Some(first_non_local) = first_non_local
+                && first_non_local.0 != symtab_info as usize
+            {
+                bail!("info={symtab_info}, but first non-local is {first_non_local}")
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
