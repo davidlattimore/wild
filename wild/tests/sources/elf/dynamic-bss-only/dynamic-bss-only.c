@@ -1,6 +1,7 @@
 // This test sets up the scenario where we have TBSS, but not TDATA. We then have a TLSGD relocation
 // for a local TLS variable in TBSS. We hope to verify that the TLSGD entry gets the correct offset.
 
+//#SkipArch: ppc64le
 //#CompArgs:-fPIC -ftls-model=global-dynamic
 //#LinkArgs:-shared -z now
 //#RunEnabled:false

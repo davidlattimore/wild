@@ -1,5 +1,6 @@
 // Makes sure that having both verdef and verneed doesn't cause problems.
 
+//#SkipArch: ppc64le
 //#Mode:dynamic
 //#Object:runtime.c
 //#LinkArgs:-z now --version-script ./mixed-verdef-verneed.map

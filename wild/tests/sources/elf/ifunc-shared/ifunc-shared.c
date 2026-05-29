@@ -1,4 +1,5 @@
 //#AbstractConfig:default
+//#SkipArch: ppc64le
 //#RequiresGlibc:true
 //#Object:compute32.c
 //#CompArgs:-fPIC

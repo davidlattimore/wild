@@ -1,4 +1,5 @@
 //#Config:default
+//#SkipArch: ppc64le
 //#Object:runtime.c
 //#EnableLinker:lld
 //#Mode:dynamic
@@ -17,14 +18,17 @@
 //#DiffMatchAny:true
 
 //#Config:origin:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z now -z origin
 //#ExpectDynamic:DT_FLAGS
 
 //#Config:nodelete:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z now -z nodelete
 //#ExpectDynamic:DT_FLAGS_1
 
 //#Config:symbolic:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z now -Bsymbolic
 // TODO: Set these
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC

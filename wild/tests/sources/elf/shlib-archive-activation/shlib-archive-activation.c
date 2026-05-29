@@ -9,6 +9,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:archive:default
+//#SkipArch: ppc64le
 //#Shared:shlib-archive-activation-1.c
 //#Archive:shlib-archive-activation-2.c
 

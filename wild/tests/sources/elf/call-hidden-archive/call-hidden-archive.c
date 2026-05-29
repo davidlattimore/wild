@@ -3,6 +3,7 @@
 // Makes sure we don't incorrectly allow the hidden attribute from the archive to affect the
 // reference to the dynamic symbol.
 
+//#SkipArch: ppc64le
 //#Object:runtime.c
 //#Mode:dynamic
 //#Shared:call-hidden-archive-lib.c

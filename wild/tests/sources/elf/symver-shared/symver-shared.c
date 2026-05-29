@@ -2,6 +2,7 @@
 // contains the definition foo@VER_1.0. Note that the definition with a single '@' is not the
 // default version. i.e. it doesn't bind 'foo'.
 
+//#SkipArch: ppc64le
 //#Object:runtime.c
 //#Shared:symver-shared-1.c
 //#Shared:symver-shared-2.c

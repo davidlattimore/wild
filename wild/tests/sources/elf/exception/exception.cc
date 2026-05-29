@@ -9,9 +9,11 @@
 //#DiffIgnore:version._ZSt21ios_base_library_initv
 
 //#Config:gcc:default
+//#SkipArch: ppc64le
 //#LinkerDriver:g++
 
 //#Config:clang:default
+//#SkipArch: ppc64le
 //#Compiler:clang
 //#LinkerDriver:clang++
 

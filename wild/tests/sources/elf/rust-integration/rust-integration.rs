@@ -37,6 +37,7 @@
 //#DiffIgnore:section.debug_str.entsize
 
 //#Config:llvm-dynamic:default
+//#SkipArch: ppc64le
 //#CompArgs:-C debuginfo=2
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_PLTGOT

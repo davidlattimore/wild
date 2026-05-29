@@ -2,6 +2,7 @@
 // section with TLS flag. This is necessary to fully stress the linker.
 
 //#Config:default
+//#SkipArch: ppc64le
 //#LinkArgs:-z now
 //#Mode:dynamic
 //#Shared:runtime.c

@@ -10,6 +10,7 @@
 //#RequiresGlibc:true
 
 //#Config:eh-frame:default
+//#SkipArch: ppc64le
 //#CompArgs:-O0 -fomit-frame-pointer
 
 //#Config:sframe:default

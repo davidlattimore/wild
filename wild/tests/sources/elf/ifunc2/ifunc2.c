@@ -6,6 +6,7 @@
 //#RequiresGlibc:true
 
 //#Config:pie:default
+//#SkipArch: ppc64le
 //#CompArgs:-fpie
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now

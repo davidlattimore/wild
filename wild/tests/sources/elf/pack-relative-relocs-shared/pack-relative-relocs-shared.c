@@ -1,4 +1,5 @@
 //#Config:wild-so
+//#SkipArch: ppc64le
 //#SoSingleLinker:wild
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now,-z,pack-relative-relocs

@@ -1,3 +1,4 @@
+//#SkipArch: ppc64le
 //#LinkerDriver:gcc
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata

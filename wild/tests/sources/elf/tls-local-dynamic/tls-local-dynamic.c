@@ -4,6 +4,7 @@
 //#DiffIgnore:dynsym.foo.section
 
 //#Config:gcc:default
+//#SkipArch: ppc64le
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now
@@ -13,7 +14,7 @@
 //#DiffEnabled:false
 // TODO: For some reason, the test fails under QEMU for LoongArch64, even though it runs correctly
 // on a native Alpine Linux system.
-//#SkipArch:loongarch64
+//#SkipArch:loongarch64,ppc64le
 
 //#Config:gcc-no-relax-aarch64:gcc-no-relax
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad

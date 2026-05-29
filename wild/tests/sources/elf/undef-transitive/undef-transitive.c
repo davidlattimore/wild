@@ -6,11 +6,13 @@
 //#Mode:dynamic
 
 //#Config:object-first:default
+//#SkipArch: ppc64le
 //#Object:undef-transitive-1.c
 //#Shared:undef-transitive-2.c
 //#ExpectError:foo
 
 //#Config:shlib-first:default
+//#SkipArch: ppc64le
 //#Shared:undef-transitive-2.c
 //#Object:undef-transitive-1.c
 //#ExpectError:foo

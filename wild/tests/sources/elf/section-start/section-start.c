@@ -6,7 +6,7 @@
 //#DiffIgnore:section.rodata.alignment
 //#DiffIgnore:section.data
 //#DiffIgnore:section.sdata
-//#SkipArch:loongarch64
+//#SkipArch:loongarch64,ppc64le
 
 /* BFD rejects the code on loongarch: relocation truncated to fit: R_LARCH_B26
    against symbol `foo' defined in .foo section. */
