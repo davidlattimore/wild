@@ -326,29 +326,26 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
     let short_off = sym_off + (ht_slots * HASH_SLOT_SIZE) as u32;
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
-    // Build constant pool: CU vectors first, then name strings.
-    let mut cv_data = Vec::new();
-    let mut str_data = Vec::new();
+    // Write constant pool: CU vectors first, then name strings.
     let mut cv_offsets = Vec::with_capacity(sorted.len());
-    let mut name_offsets = Vec::with_capacity(sorted.len());
-
+    let mut off = cp_off as usize;
     for (_, sd) in &sorted {
-        cv_offsets.push(cv_data.len() as u32);
-        cv_data.extend_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
+        cv_offsets.push((off - cp_off as usize) as u32);
+        buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
+        off += 4;
         for &e in &sd.cv_entries {
-            cv_data.extend_from_slice(&e.to_le_bytes());
+            buf[off..off + 4].copy_from_slice(&e.to_le_bytes());
+            off += 4;
         }
     }
+    let mut name_offsets = Vec::with_capacity(sorted.len());
     for (name, _) in &sorted {
-        name_offsets.push((cv_data.len() + str_data.len()) as u32);
-        str_data.extend_from_slice(name);
-        str_data.push(0);
+        name_offsets.push((off - cp_off as usize) as u32);
+        buf[off..off + name.len()].copy_from_slice(name);
+        off += name.len();
+        buf[off] = 0;
+        off += 1;
     }
-
-    // Emit into the output buffer.
-    let total = cp_off as usize + cv_data.len() + str_data.len();
-    let len = buf.len().min(total);
-    let buf = &mut buf[..len];
 
     let hdr = GdbIndexHeader {
         version: GDB_INDEX_VERSION,
@@ -388,10 +385,6 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
         name_of_main_offset: 0,
     };
     buf[so..so + SHORTCUT_TABLE_SIZE].copy_from_slice(sc.as_bytes());
-
-    let cpo = cp_off as usize;
-    buf[cpo..cpo + cv_data.len()].copy_from_slice(&cv_data);
-    buf[cpo + cv_data.len()..cpo + cv_data.len() + str_data.len()].copy_from_slice(&str_data);
 }
 
 /// Build the CU list from the already-written output `.debug_info`.
