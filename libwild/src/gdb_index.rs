@@ -15,6 +15,9 @@ use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
+use linker_utils::bit_misc::BitExtraction;
+use linker_utils::utils::u32_from_slice;
+use linker_utils::utils::u64_from_slice;
 use std::mem::size_of;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -80,8 +83,9 @@ fn gdb_hash(name: &[u8]) -> u32 {
 /// The attrs byte from `.debug_gnu_pubnames`/`.debug_gnu_pubtypes` packs kind in bits 4-6
 /// and is_static in bit 7.
 fn encode_cu_vector_entry(cu_index: u32, attrs: u8) -> u32 {
-    let kind = u32::from((attrs >> 4) & 0x7);
-    let is_static = u32::from((attrs >> 7) & 0x1);
+    let attrs = u64::from(attrs);
+    let kind = attrs.extract_bit_range(4..7) as u32;
+    let is_static = attrs.extract_bit_range(7..8) as u32;
     (cu_index & 0x00FF_FFFF) | (kind << 28) | (is_static << 31)
 }
 
@@ -103,12 +107,12 @@ fn parse_cu_boundaries(data: &[u8]) -> Vec<CuBoundary> {
     let mut cus = Vec::new();
     let mut offset = 0usize;
     while offset + 4 <= data.len() {
-        let init_len = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
+        let init_len = u32_from_slice(&data[offset..]);
         let total = if init_len == 0xFFFF_FFFF {
             if offset + 12 > data.len() {
                 break;
             }
-            let len = u64::from_le_bytes(data[offset + 4..offset + 12].try_into().unwrap());
+            let len = u64_from_slice(&data[offset + 4..]);
             12 + len as usize
         } else {
             4 + init_len as usize
@@ -138,24 +142,22 @@ fn parse_pubnames_sets(data: &[u8]) -> Vec<PubnamesSet<'_>> {
     let mut sets = Vec::new();
     let mut pos = 0;
     while pos + 4 <= data.len() {
-        let init_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+        let init_len = u32_from_slice(&data[pos..]);
 
         let (header_size, set_end, debug_info_offset) = if init_len == 0xFFFF_FFFF {
             // DWARF64: 4 + 8(len) + 2(ver) + 8(offset) + 8(size) = 30
             if pos + 30 > data.len() {
                 break;
             }
-            let len = u64::from_le_bytes(data[pos + 4..pos + 12].try_into().unwrap());
-            let dio = u64::from_le_bytes(data[pos + 14..pos + 22].try_into().unwrap());
+            let len = u64_from_slice(&data[pos + 4..]);
+            let dio = u64_from_slice(&data[pos + 14..]);
             (30, pos + 12 + len as usize, dio)
         } else {
             // DWARF32: 4(len) + 2(ver) + 4(offset) + 4(size) = 14
             if pos + 14 > data.len() {
                 break;
             }
-            let dio = u64::from(u32::from_le_bytes(
-                data[pos + 6..pos + 10].try_into().unwrap(),
-            ));
+            let dio = u64::from(u32_from_slice(&data[pos + 6..]));
             (14, pos + 4 + init_len as usize, dio)
         };
 
@@ -169,14 +171,14 @@ fn parse_pubnames_sets(data: &[u8]) -> Vec<PubnamesSet<'_>> {
                 if ep + 8 > set_end {
                     break;
                 }
-                let v = u64::from_le_bytes(data[ep..ep + 8].try_into().unwrap());
+                let v = u64_from_slice(&data[ep..]);
                 ep += 8;
                 v
             } else {
                 if ep + 4 > set_end {
                     break;
                 }
-                let v = u64::from(u32::from_le_bytes(data[ep..ep + 4].try_into().unwrap()));
+                let v = u64::from(u32_from_slice(&data[ep..]));
                 ep += 4;
                 v
             };
@@ -539,12 +541,12 @@ fn write_hash_table(
     let mask = (ht_slots - 1) as u32;
     for (i, (_, sd)) in sorted.iter().enumerate() {
         let h = sd.hash;
-        let step = ((h >> 3) & mask) | 1;
+        let step = (h.wrapping_mul(17) & mask) | 1;
         let mut slot = h & mask;
         loop {
             let so = ht_start + slot as usize * HASH_SLOT_SIZE;
-            let existing_name = u32::from_le_bytes(buf[so..so + 4].try_into().unwrap());
-            let existing_vec = u32::from_le_bytes(buf[so + 4..so + 8].try_into().unwrap());
+            let existing_name = u32_from_slice(&buf[so..]);
+            let existing_vec = u32_from_slice(&buf[so + 4..]);
             if existing_name == 0 && existing_vec == 0 {
                 buf[so..so + 4].copy_from_slice(&name_offsets[i].to_le_bytes());
                 buf[so + 4..so + 8].copy_from_slice(&cv_offsets[i].to_le_bytes());
