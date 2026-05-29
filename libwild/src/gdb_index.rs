@@ -21,6 +21,7 @@ use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
 use linker_utils::utils::u64_from_slice;
+use std::collections::BTreeSet;
 use std::mem::size_of;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -376,7 +377,7 @@ fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Vec<GdbIndexCuE
 }
 
 struct SymData {
-    cv_entries: Vec<u32>,
+    cv_entries: BTreeSet<u32>,
     hash: u32,
 }
 
@@ -433,16 +434,11 @@ fn scan_objects_for_gdb_index<'data>(
 
         for (name, entry) in collect_pubname_entries(object, &offset_to_idx, base) {
             let sd = sym_map.entry(name).or_insert_with(|| SymData {
-                cv_entries: Vec::new(),
+                cv_entries: BTreeSet::new(),
                 hash: gdb_hash(name),
             });
-            sd.cv_entries.push(entry);
+            sd.cv_entries.insert(entry);
         }
-    }
-
-    for sd in sym_map.values_mut() {
-        sd.cv_entries.sort_unstable();
-        sd.cv_entries.dedup();
     }
 
     let sorted: Vec<(&[u8], SymData)> = sym_map
