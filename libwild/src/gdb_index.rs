@@ -431,13 +431,13 @@ fn scan_objects_for_gdb_index<'data>(
         }
         cu_offset += boundaries.len() as u32;
 
-        for_each_pubname_entry(object, &offset_to_idx, base, |name, entry| {
+        for (name, entry) in collect_pubname_entries(object, &offset_to_idx, base) {
             let sd = sym_map.entry(name).or_insert_with(|| SymData {
                 cv_entries: Vec::new(),
                 hash: gdb_hash(name),
             });
             sd.cv_entries.push(entry);
-        });
+        }
     }
 
     for sd in sym_map.values_mut() {
@@ -507,14 +507,14 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> 
     entries
 }
 
-/// Iterate over `.debug_gnu_pubnames` and `.debug_gnu_pubtypes` entries in an object,
-/// calling `on_entry(name, encoded_entry)` for each symbol.
-fn for_each_pubname_entry<'data>(
+/// Collect encoded pubname/pubtype entries from an object's `.debug_gnu_pubnames`
+/// and `.debug_gnu_pubtypes` sections, returning `(name, encoded_cu_vector_entry)` pairs.
+fn collect_pubname_entries<'data>(
     object: &crate::elf::File<'data>,
     offset_to_idx: &HashMap<u64, u32>,
     fallback_cu: u32,
-    mut on_entry: impl FnMut(&'data [u8], u32),
-) {
+) -> Vec<(&'data [u8], u32)> {
+    let mut entries = Vec::new();
     for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
         let Some(data) = raw_section_by_name(object, section_name) else {
             continue;
@@ -525,10 +525,11 @@ fn for_each_pubname_entry<'data>(
                 .copied()
                 .unwrap_or(fallback_cu);
             for (name, attrs) in set.entries {
-                on_entry(name, encode_cu_vector_entry(cu_idx, attrs));
+                entries.push((name, encode_cu_vector_entry(cu_idx, attrs)));
             }
         }
     }
+    entries
 }
 
 /// Insert symbols into the open-addressing hash table region of `buf`.
