@@ -64,7 +64,14 @@ const HEADER_SIZE: usize = size_of::<GdbIndexHeader>();
 const CU_ENTRY_SIZE: usize = size_of::<GdbIndexCuEntry>();
 const ADDRESS_ENTRY_SIZE: usize = size_of::<GdbIndexAddressEntry>();
 const SHORTCUT_TABLE_SIZE: usize = size_of::<GdbIndexShortcutTable>();
-const HASH_SLOT_SIZE: usize = 8; // (name_offset, cu_vector_offset) pair
+#[derive(Debug, Clone, Copy, FromBytes, Immutable, IntoBytes, KnownLayout)]
+#[repr(C, packed)]
+struct GdbIndexHashSlot {
+    name_offset: u32,
+    cu_vector_offset: u32,
+}
+
+const HASH_SLOT_SIZE: usize = size_of::<GdbIndexHashSlot>();
 
 /// The GDB index hash function.
 fn gdb_hash(name: &[u8]) -> u32 {
@@ -545,11 +552,14 @@ fn write_hash_table(
         let mut slot = h & mask;
         loop {
             let so = ht_start + slot as usize * HASH_SLOT_SIZE;
-            let existing_name = u32_from_slice(&buf[so..]);
-            let existing_vec = u32_from_slice(&buf[so + 4..]);
-            if existing_name == 0 && existing_vec == 0 {
-                buf[so..so + 4].copy_from_slice(&name_offsets[i].to_le_bytes());
-                buf[so + 4..so + 8].copy_from_slice(&cv_offsets[i].to_le_bytes());
+            let existing =
+                GdbIndexHashSlot::read_from_bytes(&buf[so..so + HASH_SLOT_SIZE]).unwrap();
+            if existing.name_offset == 0 && existing.cu_vector_offset == 0 {
+                let new_slot = GdbIndexHashSlot {
+                    name_offset: name_offsets[i],
+                    cu_vector_offset: cv_offsets[i],
+                };
+                buf[so..so + HASH_SLOT_SIZE].copy_from_slice(new_slot.as_bytes());
                 break;
             }
             slot = (slot + step) & mask;
