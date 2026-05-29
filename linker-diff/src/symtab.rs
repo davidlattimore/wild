@@ -2,7 +2,6 @@ use crate::Binary;
 use crate::Result;
 use anyhow::bail;
 use linker_utils::elf::sht;
-use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSymbol;
 use object::read::elf::SectionHeader as _;
@@ -17,6 +16,7 @@ pub(crate) fn validate_dynamic(object: &Binary) -> Result {
 }
 
 fn validate(object: &Binary, dynamic: bool) -> Result {
+    let e = object.elf_file.endian();
     let mut symtab_info = 0;
     let (symtab_section_type, mut symbols) = if dynamic {
         (sht::DYNSYM, object.elf_file.dynamic_symbols())
@@ -24,8 +24,8 @@ fn validate(object: &Binary, dynamic: bool) -> Result {
         (sht::SYMTAB, object.elf_file.symbols())
     };
     for section in object.elf_file.elf_section_table().iter() {
-        if section.sh_type(LittleEndian) == symtab_section_type {
-            symtab_info = section.sh_info(LittleEndian);
+        if section.sh_type(e) == symtab_section_type {
+            symtab_info = section.sh_info(e);
         }
     }
     let first_non_local = symbols.find_map(|sym| sym.is_local().not().then(|| sym.index()));

@@ -3,7 +3,6 @@ use crate::header_diff::FieldValues;
 use anyhow::Result;
 use linker_utils::elf::secnames::GNU_VERSION_D_SECTION_NAME_STR;
 use linker_utils::elf::secnames::GNU_VERSION_SECTION_NAME_STR;
-use object::LittleEndian;
 use object::Object;
 use object::ObjectSymbol;
 use object::elf;
@@ -28,7 +27,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 // Reads version names defined in the binary's version_d section and their parent name to find
 // whether all the versions are present.
 fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = LittleEndian;
+    let e = bin.elf_file.endian();
     let mut values = FieldValues::default();
 
     let Some((mut verdef_iterator, strings_index)) = bin
@@ -84,7 +83,7 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
 // Reads dynamic symbol names and their corresponding version names to find whether all dynamic
 // symbols have the correct version.
 fn read_gnu_version(bin: &crate::Binary) -> Result<FieldValues> {
-    let e = LittleEndian;
+    let e = bin.elf_file.endian();
     let mut values = FieldValues::default();
 
     let Some((versyms, _)) = bin

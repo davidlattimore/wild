@@ -7,7 +7,6 @@ use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
-use object::LittleEndian;
 use object::read::elf::FileHeader as _;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -276,7 +275,9 @@ pub(crate) enum PltEntry {
 
 impl ArchKind {
     pub(crate) fn from_objects(bins: &[Binary]) -> Result<ArchKind> {
-        match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
+        let binary = &bins[0];
+        let e = binary.elf_file.endian();
+        match binary.elf_file.elf_header().e_machine(e) {
             object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
             object::elf::EM_RISCV => Ok(ArchKind::RiscV64),

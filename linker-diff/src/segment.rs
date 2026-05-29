@@ -4,7 +4,6 @@ use crate::header_diff::FieldValues;
 use anyhow::Ok;
 use anyhow::Result;
 use linker_utils::elf::pt;
-use object::LittleEndian;
 use object::elf::PT_LOAD;
 use object::read::elf::ProgramHeader as _;
 
@@ -18,7 +17,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]
 }
 
 fn read_program_segment_fields(object: &crate::Binary) -> Result<FieldValues> {
-    let e = LittleEndian;
+    let e = object.elf_file.endian();
     let mut values = FieldValues::default();
 
     for segment in object.elf_file.elf_program_headers() {

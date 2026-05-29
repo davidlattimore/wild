@@ -23,7 +23,7 @@ use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::utils::slice_from_all_bytes;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
@@ -57,8 +57,8 @@ mod version_diff;
 mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
-type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
-type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
+type ElfFile64<'data> = object::read::elf::ElfFile64<'data, Endianness>;
+type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, Endianness>;
 
 use arch::Arch;
 use arch::ArchKind;
@@ -494,14 +494,14 @@ impl<'data> Binary<'data> {
     fn section_by_name<'file: 'data>(
         &'file self,
         name: &str,
-    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+    ) -> Option<ElfSection64<'data, 'file, Endianness>> {
         self.section_by_name_bytes(name.as_bytes())
     }
 
     fn section_by_name_bytes<'file: 'data>(
         &'file self,
         name: &[u8],
-    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+    ) -> Option<ElfSection64<'data, 'file, Endianness>> {
         let index = self.sections_by_name.get(name)?.index;
         self.elf_file.section_by_index(index).ok()
     }
@@ -509,7 +509,7 @@ impl<'data> Binary<'data> {
     fn section_containing_address<'file: 'data>(
         &'file self,
         address: u64,
-    ) -> Option<ElfSection64<'file, 'data, LittleEndian>> {
+    ) -> Option<ElfSection64<'file, 'data, Endianness>> {
         self.elf_file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))

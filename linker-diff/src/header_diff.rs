@@ -15,7 +15,7 @@ use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
@@ -227,30 +227,31 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
             |object| {
                 let section = section_or_equiv(object, name, &report.config)
                     .ok_or_else(|| anyhow!("Section missing"))?;
+                let e = object.elf_file.endian();
                 let mut values = FieldValues::default();
                 values.insert("alignment", section.align(), Converter::None, object);
                 let section_header = section.elf_section_header();
                 values.insert(
                     "link",
-                    section_header.sh_link.get(LittleEndian),
+                    section_header.sh_link.get(e),
                     Converter::SectionIndex,
                     object,
                 );
                 values.insert(
                     "flags",
-                    section_header.sh_flags.get(LittleEndian).0,
+                    section_header.sh_flags.get(e).0,
                     Converter::SectionFlags,
                     object,
                 );
                 values.insert(
                     "type",
-                    section_header.sh_type.get(LittleEndian).0,
+                    section_header.sh_type.get(e).0,
                     Converter::None,
                     object,
                 );
                 values.insert(
                     "entsize",
-                    section_header.sh_entsize.get(LittleEndian),
+                    section_header.sh_entsize.get(e),
                     Converter::None,
                     object,
                 );
@@ -266,7 +267,7 @@ fn section_or_equiv<'data, 'file: 'data>(
     object: &'file Binary<'data>,
     name: &[u8],
     config: &Config,
-) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+) -> Option<ElfSection64<'data, 'file, Endianness>> {
     if let Some(section) = object.section_by_name_bytes(name) {
         return Some(section);
     }
@@ -474,7 +475,7 @@ impl FieldValues {
 fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
     let header = obj.elf_file.elf_header();
-    let e = LittleEndian;
+    let e = obj.elf_file.endian();
     values.insert_string("ident", format!("{:?}", header.e_ident.magic));
     values.insert("type", header.e_type.get(e).0, Converter::None, obj);
     values.insert("machine", header.e_machine.get(e).0, Converter::None, obj);
@@ -503,9 +504,9 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 
     let mut values = FieldValues::default();
-    let e = LittleEndian;
+    let e = obj.elf_file.endian();
 
-    let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
+    let entries: &[object::elf::Dyn64<Endianness>] = slice_from_all_bytes(dynamic.data()?);
     let mut got_null = false;
 
     // The following relies on the BFD order of the tags, but seems the easiest way how to catch

@@ -4,7 +4,7 @@ use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
 use linker_utils::elf::secnames::GNU_HASH_SECTION_NAME_STR;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
@@ -13,7 +13,7 @@ use object::SymbolIndex;
 use object::elf::FileHeader64;
 use object::read::elf::ElfSymbolTable;
 
-type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
+type GnuHashHeader = object::elf::GnuHashHeader<Endianness>;
 
 pub(crate) fn check_object(obj: &Binary) -> Result {
     let num_symbols = obj
@@ -36,7 +36,7 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
     }
 
     let gnu_hash_bytes = gnu_hash.data()?;
-    let e = LittleEndian;
+    let e = obj.elf_file.endian();
 
     let (header, rest) = object::from_bytes::<GnuHashHeader>(gnu_hash_bytes)
         .map_err(|_| anyhow!("Insufficient .gnu.hash bytes"))?;
@@ -90,17 +90,18 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
         }
         let name = sym.name()?;
         let name_bytes = sym.name_bytes()?;
-        let symbol_index = lookup_symbol(name_bytes, header, bloom_values, buckets, chains, dynsym)
-            .with_context(|| {
-                let hash = object::elf::gnu_hash(name_bytes);
-                format!(
-                    "Hash lookup of symbol `{name}` failed. \
+        let symbol_index =
+            lookup_symbol(name_bytes, header, bloom_values, buckets, chains, dynsym, e)
+                .with_context(|| {
+                    let hash = object::elf::gnu_hash(name_bytes);
+                    format!(
+                        "Hash lookup of symbol `{name}` failed. \
                         hash=0x{hash:x} \
                         buckets={buckets:?} \
                         symbol_base={symbol_base} \
                         chains={chains:x?}"
-                )
-            })?;
+                    )
+                })?;
         if symbol_index != sym.index().0 {
             bail!(
                 "Dynamic symbol `{}` hash lookup found {symbol_index}, expected {}",
@@ -115,13 +116,13 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
 
 fn lookup_symbol(
     sym_name: &[u8],
-    header: &object::elf::GnuHashHeader<LittleEndian>,
+    header: &object::elf::GnuHashHeader<Endianness>,
     bloom_values: &[u64],
     buckets: &[u32],
     chains: &[u32],
-    dynsym: ElfSymbolTable<FileHeader64<LittleEndian>>,
+    dynsym: ElfSymbolTable<FileHeader64<Endianness>>,
+    e: Endianness,
 ) -> Result<usize> {
-    let e = LittleEndian;
     let symbol_base = header.symbol_base.get(e) as usize;
     let hash = object::elf::gnu_hash(sym_name);
     let elf_class_bits = size_of::<u64>() as u32 * 8;

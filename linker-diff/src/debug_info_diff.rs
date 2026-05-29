@@ -4,7 +4,6 @@ use crate::DiffValues;
 use crate::Report;
 use crate::header_diff::DiffMode;
 use anyhow::Result;
-use gimli::LittleEndian;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use object::ObjectSection;
@@ -26,7 +25,7 @@ impl Display for CompilationUnitIdentifier {
 const DEBUG_INFO_ERROR_KEY: &str = "debug_info";
 
 fn parse_unit_info(
-    unit: gimli::UnitRef<'_, gimli::EndianSlice<'_, LittleEndian>>,
+    unit: gimli::UnitRef<'_, gimli::EndianSlice<'_, gimli::LittleEndian>>,
     size: usize,
 ) -> Result<(CompilationUnitIdentifier, usize)> {
     let mut name = None;
@@ -75,7 +74,8 @@ fn read_file_debug_info(obj: &Binary) -> Result<HashMap<CompilationUnitIdentifie
         })
     };
 
-    let borrow_section = |section| gimli::EndianSlice::new(Cow::as_ref(section), LittleEndian);
+    let borrow_section =
+        |section| gimli::EndianSlice::new(Cow::as_ref(section), gimli::LittleEndian);
     let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
     let dwarf = dwarf_sections.borrow(borrow_section);
 

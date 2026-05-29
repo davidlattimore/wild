@@ -5,7 +5,7 @@ use anyhow::bail;
 use hashbrown::HashMap;
 use itertools::Itertools;
 use linker_layout::ArchiveEntryInfo;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -254,7 +254,7 @@ impl<'data> IndexedLayout<'data> {
     pub(crate) fn get_elf_section(
         &self,
         section_id: InputSectionId,
-    ) -> Result<ElfSection64<'data, '_, LittleEndian>> {
+    ) -> Result<ElfSection64<'data, '_, Endianness>> {
         Ok(self.files[section_id.file_index]
             .elf_file
             .section_by_index(section_id.section_index)?)

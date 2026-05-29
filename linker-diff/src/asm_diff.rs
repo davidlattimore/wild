@@ -74,7 +74,7 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::utils::u32_from_slice;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectKind;
 use object::ObjectSection as _;
@@ -754,13 +754,14 @@ fn get_original_referent<'data, R: RType>(
     rel: &object::Relocation,
     input_file: &crate::section_map::InputFile<'data>,
 ) -> Result<Referent<'data, R>> {
+    let e = input_file.elf_file.endian();
     if let RelocationTarget::Symbol(symbol_index) = rel.target() {
         let symbol = input_file.elf_file.symbol_by_index(symbol_index)?;
 
         if let Some(section_index) = symbol.section_index() {
             let section = input_file.elf_file.section_by_index(section_index)?;
 
-            let flags = section.elf_section_header().sh_flags(LittleEndian);
+            let flags = section.elf_section_header().sh_flags(e);
 
             if flags.contains(object::elf::SHF_MERGE | object::elf::SHF_STRINGS) {
                 let section_data = section.data()?;
@@ -1793,7 +1794,7 @@ struct RelaxationTester<'data> {
 
 impl<'data> RelaxationTester<'data> {
     fn new(
-        original_section: &ElfSection64<'data, '_, LittleEndian>,
+        original_section: &ElfSection64<'data, '_, Endianness>,
         bin: &'data Binary<'data>,
         section_address: u64,
         input_file: &section_map::InputFile,
@@ -2755,6 +2756,8 @@ fn symbol_versions_by_name<'data>(
     binaries: &'data [Binary<'data>],
     layout: &IndexedLayout<'data>,
 ) -> HashMap<&'data [u8], SymbolVersions> {
+    let e = binaries[0].elf_file.endian();
+
     // Populate our map with eligible unique symbols from the input files.
     let mut by_name: HashMap<&[u8], SymbolVersions> = layout
         .symbol_name_to_section_id
@@ -2764,7 +2767,7 @@ fn symbol_versions_by_name<'data>(
 
             // Merge sections are ignored, since they're split before copying, so can't be compared
             // 1:1 between output files.
-            if is_merge_section(&section)
+            if is_merge_section(&section, e)
                 || section.size() == 0
                 || !SUPPORTED_SECTION_KINDS.contains(&section.kind())
             {
@@ -2810,10 +2813,10 @@ fn symbol_versions_by_name<'data>(
 
 /// Returns whether the supplied section has the merge flag set. Merge sections aren't copied in
 /// their entirety, so need special handling.
-fn is_merge_section(section: &ElfSection64<LittleEndian>) -> bool {
+fn is_merge_section(section: &ElfSection64<Endianness>, e: Endianness) -> bool {
     section
         .elf_section_header()
-        .sh_flags(LittleEndian)
+        .sh_flags(e)
         .contains(object::elf::SHF_MERGE)
 }
 
@@ -2922,7 +2925,7 @@ impl<'data> SectionVersions<'data> {
     fn original_section<'layout>(
         &self,
         layout: &'layout IndexedLayout<'data>,
-    ) -> Result<ElfSection64<'data, 'layout, LittleEndian>> {
+    ) -> Result<ElfSection64<'data, 'layout, Endianness>> {
         layout.get_elf_section(self.input_section_id)
     }
 
@@ -3170,7 +3173,7 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_verdef(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
-        let e = LittleEndian;
+        let e = elf_file.endian();
         let mut versions = Vec::new();
 
         let maybe_verdef = elf_file
@@ -3203,7 +3206,7 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_verneed(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
-        let e = LittleEndian;
+        let e = elf_file.endian();
         let mut versions = Vec::new();
 
         let maybe_verneed = elf_file
@@ -3242,7 +3245,8 @@ impl<'data> AddressIndex<'data> {
         &self,
         elf_file: &ElfFile64<'data>,
     ) -> Result<Vec<SymtabEntryInfo<'data>>> {
-        let symbol_version_indexes: Option<&[object::elf::Versym<LittleEndian>]> = self
+        let e = elf_file.endian();
+        let symbol_version_indexes: Option<&[object::elf::Versym<Endianness>]> = self
             .versym_address
             .and_then(|address| {
                 elf_file
@@ -3260,7 +3264,7 @@ impl<'data> AddressIndex<'data> {
             max_index = max_index.max(sym_index);
             let version_index = symbol_version_indexes
                 .and_then(|indexes| indexes.get(sym_index))
-                .map(|versym| versym.0.get(LittleEndian).index());
+                .map(|versym| versym.0.get(e).index());
 
             let version: Option<&[u8]> = match version_index {
                 Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
@@ -3367,7 +3371,9 @@ impl<'data> AddressIndex<'data> {
             return Ok(());
         };
 
-        let entry_length = section.elf_section_header().sh_entsize(LittleEndian) as usize;
+        let e = elf_file.endian();
+
+        let entry_length = section.elf_section_header().sh_entsize(e) as usize;
 
         if ![0, 8, 0x10].contains(&entry_length) {
             bail!("{section_name} has unrecognised entry length {entry_length}");
@@ -3422,16 +3428,16 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_dynamic(&mut self, elf_file: &ElfFile64) {
-        let e = LittleEndian;
+        let e = elf_file.endian();
 
         let dynamic_segment = elf_file
             .elf_program_headers()
             .iter()
-            .find(|seg| seg.p_type(LittleEndian) == object::elf::PT_DYNAMIC);
+            .find(|seg| seg.p_type(e) == object::elf::PT_DYNAMIC);
 
         self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
 
-        if elf_file.elf_header().e_type(LittleEndian) == object::elf::ET_DYN {
+        if elf_file.elf_header().e_type(e) == object::elf::ET_DYN {
             self.bin_attributes.relocatability = Relocatability::Relocatable;
         }
 
@@ -3440,9 +3446,9 @@ impl<'data> AddressIndex<'data> {
         };
 
         dynamic_segment
-            .and_then(|seg| seg.data(LittleEndian, elf_file.data()).ok())
+            .and_then(|seg| seg.data(e, elf_file.data()).ok())
             .and_then(|dynamic_table_data| {
-                object::slice_from_all_bytes::<object::elf::Dyn64<LittleEndian>>(dynamic_table_data)
+                object::slice_from_all_bytes::<object::elf::Dyn64<Endianness>>(dynamic_table_data)
                     .ok()
             })
             .unwrap_or_default()
@@ -3512,13 +3518,12 @@ impl<'data> AddressIndex<'data> {
 }
 
 fn get_tls_segment_size(elf_file: &ElfFile64) -> u64 {
+    let e = elf_file.endian();
+
     elf_file
         .elf_program_headers()
         .iter()
-        .find_map(|header| {
-            (header.p_type(LittleEndian) == object::elf::PT_TLS)
-                .then(|| header.p_memsz(LittleEndian))
-        })
+        .find_map(|header| (header.p_type(e) == object::elf::PT_TLS).then(|| header.p_memsz(e)))
         .unwrap_or(0)
 }
 
@@ -3721,8 +3726,8 @@ struct DynamicRelocation<'data, R: RType> {
 /// Attempts to read some data starting at `address` up to the end of the segment.
 fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
+    let e = elf_file.endian();
     for raw_seg in elf_file.elf_program_headers() {
-        let e = LittleEndian;
         if raw_seg.p_type(e) != object::elf::PT_LOAD {
             continue;
         }
@@ -3952,7 +3957,7 @@ impl Display for OutputKind {
 }
 
 impl Visibility {
-    fn from_sym(elf_symbol: &object::elf::Sym64<LittleEndian>) -> Visibility {
+    fn from_sym(elf_symbol: &object::elf::Sym64<Endianness>) -> Visibility {
         match elf_symbol.st_visibility() {
             object::elf::STV_DEFAULT => Visibility::Default,
             object::elf::STV_PROTECTED => Visibility::Protected,

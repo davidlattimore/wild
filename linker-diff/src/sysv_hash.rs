@@ -5,7 +5,7 @@ use anyhow::bail;
 use anyhow::ensure;
 use itertools::Itertools;
 use linker_utils::elf::secnames::HASH_SECTION_NAME_STR;
-use object::LittleEndian;
+use object::Endianness;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
@@ -101,7 +101,7 @@ fn lookup_symbol(
     sym_name: &[u8],
     buckets: &[u32],
     chains: &[u32],
-    dynsym: ElfSymbolTable<FileHeader64<LittleEndian>>,
+    dynsym: ElfSymbolTable<FileHeader64<Endianness>>,
 ) -> Result<usize> {
     if buckets.is_empty() {
         bail!("Empty .hash bucket table");
