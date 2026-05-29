@@ -202,7 +202,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         ContentsCommand::Matcher(matcher) => {
                                             for pattern in &matcher.input_section_name_patterns {
                                                 self.add_section_rule(SectionRule::new(
-                                                    pattern,
+                                                    pattern.name,
                                                     matcher.input_file_pattern,
                                                     crate::layout_rules::SectionRuleOutcome::Discard,
                                                 )?);
@@ -259,11 +259,14 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                 must_keep: matcher.must_keep,
                                             };
 
-                                            // If the script requested sorting, tag it for the global Harvester instead of standard placement.
+                                            // If the script requested sorting, tag it for the
+                                            // global Harvester instead of standard placement.
                                             let outcome = if pattern.sorted {
                                                 SectionRuleOutcome::ScriptSortedSection(output_info)
                                             } else {
-                                                crate::layout_rules::SectionRuleOutcome::Section(output_info)
+                                                crate::layout_rules::SectionRuleOutcome::Section(
+                                                    output_info,
+                                                )
                                             };
 
                                             self.add_section_rule(SectionRule::new(

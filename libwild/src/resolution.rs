@@ -769,7 +769,8 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
-    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search same as layout file
+    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search
+    //// same as layout file
     pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
 
     /// Total size in bytes of all executable input sections in this object. Used to determine
@@ -1357,7 +1358,7 @@ fn resolve_section<'data, P: Platform>(
 
             unloaded_section = UnloadedSection::new();
         }
-            SectionRuleOutcome::ScriptSortedSection(output_info) => {
+        SectionRuleOutcome::ScriptSortedSection(output_info) => {
             part_id = if output_info.section_id.is_regular() {
                 output_info.section_id.part_id_with_alignment(alignment)
             } else {
@@ -1373,7 +1374,7 @@ fn resolve_section<'data, P: Platform>(
 
             unloaded_section = UnloadedSection::new();
         }
-        
+
         SectionRuleOutcome::Discard => return Ok((SectionSlot::Discard, part_id::UNMAPPED)),
         SectionRuleOutcome::NoteGnuStack => {
             P::validate_stack_section(input_section, obj, args)?;

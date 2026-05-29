@@ -1115,9 +1115,7 @@ fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Mat
     })
 }
 
-fn parse_pattern<'input>(
-    input: &mut &'input BStr,
-) -> winnow::Result<SectionPattern<'input>> {
+fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<SectionPattern<'input>> {
     // Handling SORT(...) wrapper: SORT is an alias for SORT_BY_NAME in GNU ld.
     if input.starts_with(b"SORT") {
         // Consume "SORT"
@@ -1139,7 +1137,10 @@ fn parse_pattern<'input>(
         // Original behavior: bare pattern
         let name = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
         skip_comments_and_whitespace(input)?;
-        Ok(SectionPattern { name, sorted: false })
+        Ok(SectionPattern {
+            name,
+            sorted: false,
+        })
     }
 }
 
@@ -1346,12 +1347,24 @@ mod tests {
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }, SectionPattern { name: b".text2", sorted: false }],
+                        input_section_name_patterns: vec![
+                            SectionPattern {
+                                name: b".text",
+                                sorted: false,
+                            },
+                            SectionPattern {
+                                name: b".text2",
+                                sorted: false,
+                            },
+                        ],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![SectionPattern { name: b".text3", sorted: false }],
+                        input_section_name_patterns: vec![SectionPattern {
+                            name: b".text3",
+                            sorted: false,
+                        }],
                     }),
                 ],
                 alignment: None,
@@ -1369,7 +1382,10 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
                     input_file_pattern: None,
-                    input_section_name_patterns: vec![SectionPattern { name: b"___ksymtab+", sorted: false }],
+                    input_section_name_patterns: vec![SectionPattern {
+                        name: b"___ksymtab+",
+                        sorted: false,
+                    }],
                 })],
                 alignment: Some(Alignment::new(8).unwrap()),
                 start_address_expression: Some(Expression::Number(0)),
@@ -1416,7 +1432,10 @@ mod tests {
                                     ContentsCommand::Matcher(Matcher {
                                         must_keep: true,
                                         input_file_pattern: None,
-                                        input_section_name_patterns: vec![SectionPattern { name: b".rodata.foo", sorted: false }],
+                                        input_section_name_patterns: vec![SectionPattern {
+                                            name: b".rodata.foo",
+                                            sorted: false,
+                                        }],
                                     }),
                                     ContentsCommand::Align(Alignment::new(32).unwrap()),
                                     ContentsCommand::SymbolAssignment(SymbolAssignment {
@@ -1552,12 +1571,24 @@ mod tests {
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: Some(b"foo.o"),
-                        input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }, SectionPattern { name: b".text2", sorted: false }],
+                        input_section_name_patterns: vec![
+                            SectionPattern {
+                                name: b".text",
+                                sorted: false,
+                            },
+                            SectionPattern {
+                                name: b".text2",
+                                sorted: false,
+                            },
+                        ],
                     }),
                     ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_file_pattern: None,
-                        input_section_name_patterns: vec![SectionPattern { name: b".text3", sorted: false }],
+                        input_section_name_patterns: vec![SectionPattern {
+                            name: b".text3",
+                            sorted: false,
+                        }],
                     }),
                 ],
                 alignment: None,
@@ -1575,7 +1606,10 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: false,
                     input_file_pattern: Some(b"*crtbegin*.o"),
-                    input_section_name_patterns: vec![SectionPattern { name: b".ctors", sorted: false }],
+                    input_section_name_patterns: vec![SectionPattern {
+                        name: b".ctors",
+                        sorted: false,
+                    }],
                 })],
                 alignment: None,
                 start_address_expression: None,
@@ -1592,7 +1626,10 @@ mod tests {
                 commands: vec![ContentsCommand::Matcher(Matcher {
                     must_keep: true,
                     input_file_pattern: Some(b"crti.o"),
-                    input_section_name_patterns: vec![SectionPattern { name: b".init", sorted: false }],
+                    input_section_name_patterns: vec![SectionPattern {
+                        name: b".init",
+                        sorted: false,
+                    }],
                 })],
                 alignment: None,
                 start_address_expression: None,
@@ -1617,7 +1654,10 @@ mod tests {
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }],
+                                input_section_name_patterns: vec![SectionPattern {
+                                    name: b".text",
+                                    sorted: false,
+                                }],
                             })],
                             alignment: None,
                             start_address_expression: None,
@@ -1653,7 +1693,10 @@ mod tests {
                             commands: vec![ContentsCommand::Matcher(Matcher {
                                 must_keep: false,
                                 input_file_pattern: None,
-                                input_section_name_patterns: vec![SectionPattern { name: b".text", sorted: false }],
+                                input_section_name_patterns: vec![SectionPattern {
+                                    name: b".text",
+                                    sorted: false,
+                                }],
                             })],
                             alignment: None,
                             start_address_expression: None,

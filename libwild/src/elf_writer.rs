@@ -1462,12 +1462,18 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
 
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
-    
+
     // Fast O(1) lookup to skip harvested sections
-    let epilogue = layout.group_layouts.iter().find_map(|g| g.files.iter().find_map(|f| match f {
-        FileLayout::Epilogue(e) => Some(e),
-        _ => None,
-    })).unwrap();
+    let epilogue = layout
+        .group_layouts
+        .iter()
+        .find_map(|g| {
+            g.files.iter().find_map(|f| match f {
+                FileLayout::Epilogue(e) => Some(e),
+                _ => None,
+            })
+        })
+        .unwrap();
 
     let mut is_harvested = vec![false; object.sections.len()];
     for h in &epilogue.script_sorted_sections {
@@ -1482,8 +1488,10 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
         match sec {
             SectionSlot::Loaded(sec) => {
                 // Skip if handled by Harvester
-                if is_harvested[i] { continue; }
-                
+                if is_harvested[i] {
+                    continue;
+                }
+
                 write_object_section::<A>(
                     object,
                     layout,
@@ -3991,12 +3999,21 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
     build_id_buffer.fill(0);
 
     for harvested in &epilogue.script_sorted_sections {
-        let crate::layout::FileLayout::Object(object) = layout.file_layout(harvested.file_id) else {
+        let crate::layout::FileLayout::Object(object) = layout.file_layout(harvested.file_id)
+        else {
             continue;
         };
 
         if let SectionSlot::Loaded(sec) = &object.sections[harvested.section_index.0] {
-            write_object_section::<A>(object, layout, &sec, harvested.section_index, buffers, table_writer, trace)?;
+            write_object_section::<A>(
+                object,
+                layout,
+                &sec,
+                harvested.section_index,
+                buffers,
+                table_writer,
+                trace,
+            )?;
         }
     }
 
@@ -5815,3 +5832,4 @@ fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
         .map(|def| def.link)
         .unwrap_or_default()
 }
+
