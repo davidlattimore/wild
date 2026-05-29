@@ -11,4 +11,6 @@ SECTIONS
         /* Protect our harvested sections from the GC! */
         KEEP(*(SORT(.text.*)))
     }
+
+    PROVIDE(__global_pointer$ = .);
 }
