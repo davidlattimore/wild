@@ -15,6 +15,7 @@ use crate::platform::ObjectFile as _;
 use crate::platform::SectionHeader as _;
 use crate::resolution::SectionSlot;
 use hashbrown::HashMap;
+use itertools::Itertools as _;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_INFO_SECTION_NAME_STR;
@@ -492,8 +493,10 @@ fn build_address_and_symbol_tables<'data>(
         sd.cv_entries.dedup();
     }
 
-    let mut sorted: Vec<(&[u8], SymData)> = sym_map.into_iter().collect();
-    sorted.sort_unstable_by_key(|(name, _)| *name);
+    let sorted: Vec<(&[u8], SymData)> = sym_map
+        .into_iter()
+        .sorted_unstable_by_key(|(name, _)| *name)
+        .collect();
     let ht_slots = compute_hash_table_slots(sorted.len());
     AddressAndSymbolData {
         addr_entries,
