@@ -126,6 +126,19 @@ where
     }
 }
 
+impl Error {
+    /// Convert an anyhow error, preserving the full error chain.
+    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn from_anyhow(err: anyhow::Error) -> Self {
+        let mut messages = vec![err.to_string()];
+        for cause in err.chain().skip(1) {
+            messages.push(cause.to_string());
+        }
+        Error(Box::new(ErrorPayload { messages }))
+    }
+}
+
 pub trait Context<T> {
     fn with_context(self, callback: impl FnOnce() -> String) -> Result<T>;
     fn context(self, message: impl Into<String>) -> Result<T>;

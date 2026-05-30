@@ -236,6 +236,7 @@ use libwild::bail;
 use libwild::ensure;
 use libwild::error;
 use libwild::error::Context as _;
+use libwild::error::Error;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
@@ -4371,12 +4372,14 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
         .references
         .pop()
         .context("Tried to diff zero files")?;
-    let report = linker_diff::Report::from_config(diff_config.clone()).with_context(|| {
-        format!(
-            "Report::from_config failed for the following files: {}",
-            files.iter().map(|f| f.to_string_lossy()).join(" ")
-        )
-    })?;
+    let report = linker_diff::Report::from_config(diff_config.clone())
+        .map_err(Error::from_anyhow)
+        .with_context(|| {
+            format!(
+                "Report::from_config failed for the following files: {}",
+                files.iter().map(|f| f.to_string_lossy()).join(" ")
+            )
+        })?;
     if report.has_problems() {
         bail!(
             "Validation failed.\n{report}\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
