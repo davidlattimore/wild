@@ -88,8 +88,7 @@ impl crate::platform::Arch for ElfLoongArch64 {
     fn merge_eflags(
         mut eflags: impl Iterator<Item = object::elf::FileFlags>,
     ) -> Result<object::elf::FileFlags> {
-        let res = eflags.all_equal_value();
-        match res {
+        match eflags.all_equal_value() {
             Ok(flags) => Ok(flags),
             // no items, return blank flags
             Err(None) => Ok(object::elf::FileFlags(0)),
