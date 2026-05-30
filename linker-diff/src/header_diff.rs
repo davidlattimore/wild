@@ -23,6 +23,7 @@ use object::Section;
 #[allow(clippy::wildcard_imports)]
 use object::elf::*;
 use object::read::elf::Dyn;
+use object::read::macho::MachHeader;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use tabled::Table;
@@ -506,6 +507,17 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
             // We currently ignore e_shoff, e_phnum and e_shnum, since we don't really expect them
             // the same number of sections and program segments and the section header
             // offset is also generally going to be different between different linkers.
+        }
+        object::File::MachO64(file) => {
+            let header = file.macho_header();
+            let e = file.endianness();
+            values.insert("magic", header.magic(), Converter::None, obj);
+            values.insert_string(
+                "cputype",
+                header.cputype(e).name().unwrap_or("none").to_owned(),
+            );
+            values.insert("cpusubtype", header.cpusubtype(e).0, Converter::None, obj);
+            values.insert("filetype", header.filetype(e).0, Converter::None, obj);
         }
         _ => {}
     }

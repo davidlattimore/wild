@@ -1205,22 +1205,6 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
-        .long("write-layout")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().write_layout = true;
-            Ok(())
-        });
-
-    parser
-        .declare()
-        .long("write-trace")
-        .execute(|args, _modifier_stack| {
-            args.common_mut().write_trace = true;
-            Ok(())
-        });
-
-    parser
-        .declare()
         .long("got-plt-syms")
         .help("Write symbol table entries that point to the GOT/PLT entry for symbols")
         .execute(|args, _modifier_stack| {
@@ -1852,6 +1836,8 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
             args.discard_sframe = true;
             Ok(())
         });
+
+    super::declare_common_args(&mut parser);
 
     add_silently_ignored_flags(&mut parser);
     add_default_flags(&mut parser);

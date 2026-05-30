@@ -298,6 +298,8 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             Ok(())
         });
 
+    super::declare_common_args(&mut parser);
+
     add_silently_ignored_flags(&mut parser);
 
     parser

@@ -4996,7 +4996,7 @@ impl PlatformKind {
     }
 
     fn diff_supported(self) -> bool {
-        self == PlatformKind::Elf
+        [PlatformKind::Elf, PlatformKind::MachO].contains(&self)
     }
 
     fn available_linkers(self) -> Result<Vec<Linker>> {

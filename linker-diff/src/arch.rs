@@ -7,6 +7,7 @@ use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
+use object::Object;
 use object::read::elf::FileHeader as _;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -286,6 +287,12 @@ impl ArchKind {
                     object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
                     object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
                     other => bail!("Unsupported ELF architecture {other}",),
+                }
+            }
+            object::File::MachO64(file) => {
+                match file.macho_header().cputype.get(file.endianness()) {
+                    object::macho::CPU_TYPE_ARM64 => Ok(ArchKind::Aarch64),
+                    other => bail!("Unsupported MachO architecture {other}",),
                 }
             }
             other => bail!("Unsupported file format: {:?}", other.format()),

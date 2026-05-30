@@ -1317,6 +1317,24 @@ impl std::str::FromStr for CounterKind {
     }
 }
 
+fn declare_common_args<T: platform::Args>(parser: &mut ArgumentParser<T>) {
+    parser
+        .declare()
+        .long("write-layout")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().write_layout = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("write-trace")
+        .execute(|args, _modifier_stack| {
+            args.common_mut().write_trace = true;
+            Ok(())
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

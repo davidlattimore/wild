@@ -567,7 +567,9 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
 
 impl platform::SectionHeader for SectionHeader {
     fn is_alloc(&self) -> bool {
-        todo!()
+        // TODO: Surely not everything is alloc. But this is for now consistent with
+        // SectionFlags::is_alloc.
+        true
     }
 
     fn is_writable(&self) -> bool {
