@@ -750,6 +750,7 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     Prelude(PreludeLayoutState<'data, P>),
     Object(ObjectLayoutState<'data, P>),
     Dynamic(DynamicLayoutState<'data, P>),
+    StubLibrary(StubLibraryLayoutState<'data>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
     Epilogue(EpilogueLayoutState<P>),
@@ -776,6 +777,12 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
 
 pub(crate) struct EpilogueLayoutState<P: Platform> {
     format_specific: P::EpilogueLayoutExt,
+}
+
+#[derive(Debug)]
+pub(crate) struct StubLibraryLayoutState<'data> {
+    input: InputRef<'data>,
+    symbol_id_range: SymbolIdRange,
 }
 
 #[derive(Debug)]
@@ -2319,6 +2326,7 @@ fn activate<'data, 'scope, A: Arch>(
         FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::LinkerScript(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::Epilogue(_) => {}
+        FileLayoutState::StubLibrary(_) => {}
         FileLayoutState::NotLoaded(_) => {}
         FileLayoutState::SyntheticSymbols(_) => {}
     }
@@ -2465,6 +2473,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
+            FileLayoutState::StubLibrary(_) => {}
             FileLayoutState::NotLoaded(_) => {}
         }
 
@@ -2551,6 +2560,7 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 )?;
             }
             FileLayoutState::LinkerScript(_) => {}
+            FileLayoutState::StubLibrary(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::SyntheticSymbols(state) => {
                 SymbolRequestHandler::load_symbol::<A>(
@@ -2600,6 +2610,10 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 resolutions_out,
                 resources,
             )?),
+            Self::StubLibrary(s) => {
+                s.finalise_layout(memory_offsets, resolutions_out, resources)?;
+                FileLayout::NotLoaded
+            }
             Self::LinkerScript(s) => {
                 s.finalise_layout(memory_offsets, resolutions_out, resources)?;
                 FileLayout::LinkerScript(s)
@@ -2652,11 +2666,18 @@ impl<P: Platform> std::fmt::Display for LinkerScriptLayoutState<'_, P> {
     }
 }
 
+impl std::fmt::Display for StubLibraryLayoutState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
 impl<'data, P: Platform> std::fmt::Display for FileLayoutState<'data, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
+            FileLayoutState::StubLibrary(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::LinkerScript(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             FileLayoutState::SyntheticSymbols(_) => std::fmt::Display::fmt("<synthetic>", f),
@@ -4379,18 +4400,48 @@ impl<P: Platform> ResolutionWriter<'_, '_, P> {
     }
 }
 
+impl<'data> StubLibraryLayoutState<'data> {
+    fn new(stub: resolution::ResolvedStubLibrary<'data>) -> Self {
+        Self {
+            input: stub.input,
+            symbol_id_range: stub.symbol_id_range,
+        }
+    }
+
+    fn finalise_layout<P: Platform>(
+        &self,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resolutions_out: &mut ResolutionWriter<P>,
+        resources: &FinaliseLayoutResources<'_, 'data, P>,
+    ) -> Result {
+        for symbol_id in self.symbol_id_range {
+            let flags: ValueFlags = resources
+                .symbol_db
+                .flags_for_symbol(resources.per_symbol_flags, symbol_id);
+            if flags.has_resolution() && resources.symbol_db.is_canonical(symbol_id) {
+                resolutions_out.write(Some(P::create_resolution(
+                    flags,
+                    0,
+                    None,
+                    memory_offsets,
+                )))?;
+            } else {
+                resolutions_out.write(None)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
     fn create_layout_state(self, args: &P::Args) -> FileLayoutState<'data, P> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
-            resolution::ResolvedFile::StubLibrary(s) => FileLayoutState::NotLoaded(NotLoaded {
-                symbol_id_range: s.symbol_id_range,
-                section_id_range: crate::input_section_id::SectionIdRange::input(
-                    crate::input_section_id::InputSectionId::from_usize(0),
-                    0,
-                ),
-            }),
+            resolution::ResolvedFile::StubLibrary(s) => {
+                FileLayoutState::StubLibrary(StubLibraryLayoutState::new(s))
+            }
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s, args))
             }
@@ -5211,6 +5262,9 @@ impl<'data, P: Platform> std::fmt::Debug for FileLayoutState<'data, P> {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
             FileLayoutState::Prelude(_) => f.debug_tuple("Internal").finish(),
             FileLayoutState::Dynamic(s) => f.debug_tuple("Dynamic").field(&s.input).finish(),
+            FileLayoutState::StubLibrary(s) => {
+                f.debug_tuple("StubLibrary").field(&s.input).finish()
+            }
             FileLayoutState::LinkerScript(s) => {
                 f.debug_tuple("LinkerScript").field(&s.input).finish()
             }

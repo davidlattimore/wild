@@ -485,6 +485,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     let rel_info = A::relocation_from_raw(rel)?;
     let _addend = rel.r_address;
     let (resolution, _symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
+    let flags = layout.flags_for_symbol(local_symbol_id);
 
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
@@ -498,6 +499,7 @@ fn apply_relocation<'data, A: Arch<Platform = MachO>>(
     };
 
     tracing::trace!(
+            %flags,
             ?rel_info.kind,
             %rel_info.size,
             value,

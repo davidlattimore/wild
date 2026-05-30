@@ -297,6 +297,14 @@ fn setup_argument_parser() -> ArgumentParser<MachOArgs> {
             args.common_mut().file_write_mode = Some(FileWriteMode::UpdateInPlace);
             Ok(())
         });
+    parser
+        .declare_with_param()
+        .long("sym-info")
+        .help("Show symbol information. Accepts symbol name or ID.")
+        .execute(|args, _modifier_stack, value| {
+            args.common_mut().sym_info = Some(value.to_owned());
+            Ok(())
+        });
 
     super::declare_common_args(&mut parser);
 

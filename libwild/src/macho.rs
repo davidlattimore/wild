@@ -9,6 +9,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::file_writer::copy_section_data;
+use crate::grouping::SequencedInput;
 use crate::layout;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
@@ -28,6 +29,7 @@ use crate::platform;
 use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
+use crate::value_flags::ValueFlags;
 use object::Endianness;
 use object::SymbolIndex;
 use object::macho;
@@ -506,7 +508,7 @@ impl<'data> platform::ObjectFile<'data> for File<'data> {
     }
 
     fn symbol_version_debug(&self, symbol_index: object::SymbolIndex) -> Option<String> {
-        todo!()
+        None
     }
 
     fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
@@ -708,7 +710,7 @@ impl platform::Symbol for SymtabEntry {
     }
 
     fn is_interposable(&self) -> bool {
-        false
+        self.visibility() == Visibility::Default
     }
 
     fn is_func(&self) -> bool {
@@ -1773,6 +1775,12 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
 
         let rel_info = A::relocation_from_raw(rel_info)?;
         let mut flags_to_add = layout::resolution_flags(rel_info.kind);
+        if matches!(
+            symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)),
+            SequencedInput::StubLibrary(_)
+        ) {
+            flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
+        }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
         let previous_flags = atomic_flags.fetch_or(flags_to_add);
