@@ -44,6 +44,7 @@ use crate::macho::FileHeader;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
+use crate::macho::SEG_DATA_CONST;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
 use crate::macho::SegmentSectionsInfo;
@@ -336,6 +337,32 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
             data_segment_sections.len(),
         );
         write_sections(SEG_DATA, data_sections, &data_segment_sections)?;
+    }
+
+    if let Some(data_const_segment_info) =
+        get_segment_sections(layout, SegmentType::DataConstSections)
+    {
+        let data_const_segment_sections = data_const_segment_info.segment_sections;
+        let data_const_segment_size = data_const_segment_info.segment_size;
+        let (data_const_segment, data_const_sections) = split_segment_command_buffer(
+            buffers.get_mut(part_id::DATA_CONST_SEGMENT),
+            data_const_segment_sections.len(),
+        )?;
+        write_segment(
+            SEG_DATA_CONST,
+            macho::VM_PROT_READ,
+            data_const_segment,
+            data_const_segment_size.file_offset as u64,
+            data_const_segment_size.file_size as u64,
+            data_const_segment_size.mem_offset,
+            data_const_segment_size.mem_size,
+            data_const_segment_sections.len(),
+        );
+        write_sections(
+            SEG_DATA_CONST,
+            data_const_sections,
+            &data_const_segment_sections,
+        )?;
     }
 
     let linkedit_segment_size = get_segment_sections(layout, SegmentType::LinkeditSections)

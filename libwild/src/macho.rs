@@ -81,6 +81,8 @@ pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 =
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 
+pub(crate) const SEG_DATA_CONST: &str = "__DATA_CONST";
+
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
 type SymbolTable<'data> = object::read::macho::SymbolTable<'data, macho::MachHeader64<Endianness>>;
@@ -1347,6 +1349,17 @@ impl platform::Platform for MachO {
                         )) as u64,
             );
         }
+        if has_active_segment(header_info, SegmentType::DataConstSections) {
+            sizes.increment(
+                part_id::DATA_CONST_SEGMENT,
+                (size_of::<SegmentCommand>()
+                    + size_of::<SectionEntry>()
+                        * count_sections_for_segment_type(
+                            output_sections,
+                            SegmentType::DataConstSections,
+                        )) as u64,
+            );
+        }
         sizes.increment(
             part_id::LINK_EDIT_SEGMENT,
             size_of::<SegmentCommand>() as u64,
@@ -1607,7 +1620,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         ..DEFAULT_DEFS
     };
     defs[output_section_id::DATA_CONST_SEGMENT.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"__DATA_CONST")),
+        kind: SectionKind::Primary(SectionName(SEG_DATA_CONST.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };

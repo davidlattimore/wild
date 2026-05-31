@@ -258,6 +258,7 @@ fn test_merge_parts() {
         output_section_id::PAGEZERO_SEGMENT,
         output_section_id::TEXT_SEGMENT,
         output_section_id::DATA_SEGMENT,
+        output_section_id::DATA_CONST_SEGMENT,
         output_section_id::CSTRING,
         output_section_id::ENTRY_POINT,
         output_section_id::LINK_EDIT_SEGMENT,
