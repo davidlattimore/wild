@@ -128,6 +128,10 @@ tests = [
   "arch-loongarch64-relax-tlsdesc.sh",
 ]
 
+[skipped_groups.arch_ppc64le]
+reason = "ppc64le specific tests"
+tests = ["arch-ppc64le-save-restore-gprs.sh"]
+
 [skipped_groups.tls]
 reason = "Related to TLS"
 tests = ["tls-common.sh", "tls-le-error.sh"]
