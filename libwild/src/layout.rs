@@ -1199,10 +1199,6 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         self.mem_sizes.increment(part_id, size);
     }
 
-    pub(crate) fn size(&mut self, part_id: PartId) -> u64 {
-        self.mem_sizes.size(part_id)
-    }
-
     /// Allocate resources and update attributes based on a section having been loaded.
     fn section_loaded(
         &mut self,

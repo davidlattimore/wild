@@ -4,6 +4,7 @@
 use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
+use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
 use crate::ensure;
 use crate::error;
@@ -1279,6 +1280,14 @@ impl platform::Platform for MachO {
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
         args: &Self::Args,
     ) -> crate::error::Result {
+        // Chained fixups record start information per page. At this point the final GOT size is
+        // known, so reserve the fixup table entries needed to describe the GOT pages.
+        extra_sizes.increment(
+            part_id::CHAINED_FIXUP_TABLE,
+            MACHO_PAGE_ALIGNMENT
+                .value()
+                .div_ceil(*current_sizes.get(part_id::GOT)),
+        );
         Ok(())
     }
 
@@ -1380,7 +1389,7 @@ impl platform::Platform for MachO {
         _args: &Self::Args,
     ) {
         if flags.is_dynamic() && flags.needs_got() {
-            dbg!(mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE));
+            mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE);
         }
     }
 
