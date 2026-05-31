@@ -32,6 +32,7 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
+use linker_utils::elf::RelocationKind::TlsGdGotBase;
 use object::Endianness;
 use object::SymbolIndex;
 use object::macho;

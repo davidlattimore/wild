@@ -105,6 +105,27 @@ impl crate::platform::Arch for MachOAArch64 {
                     1,
                 )
             }
+            object::macho::ARM64_RELOC_GOT_LOAD_PAGE21 => {
+                debug_assert_eq!(rel_kind, RelocationKind::Relative);
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationKind::GotRelative,
+                    RelocationSize::bit_mask_aarch64(12, 33, AArch64Instruction::Adr),
+                    Some(PageMask::SymbolPlusAddendAndPosition(PAGE_MASK_4KB)),
+                    AllowedRange::from_bit_size(33, Sign::Signed),
+                    1,
+                )
+            }
+            object::macho::ARM64_RELOC_GOT_LOAD_PAGEOFF12 => {
+                debug_assert_eq!(rel_size, RelocationSize::ByteSize(4));
+                (
+                    RelocationKind::Got,
+                    RelocationSize::bit_mask_aarch64(0, 12, AArch64Instruction::MachOLow12),
+                    None,
+                    AllowedRange::no_check(),
+                    1,
+                )
+            }
             _ => bail!("Unknown relocation: {}", rel.r_type),
         };
         Ok(RelocationKindInfo {
