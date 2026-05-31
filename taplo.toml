@@ -1,5 +1,1 @@
-exclude = [
-  ".cargo-home/**",
-  "external_test_suites/**",
-  "target/**",
-]
+exclude = [".cargo-home/**", "external_test_suites/**", "target/**"]
