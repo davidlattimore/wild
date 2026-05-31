@@ -4044,13 +4044,6 @@ impl<'data, P: Platform> ObjectLayoutState<'data, P> {
                         sframe_ranges.push(offset..offset + len);
                     }
 
-                    // Collect SFrame section ranges while we're already iterating
-                    if part_id.output_section_id() == output_section_id::SFRAME {
-                        let offset = (address - sframe_start_address) as usize;
-                        let len = sec.size as usize;
-                        sframe_ranges.push(offset..offset + len);
-                    }
-
                     if let Ok(idx) = resources
                         .harvested_sections_registry
                         .binary_search_by_key(&(self.file_id, sec_idx), |s| {
