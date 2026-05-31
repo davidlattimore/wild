@@ -25,6 +25,7 @@ use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrderBuilder;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::SectionOutputInfo;
+use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::platform;
 use crate::platform::Args;
@@ -50,6 +51,7 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use std::num::NonZeroU64;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -1007,7 +1009,7 @@ impl platform::Platform for MachO {
     type CommonGroupStateExt = ();
     type ArchIdentifier = ();
     type Args = MachOArgs;
-    type ResolutionExt = ();
+    type ResolutionExt = ResolutionExt;
     type SymtabShndxEntry = ();
     type SymbolVersionIndex = ();
     type LayoutExt = ();
@@ -1463,12 +1465,21 @@ impl platform::Platform for MachO {
         dynamic_symbol_index: Option<std::num::NonZeroU32>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
     ) -> crate::layout::Resolution<Self> {
-        Resolution {
+        let mut resolution: Resolution<MachO> = Resolution {
             raw_value,
             dynamic_symbol_index,
-            format_specific: (),
+            format_specific: ResolutionExt { got_address: None },
             flags,
+        };
+
+        if flags.needs_got() {
+            let got_address = allocate_got(memory_offsets);
+            // TODO: point to PLT
+            resolution.raw_value = got_address.get();
+            resolution.format_specific.got_address = Some(got_address);
         }
+
+        resolution
     }
 
     fn raw_symbol_name<'data>(
@@ -1680,6 +1691,17 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 
     defs
 };
+
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ResolutionExt {
+    pub(crate) got_address: Option<NonZeroU64>,
+}
+
+fn allocate_got(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
+    memory_offsets.increment(part_id::GOT, GOT_ENTRY_SIZE);
+    got_address
+}
 
 // TODO: sort properly
 const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
