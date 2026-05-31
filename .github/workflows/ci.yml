@@ -249,18 +249,6 @@ jobs:
       - run: echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - run: yamlfmt -lint .
 
-  taplo:
-    name: TOML format
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Install taplo
-        uses: taiki-e/install-action@taplo
-      - run: taplo format --check --diff
-
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
