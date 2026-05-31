@@ -67,12 +67,6 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: apk add build-base lld clang clang-extra-tools bash curl tar
         if: ${{ contains(matrix.container, 'alpine') }}
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -87,6 +81,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}
+      - name: Install taplo
+        uses: taiki-e/install-action@taplo
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --features plugins
         if: ${{ matrix.test-plugins }}
@@ -190,12 +186,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang clang-format lld curl
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -203,7 +193,7 @@ jobs:
         id: rust-toolchain
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hack,cargo-minimal-versions
+          tool: cargo-hack,cargo-minimal-versions,taplo
       - uses: Swatinem/rust-cache@v2
       - run: cargo minimal-versions --direct test --profile ci
 
@@ -264,12 +254,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - name: Install Taplo (x86_64)
-        if: ${{ runner.arch == 'X64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-x86_64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
-      - name: Install Taplo (AArch64)
-        if: ${{ runner.arch == 'ARM64' }}
-        run: curl -fsSL https://github.com/tamasfe/taplo/releases/latest/download/taplo-linux-aarch64.gz | gzip -d - | install -m 755 /dev/stdin /usr/local/bin/taplo
+      - name: Install taplo
+        uses: taiki-e/install-action@taplo
       - run: taplo format --check --diff
 
   spelling:
