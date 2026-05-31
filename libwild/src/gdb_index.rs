@@ -290,7 +290,7 @@ pub(crate) fn write_gdb_index(
             Some((obj.object, obj.sections.as_slice()))
         });
     let GdbIndexScanResult {
-        sorted_symbols: sorted,
+        sorted_symbols: sorted_names,
         ht_slots,
         ..
     } = scan_objects_for_gdb_index(objects)?;
@@ -304,9 +304,9 @@ pub(crate) fn write_gdb_index(
     let cp_off = short_off + SHORTCUT_TABLE_SIZE as u32;
 
     // Write constant pool: CU vectors first, then name strings.
-    let mut cv_offsets = Vec::with_capacity(sorted.len());
+    let mut cv_offsets = Vec::with_capacity(sorted_names.len());
     let mut off = cp_off as usize;
-    for (_, sd) in &sorted {
+    for (_, sd) in &sorted_names {
         cv_offsets.push((off - cp_off as usize) as u32);
         buf[off..off + 4].copy_from_slice(&(sd.cv_entries.len() as u32).to_le_bytes());
         off += 4;
@@ -315,8 +315,8 @@ pub(crate) fn write_gdb_index(
             off += 4;
         }
     }
-    let mut name_offsets = Vec::with_capacity(sorted.len());
-    for (name, _) in &sorted {
+    let mut name_offsets = Vec::with_capacity(sorted_names.len());
+    for (name, _) in &sorted_names {
         name_offsets.push((off - cp_off as usize) as u32);
         buf[off..off + name.len()].copy_from_slice(name);
         off += name.len();
@@ -351,7 +351,7 @@ pub(crate) fn write_gdb_index(
         buf,
         ht_slots,
         sym_off as usize,
-        &sorted,
+        &sorted_names,
         &name_offsets,
         &cv_offsets,
     )?;
