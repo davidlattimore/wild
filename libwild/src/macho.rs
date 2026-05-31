@@ -73,8 +73,10 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 // TODO: optionality of __DATA and __CONST_DATA segments not respected
 pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
-pub(crate) const CHAINED_FIXUP_TABLE_SIZE: u64 =
-    (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1 + 1)) as u64;
+pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 =
+    (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1)) as u64;
+pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
+pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 
 type SectionHeader = Section64<crate::macho::Endianness>;
 type SectionTable<'data> = &'data [Section64<crate::macho::Endianness>];
@@ -878,6 +880,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             output_section_id::PAGEZERO_SEGMENT
             | output_section_id::TEXT_SEGMENT
             | output_section_id::DATA_SEGMENT
+            | output_section_id::DATA_CONST_SEGMENT
             | output_section_id::LINK_EDIT_SEGMENT
             | output_section_id::ENTRY_POINT
             | output_section_id::INTERP
@@ -886,6 +889,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::CODE_SIGNATURE_COMMAND => SegmentType::LoadCommands,
             output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
             output_section_id::DATA => SegmentType::DataSections,
+            output_section_id::GOT => SegmentType::DataConstSections,
             output_section_id::CHAINED_FIXUP_TABLE
             | output_section_id::SYMTAB_GLOBAL
             | output_section_id::STRTAB
@@ -1359,6 +1363,13 @@ impl platform::Platform for MachO {
         symbol_id: crate::symbol_db::SymbolId,
         flags: crate::value_flags::ValueFlags,
     ) -> crate::error::Result {
+        if flags.has_resolution() && symbol_db.is_stub_library_symbol(symbol_id) {
+            let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            common.allocate(
+                part_id::CHAINED_FIXUP_TABLE,
+                CHAINED_FIXUP_IMPORT_SIZE + symbol_name.bytes().len() as u64 + 1,
+            );
+        }
         Ok(())
     }
 
@@ -1368,6 +1379,9 @@ impl platform::Platform for MachO {
         output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
+        if flags.is_dynamic() && flags.needs_got() {
+            dbg!(mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE));
+        }
     }
 
     fn allocate_object_symtab_space<'data>(
@@ -1419,7 +1433,7 @@ impl platform::Platform for MachO {
     ) {
         // Allocate one extra character as n_strx == 0 is treated as unnamed.
         common.allocate(part_id::STRTAB, 1);
-        common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_SIZE);
+        common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
         common.allocate(
             part_id::CODE_SIGNATURE,
             CS_HEADERS_SIZE + code_signature_padded_identifier_size(symbol_db.args),
@@ -1479,6 +1493,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::PAGEZERO_SEGMENT);
         builder.add_section(output_section_id::TEXT_SEGMENT);
         builder.add_section(output_section_id::DATA_SEGMENT);
+        builder.add_section(output_section_id::DATA_CONST_SEGMENT);
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::INTERP); // DYLINKER
@@ -1489,6 +1504,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
         builder.add_section(output_section_id::DATA);
+        builder.add_section(output_section_id::GOT);
         // The rest (e.g. symbol table, string table).
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
         builder.add_section(output_section_id::SYMTAB_GLOBAL);
@@ -1570,6 +1586,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::DATA_CONST_SEGMENT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__DATA_CONST")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::LINK_EDIT_SEGMENT.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(SEG_LINKEDIT.as_bytes())),
         target_segment_type: Some(SegmentType::LoadCommands),
@@ -1621,6 +1642,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         min_alignment: Alignment {
             exponent: CS_SECTION_ALIGNMENT_EXP,
         },
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::GOT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__got")),
         ..DEFAULT_DEFS
     };
     // Multi-part generated sections

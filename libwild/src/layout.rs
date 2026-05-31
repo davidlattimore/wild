@@ -782,6 +782,7 @@ pub(crate) struct EpilogueLayoutState<P: Platform> {
 #[derive(Debug)]
 pub(crate) struct StubLibraryLayoutState<'data> {
     input: InputRef<'data>,
+    file_id: FileId,
     symbol_id_range: SymbolIdRange,
 }
 
@@ -1066,6 +1067,29 @@ impl<'data, P: Platform> SymbolRequestHandler<'data, P> for LinkerScriptLayoutSt
     }
 }
 
+impl HandlerData for StubLibraryLayoutState<'_> {
+    fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.symbol_id_range
+    }
+}
+
+impl<'data, P: Platform> SymbolRequestHandler<'data, P> for StubLibraryLayoutState<'data> {
+    fn load_symbol<'scope, A: Arch<Platform = P>>(
+        &mut self,
+        _common: &mut CommonGroupState<'data, P>,
+        _symbol_id: SymbolId,
+        _resources: &GraphResources<'data, 'scope, P>,
+        _queue: &mut LocalWorkQueue,
+        _scope: &Scope<'scope>,
+    ) -> Result {
+        Ok(())
+    }
+}
+
 impl<P: Platform> HandlerData for SyntheticSymbolsLayoutState<'_, P> {
     fn file_id(&self) -> FileId {
         self.file_id
@@ -1173,6 +1197,10 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
 
     pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
         self.mem_sizes.increment(part_id, size);
+    }
+
+    pub(crate) fn size(&mut self, part_id: PartId) -> u64 {
+        self.mem_sizes.size(part_id)
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -2473,7 +2501,9 @@ impl<'data, P: Platform> FileLayoutState<'data, P> {
                 s.finalise_sizes(common, per_symbol_flags, resources)?;
                 s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
             }
-            FileLayoutState::StubLibrary(_) => {}
+            FileLayoutState::StubLibrary(s) => {
+                s.finalise_symbol_sizes(common, per_symbol_flags, resources)?;
+            }
             FileLayoutState::NotLoaded(_) => {}
         }
 
@@ -4401,9 +4431,10 @@ impl<P: Platform> ResolutionWriter<'_, '_, P> {
 }
 
 impl<'data> StubLibraryLayoutState<'data> {
-    fn new(stub: resolution::ResolvedStubLibrary<'data>) -> Self {
+    fn new(stub: &resolution::ResolvedStubLibrary<'data>) -> Self {
         Self {
             input: stub.input,
+            file_id: stub.file_id,
             symbol_id_range: stub.symbol_id_range,
         }
     }
@@ -4440,7 +4471,7 @@ impl<'data, P: Platform> resolution::ResolvedFile<'data, P> {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Dynamic(s) => new_dynamic_object_layout_state(&s),
             resolution::ResolvedFile::StubLibrary(s) => {
-                FileLayoutState::StubLibrary(StubLibraryLayoutState::new(s))
+                FileLayoutState::StubLibrary(StubLibraryLayoutState::new(&s))
             }
             resolution::ResolvedFile::Prelude(s) => {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s, args))

@@ -82,6 +82,10 @@ impl OutputSectionPartMap<u64> {
         );
         *v -= size;
     }
+
+    pub(crate) fn size(&mut self, part_id: PartId) -> u64 {
+        *self.get_mut(part_id)
+    }
 }
 
 impl<T: Default + PartialEq> OutputSectionPartMap<T> {
