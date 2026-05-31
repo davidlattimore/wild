@@ -1463,7 +1463,9 @@ fn write_object<'data, A: Arch<Platform = Elf>>(
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().common().trace_span_for_file(object.file_id);
 
-    let Some(FileLayout::Epilogue(epilogue)) = layout.group_layouts.last().and_then(|g| g.files.last()) else {
+    let Some(FileLayout::Epilogue(epilogue)) =
+        layout.group_layouts.last().and_then(|g| g.files.last())
+    else {
         unreachable!("Epilogue is broken and must be the last file in the final layout group");
     };
 
