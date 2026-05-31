@@ -766,8 +766,10 @@ pub(crate) trait Platform:
     }
 
     /// Compute the size of the `.gdb_index` section, if applicable.
-    fn compute_gdb_index_size(_groups: &[crate::layout::GroupState<Self>]) -> u64 {
-        0
+    fn compute_gdb_index_size(
+        _groups: &[crate::layout::GroupState<Self>],
+    ) -> crate::error::Result<u64> {
+        Ok(0)
     }
 }
 

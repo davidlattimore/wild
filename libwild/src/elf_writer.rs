@@ -186,7 +186,7 @@ pub(crate) fn write<'data, A: Arch<Platform = Elf>>(
     }
 
     // Write .gdb_index before splitting, since it needs to read .debug_info from the output.
-    write_gdb_index_section(&mut sized_output.out, layout);
+    write_gdb_index_section(&mut sized_output.out, layout)?;
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
 
@@ -316,14 +316,14 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     });
 }
 
-fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) {
+fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) -> Result {
     use crate::platform::Args as _;
     if !layout.args().should_write_gdb_index() {
-        return;
+        return Ok(());
     }
     let sl = layout.section_layouts.get(output_section_id::GDB_INDEX);
     if sl.file_size == 0 {
-        return;
+        return Ok(());
     }
     timing_phase!("Write .gdb_index");
     let start = sl.file_offset;
@@ -331,7 +331,7 @@ fn write_gdb_index_section(output: &mut [u8], layout: &ElfLayout) {
     // and our section is writable.
     let (before, rest) = output.split_at_mut(start);
     let gdb_buf = &mut rest[..sl.file_size];
-    crate::gdb_index::write_gdb_index(gdb_buf, before, layout);
+    crate::gdb_index::write_gdb_index(gdb_buf, before, layout)
 }
 
 fn write_sframe_section(sframe_buffer: &mut [u8], layout: &ElfLayout) -> Result {

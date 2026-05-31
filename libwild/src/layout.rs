@@ -1963,7 +1963,7 @@ fn compute_total_section_part_sizes<'data, P: Platform>(
 
     // Compute and allocate the .gdb_index section size if --gdb-index is enabled.
     let gdb_index_size = if resources.symbol_db.args.should_write_gdb_index() {
-        P::compute_gdb_index_size(group_states)
+        P::compute_gdb_index_size(group_states)?
     } else {
         0
     };

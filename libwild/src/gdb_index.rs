@@ -6,6 +6,8 @@
 //! Format reference: <https://sourceware.org/gdb/current/onlinedocs/gdb.html/Index-Section-Format.html>
 
 use crate::elf::Elf;
+use crate::error::Context as _;
+use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::FileLayoutState;
 use crate::layout::GroupState;
@@ -222,23 +224,28 @@ fn parse_pubnames_sets(data: &[u8]) -> Vec<PubnamesSet<'_>> {
 }
 
 /// Read raw section data from an input object by name.
-fn raw_section_by_name<'data>(object: &crate::elf::File<'data>, name: &str) -> Option<&'data [u8]> {
-    let (_index, header) = object.section_by_name(name)?;
-    object.raw_section_data(header).ok()
+fn raw_section_by_name<'data>(
+    object: &crate::elf::File<'data>,
+    name: &str,
+) -> Result<Option<&'data [u8]>> {
+    let Some((_index, header)) = object.section_by_name(name) else {
+        return Ok(None);
+    };
+    Ok(Some(object.raw_section_data(header)?))
 }
 
 /// Pre-scan all input objects to compute the `.gdb_index` section size.
-pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
+pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> Result<u64> {
     let objects = groups.iter().flat_map(|g| g.files.iter()).filter_map(|f| {
         let FileLayoutState::Object(obj) = f else {
             return None;
         };
         Some((obj.object, obj.sections.as_slice()))
     });
-    let scan = scan_objects_for_gdb_index(objects);
+    let scan = scan_objects_for_gdb_index(objects)?;
 
     if scan.total_cus == 0 {
-        return 0;
+        return Ok(0);
     }
 
     let mut cv_bytes = 0usize;
@@ -249,25 +256,29 @@ pub(crate) fn compute_gdb_index_size(groups: &[GroupState<'_, Elf>]) -> u64 {
         str_bytes += name.len() + 1;
     }
 
-    (HEADER_SIZE
+    Ok((HEADER_SIZE
         + scan.total_cus * CU_ENTRY_SIZE
         + scan.total_addr_entries * ADDRESS_ENTRY_SIZE
         + scan.ht_slots * HASH_SLOT_SIZE
         + SHORTCUT_TABLE_SIZE
         + cv_bytes
-        + str_bytes) as u64
+        + str_bytes) as u64)
 }
 
 /// Write the `.gdb_index` section into `buf`.
 ///
 /// Reads the output `.debug_info` (already written into `output_buf`) for the CU list,
 /// and re-scans input objects for address ranges and pubnames/pubtypes symbols.
-pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout<'_, Elf>) {
+pub(crate) fn write_gdb_index(
+    buf: &mut [u8],
+    output_buf: &[u8],
+    layout: &Layout<'_, Elf>,
+) -> Result {
     if buf.is_empty() {
-        return;
+        return Ok(());
     }
 
-    let cu_entries = build_cu_list(output_buf, layout);
+    let cu_entries = build_cu_list(output_buf, layout)?;
     let objects = layout
         .group_layouts
         .iter()
@@ -282,8 +293,8 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
         sorted_symbols: sorted,
         ht_slots,
         ..
-    } = scan_objects_for_gdb_index(objects);
-    let addr_entries = build_address_entries(layout);
+    } = scan_objects_for_gdb_index(objects)?;
+    let addr_entries = build_address_entries(layout)?;
 
     let cu_list_off = HEADER_SIZE as u32;
     let tu_list_off = cu_list_off + (cu_entries.len() * CU_ENTRY_SIZE) as u32;
@@ -343,7 +354,7 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
         &sorted,
         &name_offsets,
         &cv_offsets,
-    );
+    )?;
 
     let so = short_off as usize;
     let sc = GdbIndexShortcutTable {
@@ -351,29 +362,32 @@ pub(crate) fn write_gdb_index(buf: &mut [u8], output_buf: &[u8], layout: &Layout
         name_of_main_offset: 0,
     };
     buf[so..so + SHORTCUT_TABLE_SIZE].copy_from_slice(sc.as_bytes());
+    Ok(())
 }
 
 /// Build the CU list from the already-written output `.debug_info`.
-fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Vec<GdbIndexCuEntry> {
+fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexCuEntry>> {
     let Some(id) = layout
         .output_sections
         .section_id_by_name(SectionName(DEBUG_INFO_SECTION_NAME))
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let sl = layout.section_layouts.get(id);
     let start = sl.file_offset;
     let end = start + sl.file_size;
-    if end > output_buf.len() {
-        return Vec::new();
-    }
-    parse_cu_boundaries(&output_buf[start..end])
+    crate::ensure!(
+        end <= output_buf.len(),
+        ".debug_info layout extends beyond output buffer ({end} > {})",
+        output_buf.len()
+    );
+    Ok(parse_cu_boundaries(&output_buf[start..end])
         .into_iter()
         .map(|cu| GdbIndexCuEntry {
             cu_offset: cu.offset,
             cu_length: cu.length,
         })
-        .collect()
+        .collect())
 }
 
 struct SymData {
@@ -391,16 +405,17 @@ struct GdbIndexScanResult<'data> {
 /// Scan input objects to build the symbol table and count CUs / address entries.
 fn scan_objects_for_gdb_index<'data>(
     objects: impl Iterator<Item = (&'data crate::elf::File<'data>, &'data [SectionSlot])>,
-) -> GdbIndexScanResult<'data> {
+) -> Result<GdbIndexScanResult<'data>> {
     let mut total_cus = 0usize;
     let mut total_addr_entries = 0usize;
     let mut sym_map: HashMap<&'data [u8], SymData> = HashMap::new();
     let mut cu_offset = 0u32;
 
     for (object, sections) in objects {
-        let boundaries = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)
-            .map(parse_cu_boundaries)
-            .unwrap_or_default();
+        let boundaries = match raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
+            Some(data) => parse_cu_boundaries(data),
+            None => continue,
+        };
         if boundaries.is_empty() {
             continue;
         }
@@ -415,9 +430,7 @@ fn scan_objects_for_gdb_index<'data>(
             if section.size == 0 {
                 continue;
             }
-            let Ok(header) = object.section(object::SectionIndex(si)) else {
-                continue;
-            };
+            let header = object.section(object::SectionIndex(si))?;
             if header.is_alloc() && header.is_executable() {
                 obj_addr_count += 1;
             }
@@ -432,7 +445,7 @@ fn scan_objects_for_gdb_index<'data>(
         }
         cu_offset += boundaries.len() as u32;
 
-        for (name, entry) in collect_pubname_entries(object, &offset_to_idx, base) {
+        for (name, entry) in collect_pubname_entries(object, &offset_to_idx)? {
             let sd = sym_map.entry(name).or_insert_with(|| SymData {
                 cv_entries: BTreeSet::new(),
                 hash: gdb_hash(name),
@@ -446,16 +459,16 @@ fn scan_objects_for_gdb_index<'data>(
         .sorted_unstable_by_key(|(name, _)| *name)
         .collect();
     let ht_slots = compute_hash_table_slots(sorted.len());
-    GdbIndexScanResult {
+    Ok(GdbIndexScanResult {
         total_cus,
         total_addr_entries,
         sorted_symbols: sorted,
         ht_slots,
-    }
+    })
 }
 
 /// Build address entries using resolved addresses from the final layout.
-fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> {
+fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddressEntry>> {
     let mut entries = Vec::new();
     let mut cu_offset = 0u32;
 
@@ -466,7 +479,7 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> 
             };
             let object = obj.object;
 
-            let obj_cu_count = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)
+            let obj_cu_count = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)?
                 .map_or(0, |data| parse_cu_boundaries(data).len() as u32);
             if obj_cu_count == 0 {
                 continue;
@@ -480,9 +493,7 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> 
                 if section.size == 0 {
                     continue;
                 }
-                let Ok(header) = object.section(object::SectionIndex(si)) else {
-                    continue;
-                };
+                let header = object.section(object::SectionIndex(si))?;
                 if !header.is_alloc() || !header.is_executable() {
                     continue;
                 }
@@ -500,7 +511,7 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> 
             cu_offset += obj_cu_count;
         }
     }
-    entries
+    Ok(entries)
 }
 
 /// Collect encoded pubname/pubtype entries from an object's `.debug_gnu_pubnames`
@@ -508,24 +519,22 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Vec<GdbIndexAddressEntry> 
 fn collect_pubname_entries<'data>(
     object: &crate::elf::File<'data>,
     offset_to_idx: &HashMap<u64, u32>,
-    fallback_cu: u32,
-) -> Vec<(&'data [u8], u32)> {
+) -> Result<Vec<(&'data [u8], u32)>> {
     let mut entries = Vec::new();
     for section_name in [".debug_gnu_pubnames", ".debug_gnu_pubtypes"] {
-        let Some(data) = raw_section_by_name(object, section_name) else {
+        let Some(data) = raw_section_by_name(object, section_name)? else {
             continue;
         };
         for set in parse_pubnames_sets(data) {
-            let cu_idx = offset_to_idx
-                .get(&set.debug_info_offset)
-                .copied()
-                .unwrap_or(fallback_cu);
+            let Some(&cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
+                continue;
+            };
             for (name, attrs) in set.entries {
                 entries.push((name, encode_cu_vector_entry(cu_idx, attrs)));
             }
         }
     }
-    entries
+    Ok(entries)
 }
 
 /// Insert symbols into the open-addressing hash table region of `buf`.
@@ -536,12 +545,12 @@ fn write_hash_table(
     sorted: &[(&[u8], SymData)],
     name_offsets: &[u32],
     cv_offsets: &[u32],
-) {
+) -> Result {
     let ht_end = ht_start + ht_slots * HASH_SLOT_SIZE;
     buf[ht_start..ht_end].fill(0);
 
     if ht_slots == 0 {
-        return;
+        return Ok(());
     }
     let mask = (ht_slots - 1) as u32;
     for (i, (_, sd)) in sorted.iter().enumerate() {
@@ -550,8 +559,8 @@ fn write_hash_table(
         let mut slot = h & mask;
         loop {
             let so = ht_start + slot as usize * HASH_SLOT_SIZE;
-            let existing =
-                GdbIndexHashSlot::read_from_bytes(&buf[so..so + HASH_SLOT_SIZE]).unwrap();
+            let existing = GdbIndexHashSlot::read_from_bytes(&buf[so..so + HASH_SLOT_SIZE])
+                .context("Failed to read .gdb_index hash table slot")?;
             if existing.name_offset == 0 && existing.cu_vector_offset == 0 {
                 let new_slot = GdbIndexHashSlot {
                     name_offset: name_offsets[i],
@@ -563,6 +572,7 @@ fn write_hash_table(
             slot = (slot + step) & mask;
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

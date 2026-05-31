@@ -2100,7 +2100,9 @@ impl platform::Platform for Elf {
         total_sizes.merge(&extra_sizes);
     }
 
-    fn compute_gdb_index_size(groups: &[crate::layout::GroupState<Self>]) -> u64 {
+    fn compute_gdb_index_size(
+        groups: &[crate::layout::GroupState<Self>],
+    ) -> crate::error::Result<u64> {
         crate::gdb_index::compute_gdb_index_size(groups)
     }
 
