@@ -1842,13 +1842,17 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
         flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel_info.r_address;
 
-        let rel_info = A::relocation_from_raw(rel_info)?;
-        let mut flags_to_add = layout::resolution_flags(rel_info.kind);
+        let relocation = A::relocation_from_raw(rel_info)?;
+        let mut flags_to_add = layout::resolution_flags(relocation.kind);
         if matches!(
             symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)),
             SequencedInput::StubLibrary(_)
         ) {
             flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
+        }
+        // TODO: classify symbols more reliably, likely by checking whether their section is __text.
+        if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
+            flags_to_add |= ValueFlags::FUNCTION;
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);
