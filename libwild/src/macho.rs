@@ -76,7 +76,7 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 // TODO: optionality of __DATA and __CONST_DATA segments not respected
-pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 4;
+pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 5;
 pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 =
     (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1)) as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
@@ -1270,6 +1270,7 @@ impl platform::Platform for MachO {
         properties: &Self::LayoutExt,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
     ) {
+        mem_sizes.increment(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
     }
 
     fn finalise_sizes_all<'data>(
@@ -1289,9 +1290,13 @@ impl platform::Platform for MachO {
         // known, so reserve the fixup table entries needed to describe the GOT pages.
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
-            MACHO_PAGE_ALIGNMENT
-                .value()
-                .div_ceil(*current_sizes.get(part_id::GOT)),
+            // TODO
+            dbg!(
+                size_of::<u32>() as u64
+                    * current_sizes
+                        .get(part_id::GOT)
+                        .div_ceil(MACHO_PAGE_ALIGNMENT.value())
+            ),
         );
         Ok(())
     }
@@ -1409,6 +1414,10 @@ impl platform::Platform for MachO {
         }
     }
 
+    fn epilogue_allocated_part_ids() -> &'static [crate::part_id::PartId] {
+        &[part_id::CHAINED_FIXUP_TABLE]
+    }
+
     fn allocate_object_symtab_space<'data>(
         state: &crate::layout::ObjectLayoutState<'data, Self>,
         common: &mut crate::layout::CommonGroupState<'data, Self>,
@@ -1458,7 +1467,6 @@ impl platform::Platform for MachO {
     ) {
         // Allocate one extra character as n_strx == 0 is treated as unnamed.
         common.allocate(part_id::STRTAB, 1);
-        common.allocate(part_id::CHAINED_FIXUP_TABLE, CHAINED_FIXUP_TABLE_BASE_SIZE);
         common.allocate(
             part_id::CODE_SIGNATURE,
             CS_HEADERS_SIZE + code_signature_padded_identifier_size(symbol_db.args),

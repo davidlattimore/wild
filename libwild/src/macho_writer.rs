@@ -8,6 +8,7 @@ use crate::file_writer::SizedOutput;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::Layout;
@@ -158,6 +159,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
             write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
+        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers)?,
         _ => {
             // TODO
         }
@@ -206,7 +208,18 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
             .0;
     write_code_signature_command::<A>(layout, code_signature_command);
 
+    // Fill up one extra character as n_strx == 0 is treated as unnamed.
+    buffers.get_mut(part_id::STRTAB).fill(0);
+
+    Ok(())
+}
+
+fn write_epilogue<A: Arch<Platform = MachO>>(
+    _epilogue: &EpilogueLayout<MachO>,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
     let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
+    dbg!(chained_fixup_table.len());
     // TODO: remove in the future once we handle a dynamic number of segments
     chained_fixup_table.fill(0);
     let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
@@ -225,9 +238,6 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
             .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
     write_chained_fixup_table::<A>(chained_fixups_header, starts_in_image)?;
-
-    // Fill up one extra character as n_strx == 0 is treated as unnamed.
-    buffers.get_mut(part_id::STRTAB).fill(0);
 
     Ok(())
 }

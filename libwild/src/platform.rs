@@ -618,6 +618,12 @@ pub(crate) trait Platform:
         args: &Self::Args,
     );
 
+    /// Section parts whose allocations may be discovered while processing regular input files,
+    /// but whose bytes are emitted by the epilogue.
+    fn epilogue_allocated_part_ids() -> &'static [PartId] {
+        &[]
+    }
+
     fn allocate_object_symtab_space<'data>(
         state: &ObjectLayoutState<'data, Self>,
         common: &mut CommonGroupState<'data, Self>,
