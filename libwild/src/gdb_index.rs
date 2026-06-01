@@ -302,6 +302,12 @@ pub(crate) fn write_gdb_index(
         ht_slots,
         ..
     } = scan_objects_for_gdb_index(objects)?;
+    if !cu_entries.is_empty() && sorted_names.is_empty() {
+        layout.symbol_db.warning(
+            "Objects lack .debug_gnu_pubnames/.debug_gnu_pubtypes sections, so the symbol table in .gdb_index will be empty. \
+             Compile with -ggnu-pubnames to populate it.",
+        );
+    }
     let addr_entries = build_address_entries(layout)?;
 
     let cu_list_off = HEADER_SIZE as u32;
@@ -364,6 +370,9 @@ pub(crate) fn write_gdb_index(
         &cv_offsets,
     )?;
 
+    // The shortcut table lets GDB quickly determine the language of `main` without scanning the
+    // full index. Filling it requires looking up the DWARF language attribute of the main CU, which
+    // we don't currently do. GDB handles zeroed values here by falling back to its own lookup.
     let so = short_off as usize;
     let sc = GdbIndexShortcutTable {
         language_of_main: 0,
