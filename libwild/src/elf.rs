@@ -71,7 +71,6 @@ use crate::string_merging::MergedStringsSection;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
@@ -992,7 +991,6 @@ impl platform::Platform for Elf {
         queue: &mut crate::layout::LocalWorkQueue,
         scope: &rayon::Scope<'scope>,
     ) -> Result {
-        let file_symbol_id_range = object.symbol_id_range;
         let eh_frame_section = object.object.section(eh_frame_section_index)?;
         let data = object.object.raw_section_data(eh_frame_section)?;
         let frame_index_offset = object.format_specific.exception_frames.len();
@@ -1001,7 +999,6 @@ impl platform::Platform for Elf {
                 ExceptionFrames::Rela(process_eh_frame_relocations::<A, Rela>(
                     object,
                     common,
-                    file_symbol_id_range,
                     resources,
                     queue,
                     eh_frame_section,
@@ -1016,7 +1013,6 @@ impl platform::Platform for Elf {
                 ExceptionFrames::Crel(process_eh_frame_relocations::<A, Crel>(
                     object,
                     common,
-                    file_symbol_id_range,
                     resources,
                     queue,
                     eh_frame_section,
@@ -2583,7 +2579,6 @@ impl DynamicLayoutStateExt<'_> {
 fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Relocation>(
     object: &mut layout::ObjectLayoutState<'data, Elf>,
     common: &mut layout::CommonGroupState<'data, Elf>,
-    file_symbol_id_range: SymbolIdRange,
     resources: &'scope layout::GraphResources<'data, '_, Elf>,
     queue: &mut layout::LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
@@ -2615,7 +2610,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
 
         if prefix.cie_id == 0 {
             // This is a CIE
-            let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
+
             // When deduplicating CIEs, we take into consideration the bytes of the CIE and all the
             // symbols it references. If however, it references something other than a symbol, then,
             // because we're not taking that into consideration, we disallow deduplication.
@@ -2641,11 +2636,7 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                     scope,
                 )?;
 
-                if let Some(local_sym_index) = rel.symbol() {
-                    let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
-                    let definition = resources.symbol_db.definition(local_symbol_id);
-                    referenced_symbols.push(definition);
-                } else {
+                if rel.symbol().is_none() {
                     eligible_for_deduplication = false;
                 }
                 rel_iter.next();
@@ -2656,7 +2647,6 @@ fn process_eh_frame_relocations<'data, 'scope, A: Arch<Platform = Elf>, R: Reloc
                 cie: Cie {
                     bytes: &data[offset..next_offset],
                     eligible_for_deduplication,
-                    referenced_symbols,
                 },
             });
         } else {
@@ -4084,7 +4074,6 @@ fn finalise_gnu_version_size<'data>(
 struct Cie<'data> {
     bytes: &'data [u8],
     eligible_for_deduplication: bool,
-    referenced_symbols: SmallVec<[SymbolId; 1]>,
 }
 
 struct CieAtOffset<'data> {
