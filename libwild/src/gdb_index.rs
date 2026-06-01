@@ -116,6 +116,9 @@ struct CuBoundary {
 }
 
 /// Walk `.debug_info` bytes and return `(offset, total_length)` for each CU.
+///
+/// Each CU starts with an initial length field (§7.5.1.1) encoded per §7.4: a 4-byte value, or
+/// `0xFFFF_FFFF` followed by an 8-byte length for DWARF-64.
 fn parse_cu_boundaries(data: &[u8]) -> Vec<CuBoundary> {
     let mut cus = Vec::new();
     let mut offset = 0usize;
