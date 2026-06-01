@@ -116,32 +116,30 @@ struct CuBoundary {
 }
 
 /// Walk `.debug_info` bytes and return `(offset, total_length)` for each CU.
-fn parse_cu_boundaries(data: &[u8]) -> Result<Vec<CuBoundary>> {
+fn parse_cu_boundaries(data: &[u8]) -> Vec<CuBoundary> {
     let mut cus = Vec::new();
     let mut offset = 0usize;
     while offset + 4 <= data.len() {
         let init_len = u32_from_slice(&data[offset..]);
         let total = if init_len == 0xFFFF_FFFF {
-            crate::ensure!(
-                offset + 12 <= data.len(),
-                "truncated DWARF64 initial length in .debug_info at offset {offset:#x}"
-            );
+            if offset + 12 > data.len() {
+                break;
+            }
             let len = u64_from_slice(&data[offset + 4..]);
             12 + len as usize
         } else {
             4 + init_len as usize
         };
-        crate::ensure!(
-            total > 0 && offset + total <= data.len(),
-            "invalid CU length {total} in .debug_info at offset {offset:#x}"
-        );
+        if total == 0 || offset + total > data.len() {
+            break;
+        }
         cus.push(CuBoundary {
             offset: offset as u64,
             length: total as u64,
         });
         offset += total;
     }
-    Ok(cus)
+    cus
 }
 
 struct PubnamesSet<'data> {
@@ -153,7 +151,7 @@ struct PubnamesSet<'data> {
 ///
 /// Each set has a header pointing to a CU in `.debug_info`, followed by
 /// (die_offset, attrs_byte, NUL-terminated name) entries.
-fn parse_pubnames_sets(data: &[u8]) -> Result<Vec<PubnamesSet<'_>>> {
+fn parse_pubnames_sets(data: &[u8]) -> Vec<PubnamesSet<'_>> {
     let mut sets = Vec::new();
     let mut pos = 0;
     while pos + 4 <= data.len() {
@@ -161,19 +159,17 @@ fn parse_pubnames_sets(data: &[u8]) -> Result<Vec<PubnamesSet<'_>>> {
 
         let (header_size, set_end, debug_info_offset) = if init_len == 0xFFFF_FFFF {
             // DWARF64: 4 + 8(len) + 2(ver) + 8(offset) + 8(size) = 30
-            crate::ensure!(
-                pos + 30 <= data.len(),
-                "truncated DWARF64 pubnames header at offset {pos:#x}"
-            );
+            if pos + 30 > data.len() {
+                break;
+            }
             let len = u64_from_slice(&data[pos + 4..]);
             let dio = u64_from_slice(&data[pos + 14..]);
             (30, pos + 12 + len as usize, dio)
         } else {
             // DWARF32: 4(len) + 2(ver) + 4(offset) + 4(size) = 14
-            crate::ensure!(
-                pos + 14 <= data.len(),
-                "truncated DWARF32 pubnames header at offset {pos:#x}"
-            );
+            if pos + 14 > data.len() {
+                break;
+            }
             let dio = u64::from(u32_from_slice(&data[pos + 6..]));
             (14, pos + 4 + init_len as usize, dio)
         };
@@ -185,18 +181,16 @@ fn parse_pubnames_sets(data: &[u8]) -> Result<Vec<PubnamesSet<'_>>> {
 
         while ep < set_end {
             let die_offset = if is_64 {
-                crate::ensure!(
-                    ep + 8 <= set_end,
-                    "truncated DWARF64 pubnames entry at offset {ep:#x}"
-                );
+                if ep + 8 > set_end {
+                    break;
+                }
                 let v = u64_from_slice(&data[ep..]);
                 ep += 8;
                 v
             } else {
-                crate::ensure!(
-                    ep + 4 <= set_end,
-                    "truncated DWARF32 pubnames entry at offset {ep:#x}"
-                );
+                if ep + 4 > set_end {
+                    break;
+                }
                 let v = u64::from(u32_from_slice(&data[ep..]));
                 ep += 4;
                 v
@@ -204,20 +198,18 @@ fn parse_pubnames_sets(data: &[u8]) -> Result<Vec<PubnamesSet<'_>>> {
             if die_offset == 0 {
                 break;
             }
-            crate::ensure!(
-                ep < set_end,
-                "truncated pubnames entry (missing attrs/name) at offset {ep:#x}"
-            );
+            if ep >= set_end {
+                break;
+            }
             let attrs = data[ep];
             ep += 1;
             let name_start = ep;
             while ep < set_end && data[ep] != 0 {
                 ep += 1;
             }
-            crate::ensure!(
-                ep < set_end,
-                "unterminated pubnames name string at offset {name_start:#x}"
-            );
+            if ep >= set_end {
+                break;
+            }
             entries.push((&data[name_start..ep], attrs));
             ep += 1;
         }
@@ -228,7 +220,7 @@ fn parse_pubnames_sets(data: &[u8]) -> Result<Vec<PubnamesSet<'_>>> {
         });
         pos = set_end;
     }
-    Ok(sets)
+    sets
 }
 
 /// Read raw section data from an input object by name.
@@ -398,7 +390,7 @@ fn build_cu_list(output_buf: &[u8], layout: &Layout<'_, Elf>) -> Result<Vec<GdbI
         ".debug_info layout extends beyond output buffer ({end} > {})",
         output_buf.len()
     );
-    Ok(parse_cu_boundaries(&output_buf[start..end])?
+    Ok(parse_cu_boundaries(&output_buf[start..end])
         .into_iter()
         .map(|cu| GdbIndexCuEntry {
             cu_offset: cu.offset,
@@ -430,7 +422,7 @@ fn scan_objects_for_gdb_index<'data>(
 
     for (object, sections) in objects {
         let boundaries = match raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
-            Some(data) => parse_cu_boundaries(data)?,
+            Some(data) => parse_cu_boundaries(data),
             None => continue,
         };
         if boundaries.is_empty() {
@@ -496,10 +488,8 @@ fn build_address_entries(layout: &Layout<'_, Elf>) -> Result<Vec<GdbIndexAddress
             };
             let object = obj.object;
 
-            let obj_cu_count = match raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)? {
-                Some(data) => parse_cu_boundaries(data)?.len() as u32,
-                None => 0,
-            };
+            let obj_cu_count = raw_section_by_name(object, DEBUG_INFO_SECTION_NAME_STR)?
+                .map_or(0, |data| parse_cu_boundaries(data).len() as u32);
             if obj_cu_count == 0 {
                 continue;
             }
@@ -544,7 +534,7 @@ fn collect_pubname_entries<'data>(
         let Some(data) = raw_section_by_name(object, section_name)? else {
             continue;
         };
-        for set in parse_pubnames_sets(data)? {
+        for set in parse_pubnames_sets(data) {
             let Some(&cu_idx) = offset_to_idx.get(&set.debug_info_offset) else {
                 continue;
             };
@@ -633,12 +623,12 @@ mod tests {
 
     #[test]
     fn test_parse_cu_boundaries() {
-        assert!(parse_cu_boundaries(&[]).unwrap().is_empty());
+        assert!(parse_cu_boundaries(&[]).is_empty());
 
         // Single DWARF32 CU: init_length=8, total = 4 + 8 = 12 bytes.
         let mut data = vec![0u8; 12];
         data[0..4].copy_from_slice(&8u32.to_le_bytes());
-        let cus = parse_cu_boundaries(&data).unwrap();
+        let cus = parse_cu_boundaries(&data);
         assert_eq!(cus.len(), 1);
         assert_eq!(cus[0].offset, 0);
         assert_eq!(cus[0].length, 12);
