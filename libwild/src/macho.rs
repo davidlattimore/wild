@@ -66,6 +66,11 @@ use zerocopy::U64;
 #[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct MachO;
 
+#[derive(Debug, Default)]
+pub(crate) struct EpilogueLayoutExt<'data> {
+    pub(crate) imported_symbols: Vec<ImportedSymbol<'data>>,
+}
+
 const LE: Endianness = Endianness::Little;
 
 /// Mach-O uses a zero page for all 32bit addresses and thus we begin the memory
@@ -1009,7 +1014,7 @@ impl platform::Platform for MachO {
     type RelocationInfo = object::macho::RelocationInfo;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
-    type EpilogueLayoutExt = ();
+    type EpilogueLayoutExt<'data> = EpilogueLayoutExt<'data>;
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
     type ArchIdentifier = ();
@@ -1243,16 +1248,20 @@ impl platform::Platform for MachO {
         Ok(())
     }
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: crate::output_kind::OutputKind,
         dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
-    ) -> Self::EpilogueLayoutExt {
+        imported_symbols: &[ImportedSymbol<'data>],
+    ) -> Self::EpilogueLayoutExt<'data> {
+        EpilogueLayoutExt {
+            imported_symbols: imported_symbols.to_vec(),
+        }
     }
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'_>,
     ) {
     }
 
@@ -1266,7 +1275,7 @@ impl platform::Platform for MachO {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'data>,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
         properties: &Self::LayoutExt,
@@ -1282,16 +1291,17 @@ impl platform::Platform for MachO {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'_>,
         current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
         extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
-        imported_symbols: &[ImportedSymbol],
+        _imported_symbols: &[ImportedSymbol],
         args: &Self::Args,
     ) -> crate::error::Result {
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
-            imported_symbols
+            state
+                .imported_symbols
                 .iter()
                 .map(|s| CHAINED_FIXUP_IMPORT_SIZE + s.name.len() as u64 + 1)
                 .sum(),
@@ -1301,14 +1311,14 @@ impl platform::Platform for MachO {
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
             size_of::<u32>() as u64
-                * (imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value()),
+                * (state.imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value()),
         );
 
         Ok(())
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
+        epilogue_state: &mut Self::EpilogueLayoutExt<'data>,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         common_state: &Self::LayoutExt,

@@ -233,7 +233,7 @@ pub(crate) trait Platform:
     type RelocationInfo: Copy + Send + Sync + 'static;
     type NonAddressableIndexes: NonAddressableIndexes + Send + Sync + 'static;
     type NonAddressableCounts: Default + Send + Sync + 'static;
-    type EpilogueLayoutExt: Send + Sync + 'static;
+    type EpilogueLayoutExt<'data>: Send + Sync + 'data;
     type GroupLayoutExt: std::fmt::Debug + Send + Sync + 'static;
     type CommonGroupStateExt: Default + std::fmt::Debug + Send + Sync + 'static;
     type ArchIdentifier: Send + Sync + 'static;
@@ -509,15 +509,16 @@ pub(crate) trait Platform:
         scope: &Scope<'scope>,
     ) -> Result;
 
-    fn new_epilogue_layout(
+    fn new_epilogue_layout<'data>(
         args: &Self::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
-    ) -> Self::EpilogueLayoutExt;
+        imported_symbols: &[ImportedSymbol<'data>],
+    ) -> Self::EpilogueLayoutExt<'data>;
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'_>,
     );
 
     fn apply_non_addressable_indexes<'data, 'groups>(
@@ -527,7 +528,7 @@ pub(crate) trait Platform:
     );
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'data>,
         mem_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[DynamicSymbolDefinition<'data, Self>],
         properties: &Self::LayoutExt,
@@ -540,7 +541,7 @@ pub(crate) trait Platform:
     );
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt,
+        state: &mut Self::EpilogueLayoutExt<'_>,
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
@@ -558,7 +559,7 @@ pub(crate) trait Platform:
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt,
+        epilogue_state: &mut Self::EpilogueLayoutExt<'data>,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'data, Self>,
         common_state: &Self::LayoutExt,

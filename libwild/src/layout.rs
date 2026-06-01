@@ -157,12 +157,14 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
+    let imported_symbols = collect_imported_symbols(&group_states);
 
     group_states.push(GroupState {
         files: vec![FileLayoutState::Epilogue(EpilogueLayoutState::new(
             symbol_db.args,
             symbol_db.output_kind,
             &mut dynamic_symbol_definitions,
+            &imported_symbols,
         ))],
         queue: LocalWorkQueue::new(epilogue_file_id.group()),
         common: CommonGroupState::new(&output_sections),
@@ -190,7 +192,6 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &finalise_sizes_resources,
     )?;
 
-    let imported_symbols = collect_imported_symbols(&group_states);
     finalise_sizes_resources.imported_symbols = &imported_symbols;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
@@ -709,7 +710,7 @@ pub(crate) enum FileLayout<'data, P: Platform> {
     Object(ObjectLayout<'data, P>),
     Dynamic(DynamicLayout<'data, P>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data, P>),
-    Epilogue(EpilogueLayout<P>),
+    Epilogue(EpilogueLayout<'data, P>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
@@ -768,7 +769,7 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     StubLibrary(StubLibraryLayoutState<'data>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
-    Epilogue(EpilogueLayoutState<P>),
+    Epilogue(EpilogueLayoutState<'data, P>),
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
 
@@ -790,8 +791,8 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     internal_symbols: InternalSymbols<'data, P>,
 }
 
-pub(crate) struct EpilogueLayoutState<P: Platform> {
-    format_specific: P::EpilogueLayoutExt,
+pub(crate) struct EpilogueLayoutState<'data, P: Platform> {
+    format_specific: P::EpilogueLayoutExt<'data>,
 }
 
 #[derive(Debug)]
@@ -815,8 +816,8 @@ pub(crate) struct SyntheticSymbolsLayout<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout<P: Platform> {
-    pub(crate) format_specific: P::EpilogueLayoutExt,
+pub(crate) struct EpilogueLayout<'data, P: Platform> {
+    pub(crate) format_specific: P::EpilogueLayoutExt<'data>,
     pub(crate) dynsym_start_index: u32,
 }
 
@@ -2707,7 +2708,7 @@ impl<P: Platform> std::fmt::Display for PreludeLayoutState<'_, P> {
     }
 }
 
-impl<P: Platform> std::fmt::Display for EpilogueLayoutState<P> {
+impl<P: Platform> std::fmt::Display for EpilogueLayoutState<'_, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
@@ -3674,14 +3675,20 @@ impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
     }
 }
 
-impl<'data, P: Platform> EpilogueLayoutState<P> {
+impl<'data, P: Platform> EpilogueLayoutState<'data, P> {
     fn new(
         args: &P::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<P>],
+        imported_symbols: &[ImportedSymbol<'data>],
     ) -> Self {
         EpilogueLayoutState {
-            format_specific: P::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
+            format_specific: P::new_epilogue_layout(
+                args,
+                output_kind,
+                dynamic_symbol_definitions,
+                imported_symbols,
+            ),
         }
     }
 
@@ -3728,7 +3735,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<EpilogueLayout<P>> {
+    ) -> Result<EpilogueLayout<'data, P>> {
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
