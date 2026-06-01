@@ -415,6 +415,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         relocation_statistics,
         per_symbol_flags,
         dynamic_symbol_definitions,
+        imported_symbols,
         properties_and_attributes,
         thunk_block_addresses,
         compressed_debug_sections: OutputSectionMap::with_size(num_sections),
@@ -677,6 +678,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
     /// A list of imported STUB library symbols (Mach-O specific).
+    pub(crate) imported_symbols: Vec<ImportedSymbol<'data>>,
     pub(crate) properties_and_attributes: P::LayoutExt,
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.

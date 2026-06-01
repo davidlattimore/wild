@@ -159,7 +159,7 @@ fn write_file<'data, A: Arch<Platform = MachO>>(
             write_object::<A>(s, buffers, layout, symbol_writer)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, layout)?,
-        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers)?,
+        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, layout)?,
         _ => {
             // TODO
         }
@@ -217,7 +217,20 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
 fn write_epilogue<A: Arch<Platform = MachO>>(
     _epilogue: &EpilogueLayout<MachO>,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &MachOLayout<'_>,
 ) -> Result {
+    for imported_symbol in &layout.imported_symbols {
+        let stub_library_name = layout
+            .symbol_db
+            .stub_library_install_name_for_symbol(imported_symbol.symbol_id)
+            .unwrap_or("<unknown Mach-O stub library>");
+        eprintln!(
+            "Mach-O imported symbol: {} from stub library {}",
+            String::from_utf8_lossy(imported_symbol.name),
+            stub_library_name,
+        );
+    }
+
     let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
     dbg!(chained_fixup_table.len());
     // TODO: remove in the future once we handle a dynamic number of segments
