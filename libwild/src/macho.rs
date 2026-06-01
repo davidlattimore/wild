@@ -12,6 +12,7 @@ use crate::error::Result;
 use crate::file_writer::copy_section_data;
 use crate::grouping::SequencedInput;
 use crate::layout;
+use crate::layout::ImportedSymbol;
 use crate::layout::Layout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::Resolution;
@@ -52,6 +53,7 @@ use object::read::macho::Nlist;
 use object::read::macho::Section;
 use object::read::macho::Segment;
 use std::borrow::Cow;
+use std::io::Read;
 use std::num::NonZeroU64;
 use zerocopy::BigEndian;
 use zerocopy::FromBytes;
@@ -1284,20 +1286,24 @@ impl platform::Platform for MachO {
         current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
         extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        imported_symbols: &[ImportedSymbol],
         args: &Self::Args,
     ) -> crate::error::Result {
+        extra_sizes.increment(
+            part_id::CHAINED_FIXUP_TABLE,
+            imported_symbols
+                .iter()
+                .map(|s| CHAINED_FIXUP_IMPORT_SIZE + s.name.len() as u64 + 1)
+                .sum(),
+        );
         // Chained fixups record start information per page. At this point the final GOT size is
         // known, so reserve the fixup table entries needed to describe the GOT pages.
         extra_sizes.increment(
             part_id::CHAINED_FIXUP_TABLE,
-            // TODO
-            dbg!(
-                size_of::<u32>() as u64
-                    * current_sizes
-                        .get(part_id::GOT)
-                        .div_ceil(MACHO_PAGE_ALIGNMENT.value())
-            ),
+            size_of::<u32>() as u64
+                * (imported_symbols.len() as u64).div_ceil(MACHO_PAGE_ALIGNMENT.value()),
         );
+
         Ok(())
     }
 
@@ -1395,10 +1401,7 @@ impl platform::Platform for MachO {
     ) -> crate::error::Result {
         if flags.has_resolution() && symbol_db.is_stub_library_symbol(symbol_id) {
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            common.allocate(
-                part_id::CHAINED_FIXUP_TABLE,
-                CHAINED_FIXUP_IMPORT_SIZE + symbol_name.bytes().len() as u64 + 1,
-            );
+            common.add_imported_symbol(symbol_id, symbol_name.bytes());
         }
         Ok(())
     }
@@ -1412,10 +1415,6 @@ impl platform::Platform for MachO {
         if flags.is_dynamic() && flags.needs_got() {
             mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE);
         }
-    }
-
-    fn epilogue_allocated_part_ids() -> &'static [crate::part_id::PartId] {
-        &[part_id::CHAINED_FIXUP_TABLE]
     }
 
     fn allocate_object_symtab_space<'data>(

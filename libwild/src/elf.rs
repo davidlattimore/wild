@@ -24,6 +24,7 @@ use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
 use crate::layout::HandlerData as _;
+use crate::layout::ImportedSymbol;
 use crate::layout::ObjectLayout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
@@ -1294,6 +1295,7 @@ impl platform::Platform for Elf {
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        _imported_symbols: &[ImportedSymbol],
         args: &ElfArgs,
     ) -> Result {
         if args.hash_style.includes_sysv() {

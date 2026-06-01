@@ -175,8 +175,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         objects_iter(&group_states).map(|obj| &obj.format_specific),
     )?;
 
-    let finalise_sizes_resources = FinaliseSizesResources {
+    let mut finalise_sizes_resources = FinaliseSizesResources {
         dynamic_symbol_definitions: &dynamic_symbol_definitions,
+        imported_symbols: &[],
         symbol_db: &symbol_db,
         merged_strings: &merged_strings,
         format_specific: &properties_and_attributes,
@@ -188,6 +189,9 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &atomic_per_symbol_flags,
         &finalise_sizes_resources,
     )?;
+
+    let imported_symbols = collect_imported_symbols(&group_states);
+    finalise_sizes_resources.imported_symbols = &imported_symbols;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
     // got an error or panic, then we'll have printed at that point.
@@ -425,6 +429,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
 struct FinaliseSizesResources<'data, 'scope, P: Platform> {
     dynamic_symbol_definitions: &'scope [DynamicSymbolDefinition<'data, P>],
+    imported_symbols: &'scope [ImportedSymbol<'data>],
     symbol_db: &'scope SymbolDb<'data, P>,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     format_specific: &'scope P::LayoutExt,
@@ -581,6 +586,15 @@ fn merge_dynamic_symbol_definitions<'data, P: Platform>(
     Ok(dynamic_symbol_definitions)
 }
 
+fn collect_imported_symbols<'data, P: Platform>(
+    group_states: &[GroupState<'data, P>],
+) -> Vec<ImportedSymbol<'data>> {
+    group_states
+        .iter()
+        .flat_map(|group| group.common.imported_symbols.iter().copied())
+        .collect()
+}
+
 fn append_prelude_defsym_dynamic_symbols<'data, P: Platform>(
     group_states: &[GroupState<'data, P>],
     symbol_db: &SymbolDb<'data, P>,
@@ -662,6 +676,7 @@ pub struct Layout<'data, P: Platform> {
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
+    /// A list of imported STUB library symbols (Mach-O specific).
     pub(crate) properties_and_attributes: P::LayoutExt,
     /// Thunk address maps indexed by ThunkBlockId. Each entry maps SymbolId to the memory address
     /// of the thunk for that symbol within the block.
@@ -1142,6 +1157,9 @@ pub(crate) struct CommonGroupState<'data, P: Platform> {
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data, P>>,
 
+    /// A list of imported STUB library symbols (Mach-O specific).
+    imported_symbols: Vec<ImportedSymbol<'data>>,
+
     pub(crate) format_specific: P::CommonGroupStateExt,
 }
 
@@ -1151,6 +1169,7 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
+            imported_symbols: Default::default(),
             format_specific: Default::default(),
         }
     }
@@ -1197,6 +1216,11 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
 
     pub(crate) fn allocate(&mut self, part_id: PartId, size: u64) {
         self.mem_sizes.increment(part_id, size);
+    }
+
+    pub(crate) fn add_imported_symbol(&mut self, symbol_id: SymbolId, name: &'data [u8]) {
+        self.imported_symbols
+            .push(ImportedSymbol { symbol_id, name });
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -1279,6 +1303,15 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) format_specific: P::DynamicSymbolDefinitionExt,
+}
+
+#[derive(derive_more::Debug, Clone, Copy)]
+pub(crate) struct ImportedSymbol<'data> {
+    // TODO
+    #[allow(unused)]
+    pub(crate) symbol_id: SymbolId,
+    #[debug("{:?}", String::from_utf8_lossy(name))]
+    pub(crate) name: &'data [u8],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3664,6 +3697,7 @@ impl<'data, P: Platform> EpilogueLayoutState<P> {
             total_sizes,
             &mut extra_sizes,
             resources.dynamic_symbol_definitions,
+            resources.imported_symbols,
             resources.symbol_db.args,
         )?;
 

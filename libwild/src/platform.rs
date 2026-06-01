@@ -11,6 +11,7 @@ use crate::input_data::InputRef;
 use crate::layout;
 use crate::layout::CommonGroupState;
 use crate::layout::DynamicSymbolDefinition;
+use crate::layout::ImportedSymbol;
 use crate::layout::Layout;
 use crate::layout::ObjectLayoutState;
 use crate::layout::OutputRecordLayout;
@@ -543,6 +544,7 @@ pub(crate) trait Platform:
         current_sizes: &OutputSectionPartMap<u64>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[DynamicSymbolDefinition<Self>],
+        imported_symbols: &[ImportedSymbol],
         args: &Self::Args,
     ) -> Result;
 
@@ -617,12 +619,6 @@ pub(crate) trait Platform:
         output_kind: OutputKind,
         args: &Self::Args,
     );
-
-    /// Section parts whose allocations may be discovered while processing regular input files,
-    /// but whose bytes are emitted by the epilogue.
-    fn epilogue_allocated_part_ids() -> &'static [PartId] {
-        &[]
-    }
 
     fn allocate_object_symtab_space<'data>(
         state: &ObjectLayoutState<'data, Self>,

@@ -7,6 +7,7 @@ use crate::args::wasm::WasmArgs;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::layout::ImportedSymbol;
 use crate::layout_rules::SectionKind;
 use crate::output_section_id::SectionName;
 use crate::platform;
@@ -1680,6 +1681,7 @@ impl platform::Platform for Wasm {
         current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
         extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
+        imported_symbols: &[ImportedSymbol],
         args: &Self::Args,
     ) -> crate::error::Result {
         Ok(())
