@@ -94,7 +94,7 @@ symbolic-demangle = { version = "13.0.0", default-features = false, features = [
   "cpp",
   "rust",
 ] }
-tabled = "0.20.0"
+tabled = "0.21.0"
 tempfile = "3.0.2"
 thread_local = "1.1.9"
 toml = "1.0.3"
@@ -107,7 +107,7 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
 uuid = { version = "1.3.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 wait4 = "0.1.3"
-wasmparser = "0.248.0"
+wasmparser = "0.251.0"
 which = "8.0.0"
 winnow = { version = "1.0.0", features = ["simd"] }
 zerocopy = { version = "0.8.27", features = ["derive"] }
