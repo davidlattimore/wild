@@ -1395,7 +1395,7 @@ impl platform::Platform for Wasm {
     type RelocationInfo = u32;
     type NonAddressableIndexes = NonAddressableIndexes;
     type NonAddressableCounts = ();
-    type EpilogueLayoutExt<'data> = ();
+    type EpilogueLayoutExt = ();
     type GroupLayoutExt = ();
     type CommonGroupStateExt = ();
     type ArchIdentifier = ();
@@ -1635,17 +1635,16 @@ impl platform::Platform for Wasm {
         todo!()
     }
 
-    fn new_epilogue_layout<'data>(
+    fn new_epilogue_layout(
         args: &Self::Args,
         output_kind: crate::output_kind::OutputKind,
         dynamic_symbol_definitions: &mut [crate::layout::DynamicSymbolDefinition<'_, Self>],
-        imported_symbols: &[ImportedSymbol<'data>],
-    ) -> Self::EpilogueLayoutExt<'data> {
+    ) -> Self::EpilogueLayoutExt {
     }
 
     fn apply_non_addressable_indexes_epilogue(
         counts: &mut Self::NonAddressableCounts,
-        state: &mut Self::EpilogueLayoutExt<'_>,
+        state: &mut Self::EpilogueLayoutExt,
     ) {
         // No-op: Wasm has no version table.
     }
@@ -1661,7 +1660,7 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_sizes_epilogue<'data>(
-        state: &mut Self::EpilogueLayoutExt<'data>,
+        state: &mut Self::EpilogueLayoutExt,
         mem_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_definitions: &[crate::layout::DynamicSymbolDefinition<'data, Self>],
         properties: &Self::LayoutExt,
@@ -1678,7 +1677,7 @@ impl platform::Platform for Wasm {
     }
 
     fn apply_late_size_adjustments_epilogue(
-        state: &mut Self::EpilogueLayoutExt<'_>,
+        state: &mut Self::EpilogueLayoutExt,
         current_sizes: &crate::output_section_part_map::OutputSectionPartMap<u64>,
         extra_sizes: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         dynamic_symbol_defs: &[crate::layout::DynamicSymbolDefinition<Self>],
@@ -1689,7 +1688,7 @@ impl platform::Platform for Wasm {
     }
 
     fn finalise_layout_epilogue<'data>(
-        epilogue_state: &mut Self::EpilogueLayoutExt<'data>,
+        epilogue_state: &mut Self::EpilogueLayoutExt,
         memory_offsets: &mut crate::output_section_part_map::OutputSectionPartMap<u64>,
         symbol_db: &crate::symbol_db::SymbolDb<'data, Self>,
         common_state: &Self::LayoutExt,

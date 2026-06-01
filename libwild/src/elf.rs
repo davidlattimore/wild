@@ -319,7 +319,7 @@ impl platform::Platform for Elf {
     type SymbolVersionIndex = Versym;
     type NonAddressableCounts = NonAddressableCounts;
     type NonAddressableIndexes = NonAddressableIndexes;
-    type EpilogueLayoutExt<'data> = EpilogueLayoutExt;
+    type EpilogueLayoutExt = EpilogueLayoutExt;
     type GroupLayoutExt = GroupLayoutExt;
     type CommonGroupStateExt = CommonGroupStateExt;
     type PreludeLayoutStateExt = PreludeLayoutStateExt;
@@ -1081,7 +1081,6 @@ impl platform::Platform for Elf {
         args: &ElfArgs,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<'_, Self>],
-        _imported_symbols: &[ImportedSymbol],
     ) -> EpilogueLayoutExt {
         let gnu_hash_layout = create_gnu_hash_layout(args, output_kind, dynamic_symbol_definitions);
 
