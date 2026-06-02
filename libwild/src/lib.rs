@@ -112,6 +112,7 @@ use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use std::io::BufWriter;
+use std::io::IsTerminal;
 use std::io::Write;
 use std::path::Path;
 pub use subprocess::run_in_subprocess;
@@ -141,7 +142,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
         debug_trace::init()
     } else {
         tracing_subscriber::registry()
-            .with(fmt::layer())
+            .with(fmt::layer().with_ansi(std::io::stdout().is_terminal()))
             .with(EnvFilter::from_env("WILD_LOG"))
             .try_init()
             .map_err(|_| AlreadyInitialised)

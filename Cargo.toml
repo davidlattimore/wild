@@ -100,6 +100,7 @@ thread_local = "1.1.9"
 toml = "1.0.3"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.16", default-features = false, features = [
+  "ansi",
   "env-filter",
   "fmt",
   "registry",
