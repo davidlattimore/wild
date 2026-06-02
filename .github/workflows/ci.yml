@@ -127,6 +127,23 @@ jobs:
       - run: cp -f .cargo/config.toml.cross-loongarch64 .cargo/config.toml
       - run: cargo build --target loongarch64-unknown-linux-gnu
 
+  ppc64le-build:
+    name: Build Linux (PPC64LE)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
+        with:
+          targets: powerpc64le-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install build-essential lld gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu
+      - run: cp -f .cargo/config.toml.cross-ppc64le .cargo/config.toml
+      - run: cargo build --target powerpc64le-unknown-linux-gnu
+
   wasip1-build:
     name: Build wasip1
     runs-on: ubuntu-24.04
