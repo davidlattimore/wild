@@ -9,6 +9,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::elf::PropertyClass;
 use crate::error;
 use crate::error::Result;
+use crate::malfunction_point_ret;
 use crate::platform::Platform;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
@@ -226,6 +227,7 @@ impl crate::platform::Arch for ElfX86_64 {
                     // mov *x(%rip), reg
                     0x8b => {
                         if is_absolute || is_absolute_address {
+                            malfunction_point_ret!("no-mov-indirect-to-absolute", None);
                             return Some(Relaxation {
                                 kind: RelaxationKind::MovIndirectToAbsolute,
                                 rel_info: rel_info_from_type!(object::elf::R_X86_64_32),

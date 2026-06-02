@@ -40,6 +40,7 @@ pub(crate) mod macho_aarch64;
 pub(crate) mod macho_object;
 pub(crate) mod macho_stub_library;
 pub(crate) mod macho_writer;
+pub mod malfunction;
 pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;

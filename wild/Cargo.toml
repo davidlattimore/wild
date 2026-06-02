@@ -30,6 +30,7 @@ dhat = { workspace = true, optional = true }
 [dev-dependencies]
 ar.workspace = true
 bitflags.workspace = true
+diff.workspace = true
 itertools.workspace = true
 foldhash.workspace = true
 gimli.workspace = true

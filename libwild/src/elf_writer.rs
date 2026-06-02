@@ -56,6 +56,7 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::SyntheticSymbolsLayout;
 use crate::layout::compute_allocations;
 use crate::linker_script::Expression;
+use crate::malfunction;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -401,13 +402,18 @@ fn populate_file_header<A: Arch<Platform = Elf>>(
     header: &mut FileHeader,
 ) -> Result {
     let output_kind = layout.symbol_db.output_kind;
-    let ty = if output_kind.is_partial_object() {
+    let mut ty = if output_kind.is_partial_object() {
         object::elf::ET_REL
     } else if output_kind.is_relocatable() {
         object::elf::ET_DYN
     } else {
         object::elf::ET_EXEC
     };
+
+    if malfunction::malfunction_point("elf-incorrect-type") {
+        ty = object::elf::ET_CORE;
+    }
+
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
     header.e_ident.class = object::elf::ELFCLASS64;

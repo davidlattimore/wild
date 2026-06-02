@@ -20,6 +20,10 @@
 //#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad
 //#Arch:aarch64
 
+//#Config:malfunction-no-movzx0lsl16:gcc
+//#Arch:aarch64
+//#Malfunction:no-movzx0lsl16
+
 _Thread_local long foo = 42;
 
 int main() { return foo; }

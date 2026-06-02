@@ -107,6 +107,9 @@
 //!
 //! ExpectWarningWild:{message regex} As for ExpectWarning, but only checks Wild's warning output.
 //!
+//! Malfunction:{malfunction-id} Run with the specified malfunction enabled. Linking should still
+//! succeed, but linker-diff should report a diff. That diff will be snapshot tested.
+//!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
@@ -261,8 +264,10 @@ use object::ObjectKind;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
 use object::read::elf::ProgramHeader;
+use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
@@ -793,6 +798,7 @@ struct Config {
     should_error: bool,
     expect_stderr: Vec<ErrorMatcher>,
     expect_stdout: Vec<ErrorMatcher>,
+    active_malfunction: Option<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_glibc_version: Option<String>,
@@ -1172,7 +1178,9 @@ impl Config {
     }
 
     fn can_use_wild_in_process(&self) -> bool {
-        self.expect_stderr.is_empty() && self.expect_stdout.is_empty()
+        self.expect_stderr.is_empty()
+            && self.expect_stdout.is_empty()
+            && self.active_malfunction.is_none()
     }
 
     fn source_path(&self, filename: &str) -> PathBuf {
@@ -1433,6 +1441,7 @@ impl Config {
             should_error: false,
             expect_stderr: Default::default(),
             expect_stdout: Default::default(),
+            active_malfunction: None,
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -1708,6 +1717,14 @@ fn process_directive(
         }
         "ExpectWarningWild" => {
             config.expect_stderr.push(ErrorMatcher::wild_only(arg)?);
+        }
+        "Malfunction" => {
+            let prefix = format!("malfunction-{arg}");
+            if !config.config_name.starts_with(&prefix) {
+                bail!("Config name must be prefixed with '{prefix}'");
+            }
+            config.active_malfunction = Some(arg.to_owned());
+            config.should_run = false;
         }
         "SecEquiv" => config.section_equiv.push(
             arg.split_once('=')
@@ -3142,6 +3159,10 @@ impl LinkCommand {
                 }
             }
 
+            if let Some(malfunction) = config.active_malfunction.as_ref() {
+                command.env(libwild::malfunction::ENV_NAME, malfunction);
+            }
+
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
             }
@@ -4538,7 +4559,7 @@ fn diff_shared_objects(config: &Config, programs: &[Program]) -> Result {
     }
     for so_group in so_groups {
         let filenames = so_group.iter().map(|i| i.path.clone()).collect_vec();
-        diff_files(
+        diff_files_report_command(
             config,
             filenames,
             // Shared objects should always have a command.
@@ -4553,17 +4574,135 @@ fn diff_executables(config: &Config, programs: &[Program]) -> Result {
         .iter()
         .map(|p| p.link_output.binary.clone())
         .collect_vec();
-    diff_files(config, filenames, programs.last().unwrap())
+    diff_files_report_command(config, filenames, programs.last().unwrap())
 }
 
-/// Diff the supplied files. The last file should be the one that we produced.
-fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
+fn normalise_report(report: &linker_diff::Report) -> String {
+    static BUILD_DIR_REGEX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new("(?<a>[` ])/.*tests/build/").unwrap());
+    static ADDRESS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("0x[0-9a-f]{3}").unwrap());
+    // Position of ^ markers depends on width of address on previous line.
+    static MARKER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new("^ *\\^+([^^]+)$").unwrap());
+
+    let mut out = String::new();
+    for line in report.to_string().lines() {
+        let line_out = if line.contains("tests/build") {
+            BUILD_DIR_REGEX.replace_all(line, "$a")
+        } else if ADDRESS_REGEX.is_match(line) {
+            // Lines containing hex addresses aren't likely to be consistent between different
+            // systems.
+            continue;
+        } else if let Some(captures) = MARKER_REGEX.captures(line) {
+            Cow::Owned(captures[1].to_owned())
+        } else {
+            Cow::Borrowed(line)
+        };
+        out.push_str(&line_out);
+        out.push('\n');
+    }
+    out
+}
+
+/// Set variable to "update" to update expected outputs of snapshot tests.
+const SNAPSHOT_VAR: &str = "WILD_SNAPSHOT";
+const SNAPSHOT_UPDATE: &str = "update";
+
+fn handle_snapshot(path: &Path, actual: &str) -> Result {
+    let expected = std::fs::read_to_string(path).unwrap_or_default();
+    if expected == actual {
+        return Ok(());
+    }
+
+    let behaviour = std::env::var(SNAPSHOT_VAR).unwrap_or_default();
+
+    match behaviour.as_str() {
+        SNAPSHOT_UPDATE => {
+            std::fs::write(path, actual)
+                .with_context(|| format!("Failed to write `{}`", path.display()))?;
+        }
+        "" => {
+            bail!(
+                "Output changed\n{diff}\nRun with {SNAPSHOT_VAR}={SNAPSHOT_UPDATE} to update",
+                diff = diff_lines(&expected, actual)
+            );
+        }
+        other => bail!("Unsupported value {SNAPSHOT_VAR}=\"{other}\""),
+    }
+
+    Ok(())
+}
+
+fn diff_lines(expected: &str, actual: &str) -> String {
+    let mut out = String::new();
+
+    for diff in diff::lines(expected, actual) {
+        match diff {
+            diff::Result::Left(s) => {
+                writeln!(&mut out, "-{s}").unwrap();
+            }
+            diff::Result::Both(a, _) => {
+                writeln!(&mut out, " {a}").unwrap();
+            }
+            diff::Result::Right(s) => {
+                writeln!(&mut out, "+{s}").unwrap();
+            }
+        }
+    }
+
+    out
+}
+
+fn diff_files_report_command(
+    config: &Config,
+    files: Vec<PathBuf>,
+    command_display: &dyn Display,
+) -> Result {
     if !config.should_diff || files.len() < 2 {
         return Ok(());
     }
 
+    let diff_config = create_diff_config(config, files)?;
+
+    diff_files(config, &diff_config).with_context(|| {
+        format!(
+            "Diff reported error: {command_display}\nTo revalidate:\n\
+            cargo run --bin linker-diff -- {}",
+            diff_config.to_arg_string()
+        )
+    })
+}
+
+/// Diff the supplied files. The last file should be the one that we produced.
+fn diff_files(config: &Config, diff_config: &linker_diff::Config) -> Result {
+    let report = produce_diff_report(diff_config)?;
+
+    if let Some(malfunction) = config.active_malfunction.as_ref() {
+        if !report.has_problems() {
+            bail!("No diff reported when running with malfunction `{malfunction}`");
+        }
+
+        let path = config.test_src_dir.join(format!(
+            "{config_name}.{arch}.exp",
+            arch = config.arch,
+            config_name = config.config_name,
+        ));
+
+        return handle_snapshot(&path, &normalise_report(&report));
+    }
+
+    if report.has_problems() {
+        bail!("Validation failed.\n{report}");
+    }
+    Ok(())
+}
+
+fn create_diff_config(config: &Config, files: Vec<PathBuf>) -> Result<linker_diff::Config> {
     let mut diff_config = linker_diff::Config::default();
-    diff_config.colour = linker_diff::ColourMode::Always;
+    diff_config.colour = if config.active_malfunction.is_some() {
+        linker_diff::ColourMode::Never
+    } else {
+        linker_diff::ColourMode::Always
+    };
     diff_config.wild_defaults = true;
     diff_config
         .ignore
@@ -4580,22 +4719,23 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
         .references
         .pop()
         .context("Tried to diff zero files")?;
-    let report = linker_diff::Report::from_config(diff_config.clone())
+
+    Ok(diff_config)
+}
+
+fn produce_diff_report(diff_config: &linker_diff::Config) -> Result<linker_diff::Report> {
+    linker_diff::Report::from_config(diff_config.clone())
         .map_err(Error::from_anyhow)
         .with_context(|| {
             format!(
                 "Report::from_config failed for the following files: {}",
-                files.iter().map(|f| f.to_string_lossy()).join(" ")
+                diff_config
+                    .references
+                    .iter()
+                    .map(|f| f.to_string_lossy())
+                    .join(" ")
             )
-        })?;
-    if report.has_problems() {
-        bail!(
-            "Validation failed.\n{report}\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
-             {}\nTo disable diff checking, set run_all_diffs=false in test config (see CONTRIBUTING.md)",
-            diff_config.to_arg_string()
-        );
-    }
-    Ok(())
+        })
 }
 
 fn setup_wild_ld_symlink() -> Result {
