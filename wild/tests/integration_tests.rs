@@ -1504,34 +1504,24 @@ fn process_directive(
         "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
         "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
         "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
-        "ExpectSym" => config.assertions.expected_symtab_entries.push(
-            ExpectedSymtabEntry::parse(arg.trim())
-                .context("Failed to parse ExpectSym arguments")?,
-        ),
-        "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
-            ExpectedSymtabEntry::parse(arg.trim())
-                .context("Failed to parse ExpectDynSym arguments")?,
-        ),
-        "ExpectComment" => config
+        "ExpectSym" => config
             .assertions
-            .expected_comments
-            .push(arg.trim().to_owned()),
+            .expected_symtab_entries
+            .push(ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectSym arguments")?),
+        "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
+            ExpectedSymtabEntry::parse(arg).context("Failed to parse ExpectDynSym arguments")?,
+        ),
+        "ExpectComment" => config.assertions.expected_comments.push(arg.to_owned()),
         "NoSym" => {
-            config.assertions.no_sym.insert(arg.trim().to_owned());
+            config.assertions.no_sym.insert(arg.to_owned());
         }
         "NoDynSym" => {
-            config.assertions.no_dynsym.insert(arg.trim().to_owned());
+            config.assertions.no_dynsym.insert(arg.to_owned());
         }
-        "DoesNotContain" => config
-            .assertions
-            .does_not_contain
-            .push(arg.trim().to_owned()),
-        "Contains" => config
-            .assertions
-            .contains_strings
-            .push(arg.trim().to_owned()),
+        "DoesNotContain" => config.assertions.does_not_contain.push(arg.to_owned()),
+        "Contains" => config.assertions.contains_strings.push(arg.to_owned()),
         "ExpectSectionBytes" => {
-            let (section_name, hex_str) = arg.trim().split_once('=').with_context(|| {
+            let (section_name, hex_str) = arg.split_once('=').with_context(|| {
                 format!("ExpectSectionBytes requires section_name=0xhex_bytes, got `{arg}`")
             })?;
             let hex_str = hex_str.trim().strip_prefix("0x").with_context(|| {
@@ -1551,11 +1541,11 @@ fn process_directive(
         "ExpectDynamic" => config
             .assertions
             .expected_dynamic_entries
-            .push(arg.trim().to_owned()),
+            .push(arg.to_owned()),
         "NoDynamic" => config
             .assertions
             .absent_dynamic_entries
-            .push(arg.trim().to_owned()),
+            .push(arg.to_owned()),
         "ExpectLoadAlignment" => {
             let alignment_strs = arg.split(" ").map(str::trim);
             let alignments = alignment_strs.map(|alignment_str| {
@@ -1592,7 +1582,7 @@ fn process_directive(
             }
             config.linker_driver.direct_mut()?.mode = mode;
         }
-        "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
+        "DiffIgnore" => config.diff_ignore.push(arg.to_owned()),
         "DiffEnabled" => {
             config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
         }
@@ -1604,33 +1594,30 @@ fn process_directive(
             config.run_dyn_sym = Some(arg.parse().context("Invalid string for RunDynSym")?)
         }
         "SkipLinker" => {
-            config.skip_linkers.insert(arg.trim().to_owned());
+            config.skip_linkers.insert(arg.to_owned());
         }
         "EnableLinker" => {
-            config.enabled_linkers.insert(arg.trim().to_owned());
+            config.enabled_linkers.insert(arg.to_owned());
         }
         "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
         "ExpectError" => {
-            config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
+            config.expect_stderr.push(ErrorMatcher::new(arg)?);
             config.should_error = true;
             // If there are errors, then there's nothing to run and nothing to diff.
             config.should_run = false;
             config.should_diff = false;
         }
         "ExpectMessage" => {
-            config.expect_stdout.push(ErrorMatcher::new(arg.trim())?);
+            config.expect_stdout.push(ErrorMatcher::new(arg)?);
         }
         "ExpectWarning" => {
-            config.expect_stderr.push(ErrorMatcher::new(arg.trim())?);
+            config.expect_stderr.push(ErrorMatcher::new(arg)?);
         }
         "ExpectWarningWild" => {
-            config
-                .expect_stderr
-                .push(ErrorMatcher::wild_only(arg.trim())?);
+            config.expect_stderr.push(ErrorMatcher::wild_only(arg)?);
         }
         "SecEquiv" => config.section_equiv.push(
-            arg.trim()
-                .split_once('=')
+            arg.split_once('=')
                 .ok_or_else(|| error!("DiffIgnore missing '='"))
                 .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
         ),
@@ -1676,14 +1663,14 @@ fn process_directive(
                 template,
             })
         }
-        "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
+        "RemoveSection" => config.remove_sections.push(arg.to_owned()),
         "AssertOutputFileMatches" => {
             config
                 .assertions
                 .output_file_matches
                 .push(OutputFileMatch::parse(arg)?);
         }
-        "Compiler" => config.compiler = arg.trim().to_owned(),
+        "Compiler" => config.compiler = arg.to_owned(),
         "Arch" => {
             config.support_architectures = arg
                 .trim()
@@ -1703,10 +1690,10 @@ fn process_directive(
                 .filter(|arch| !skipped.contains(arch))
                 .collect();
         }
-        "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
+        "RequiresGlibc" => config.requires_glibc = arg.to_lowercase().parse()?,
         "RequiresGlibcVersion" => {
             config.requires_glibc = true;
-            config.requires_glibc_version = Some(arg.trim().to_owned())
+            config.requires_glibc_version = Some(arg.to_owned())
         }
         "RequiresSFrameBacktrace" => {
             config.requires_sframe_backtrace = parse_bool(arg, "RequiresSFrameBacktrace")?;
@@ -1714,12 +1701,12 @@ fn process_directive(
         "RequiresCompilerFlags" => {
             config
                 .requires_compiler_flags
-                .extend(arg.trim().split(' ').map(str::to_owned));
+                .extend(arg.split(' ').map(str::to_owned));
         }
         "RequiresLinkerFlags" => {
             config
                 .requires_linker_flags
-                .extend(arg.trim().split(' ').map(str::to_owned));
+                .extend(arg.split(' ').map(str::to_owned));
         }
         "RequiresNightlyRustc" => {
             config.requires_nightly_rustc = arg.to_lowercase().parse()?;
@@ -1751,7 +1738,7 @@ fn process_directive(
 }
 
 fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
-    match arg.trim() {
+    match arg {
         "true" => Ok(true),
         "false" => Ok(false),
         other => bail!("Unsupported value for {opt_name} '{other}'"),
@@ -4160,7 +4147,7 @@ fn read_comments<'data>(
 
 impl LinkerDriver {
     fn parse(arg: &str) -> Result<LinkerDriver> {
-        match arg.trim() {
+        match arg {
             "gcc" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::C))),
             "g++" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::Cpp))),
             "clang" => Ok(LinkerDriver::Compiler(Compiler::Clang(CLanguage::C))),
