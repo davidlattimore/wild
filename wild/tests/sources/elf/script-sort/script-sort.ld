@@ -2,14 +2,19 @@ ENTRY(_start)
 
 SECTIONS
 {
-    /* Start at base + 4KB to safely leave room for ELF headers without using math */
     . = 0x401000;
 
     .text : {
         *(.text)
         
-        /* Protect our harvested sections from the GC! */
-        KEEP(*(SORT(.text.*)))
+        /* Test 1: Global sorting across files using standard ELF naming */
+        *(SORT(.text.sort.*))
+        
+        /* Test 2: SORT with KEEP */
+        KEEP(*(SORT(.text.kept.*)))
+
+        /* Test 3: SORT without KEEP */
+        *(SORT(.text.drop.*))
     }
 
     PROVIDE(__global_pointer$ = .);

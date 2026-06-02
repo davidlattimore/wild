@@ -750,8 +750,7 @@ pub(crate) struct ResolvedCommon<'data, P: Platform> {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct ScriptSortedSectionDetail<'data> {
-    pub(crate) name: &'data [u8],
+pub(crate) struct ScriptSortedSectionDetail {
     pub(crate) index: object::SectionIndex,
 }
 
@@ -769,9 +768,8 @@ pub(crate) struct ResolvedObject<'data, P: Platform> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 
     init_fini_sections: Vec<InitFiniSectionDetail>,
-    //// Stored as a flat Vec to ensure L1 cache locality during the final layout binary search
     //// same as layout file
-    pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
+    pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail>,
 
     /// Total size in bytes of all executable input sections in this object. Used to determine
     /// early-on if we can be sure that thunks won't be needed.
@@ -1366,7 +1364,6 @@ fn resolve_section<'data, P: Platform>(
             };
 
             obj.script_sorted_sections.push(ScriptSortedSectionDetail {
-                name: section_name,
                 index: input_section_index,
             });
 

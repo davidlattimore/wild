@@ -706,7 +706,7 @@ pub(crate) enum FileLayout<'data, P: Platform> {
     Object(ObjectLayout<'data, P>),
     Dynamic(DynamicLayout<'data, P>),
     SyntheticSymbols(SyntheticSymbolsLayout<'data, P>),
-    Epilogue(EpilogueLayout<'data, P>),
+    Epilogue(EpilogueLayout<P>),
     NotLoaded,
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
@@ -764,7 +764,7 @@ pub(crate) enum FileLayoutState<'data, P: Platform> {
     Dynamic(DynamicLayoutState<'data, P>),
     NotLoaded(NotLoaded),
     SyntheticSymbols(SyntheticSymbolsLayoutState<'data, P>),
-    Epilogue(EpilogueLayoutState<'data, P>),
+    Epilogue(EpilogueLayoutState<P>),
     LinkerScript(LinkerScriptLayoutState<'data, P>),
 }
 
@@ -786,9 +786,9 @@ pub(crate) struct SyntheticSymbolsLayoutState<'data, P: Platform> {
     internal_symbols: InternalSymbols<'data, P>,
 }
 
-pub(crate) struct EpilogueLayoutState<'data, P: Platform> {
+pub(crate) struct EpilogueLayoutState<P: Platform> {
     format_specific: P::EpilogueLayoutExt,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection<'data>>,
+    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
 }
 
 #[derive(Debug)]
@@ -805,10 +805,10 @@ pub(crate) struct SyntheticSymbolsLayout<'data, P: Platform> {
 }
 
 #[derive(Debug)]
-pub(crate) struct EpilogueLayout<'data, P: Platform> {
+pub(crate) struct EpilogueLayout<P: Platform> {
     pub(crate) format_specific: P::EpilogueLayoutExt,
     pub(crate) dynsym_start_index: u32,
-    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection<'data>>,
+    pub(crate) script_sorted_sections: Vec<HarvestedSortedSection>,
 }
 
 #[derive(Debug)]
@@ -1226,7 +1226,7 @@ pub(crate) struct ObjectLayoutState<'data, P: Platform> {
     /// and later transferred to `ObjectLayout`.
     section_relax_deltas: RelaxDeltaMap,
 
-    pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail<'data>>,
+    pub(crate) script_sorted_sections: Vec<ScriptSortedSectionDetail>,
 
     /// Which ThunkBlock handles primary-part thunks for this object.
     pub(crate) thunk_block_id: ThunkBlockId,
@@ -1355,7 +1355,7 @@ pub(crate) struct FinaliseLayoutResources<'scope, 'data, P: Platform> {
     output_sections: &'scope OutputSections<'data, P>,
     output_order: &'scope OutputOrder,
     pub(crate) section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
-    pub(crate) harvested_sections_registry: &'scope [HarvestedSortedSection<'data>],
+    pub(crate) harvested_sections_registry: &'scope [HarvestedSortedSection],
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
     dynamic_symbol_definitions: &'scope Vec<DynamicSymbolDefinition<'data, P>>,
@@ -2651,7 +2651,7 @@ impl<P: Platform> std::fmt::Display for PreludeLayoutState<'_, P> {
     }
 }
 
-impl<P: Platform> std::fmt::Display for EpilogueLayoutState<'_, P> {
+impl<P: Platform> std::fmt::Display for EpilogueLayoutState<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
@@ -3611,12 +3611,12 @@ impl<'data, P: Platform> SyntheticSymbolsLayoutState<'data, P> {
     }
 }
 
-impl<'data, P: Platform> EpilogueLayoutState<'data, P> {
+impl<'data, P: Platform> EpilogueLayoutState<P> {
     fn new(
         args: &P::Args,
         output_kind: OutputKind,
         dynamic_symbol_definitions: &mut [DynamicSymbolDefinition<P>],
-        script_sorted_sections: Vec<HarvestedSortedSection<'data>>,
+        script_sorted_sections: Vec<HarvestedSortedSection>,
     ) -> Self {
         EpilogueLayoutState {
             format_specific: P::new_epilogue_layout(args, output_kind, dynamic_symbol_definitions),
@@ -3669,7 +3669,7 @@ impl<'data, P: Platform> EpilogueLayoutState<'data, P> {
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data, P>,
-    ) -> Result<EpilogueLayout<'data, P>> {
+    ) -> Result<EpilogueLayout<P>> {
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -5473,21 +5473,21 @@ impl<'data, P: Platform> Drop for Layout<'data, P> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct HarvestedSortedSection<'data> {
+pub(crate) struct HarvestedSortedSection {
     pub(crate) file_id: FileId,
     pub(crate) section_index: object::SectionIndex,
     pub(crate) part_id: PartId,
     pub(crate) size: u64,
     pub(crate) alignment: Alignment,
     pub(crate) mem_offset: u64,
-    pub(crate) _name: &'data [u8],
+    //pub(crate) _name: &'data [u8],
 }
 
 fn harvest_and_sort_script_sections<'data, P: Platform>(
     group_states: &mut [GroupState<'data, P>],
     output_sections: &OutputSections<P>,
     section_part_ids: &[PartId],
-) -> Vec<HarvestedSortedSection<'data>> {
+) -> Vec<HarvestedSortedSection> {
     timing_phase!("Harvest and sort script sections");
 
     let has_any_sorting = group_states.iter().any(|g| {
@@ -5514,7 +5514,9 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                         let part_id = obj.section_part_id(section_req.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
                         temp.push((
-                            section_req.name,
+                            obj.object
+                                .section_name(section_req.index)
+                                .unwrap_or_default(),
                             HarvestedSortedSection {
                                 file_id: obj.file_id,
                                 section_index: section_req.index,
@@ -5522,7 +5524,6 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
                                 size: capacity,
                                 alignment: part_id.alignment(output_sections),
                                 mem_offset: 0,
-                                _name: section_req.name, // pointer
                             },
                         ));
                     }
