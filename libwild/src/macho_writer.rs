@@ -817,7 +817,7 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
         .set(DYLD_CHAINED_PTR_64_OFFSET);
     starts_in_segment
         .segment_offset
-        .set(data_const_segment.mem_offset);
+        .set(data_const_segment.file_offset as u64);
     starts_in_segment.max_valid_pointer.set(0);
     // TODO
     starts_in_segment.page_count.set(1);
