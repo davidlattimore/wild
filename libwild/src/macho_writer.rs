@@ -46,6 +46,7 @@ use crate::macho::DylibCommand;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
+use crate::macho::GOT_ENTRY_SIZE;
 use crate::macho::LIBSYSTEM_PATH;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
@@ -149,6 +150,9 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
             Ok(())
         })?;
 
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
+    write_got_entries(layout, section_buffers.get_mut(output_section_id::GOT))?;
+
     write_code_signature(layout, sized_output)?;
 
     Ok(())
@@ -232,6 +236,31 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
     layout: &MachOLayout<'_>,
 ) -> Result {
     write_chained_fixup_table::<A>(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
+
+    Ok(())
+}
+
+fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
+    let got_layout = layout.section_layouts.get(output_section_id::GOT);
+
+    for imported_symbol in &layout.imported_symbols {
+        let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) else {
+            continue;
+        };
+        let Some(got_address) = resolution.format_specific.got_address else {
+            continue;
+        };
+
+        let offset = got_address
+            .get()
+            .checked_sub(got_layout.mem_offset)
+            .ok_or_else(|| error!("Mach-O GOT entry address is before __got"))?
+            as usize;
+        let end = offset + GOT_ENTRY_SIZE as usize;
+        ensure!(end <= got.len(), "Mach-O GOT entry is outside __got");
+
+        got[offset..end].copy_from_slice(&(1u64 << 63).to_le_bytes());
+    }
 
     Ok(())
 }
