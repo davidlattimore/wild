@@ -354,7 +354,7 @@ fn write_segment_commands<A: Arch<Platform = MachO>>(
         )?;
         write_segment(
             SEG_DATA_CONST,
-            macho::VM_PROT_READ,
+            macho::VM_PROT_READ | macho::VM_PROT_WRITE,
             data_const_segment,
             data_const_segment_size.file_offset as u64,
             data_const_segment_size.file_size as u64,
