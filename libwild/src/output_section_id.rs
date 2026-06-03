@@ -113,6 +113,7 @@ pub(crate) const LINK_EDIT_SEGMENT: OutputSectionId =
 pub(crate) const ENTRY_POINT: OutputSectionId = part_id::ENTRY_POINT.output_section_id();
 pub(crate) const DYLD_CHAINED_FIXUPS: OutputSectionId =
     part_id::DYLD_CHAINED_FIXUPS.output_section_id();
+pub(crate) const LOAD_DYLIB: OutputSectionId = part_id::LOAD_DYLIB.output_section_id();
 pub(crate) const CHAINED_FIXUP_TABLE: OutputSectionId =
     part_id::CHAINED_FIXUP_TABLE.output_section_id();
 pub(crate) const SYMTAB_COMMAND: OutputSectionId = part_id::SYMTAB_COMMAND.output_section_id();

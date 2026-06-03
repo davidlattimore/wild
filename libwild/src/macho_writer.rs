@@ -42,9 +42,11 @@ use crate::macho::DYLD_CHAINED_PTR_64_OFFSET;
 use crate::macho::DYLINKER_PATH;
 use crate::macho::DyldChainedFixupsCommand;
 use crate::macho::DyldChainedStartsInSegment;
+use crate::macho::DylibCommand;
 use crate::macho::DylinkerCommand;
 use crate::macho::EntryPointCommand;
 use crate::macho::FileHeader;
+use crate::macho::LIBSYSTEM_PATH;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
@@ -85,6 +87,7 @@ use object::macho::CPU_SUBTYPE_ARM64_ALL;
 use object::macho::CPU_TYPE_ARM64;
 use object::macho::LC_CODE_SIGNATURE;
 use object::macho::LC_DYLD_CHAINED_FIXUPS;
+use object::macho::LC_LOAD_DYLIB;
 use object::macho::LC_LOAD_DYLINKER;
 use object::macho::LC_MAIN;
 use object::macho::LC_SEGMENT_64;
@@ -195,6 +198,11 @@ fn write_prelude<'data, A: Arch<Platform = MachO>>(
         from_bytes_mut(buffers.get_mut(part_id::INTERP))
             .map_err(|_| error!("Invalid INTERP command allocation"))?;
     write_dylinker_command::<A>(dylinker_command, dylinker_path_buffer);
+
+    let (dylib_command, dylib_path_buffer): (&mut DylibCommand, &mut [u8]) =
+        from_bytes_mut(buffers.get_mut(part_id::LOAD_DYLIB))
+            .map_err(|_| error!("Invalid LOAD_DYLIB command allocation"))?;
+    write_dylib_command::<A>(dylib_command, dylib_path_buffer);
 
     let chained_fixups_command: &mut DyldChainedFixupsCommand =
         from_bytes_mut(buffers.get_mut(part_id::DYLD_CHAINED_FIXUPS))
@@ -641,6 +649,37 @@ fn write_dylinker_command<A: Arch<Platform = MachO>>(
 
     path_buffer[0..DYLINKER_PATH.len()].copy_from_slice(DYLINKER_PATH);
     path_buffer[DYLINKER_PATH.len()..].zero();
+}
+
+fn write_dylib_command<A: Arch<Platform = MachO>>(
+    command: &mut DylibCommand,
+    path_buffer: &mut [u8],
+) {
+    command.cmd.set(LE, LC_LOAD_DYLIB);
+    command.cmdsize.set(
+        LE,
+        ((size_of::<DylibCommand>() + LIBSYSTEM_PATH.len())
+            .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u32,
+    );
+    command
+        .dylib
+        .name
+        .offset
+        .set(LE, size_of::<DylibCommand>() as u32);
+    // TODO
+    command.dylib.timestamp.set(LE, 2);
+    // TODO
+    command
+        .dylib
+        .current_version
+        .set(LE, macho::Version(1356 << 16));
+    command
+        .dylib
+        .compatibility_version
+        .set(LE, macho::Version(1 << 16));
+
+    path_buffer[0..LIBSYSTEM_PATH.len()].copy_from_slice(LIBSYSTEM_PATH);
+    path_buffer[LIBSYSTEM_PATH.len()..].zero();
 }
 
 fn write_dyld_chained_fixups_command<A: Arch<Platform = MachO>>(

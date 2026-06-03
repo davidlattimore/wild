@@ -114,6 +114,7 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
         part_id::GNU_HASH,
         part_id::DYNAMIC,
         part_id::INTERP,
+        part_id::LOAD_DYLIB,
         part_id::FILE_HEADER,
         part_id::PROGRAM_HEADERS,
         part_id::SECTION_HEADERS,

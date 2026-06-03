@@ -78,6 +78,7 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 
 /// A path to the default dynamic linker.
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
+pub(crate) const LIBSYSTEM_PATH: &[u8] = b"/usr/lib/libSystem.B.dylib";
 // TODO: optionality of __DATA and __CONST_DATA segments not respected
 pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 5;
 pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHeader>()
@@ -100,6 +101,7 @@ pub(crate) type SegmentCommand = object::macho::SegmentCommand64<Endianness>;
 pub(crate) type SectionEntry = object::macho::Section64<Endianness>;
 pub(crate) type EntryPointCommand = object::macho::EntryPointCommand<Endianness>;
 pub(crate) type DylinkerCommand = object::macho::DylinkerCommand<Endianness>;
+pub(crate) type DylibCommand = object::macho::DylibCommand<Endianness>;
 pub(crate) type CodeSignatureCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type DyldChainedFixupsCommand = object::macho::LinkeditDataCommand<Endianness>;
 pub(crate) type ChainedFixupsHeader = DyldChainedFixupsHeader;
@@ -917,6 +919,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::LINK_EDIT_SEGMENT
             | output_section_id::ENTRY_POINT
             | output_section_id::INTERP
+            | output_section_id::LOAD_DYLIB
             | output_section_id::DYLD_CHAINED_FIXUPS
             | output_section_id::SYMTAB_COMMAND
             | output_section_id::CODE_SIGNATURE_COMMAND => SegmentType::LoadCommands,
@@ -1408,6 +1411,11 @@ impl platform::Platform for MachO {
                 .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
         );
         sizes.increment(
+            part_id::LOAD_DYLIB,
+            ((size_of::<DylibCommand>() + LIBSYSTEM_PATH.len())
+                .next_multiple_of(MACHO_COMMAND_ALIGNMENT)) as u64,
+        );
+        sizes.increment(
             part_id::DYLD_CHAINED_FIXUPS,
             size_of::<DyldChainedFixupsCommand>() as u64,
         );
@@ -1563,6 +1571,7 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::LINK_EDIT_SEGMENT);
         builder.add_section(output_section_id::ENTRY_POINT);
         builder.add_section(output_section_id::INTERP); // DYLINKER
+        builder.add_section(output_section_id::LOAD_DYLIB);
         builder.add_section(output_section_id::DYLD_CHAINED_FIXUPS);
         builder.add_section(output_section_id::SYMTAB_COMMAND);
         builder.add_section(output_section_id::CODE_SIGNATURE_COMMAND);
@@ -1669,6 +1678,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::INTERP.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLINKER")),
+        target_segment_type: Some(SegmentType::LoadCommands),
+        ..DEFAULT_DEFS
+    };
+    defs[output_section_id::LOAD_DYLIB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"LC_LOAD_DYLIB")),
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
