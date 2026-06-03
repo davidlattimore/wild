@@ -77,6 +77,7 @@ use linker_utils::elf::RelocationKind;
 use object::BigEndian;
 use object::Endianness;
 use object::SymbolIndex;
+use object::U16;
 use object::U32;
 use object::from_bytes_mut;
 use object::macho;
@@ -222,28 +223,6 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'_>,
 ) -> Result {
-    for imported_symbol in &layout.imported_symbols {
-        let stub_library_name = layout
-            .symbol_db
-            .stub_library_install_name_for_symbol(imported_symbol.symbol_id)
-            .unwrap_or("<unknown Mach-O stub library>");
-        if let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) {
-            eprintln!(
-                "Mach-O imported symbol: {} from stub library {} raw_value {:#x} ({})",
-                String::from_utf8_lossy(imported_symbol.name),
-                stub_library_name,
-                resolution.raw_value,
-                resolution.raw_value,
-            );
-        } else {
-            eprintln!(
-                "Mach-O imported symbol: {} from stub library {} raw_value <none>",
-                String::from_utf8_lossy(imported_symbol.name),
-                stub_library_name,
-            );
-        }
-    }
-
     write_chained_fixup_table::<A>(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
 
     Ok(())
@@ -721,9 +700,41 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     chained_fixup_table: &mut [u8],
 ) -> Result {
+    // TODO: remove
+    for imported_symbol in &layout.imported_symbols {
+        let stub_library_name = layout
+            .symbol_db
+            .stub_library_install_name_for_symbol(imported_symbol.symbol_id)
+            .unwrap_or("<unknown Mach-O stub library>");
+        if let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) {
+            eprintln!(
+                "Mach-O imported symbol: {} from stub library {} raw_value {:#x} ({})",
+                String::from_utf8_lossy(imported_symbol.name),
+                stub_library_name,
+                resolution.raw_value,
+                resolution.raw_value,
+            );
+        } else {
+            eprintln!(
+                "Mach-O imported symbol: {} from stub library {} raw_value <none>",
+                String::from_utf8_lossy(imported_symbol.name),
+                stub_library_name,
+            );
+        }
+    }
+
+    let symbols = &layout.imported_symbols;
+    let _imported_symbols_strings_len: usize = symbols.iter().map(|sym| sym.name.len() + 1).sum();
     dbg!(chained_fixup_table.len());
+
     // TODO: DEFAULT_SEGMENT_COUNT should be dynamically allocated
-    let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
+    let starts_in_image_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
+    let starts_in_segment_len = size_of::<DyldChainedStartsInSegment>() + size_of::<u16>();
+    let imports_len = size_of::<u32>() * symbols.len();
+
+    let starts_offset = size_of::<ChainedFixupsHeader>();
+    let imports_offset = starts_offset + starts_in_image_len + starts_in_segment_len;
+    let symbols_offset = imports_offset + imports_len;
 
     let (header, rest) = ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
         .map_err(|_| error!("Invalid chained fixups header allocation"))?;
@@ -732,19 +743,17 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
             .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
     let (starts_in_segment, rest) = DyldChainedStartsInSegment::mut_from_prefix(rest)
         .map_err(|_| error!("Invalid chained fixups starts in segment allocation"))?;
+    let (page_starts, rest) = slice_from_bytes_mut::<U16<Endianness>>(rest, 1)
+        .map_err(|_| error!("Invalid chained fixups page starts allocation"))?;
+    let (imports, string_pool) = slice_from_bytes_mut::<U32<Endianness>>(rest, symbols.len())
+        .map_err(|_| error!("Invalid chained fixups imports allocation"))?;
 
     // 1) fill up ChainedFixupsHeader
     header.fixups_version.set(0);
-    header
-        .starts_offset
-        .set(size_of::<ChainedFixupsHeader>() as u32);
-    header
-        .imports_offset
-        .set((size_of::<ChainedFixupsHeader>() + starts_len) as u32);
-    header
-        .symbols_offset
-        .set((size_of::<ChainedFixupsHeader>() + starts_len) as u32);
-    header.imports_count.set(0);
+    header.starts_offset.set(starts_offset as u32);
+    header.imports_offset.set(imports_offset as u32);
+    header.symbols_offset.set(symbols_offset as u32);
+    header.imports_count.set(symbols.len() as u32);
     header.imports_format.set(DYLD_CHAINED_IMPORT);
     header.symbols_format.set(0);
 
@@ -752,15 +761,15 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     //    `seg_info_offset` ([u32; seg_count]); only __DATA_CONST,__got segment is covered
     starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
+    // TODO: find the index of the segment properly
+    starts_in_image[4].set(LE, starts_in_image_len as u32);
 
     // 3) fill up DyldChainedStartsInSegment for the __got section
     let data_const_segment = get_segment_sections(layout, SegmentType::DataConstSections)
         .ok_or_else(|| error!("__DATA_CONST segment expected"))?
         .segment_size;
 
-    starts_in_segment
-        .size
-        .set(size_of::<DyldChainedStartsInSegment>() as u32);
+    starts_in_segment.size.set(starts_in_segment_len as u32);
     starts_in_segment
         .page_size
         .set(MACHO_PAGE_ALIGNMENT.value() as u16);
@@ -773,9 +782,21 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     starts_in_segment.max_valid_pointer.set(0);
     // TODO
     starts_in_segment.page_count.set(1);
+    page_starts[0].set(LE, 0);
 
     // 4) fill up all imported symbols chunked by the pages
     // TODO
+    let symbol = symbols.iter().exactly_one().unwrap();
+
+    // Emit `dyld_chained_import` that is built by 3 pieces:
+    // lib_ordinal: 8
+    // weak_import: 1
+    // name_offset: 23
+    imports[0].set(Endianness::Little, 1);
+
+    // 5) fill up string pool for the symbol names
+    string_pool[..symbol.name.len()].copy_from_slice(symbol.name);
+    string_pool[symbol.name.len()] = b'\0';
 
     Ok(())
 }

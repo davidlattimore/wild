@@ -80,8 +80,10 @@ pub(crate) const MACHO_COMMAND_ALIGNMENT: usize = 8;
 pub(crate) const DYLINKER_PATH: &[u8] = b"/usr/lib/dyld";
 // TODO: optionality of __DATA and __CONST_DATA segments not respected
 pub(crate) const DEFAULT_SEGMENT_COUNT: usize = 5;
-pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 =
-    (size_of::<ChainedFixupsHeader>() + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1)) as u64;
+pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHeader>()
+    + size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1)
+    + size_of::<DyldChainedStartsInSegment>())
+    as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
 
