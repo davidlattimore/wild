@@ -593,7 +593,13 @@ impl Architecture {
 
     fn default_target_triple(&self, platform: PlatformKind) -> String {
         match platform {
-            PlatformKind::Elf => format!("{}-unknown-linux-gnu", self.triple_arch()),
+            PlatformKind::Elf => {
+                if cfg!(target_os = "freebsd") {
+                    format!("{}-unknown-freebsd", self.triple_arch())
+                } else {
+                    format!("{}-unknown-linux-gnu", self.triple_arch())
+                }
+            }
             PlatformKind::MachO => format!("{}-apple-darwin", self.darwin_arch_name()),
         }
     }
@@ -4700,6 +4706,17 @@ fn run_integration_test(
     if arch != host_arch && !test_config.qemu_arch.contains(&arch) {
         return Ok(libtest_mimic::Completion::ignored_with(
             "Architecture disabled",
+        ));
+    }
+
+    if cfg!(target_os = "freebsd")
+        && matches!(
+            config.linker_driver,
+            LinkerDriver::Compiler(Compiler::Gcc(..))
+        )
+    {
+        return Ok(libtest_mimic::Completion::ignored_with(
+            "GCC on FreeBSD can only drive linkers (bfd, lld, gold) installed system-wide.",
         ));
     }
 
