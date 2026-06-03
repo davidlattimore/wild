@@ -224,33 +224,24 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
             .symbol_db
             .stub_library_install_name_for_symbol(imported_symbol.symbol_id)
             .unwrap_or("<unknown Mach-O stub library>");
-        eprintln!(
-            "Mach-O imported symbol: {} from stub library {}",
-            String::from_utf8_lossy(imported_symbol.name),
-            stub_library_name,
-        );
+        if let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) {
+            eprintln!(
+                "Mach-O imported symbol: {} from stub library {} raw_value {:#x} ({})",
+                String::from_utf8_lossy(imported_symbol.name),
+                stub_library_name,
+                resolution.raw_value,
+                resolution.raw_value,
+            );
+        } else {
+            eprintln!(
+                "Mach-O imported symbol: {} from stub library {} raw_value <none>",
+                String::from_utf8_lossy(imported_symbol.name),
+                stub_library_name,
+            );
+        }
     }
 
-    let chained_fixup_table = buffers.get_mut(part_id::CHAINED_FIXUP_TABLE);
-    dbg!(chained_fixup_table.len());
-    // TODO: remove in the future once we handle a dynamic number of segments
-    chained_fixup_table.fill(0);
-    let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
-    let min_len = size_of::<ChainedFixupsHeader>() + starts_len;
-    if chained_fixup_table.len() < min_len {
-        bail!(
-            "CHAINED_FIXUP_TABLE allocation too small. Need at least {} bytes, got {}",
-            min_len,
-            chained_fixup_table.len()
-        );
-    }
-    let (chained_fixups_header, rest): (&mut ChainedFixupsHeader, &mut [u8]) =
-        ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
-            .map_err(|_| error!("Invalid chained fixups header allocation"))?;
-    let (starts_in_image, _) =
-        slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
-            .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
-    write_chained_fixup_table::<A>(chained_fixups_header, starts_in_image)?;
+    write_chained_fixup_table::<A>(buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
 
     Ok(())
 }
@@ -723,11 +714,28 @@ fn write_code_signature_command<A: Arch<Platform = MachO>>(
     command.datasize.set(LE, code_signature.file_size as u32);
 }
 
-fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
-    header: &mut ChainedFixupsHeader,
-    starts_in_image: &mut [U32<Endianness>],
-) -> Result {
+fn write_chained_fixup_table<A: Arch<Platform = MachO>>(chained_fixup_table: &mut [u8]) -> Result {
+    dbg!(chained_fixup_table.len());
     let starts_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);
+    let min_len = size_of::<ChainedFixupsHeader>() + starts_len;
+    if chained_fixup_table.len() < min_len {
+        bail!(
+            "CHAINED_FIXUP_TABLE allocation too small. Need at least {} bytes, got {}",
+            min_len,
+            chained_fixup_table.len()
+        );
+    }
+
+    // TODO: remove in the future once we handle a dynamic number of segments
+    chained_fixup_table.fill(0);
+
+    let (header, rest): (&mut ChainedFixupsHeader, &mut [u8]) =
+        ChainedFixupsHeader::mut_from_prefix(chained_fixup_table)
+            .map_err(|_| error!("Invalid chained fixups header allocation"))?;
+    let (starts_in_image, _) =
+        slice_from_bytes_mut::<U32<Endianness>>(rest, DEFAULT_SEGMENT_COUNT + 1)
+            .map_err(|_| error!("Invalid chained fixups starts allocation"))?;
+
     if starts_in_image.len() != DEFAULT_SEGMENT_COUNT + 1 {
         bail!(
             "Invalid chained fixups starts allocation. Expected {} entries, got {}",
