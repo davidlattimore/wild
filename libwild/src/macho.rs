@@ -105,14 +105,8 @@ pub(crate) type SymtabCommand = object::macho::SymtabCommand<Endianness>;
 
 // TODO: move the following data types to object crate
 
-// values for dyld_chained_fixups_header.imports_format
-#[allow(non_camel_case_types)]
-#[repr(u32)]
-pub(crate) enum DyldChainedFixupsImporstFormat {
-    DYLD_CHAINED_IMPORT = 1,
-    DYLD_CHAINED_IMPORT_ADDEND = 2,
-    DYLD_CHAINED_IMPORT_ADDEND64 = 3,
-}
+pub(crate) const DYLD_CHAINED_IMPORT: u32 = 1;
+pub(crate) const DYLD_CHAINED_PTR_64_OFFSET: u16 = 6;
 
 // header of the LC_DYLD_CHAINED_FIXUPS payload
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
@@ -146,7 +140,7 @@ pub(crate) struct DyldChainedFixupsHeader {
 // and passed down to the kernel for page-in linking
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
-struct DyldChainedStartsInSegment {
+pub(crate) struct DyldChainedStartsInSegment {
     // size of this (amount kernel needs to copy)
     pub(crate) size: U32<zerocopy::LittleEndian>,
     // 0x1000 or 0x4000
