@@ -869,6 +869,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         self,
         section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
     ) -> bool {
         let mapped_segment = match section_id {
             output_section_id::FILE_HEADER => SegmentType::Text,

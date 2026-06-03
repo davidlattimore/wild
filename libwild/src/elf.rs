@@ -4340,15 +4340,20 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         self,
         info: &crate::output_section_id::SectionOutputInfo<Elf>,
         section_id: OutputSectionId,
+        rosegment: bool,
     ) -> bool {
         match self.segment_type {
             pt::NOTE => info.section_attributes.ty == sht::NOTE,
             pt::TLS => info.section_attributes.flags.contains(shf::TLS),
             pt::LOAD => {
+                let mut exec = info.section_attributes.flags.contains(shf::EXECINSTR);
+                if !rosegment && !info.section_attributes.flags.contains(shf::WRITE) {
+                    exec = true;
+                }
+
                 info.section_attributes.flags.contains(shf::ALLOC)
                     && info.section_attributes.flags.contains(shf::WRITE) == self.is_writable()
-                    && info.section_attributes.flags.contains(shf::EXECINSTR)
-                        == self.is_executable()
+                    && exec == self.is_executable()
             }
             pt::GNU_RELRO => {
                 info.section_attributes.flags.contains(shf::TLS)

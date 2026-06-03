@@ -33,7 +33,6 @@ tests = [
   "require-defined.sh",
   "response-file-quoting.sh",
   "retain-symbols-file.sh",
-  "rosegment.sh",
   "run.sh",
   "section-align.sh",                      # `--section-alignment`
   "sort-debug-info-compressed.sh",         # `-Map`

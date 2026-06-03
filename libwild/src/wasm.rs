@@ -1198,6 +1198,7 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
         self,
         _section_info: &crate::output_section_id::SectionOutputInfo<Self::Platform>,
         section_id: crate::output_section_id::OutputSectionId,
+        _rosegment: bool,
     ) -> bool {
         use crate::output_section_id as osid;
 

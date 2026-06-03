@@ -166,6 +166,8 @@ pub(crate) struct OutputSections<'data, P: Platform> {
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
 
     init_fini_by_priority: HashMap<(OutputSectionId, u16), OutputSectionId>,
+
+    rosegment: bool,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
@@ -452,7 +454,7 @@ impl<'data, P: Platform> OutputSections<'data, P> {
         segment_def: P::ProgramSegmentDef,
     ) -> bool {
         let info = self.output_info(section_id);
-        segment_def.should_include_section(info, section_id)
+        segment_def.should_include_section(info, section_id, self.rosegment)
     }
 }
 
@@ -668,7 +670,12 @@ impl<'data, P: Platform> OutputSections<'data, P> {
             custom_by_name: HashMap::new(),
             output_section_indexes: Default::default(),
             init_fini_by_priority: HashMap::new(),
+            rosegment: true,
         }
+    }
+
+    pub(crate) fn set_rosegment(&mut self, rosegment: bool) {
+        self.rosegment = rosegment;
     }
 
     pub(crate) fn bump_min_alignment(&mut self, sid: OutputSectionId, a: Alignment) {

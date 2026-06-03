@@ -128,6 +128,7 @@ pub struct ElfArgs {
     pub(crate) should_output_partial_object: bool,
 
     pub(crate) nmagic: bool,
+    pub(crate) rosegment: bool,
 
     rpath_set: IndexSet<String>,
 
@@ -318,6 +319,7 @@ impl Default for ElfArgs {
             discard_sframe: false,
 
             nmagic: false,
+            rosegment: true,
 
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
@@ -1830,6 +1832,24 @@ fn setup_argument_parser() -> ArgumentParser<ElfArgs> {
 
     parser
         .declare()
+        .long("rosegment")
+        .help("Put read-only non-executable sections in their own segment (default)")
+        .execute(|args, _modifier_stack| {
+            args.rosegment = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-rosegment")
+        .help("Don't put read-only non-executable sections in their own segment")
+        .execute(|args, _modifier_stack| {
+            args.rosegment = false;
+            Ok(())
+        });
+
+    parser
+        .declare()
         .long("discard-sframe")
         .help("Discard SFrame section")
         .execute(|args, _modifier_stack| {
@@ -1890,6 +1910,10 @@ impl platform::Args for ElfArgs {
 
     fn verbose_gc_stats(&self) -> bool {
         self.verbose_gc_stats
+    }
+
+    fn rosegment(&self) -> bool {
+        self.rosegment
     }
 
     fn common(&self) -> &crate::args::CommonArgs {

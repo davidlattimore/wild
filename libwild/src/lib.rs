@@ -284,6 +284,7 @@ impl Linker {
 
         let mut output_sections =
             OutputSections::with_base_address(P::start_memory_address(output_kind));
+        output_sections.set_rosegment(args.rosegment());
 
         let mut layout_rules_builder = LayoutRulesBuilder::default();
 
