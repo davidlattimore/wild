@@ -945,9 +945,9 @@ dependencies = [
 name = "linker-diff"
 version = "0.9.0"
 dependencies = [
+ "anstyle",
  "anyhow",
  "clap",
- "colored",
  "gimli 0.33.0",
  "hashbrown 0.17.1",
  "iced-x86",

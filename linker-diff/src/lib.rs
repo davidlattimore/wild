@@ -17,7 +17,6 @@ use anyhow::Context as _;
 use anyhow::bail;
 use asm_diff::AddressIndex;
 use clap::Parser;
-use clap::ValueEnum;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
@@ -37,6 +36,7 @@ use std::path::PathBuf;
 mod aarch64;
 mod arch;
 mod asm_diff;
+mod colour;
 mod debug_info_diff;
 mod diagnostics;
 mod eh_frame_diff;
@@ -60,9 +60,9 @@ mod x86_64;
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, Endianness>;
 
+pub use crate::colour::ColourMode;
 use arch::Arch;
 use arch::ArchKind;
-use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
 use object::Section;
 use object::Symbol;
@@ -106,18 +106,10 @@ pub struct Config {
     pub match_any: bool,
 
     #[arg(long, alias = "color", default_value = "auto")]
-    pub colour: Colour,
+    pub colour: ColourMode,
 
     /// Primary file that we're validating against the reference file(s)
     pub file: PathBuf,
-}
-
-#[derive(ValueEnum, Copy, Clone, Default)]
-pub enum Colour {
-    #[default]
-    Auto,
-    Never,
-    Always,
 }
 
 /// An output binary such as an executable or shared object.
@@ -572,6 +564,7 @@ pub struct Report {
 #[derive(Default)]
 pub struct Coverage {
     sections: HashMap<InputSectionId, SectionCoverage>,
+    colour: ColourMode,
 }
 
 struct SectionCoverage {
@@ -590,16 +583,6 @@ struct SectionCoverage {
 
 impl Report {
     pub fn from_config(mut config: Config) -> Result<Report> {
-        // This changes mutable global state, which isn't an ideal thing to be doing from a library.
-        // It's expedient though, and we don't really expect linker-diff to get used as a library
-        // anywhere except the linker-diff binary and wild's integration tests, so this probably
-        // isn't a big deal.
-        match config.colour {
-            Colour::Auto => colored::control::unset_override(),
-            Colour::Never => colored::control::set_override(false),
-            Colour::Always => colored::control::set_override(true),
-        }
-
         let display_names = short_file_display_names(&config)?;
 
         let file_bytes = config
@@ -645,7 +628,10 @@ impl Report {
             names: objects.iter().map(|o| o.name.clone()).collect(),
             paths: objects.iter().map(|o| o.path.clone()).collect(),
             diffs: Default::default(),
-            coverage: config.coverage.then(Coverage::default),
+            coverage: config.coverage.then(|| Coverage {
+                colour: config.colour,
+                ..Coverage::default()
+            }),
             config,
         };
 
@@ -826,9 +812,9 @@ impl Display for Coverage {
                 sec.original_file,
                 sec.name,
                 if sec.diffed {
-                    "true".green()
+                    self.colour.green("true")
                 } else {
-                    "false".red()
+                    self.colour.red("false")
                 }
             )?;
 

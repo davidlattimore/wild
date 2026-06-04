@@ -42,6 +42,7 @@ use self::section_map::IndexedLayout;
 use self::section_map::InputSectionId;
 use self::section_map::SymbolInfo;
 use crate::Binary;
+use crate::ColourMode;
 use crate::Diff;
 use crate::DiffValues;
 use crate::ElfFile64;
@@ -62,8 +63,6 @@ use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
-use colored::ColoredString;
-use colored::Colorize as _;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::elf::BitMask;
@@ -268,6 +267,7 @@ fn compare_sections<A: Arch>(
                         section_versions.input_section_id,
                         layout,
                         trace,
+                        report.config.colour,
                     )?;
                     report.add_diff(diff);
                 }
@@ -600,6 +600,7 @@ fn diff_literal_bytes<'data, A: Arch>(
                 section_versions.input_section_id,
                 layout,
                 TraceOutput::default(),
+                report.config.colour,
             )?);
         }
     }
@@ -615,6 +616,7 @@ struct ExecDiff<'data, A: Arch> {
     testers: &'data [RelaxationTester<'data>],
     section_id: InputSectionId,
     trace: TraceOutput,
+    colour: ColourMode,
 }
 
 impl<A: Arch> ExecDiff<'_, A> {
@@ -635,8 +637,10 @@ impl<A: Arch> ExecDiff<'_, A> {
         writeln!(
             f,
             "{file_identifier} {section_name} {function_name}",
-            section_name = original_section.name()?.blue(),
-            function_name = String::from_utf8_lossy(function_info.name).cyan()
+            section_name = self.colour.blue(original_section.name()?),
+            function_name = self
+                .colour
+                .cyan(String::from_utf8_lossy(function_info.name))
         )?;
 
         let mut trace = TraceOutput::default();
@@ -668,6 +672,7 @@ impl<A: Arch> ExecDiff<'_, A> {
             function_info,
             instructions: Default::default(),
             trace,
+            colour: self.colour,
         }];
 
         for (res, tester) in self.resolutions.iter().zip(self.testers) {
@@ -687,6 +692,7 @@ impl<A: Arch> ExecDiff<'_, A> {
                 function_info,
                 instructions: Default::default(),
                 trace: res.trace.clone(),
+                colour: self.colour,
             };
 
             blocks.push(block);
@@ -731,6 +737,7 @@ fn resolution_diff_exec<A: Arch>(
     section_id: InputSectionId,
     layout: &IndexedLayout,
     trace: TraceOutput,
+    colour: ColourMode,
 ) -> Result<Diff> {
     let diff = ExecDiff {
         offset,
@@ -739,6 +746,7 @@ fn resolution_diff_exec<A: Arch>(
         testers,
         section_id,
         trace,
+        colour,
     };
 
     let mut out = String::new();
@@ -994,6 +1002,8 @@ struct RelocationInstructionBlock<'data, A: Arch> {
     instructions: Vec<Instruction<'data, A>>,
 
     trace: TraceOutput,
+
+    colour: ColourMode,
 }
 
 struct OriginalAnnotation<'data, A: Arch> {
@@ -1198,7 +1208,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             write!(
                 f,
                 "{:name_width$} 0x{:0address_width$x}: [ ",
-                self.name.blue(),
+                self.colour.blue(self.name),
                 instruction.address()
             )?;
 
@@ -1210,7 +1220,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     // Bytes within the range that we would have compared are highlighted yellow,
                     // while bytes outside the range are left in the default colour. This makes it
                     // easier to spot what's going on if our ranges are wrong.
-                    write!(f, "{} ", format!("{v:02x}").yellow())?;
+                    write!(f, "{} ", self.colour.yellow(format!("{v:02x}")))?;
                 } else {
                     write!(f, "{v:02x} ")?;
                 }
@@ -1221,7 +1231,12 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             let instruction_padding =
                 (maximum_widths.instruction_bytes - instruction.bytes.len()) * 3;
 
-            writeln!(f, "{:instruction_padding$}] {}", "", out.purple())?;
+            writeln!(
+                f,
+                "{:instruction_padding$}] {}",
+                "",
+                self.colour.magenta(out)
+            )?;
 
             if let Some(annotation) = annotations.peek()
                 && annotation.offset_in_section >= instruction_offset
@@ -1232,7 +1247,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     + 7
                     + (annotation.offset_in_section - instruction_offset) as usize * 3;
 
-                annotation.write(f, &format!("{:num_spaces$}", ""))?;
+                annotation.write(f, &format!("{:num_spaces$}", ""), self.colour)?;
 
                 annotations.next();
             }
@@ -1242,7 +1257,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             write!(
                 f,
                 "{name:name_width$} 0x{address:0address_width$x}: [ ",
-                name = self.name.blue(),
+                name = self.colour.blue(self.name),
                 address = self.section_address + self.range.start,
             )?;
 
@@ -1252,7 +1267,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                     .and_then(|bytes| bytes.get(i as usize).copied())
                     .unwrap_or(0);
 
-                write!(f, "{} ", format!("{byte:02x}").yellow())?;
+                write!(f, "{} ", self.colour.yellow(format!("{byte:02x}")))?;
             }
             writeln!(f, "]")?;
         }
@@ -1260,12 +1275,16 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         // Print any remaining annotations.
         for annotation in annotations {
             let num_spaces = name_width + address_width + 6;
-            annotation.write(f, &format!("{:num_spaces$} ", self.name.blue()))?;
+            annotation.write(
+                f,
+                &format!("{:num_spaces$} ", self.colour.blue(self.name)),
+                self.colour,
+            )?;
         }
 
         if let Some(r) = self.reference {
-            write!(f, "{:name_width$} ", self.name.blue())?;
-            r.write_to(f)?;
+            write!(f, "{:name_width$} ", self.colour.blue(self.name))?;
+            r.write_to(f, self.colour)?;
         }
 
         writeln!(f)?;
@@ -1273,7 +1292,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         self.write_traces(f, maximum_widths)?;
 
         for message in &self.trace.messages {
-            writeln!(f, "{:name_width$} {message}", self.name.blue())?;
+            writeln!(f, "{:name_width$} {message}", self.colour.blue(self.name))?;
         }
 
         Ok(())
@@ -1284,7 +1303,11 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         let prefix = " TRACE: ";
 
         for trace in &self.trace_messages {
-            writeln!(f, "{:name_width$}{prefix}{trace}", self.name.blue())?;
+            writeln!(
+                f,
+                "{:name_width$}{prefix}{trace}",
+                self.colour.blue(self.name)
+            )?;
         }
 
         Ok(())
@@ -1292,27 +1315,27 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 }
 
 impl<A: Arch> Annotation<'_, A> {
-    fn write(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         match &self.kind {
             AnnotationKind::MatchedRelaxation(inner) => {
-                inner.write_to(f, line_prefix)?;
+                inner.write_to(f, line_prefix, colour)?;
                 writeln!(f)?;
             }
             AnnotationKind::Ambiguous(possible) => {
                 for a in possible {
-                    a.write_to(f, line_prefix)?;
+                    a.write_to(f, line_prefix, colour)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::MatchFailed(failures) => {
                 for m in failures {
                     write!(f, "{line_prefix}")?;
-                    m.write_to(f)?;
+                    m.write_to(f, colour)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::Error(error) => {
-                writeln!(f, "{line_prefix}{}", error.red())?;
+                writeln!(f, "{line_prefix}{}", colour.red(error))?;
             }
             AnnotationKind::LiteralByteMismatch => {
                 return Ok(());
@@ -1324,12 +1347,12 @@ impl<A: Arch> Annotation<'_, A> {
 }
 
 impl<A: Arch> MatchedRelaxation<A> {
-    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write_to(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, self.r_type)?;
-        write!(f, "{} ", self.r_type.to_string().green())?;
+        write!(f, "{} ", colour.green(self.r_type.to_string()))?;
         if let Some(r) = self.relaxation_kind {
-            write!(f, "{} ", format!("{r:?}").bright_green())?;
+            write!(f, "{} ", colour.bright_green(format!("{r:?}")))?;
         }
 
         Ok(())
@@ -1337,22 +1360,22 @@ impl<A: Arch> MatchedRelaxation<A> {
 }
 
 impl<'data, A: Arch> RelaxationMatch<'data, A> {
-    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
+    fn write_to(&self, f: &mut String, line_prefix: &str, colour: ColourMode) -> Result {
         let rel = self.relaxation;
 
         write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, rel.new_r_type)?;
 
-        write!(f, "{} ", rel.new_r_type.to_string().green())?;
+        write!(f, "{} ", colour.green(rel.new_r_type.to_string()))?;
 
         if let Some(alt) = rel.alt_r_type {
-            write!(f, "/{} ", alt.to_string().green())?;
+            write!(f, "/{} ", colour.green(alt.to_string()))?;
         }
 
         writeln!(
             f,
             "{} ",
-            format!("{:?}", rel.relaxation_kind).bright_green()
+            colour.bright_green(format!("{:?}", rel.relaxation_kind))
         )?;
 
         Ok(())
@@ -1381,15 +1404,15 @@ fn num_carets_for_r_type<R: RType>(r_type: R) -> usize {
 }
 
 impl<A: Arch> FailedMatch<A> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         write_carets_for_r_type(f, self.candidate.new_r_type)?;
 
         write!(
             f,
             "{} {:?} {}",
-            self.candidate.new_r_type.to_string().green(),
+            colour.green(self.candidate.new_r_type.to_string()),
             self.candidate.relaxation_kind,
-            self.reason.red()
+            colour.red(&self.reason)
         )?;
         Ok(())
     }
@@ -1555,18 +1578,32 @@ struct UnmatchedAddress {
 }
 
 impl<'data, R: RType> Reference<'data, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         match self.indirection {
             Indirection::Direct => {}
-            Indirection::Got => write!(f, "GOT{}", arrow())?,
-            Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(), arrow())?,
-            Indirection::GotPltGot => write!(f, "GOT{}PLT{}GOT{}", arrow(), arrow(), arrow())?,
+            Indirection::Got => write!(f, "GOT{}", arrow(colour))?,
+            Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(colour), arrow(colour))?,
+            Indirection::GotPltGot => {
+                write!(
+                    f,
+                    "GOT{}PLT{}GOT{}",
+                    arrow(colour),
+                    arrow(colour),
+                    arrow(colour)
+                )?;
+            }
             Indirection::ThunkPltGot => {
-                write!(f, "thunk{}PLT{}GOT{}", arrow(), arrow(), arrow())?;
+                write!(
+                    f,
+                    "thunk{}PLT{}GOT{}",
+                    arrow(colour),
+                    arrow(colour),
+                    arrow(colour)
+                )?;
             }
         }
 
-        self.referent.write_to(f)?;
+        self.referent.write_to(f, colour)?;
 
         Ok(())
     }
@@ -1610,7 +1647,7 @@ impl<'data, R: RType> Reference<'data, R> {
 }
 
 impl<R: RType> Referent<'_, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         match self {
             Referent::Unknown => write!(f, "??")?,
             Referent::Named(symbol_name, offset) => {
@@ -1641,7 +1678,9 @@ impl<R: RType> Referent<'_, R> {
             Referent::MergedString(merged) => {
                 merged.write_to(f)?;
             }
-            Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
+            Referent::DynamicRelocation(dynamic_relocation) => {
+                dynamic_relocation.write_to(f, colour)?;
+            }
             Referent::TlsDesc(symbol) => write!(f, "TlsDesc({symbol})")?,
             Referent::IFunc(Some(symbol)) => write!(f, "IFunc({symbol})")?,
             Referent::IFunc(None) => write!(f, "UnknownIFunc")?,
@@ -1728,13 +1767,13 @@ impl<R: RType> DynamicRelocation<'_, R> {
 }
 
 impl<R: RType> DynamicRelocation<'_, R> {
-    fn write_to(&self, f: &mut String) -> Result {
+    fn write_to(&self, f: &mut String, colour: ColourMode) -> Result {
         write!(
             f,
             "{}{}{}",
-            self.r_type.to_string().green().bold(),
-            arrow(),
-            self.entry.to_string().cyan()
+            colour.green_bold(self.r_type.to_string()),
+            arrow(colour),
+            colour.cyan(self.entry.to_string())
         )?;
         if self.addend != 0 {
             write!(f, " {:+}", self.addend)?;
@@ -1743,8 +1782,8 @@ impl<R: RType> DynamicRelocation<'_, R> {
     }
 }
 
-fn arrow() -> ColoredString {
-    "->".bright_yellow()
+fn arrow(colour: ColourMode) -> impl std::fmt::Display {
+    colour.bright_yellow("->")
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
