@@ -279,15 +279,8 @@ pub(crate) fn sort_sframe_section(
     let total_fre_size: usize = entries.iter().map(|e| e.fre_bytes.len()).sum();
     let total_size = header_end_offset + fde_size + total_fre_size;
 
-    /*   if total_size > section.len() {
-        bail!("Merged SFrame section too large");
-    } */
     if total_size > section.len() {
-        bail!(
-            "Merged SFrame section too large (Actual Data: {}, Pre-allocated Memory: {})",
-            total_size,
-            section.len()
-        );
+        bail!("Merged SFrame section too large");
     }
 
     let header = Header {

@@ -3984,6 +3984,7 @@ fn write_epilogue<A: Arch<Platform = Elf>>(
             &epilogue_offsets,
         )?;
     }
+
     // The actual build-id will be filled in later once all writing has completed. It's important
     // that we fill it with zeros now however, since if we're overwriting an existing file, there
     // might be other data there and we don't zero it, then the build ID will be hashing that data.

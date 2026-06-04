@@ -156,18 +156,19 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
 
     let mut dynamic_symbol_definitions =
         merge_dynamic_symbol_definitions(&group_states, &symbol_db)?;
-    let mut script_sorted_sections = harvest_and_sort_script_sections(
+    let script_sorted_sections = harvest_and_sort_script_sections(
         &mut group_states,
         &output_sections,
         &symbol_db.section_part_ids,
     );
+    let num_sorted_sections = script_sorted_sections.len();
 
     group_states.push(GroupState {
         files: vec![FileLayoutState::Epilogue(EpilogueLayoutState::new(
             symbol_db.args,
             symbol_db.output_kind,
             &mut dynamic_symbol_definitions,
-            script_sorted_sections.clone(),
+            script_sorted_sections,
         ))],
         queue: LocalWorkQueue::new(epilogue_file_id.group()),
         common: CommonGroupState::new(&output_sections),
@@ -297,8 +298,7 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
     )?;
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
-    let starting_mem_offsets_by_group =
-        compute_start_offsets_by_group(&group_states, mem_offsets.clone());
+    let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
 
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
@@ -306,28 +306,16 @@ pub fn compute<'data, P: Platform, A: Arch<Platform = P>>(
         &merged_strings,
     );
 
-    // --- SECTION SORTING & ADDRESS ASSIGNMENT ---
-
     // At this stage, sections marked for sorting have been harvested but lack concrete memory
     // addresses. We perform a two-step finalization:
     // Sort the harvested sections according to the requested criteria.
     // Linearize them in memory, starting from the base offset of their respective output section
     // part, and advancing by the size of each section.
-    let mut harvested_sections_registry = Vec::with_capacity(script_sorted_sections.len());
-    let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
-
-    for sec in &mut script_sorted_sections {
-        let offset = epilogue_offsets.get_mut(sec.part_id);
-        // Ensure the memory address correctly aligns with CPU instruction requirements
-        *offset = sec.alignment.align_up(*offset);
-        sec.mem_offset = *offset;
-        *offset += sec.size;
-
-        // Push directly into our flat Vector—no hashing math required!
-        harvested_sections_registry.push(sec.clone());
-    }
-
-    harvested_sections_registry.sort_unstable_by_key(|s| (s.file_id, s.section_index.0));
+    let harvested_sections_registry = assign_addresses_to_sorted_sections(
+        &mut group_states,
+        &starting_mem_offsets_by_group,
+        num_sorted_sections,
+    );
 
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
@@ -5480,7 +5468,6 @@ pub(crate) struct HarvestedSortedSection {
     pub(crate) size: u64,
     pub(crate) alignment: Alignment,
     pub(crate) mem_offset: u64,
-    //pub(crate) _name: &'data [u8],
 }
 
 fn harvest_and_sort_script_sections<'data, P: Platform>(
@@ -5509,7 +5496,6 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
         for file in &mut group.files {
             if let FileLayoutState::Object(obj) = file {
                 for section_req in &obj.script_sorted_sections {
-                    //for section_req in &obj.script_sorted_sections {
                     if let SectionSlot::Loaded(sec) = &obj.sections[section_req.index.0] {
                         let part_id = obj.section_part_id(section_req.index, section_part_ids);
                         let capacity = sec.capacity(part_id, output_sections);
@@ -5534,4 +5520,30 @@ fn harvest_and_sort_script_sections<'data, P: Platform>(
 
     temp.sort_by_key(|a| a.0);
     temp.into_iter().map(|(_, harvested)| harvested).collect()
+}
+// Assigning memory addresses to script sorted sections and returning the finalized registry.
+fn assign_addresses_to_sorted_sections<P: Platform>(
+    group_states: &mut [GroupState<P>],
+    starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
+    num_sorted_sections: usize,
+) -> Vec<HarvestedSortedSection> {
+    let mut harvested_sections_registry = Vec::with_capacity(num_sorted_sections);
+    let mut epilogue_offsets = starting_mem_offsets_by_group.last().unwrap().clone();
+
+    if let FileLayoutState::Epilogue(epilogue_state) =
+        &mut group_states.last_mut().unwrap().files[0]
+    {
+        for sec in &mut epilogue_state.script_sorted_sections {
+            let offset = epilogue_offsets.get_mut(sec.part_id);
+            *offset = sec.alignment.align_up(*offset);
+            sec.mem_offset = *offset;
+            *offset += sec.size;
+
+            harvested_sections_registry.push(sec.clone());
+        }
+    }
+
+    harvested_sections_registry.sort_unstable_by_key(|s| (s.file_id, s.section_index.0));
+
+    harvested_sections_registry
 }
