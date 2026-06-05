@@ -277,7 +277,7 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
 
         // TODO: add const
         let next = if i == sorted_symbols.len() - 1 { 0 } else { 2 };
-        got[offset..end].copy_from_slice(&((1u64 << 63) | (next << 52) | (i as u64)).to_le_bytes());
+        got[offset..end].copy_from_slice(&((1u64 << 63) | (next << 51) | (i as u64)).to_le_bytes());
     }
 
     Ok(())
