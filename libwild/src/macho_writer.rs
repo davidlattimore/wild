@@ -864,23 +864,41 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
         .segment_offset
         .set(data_const_segment.file_offset as u64);
     starts_in_segment.max_valid_pointer.set(0);
-    // TODO
+    // TODO:
     starts_in_segment.page_count.set(1);
     page_starts[0].set(LE, 0);
 
     // 4) fill up all imported symbols chunked by the pages
-    // TODO
-    let symbol = symbols.iter().exactly_one().unwrap();
+    // TODO: support more pages
+    assert!(symbols.len() < MACHO_PAGE_ALIGNMENT.value() as usize / size_of::<u32>());
+
+    let sorted_symbols = symbols
+        .iter()
+        .map(|sym| {
+            (
+                sym,
+                layout.local_symbol_resolution(sym.symbol_id).expect("TODO"),
+            )
+        })
+        // TODO
+        .sorted_by_key(|(_, res)| res.raw_value)
+        .collect_vec();
+    let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
+    let mut str_offset = 0;
+    for (symbol, _) in &sorted_symbols {
+        string_pool[str_offset..str_offset + symbol.name.len()].copy_from_slice(symbol.name);
+        string_pool[str_offset + symbol.name.len()] = b'\0';
+        symbol_offsets.push(str_offset);
+        str_offset += symbol.name.len() + 1;
+    }
 
     // Emit `dyld_chained_import` that is built by 3 pieces:
     // lib_ordinal: 8
     // weak_import: 1
     // name_offset: 23
-    imports[0].set(Endianness::Little, 1);
-
-    // 5) fill up string pool for the symbol names
-    string_pool[..symbol.name.len()].copy_from_slice(symbol.name);
-    string_pool[symbol.name.len()] = b'\0';
+    for i in 0..sorted_symbols.len() {
+        imports[i].set(Endianness::Little, 1 + (symbol_offsets[i] << 9) as u32);
+    }
 
     Ok(())
 }
