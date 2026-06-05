@@ -2031,7 +2031,7 @@ impl Program<'_> {
         let (mut recv, send) = std::io::pipe()?;
         command.stdout(send.try_clone()?).stderr(send);
 
-        let spawn_result = spawn_with_retry(&mut command, 10);
+        let spawn_result = spawn_with_retry(&mut command, Duration::from_secs(10));
 
         let mut child = spawn_result.with_context(|| {
             format!(
@@ -2096,32 +2096,32 @@ impl Program<'_> {
     }
 }
 
-/// Attempts to spawn `command`. If that fails due to ETXTBSY, then retries until we've tried
-/// `max_attempts` times. Other errors do not result in retries. This works around the fact that
-/// writing then executing a file from a multi-threaded program on Linux is inherently racy and
-/// there's not currently any way to truly fix it. The problem occurs if other threads are spawning
-/// subprocesses at the same time as our thread is writing the executable. When that happens the
-/// subprocess from the other thread inherits the file descriptor and potentially also the mmaps for
-/// the executable that we're writing. That means that once we close the file, the other subprocess
-/// still has it open, so when we attempt to execute it, we can't because it's locked due to the
-/// other process still having it open. Linux 6.11 fixed this problem by removing ETXTBSY, but
-/// unfortunately that got reverted. Someday, we might get O_CLOFORK, but that would only help if
-/// the associated mmap isn't cloned. In the meantime, our options are (a) only write executables
-/// from subprocesses - but then we don't get to test in-process use of libwild or (b) this retry
-/// logic. See also https://github.com/rust-lang/rust/issues/114554
-fn spawn_with_retry(command: &mut Command, max_attempts: u32) -> Result<std::process::Child> {
-    let mut attempts_remaining = max_attempts;
+/// Attempts to spawn `command`. If that fails due to ETXTBSY, then retries until the timeout is
+/// reached. Other errors do not result in retries. This works around the fact that writing then
+/// executing a file from a multi-threaded program on Linux is inherently racy and there's not
+/// currently any way to truly fix it. The problem occurs if other threads are spawning subprocesses
+/// at the same time as our thread is writing the executable. When that happens the subprocess from
+/// the other thread inherits the file descriptor and potentially also the mmaps for the executable
+/// that we're writing. That means that once we close the file, the other subprocess still has it
+/// open, so when we attempt to execute it, we can't because it's locked due to the other process
+/// still having it open. Linux 6.11 fixed this problem by removing ETXTBSY, but unfortunately that
+/// got reverted. Someday, we might get O_CLOFORK, but that would only help if the associated mmap
+/// isn't cloned. In the meantime, our options are (a) only write executables from subprocesses -
+/// but then we don't get to test in-process use of libwild or (b) this retry logic. See also
+/// https://github.com/rust-lang/rust/issues/114554
+fn spawn_with_retry(command: &mut Command, timeout: Duration) -> Result<std::process::Child> {
+    let start = Instant::now();
+    let mut delay = Duration::from_millis(10);
     loop {
         match command.spawn() {
             Ok(child) => return Ok(child),
             Err(error) => {
-                attempts_remaining -= 1;
-
-                if attempts_remaining == 0 || error.kind() != ErrorKind::ExecutableFileBusy {
+                if start.elapsed() >= timeout || error.kind() != ErrorKind::ExecutableFileBusy {
                     return Err(error.into());
                 }
 
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(delay);
+                delay *= 2;
             }
         }
     }
