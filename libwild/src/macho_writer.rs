@@ -246,9 +246,9 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
     let got_layout = layout.section_layouts.get(output_section_id::GOT);
 
     for imported_symbol in &layout.imported_symbols {
-        let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) else {
-            continue;
-        };
+        let resolution = layout
+            .local_symbol_resolution(imported_symbol.symbol_id)
+            .with_context(|| "missing resolution for a stub library symbol".to_string())?;
         let Some(got_address) = resolution.format_specific.got_address else {
             continue;
         };
@@ -256,11 +256,11 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
         let offset = got_address
             .get()
             .checked_sub(got_layout.mem_offset)
-            .ok_or_else(|| error!("Mach-O GOT entry address is before __got"))?
+            .ok_or_else(|| error!("GOT entry address is before __got"))?
             as usize;
         let end = offset + GOT_ENTRY_SIZE as usize;
-        ensure!(end <= got.len(), "Mach-O GOT entry is outside __got");
 
+        // TODO: add const
         got[offset..end].copy_from_slice(&(1u64 << 63).to_le_bytes());
     }
 
@@ -274,25 +274,26 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
     let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
 
     for imported_symbol in &layout.imported_symbols {
-        let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) else {
-            continue;
-        };
-        let Some(plt_address) = resolution.format_specific.plt_address else {
-            continue;
-        };
-        let Some(got_address) = resolution.format_specific.got_address else {
-            continue;
-        };
+        let resolution = layout
+            .local_symbol_resolution(imported_symbol.symbol_id)
+            .ok_or(error!("missing resolution for a stub library symbol"))?;
+        let stub_address = resolution
+            .format_specific
+            .plt_address
+            .ok_or(error!("missing __stub address"))?;
+        let got_address = resolution
+            .format_specific
+            .got_address
+            .ok_or(error!("missing GOT entry"))?;
 
-        let offset = plt_address
+        let offset = stub_address
             .get()
             .checked_sub(plt_layout.mem_offset)
-            .ok_or_else(|| error!("Mach-O PLT entry address is before __stubs"))?
+            .ok_or_else(|| error!("STUB entry address is before __stubs"))?
             as usize;
         let end = offset + PLT_ENTRY_SIZE as usize;
-        ensure!(end <= plt.len(), "Mach-O PLT entry is outside __stubs");
 
-        A::write_plt_entry(&mut plt[offset..end], got_address.get(), plt_address.get())?;
+        A::write_plt_entry(&mut plt[offset..end], got_address.get(), stub_address.get())?;
     }
 
     Ok(())
