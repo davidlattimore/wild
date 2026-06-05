@@ -785,17 +785,6 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
         matches!(self.groups[file_id.group()], Group::StubLibraries(_))
     }
 
-    pub(crate) fn stub_library_install_name_for_symbol(&self, symbol_id: SymbolId) -> Option<&str> {
-        let file_id = self.file_id_for_symbol(symbol_id);
-        match &self.groups[file_id.group()] {
-            Group::StubLibraries(stubs) => stubs
-                .iter()
-                .find(|stub| stub.symbol_id_range.contains(symbol_id))
-                .map(|stub| stub.defined_symbols.install_name.as_str()),
-            _ => None,
-        }
-    }
-
     pub(crate) fn definition(&self, symbol_id: SymbolId) -> SymbolId {
         // We need to do two steps when finding the definition for a symbol, since the definition
         // may have changed since we did the original name lookup. It would be possible to avoid

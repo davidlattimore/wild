@@ -807,29 +807,6 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     layout: &MachOLayout,
     chained_fixup_table: &mut [u8],
 ) -> Result {
-    // TODO: remove
-    for imported_symbol in &layout.imported_symbols {
-        let stub_library_name = layout
-            .symbol_db
-            .stub_library_install_name_for_symbol(imported_symbol.symbol_id)
-            .unwrap_or("<unknown Mach-O stub library>");
-        if let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) {
-            eprintln!(
-                "Mach-O imported symbol: {} from stub library {} raw_value {:#x} ({})",
-                String::from_utf8_lossy(imported_symbol.name),
-                stub_library_name,
-                resolution.raw_value,
-                resolution.raw_value,
-            );
-        } else {
-            eprintln!(
-                "Mach-O imported symbol: {} from stub library {} raw_value <none>",
-                String::from_utf8_lossy(imported_symbol.name),
-                stub_library_name,
-            );
-        }
-    }
-
     let symbols = &layout.imported_symbols;
     let _imported_symbols_strings_len: usize = symbols.iter().map(|sym| sym.name.len() + 1).sum();
 
