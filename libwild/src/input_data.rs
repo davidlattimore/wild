@@ -8,7 +8,6 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::bail;
-use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -206,6 +205,8 @@ enum LoadedFileState<'data, P: Platform> {
 enum InputRecord<'data, P: Platform> {
     Object(Result<Box<ParsedInputObject<'data, P>>>),
     LtoInput(Box<UnclaimedLtoInput<'data>>),
+    // TODO: remove
+    Empty,
 }
 
 struct UnclaimedLtoInput<'data> {
@@ -527,7 +528,7 @@ fn process_archive<'data, P: Platform>(
                 let kind = FileKind::identify_bytes(input_ref.data())
                     .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                outputs.push(state.process_input(input_ref, file, kind)?);
+                outputs.push(state.process_input(state, input_ref, file, kind)?);
             }
             ArchiveEntry::Thin(_) => unreachable!(),
         }
@@ -580,7 +581,7 @@ fn process_thin_archive<'data, P: Platform>(
                 let kind = FileKind::identify_bytes(input_ref.data())
                     .with_context(|| format!("Failed process input `{input_ref}`"))?;
 
-                parsed_files.push(state.process_input(input_ref, &Arc::new(file), kind)?);
+                parsed_files.push(state.process_input(state, input_ref, &Arc::new(file), kind)?);
                 files.push(input_file);
             }
             ArchiveEntry::Regular(_) => {}
@@ -667,7 +668,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
                 Ok(LoadedFileState::StubLibrary(input_file, defined_library))
             }
             _ => {
-                let parsed = self.process_input(input_ref, &Arc::new(file), kind)?;
+                let parsed = self.process_input(self, input_ref, &Arc::new(file), kind)?;
                 Ok(LoadedFileState::Loaded(input_file, parsed))
             }
         }
@@ -714,6 +715,7 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
 
     fn process_input(
         &self,
+        state: &TemporaryState<'data, P>,
         input_ref: InputRef<'data>,
         file: &Arc<std::fs::File>,
         kind: FileKind,
@@ -739,10 +741,17 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
-        ensure!(
-            kind != FileKind::FatMachOObject,
-            "Fat object file is not supported yet: {input_ref}"
-        );
+        // TODO
+        // ensure!(
+        //     kind != FileKind::FatMachOObject,
+        //     "Fat object file is not supported yet: {input_ref}"
+        // );
+        if kind == FileKind::FatMachOObject {
+            state
+                .args
+                .warning(format!("Fat object file is not supported yet: {input_ref}"));
+            return Ok(InputRecord::Empty);
+        }
 
         let input_bytes = InputBytes {
             kind,
@@ -1056,6 +1065,7 @@ impl<'data, P: Platform> LoadedInputs<'data, P> {
                     Err(e) => self.lto_objects.push(Err(e)),
                 }
             }
+            InputRecord::Empty => {}
         }
     }
 
