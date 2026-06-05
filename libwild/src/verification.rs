@@ -93,6 +93,7 @@ fn should_ignore_alignment(part_id: PartId) -> bool {
             part_id::EH_FRAME,
             part_id::GNU_VERSION_D,
             part_id::CODE_SIGNATURE,
+            part_id::STRTAB,
         ]
         .contains(&part_id)
 }

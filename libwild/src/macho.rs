@@ -1595,9 +1595,9 @@ impl platform::Platform for MachO {
         builder.add_section(output_section_id::DATA);
         builder.add_section(output_section_id::GOT);
         // The rest (e.g. symbol table, string table).
+        builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CHAINED_FIXUP_TABLE);
         builder.add_section(output_section_id::SYMTAB_GLOBAL);
-        builder.add_section(output_section_id::STRTAB);
         builder.add_section(output_section_id::CODE_SIGNATURE);
 
         builder.build()
@@ -1715,6 +1715,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         target_segment_type: Some(SegmentType::LoadCommands),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"STRTAB")),
+        target_segment_type: Some(SegmentType::LinkeditSections),
+        ..DEFAULT_DEFS
+    };
     defs[output_section_id::CHAINED_FIXUP_TABLE.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"DYLD_CHAINED_FIXUPS_TABLE")),
         target_segment_type: Some(SegmentType::LinkeditSections),
@@ -1722,11 +1727,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
     };
     defs[output_section_id::SYMTAB_GLOBAL.as_usize()] = BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"SYMTAB")),
-        target_segment_type: Some(SegmentType::LinkeditSections),
-        ..DEFAULT_DEFS
-    };
-    defs[output_section_id::STRTAB.as_usize()] = BuiltInSectionDetails {
-        kind: SectionKind::Primary(SectionName(b"STRTAB")),
         target_segment_type: Some(SegmentType::LinkeditSections),
         ..DEFAULT_DEFS
     };
@@ -1925,11 +1925,11 @@ fn process_relocation<'data, 'scope, A: platform::Arch<Platform = MachO>>(
             symbol_db.file(symbol_db.file_id_for_symbol(symbol_id)),
             SequencedInput::StubLibrary(_)
         ) {
-            flags_to_add |= ValueFlags::GOT | ValueFlags::PLT;
+            flags_to_add |= ValueFlags::GOT;
         }
         // TODO: classify symbols more reliably, likely by checking whether their section is __text.
         if rel_info.r_type == object::macho::ARM64_RELOC_BRANCH26 {
-            flags_to_add |= ValueFlags::FUNCTION;
+            flags_to_add |= ValueFlags::FUNCTION | ValueFlags::PLT;
         }
 
         let atomic_flags = &resources.per_symbol_flags.get_atomic(symbol_id);

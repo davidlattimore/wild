@@ -246,7 +246,21 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
 fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
     let got_layout = layout.section_layouts.get(output_section_id::GOT);
 
-    for imported_symbol in &layout.imported_symbols {
+    // TODO
+    let sorted_symbols = layout
+        .imported_symbols
+        .iter()
+        .map(|sym| {
+            (
+                sym,
+                layout.local_symbol_resolution(sym.symbol_id).expect("TODO"),
+            )
+        })
+        // TODO
+        .sorted_by_key(|(_, res)| res.format_specific.got_address.unwrap())
+        .map(|(sym, _)| sym)
+        .collect_vec();
+    for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
         let resolution = layout
             .local_symbol_resolution(imported_symbol.symbol_id)
             .with_context(|| "missing resolution for a stub library symbol".to_string())?;
@@ -262,7 +276,8 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
         let end = offset + GOT_ENTRY_SIZE as usize;
 
         // TODO: add const
-        got[offset..end].copy_from_slice(&(1u64 << 63).to_le_bytes());
+        let next = if i == sorted_symbols.len() - 1 { 0 } else { 2 };
+        got[offset..end].copy_from_slice(&((1u64 << 63) | (next << 52) | (i as u64)).to_le_bytes());
     }
 
     Ok(())
@@ -278,10 +293,9 @@ fn write_plt_entries<A: Arch<Platform = MachO>>(
         let resolution = layout
             .local_symbol_resolution(imported_symbol.symbol_id)
             .ok_or(error!("missing resolution for a stub library symbol"))?;
-        let stub_address = resolution
-            .format_specific
-            .plt_address
-            .ok_or(error!("missing __stub address"))?;
+        let Some(stub_address) = resolution.format_specific.plt_address else {
+            continue;
+        };
         let got_address = resolution
             .format_specific
             .got_address
@@ -883,11 +897,16 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
         .map(|sym| {
             (
                 sym,
-                layout.local_symbol_resolution(sym.symbol_id).expect("TODO"),
+                layout
+                    .local_symbol_resolution(sym.symbol_id)
+                    .expect("TODO")
+                    .format_specific
+                    .got_address
+                    .unwrap(),
             )
         })
         // TODO
-        .sorted_by_key(|(_, res)| res.raw_value)
+        .sorted_by_key(|(_, got_address)| *got_address)
         .collect_vec();
     let mut symbol_offsets = Vec::with_capacity(sorted_symbols.len());
     let mut str_offset = 0;
