@@ -8,7 +8,8 @@ on:
     branches:
       - "**"
 
-permissions: {}
+permissions:
+  packages: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,20 +21,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     container:
-      image: "ubuntu:26.04"
+      image: "ghcr.io/wild-linker/wild/ci-ubuntu-cross-amd64:sha-b58cc74a969f3f81c8a01b5d626fa850e3d39c38"
     steps:
-      - run: |
-          apt-get update && apt-get -y install gcc g++ clang llvm lld curl bubblewrap git zstd qemu-user gdb dwarfdump perl wget xz-utils \
-              binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu binutils-loongarch64-linux-gnu \
-              gcc-aarch64-linux-gnu gcc-riscv64-linux-gnu gcc-loongarch64-linux-gnu \
-              g++-aarch64-linux-gnu g++-riscv64-linux-gnu g++-loongarch64-linux-gnu
       - name: Checkout
         uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        id: rust-toolchain
       - uses: Swatinem/rust-cache@v2
       - name: Check regressions
         run: WILD_TEST_CROSS=all cargo test --features mold_tests external_test_suites/mold -- --skip expect_failure
