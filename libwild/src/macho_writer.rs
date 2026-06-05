@@ -51,6 +51,7 @@ use crate::macho::LIBSYSTEM_PATH;
 use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
+use crate::macho::PLT_ENTRY_SIZE;
 use crate::macho::SEG_DATA_CONST;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
@@ -152,6 +153,7 @@ pub(crate) fn write<'data, A: Arch<Platform = MachO>>(
 
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out).0;
     write_got_entries(layout, section_buffers.get_mut(output_section_id::GOT))?;
+    write_plt_entries::<A>(layout, section_buffers.get_mut(output_section_id::PLT_GOT))?;
 
     write_code_signature(layout, sized_output)?;
 
@@ -260,6 +262,37 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
         ensure!(end <= got.len(), "Mach-O GOT entry is outside __got");
 
         got[offset..end].copy_from_slice(&(1u64 << 63).to_le_bytes());
+    }
+
+    Ok(())
+}
+
+fn write_plt_entries<A: Arch<Platform = MachO>>(
+    layout: &MachOLayout<'_>,
+    plt: &mut [u8],
+) -> Result {
+    let plt_layout = layout.section_layouts.get(output_section_id::PLT_GOT);
+
+    for imported_symbol in &layout.imported_symbols {
+        let Some(resolution) = layout.local_symbol_resolution(imported_symbol.symbol_id) else {
+            continue;
+        };
+        let Some(plt_address) = resolution.format_specific.plt_address else {
+            continue;
+        };
+        let Some(got_address) = resolution.format_specific.got_address else {
+            continue;
+        };
+
+        let offset = plt_address
+            .get()
+            .checked_sub(plt_layout.mem_offset)
+            .ok_or_else(|| error!("Mach-O PLT entry address is before __stubs"))?
+            as usize;
+        let end = offset + PLT_ENTRY_SIZE as usize;
+        ensure!(end <= plt.len(), "Mach-O PLT entry is outside __stubs");
+
+        A::write_plt_entry(&mut plt[offset..end], got_address.get(), plt_address.get())?;
     }
 
     Ok(())
@@ -467,13 +500,19 @@ fn write_sections(
         section.addr.set(LE, size.mem_offset);
         section.size.set(LE, size.mem_size);
         section.offset.set(LE, size.file_offset as u32);
-        // TODO
-        section.align.set(LE, 0);
+        section.align.set(LE, u32::from(size.alignment.exponent));
         section.reloff.set(LE, 0);
         section.nreloc.set(LE, 0);
         section.flags.set(LE, *section_flags);
         section.reserved1.set(LE, 0);
-        section.reserved2.set(LE, 0);
+        // TODO: find a better place
+        let reserved2 =
+            if section_flags.0 & macho::SECTION_TYPE == u32::from(macho::S_SYMBOL_STUBS.0) {
+                PLT_ENTRY_SIZE as u32
+            } else {
+                0
+            };
+        section.reserved2.set(LE, reserved2);
         section.reserved3.set(LE, 0);
     }
 
@@ -793,7 +832,6 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
 
     let symbols = &layout.imported_symbols;
     let _imported_symbols_strings_len: usize = symbols.iter().map(|sym| sym.name.len() + 1).sum();
-    dbg!(chained_fixup_table.len());
 
     // TODO: DEFAULT_SEGMENT_COUNT should be dynamically allocated
     let starts_in_image_len = size_of::<u32>() * (DEFAULT_SEGMENT_COUNT + 1);

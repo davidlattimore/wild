@@ -87,6 +87,7 @@ pub(crate) const CHAINED_FIXUP_TABLE_BASE_SIZE: u64 = (size_of::<ChainedFixupsHe
     as u64;
 pub(crate) const CHAINED_FIXUP_IMPORT_SIZE: u64 = size_of::<u32>() as u64;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 8;
+pub(crate) const PLT_ENTRY_SIZE: u64 = 12;
 
 pub(crate) const SEG_DATA_CONST: &str = "__DATA_CONST";
 
@@ -923,7 +924,9 @@ impl platform::ProgramSegmentDef for ProgramSegmentDef {
             | output_section_id::DYLD_CHAINED_FIXUPS
             | output_section_id::SYMTAB_COMMAND
             | output_section_id::CODE_SIGNATURE_COMMAND => SegmentType::LoadCommands,
-            output_section_id::TEXT | output_section_id::CSTRING => SegmentType::TextSections,
+            output_section_id::TEXT | output_section_id::CSTRING | output_section_id::PLT_GOT => {
+                SegmentType::TextSections
+            }
             output_section_id::DATA => SegmentType::DataSections,
             output_section_id::GOT => SegmentType::DataConstSections,
             output_section_id::CHAINED_FIXUP_TABLE
@@ -1445,6 +1448,9 @@ impl platform::Platform for MachO {
         output_kind: crate::output_kind::OutputKind,
         _args: &Self::Args,
     ) {
+        if flags.is_dynamic() && flags.needs_plt() {
+            mem_sizes.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
+        }
         if flags.is_dynamic() && flags.needs_got() {
             mem_sizes.increment(part_id::GOT, GOT_ENTRY_SIZE);
         }
@@ -1522,13 +1528,20 @@ impl platform::Platform for MachO {
         let mut resolution: Resolution<MachO> = Resolution {
             raw_value,
             dynamic_symbol_index,
-            format_specific: ResolutionExt { got_address: None },
+            format_specific: ResolutionExt {
+                got_address: None,
+                plt_address: None,
+            },
             flags,
         };
 
-        if flags.needs_got() {
+        if flags.needs_plt() {
+            let plt_address = allocate_plt(memory_offsets);
+            resolution.raw_value = plt_address.get();
+            resolution.format_specific.plt_address = Some(plt_address);
+            resolution.format_specific.got_address = Some(allocate_got(memory_offsets));
+        } else if flags.needs_got() {
             let got_address = allocate_got(memory_offsets);
-            // TODO: point to PLT
             resolution.raw_value = got_address.get();
             resolution.format_specific.got_address = Some(got_address);
         }
@@ -1578,6 +1591,7 @@ impl platform::Platform for MachO {
         // Content of the sections (e.g. __text, __data).
         builder.add_section(output_section_id::TEXT);
         builder.add_section(output_section_id::CSTRING);
+        builder.add_section(output_section_id::PLT_GOT);
         builder.add_section(output_section_id::DATA);
         builder.add_section(output_section_id::GOT);
         // The rest (e.g. symbol table, string table).
@@ -1728,6 +1742,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
         kind: SectionKind::Primary(SectionName(b"__got")),
         ..DEFAULT_DEFS
     };
+    defs[output_section_id::PLT_GOT.as_usize()] = BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(b"__stubs")),
+        section_flags: macho::S_SYMBOL_STUBS
+            .to_flags()
+            .with(macho::S_ATTR_PURE_INSTRUCTIONS)
+            .with(macho::S_ATTR_SOME_INSTRUCTIONS),
+        min_alignment: Alignment { exponent: 2 },
+        ..DEFAULT_DEFS
+    };
     // Multi-part generated sections
     // Start of regular sections
     defs[output_section_id::TEXT.as_usize()] = BuiltInSectionDetails {
@@ -1755,12 +1778,19 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = {
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ResolutionExt {
     pub(crate) got_address: Option<NonZeroU64>,
+    pub(crate) plt_address: Option<NonZeroU64>,
 }
 
 fn allocate_got(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
     let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
     memory_offsets.increment(part_id::GOT, GOT_ENTRY_SIZE);
     got_address
+}
+
+fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
+    memory_offsets.increment(part_id::PLT_GOT, PLT_ENTRY_SIZE);
+    plt_address
 }
 
 // TODO: sort properly

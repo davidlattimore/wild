@@ -1046,7 +1046,8 @@ impl AArch64Instruction {
                         scale = 4;
                     }
                 }
-                mask = (extracted_value as u32) >> scale;
+                and_from_slice(dest, &(!(0xfff_u32 << 10)).to_le_bytes());
+                mask = ((extracted_value as u32) >> scale) << 10;
             }
         }
         // Read the original value and combine it with the prepared mask.

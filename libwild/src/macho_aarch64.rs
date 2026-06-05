@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 
 use crate::bail;
+use crate::ensure;
 use crate::macho::MachO;
 use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::AllowedRange;
@@ -10,9 +11,21 @@ use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+use linker_utils::elf::SIZE_4KB;
 use linker_utils::elf::Sign;
 
 pub(crate) struct MachOAArch64;
+
+// ADRP+ADD+BR symbol stub template.
+const STUB_TEMPLATE: &[u8] = &[
+    0x10, 0x00, 0x00, 0x90, // ADRP x16, page(got)
+    0x10, 0x02, 0x40, 0xf9, // LDR  x16, [x16, #off]
+    0x00, 0x02, 0x1f, 0xd6, // BR   x16
+];
+
+const _ASSERTS: () = {
+    assert!(STUB_TEMPLATE.len() as u64 == crate::macho::PLT_ENTRY_SIZE);
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Relaxation {}
@@ -57,7 +70,24 @@ impl crate::platform::Arch for MachOAArch64 {
         got_address: u64,
         plt_address: u64,
     ) -> crate::error::Result {
-        todo!()
+        // TODO: For simplicity, we assume now the PLT entry precedes the GOT entry, so we can
+        // make the offset calculation in the unsigned type.
+        debug_assert!(plt_address < got_address);
+
+        plt_entry.copy_from_slice(STUB_TEMPLATE);
+        let plt_page_address = plt_address & !PAGE_MASK_4KB;
+        let offset = got_address.wrapping_sub(plt_page_address);
+        ensure!(
+            offset < (1 << 32),
+            "Mach-O stub is more than 4GiB away from GOT"
+        );
+        AArch64Instruction::Adr.write_to_value(offset / SIZE_4KB, false, &mut plt_entry[0..4]);
+        AArch64Instruction::MachOLow12.write_to_value(
+            offset & PAGE_MASK_4KB,
+            false,
+            &mut plt_entry[4..8],
+        );
+        Ok(())
     }
 
     fn relocation_from_raw(
