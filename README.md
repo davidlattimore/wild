@@ -49,7 +49,7 @@ To use a stable Wild from Nixpkgs:
 let
  wildStdenv = pkgs.useWildLinker pkgs.stdenv;
 in
-pkgs.callPackage ./package { stdenv = wildStdenv; }  
+pkgs.callPackage ./package { stdenv = wildStdenv; }
 ```
 
 to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md)
@@ -111,6 +111,7 @@ binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary).
 
 ### Illumos specific Cargo configuration:
 
+```toml
 [target.x86_64-unknown-illumos]
 # Absolute path to clang - on OmniOS this is likely something like /opt/ooce/bin/clang.
 linker = "/usr/bin/clang"
