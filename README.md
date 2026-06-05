@@ -107,11 +107,10 @@ Then configure the project (you might need to remove the configuration cache fir
 usual build steps.
 
 Due to the complexity of these build systems, you might want to verify that Wild was used to link a
-binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary)
+binary with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary).
 
 ### Illumos specific Cargo configuration:
 
-```
 [target.x86_64-unknown-illumos]
 # Absolute path to clang - on OmniOS this is likely something like /opt/ooce/bin/clang.
 linker = "/usr/bin/clang"
