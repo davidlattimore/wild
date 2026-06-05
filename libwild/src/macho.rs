@@ -1801,7 +1801,7 @@ const DEFAULT_SECTION_RULES: &[SectionRule<'static>] = &[
     // SectionRule::exact_section_keep(b"__compact_unwind", crate::output_section_id::EH_FRAME),
 ];
 
-const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: SegmentType::Text,
     },

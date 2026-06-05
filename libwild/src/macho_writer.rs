@@ -52,6 +52,7 @@ use crate::macho::MACHO_COMMAND_ALIGNMENT;
 use crate::macho::MACHO_START_MEM_ADDRESS;
 use crate::macho::MachO;
 use crate::macho::PLT_ENTRY_SIZE;
+use crate::macho::PROGRAM_SEGMENT_DEFS;
 use crate::macho::SEG_DATA_CONST;
 use crate::macho::SectionEntry;
 use crate::macho::SegmentCommand;
@@ -845,8 +846,13 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     //    `seg_info_offset` ([u32; seg_count]); only __DATA_CONST,__got segment is covered
     starts_in_image[0].set(LE, DEFAULT_SEGMENT_COUNT as u32);
     starts_in_image[1..].fill(U32::new(LE, 0));
-    // TODO: find the index of the segment properly
-    starts_in_image[4].set(LE, starts_in_image_len as u32);
+
+    let data_const_segment_index = PROGRAM_SEGMENT_DEFS
+        .iter()
+        .filter(|segment| get_segment_sections(layout, segment.segment_type).is_some())
+        .position(|segment_type| segment_type.segment_type == SegmentType::DataConstSections)
+        .ok_or_else(|| error!("__DATA_CONST segment expected"))?;
+    starts_in_image[data_const_segment_index].set(LE, starts_in_image_len as u32);
 
     // 3) fill up DyldChainedStartsInSegment for the __got section
     let data_const_segment = get_segment_sections(layout, SegmentType::DataConstSections)
