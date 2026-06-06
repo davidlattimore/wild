@@ -239,6 +239,7 @@ fn write_epilogue<A: Arch<Platform = MachO>>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &MachOLayout<'_>,
 ) -> Result {
+    verbose_timing_phase!("Write epilogue");
     write_chained_fixup_table::<A>(layout, buffers.get_mut(part_id::CHAINED_FIXUP_TABLE))?;
 
     Ok(())
@@ -927,6 +928,8 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
 }
 
 fn write_code_signature(layout: &MachOLayout, sized_output: &mut SizedOutput) -> Result {
+    verbose_timing_phase!("Write code signature");
+
     let code_signature_section = layout
         .section_layouts
         .get(output_section_id::CODE_SIGNATURE);

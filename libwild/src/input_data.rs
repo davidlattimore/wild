@@ -612,9 +612,12 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         request: OpenFileRequest,
         scope: &Scope<'scope>,
     ) -> Result<LoadedFileState<'data, P>> {
-        verbose_timing_phase!("Open file");
-
         let absolute_path = &request.paths.absolute;
+        verbose_timing_phase!(
+            "Open file",
+            path = absolute_path.to_string_lossy().to_string()
+        );
+
         let result = FileData::open(absolute_path.as_path(), self.args.common().prepopulate_maps);
         let (data, file) = match request.referenced_by.as_ref() {
             Some(referenced_by) => {

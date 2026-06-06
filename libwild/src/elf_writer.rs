@@ -3928,7 +3928,7 @@ fn write_synthetic_symbols<'data, A: Arch<Platform = Elf>>(
     table_writer: &mut TableWriter,
     layout: &ElfLayout<'data>,
 ) -> Result {
-    verbose_timing_phase!("Write epilogue");
+    verbose_timing_phase!("Write synthetic symbols");
 
     write_internal_symbols_plt_got_entries::<A>(&syn.internal_symbols, table_writer, layout)?;
 
