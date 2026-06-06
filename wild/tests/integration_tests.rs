@@ -4764,12 +4764,12 @@ fn available_linkers_for_linux() -> Result<Vec<Linker>> {
 fn available_linkers_for_mac() -> Result<Vec<Linker>> {
     let mut linkers = Vec::new();
 
-    if let Ok(path) = find_bin(&["ld.lld"]) {
+    if let Ok(path) = find_bin(&["ld64.lld"]) {
         linkers.push(Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
             path,
-            cross_paths: find_cross_paths("ld.lld"),
+            cross_paths: find_cross_paths("ld64.lld"),
             enabled_by_default: true,
         }));
     }
