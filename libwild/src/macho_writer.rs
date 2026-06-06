@@ -293,9 +293,20 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
             as usize;
         let end = offset + GOT_ENTRY_SIZE as usize;
 
-        // TODO: add const
+        /* DYLD_CHAINED_PTR_64 format:
+        struct dyld_chained_ptr_64_bind
+        {
+            uint64_t    ordinal   : 24,
+                        addend    :  8,   // 0 thru 255
+                        reserved  : 19,   // all zeros
+                        next      : 12,   // 4-byte stride
+                        bind      :  1;   // == 1
+        }; */
+        let bind = 1u64 << 63;
         let next = if i == sorted_symbols.len() - 1 { 0 } else { 2 };
-        got[offset..end].copy_from_slice(&((1u64 << 63) | (next << 51) | (i as u64)).to_le_bytes());
+        let next = next << 51;
+        let ordinal = i as u64;
+        got[offset..end].copy_from_slice(&(bind | next | ordinal).to_le_bytes());
     }
 
     Ok(())
