@@ -1832,11 +1832,13 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         // Not a real segment from the Macho-O definition.
         segment_type: SegmentType::LoadCommands,
+        // included in SegmentType::Text
         part_id: None,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::TextSections,
-        part_id: Some(part_id::TEXT_SEGMENT),
+        // included in SegmentType::Text
+        part_id: None,
     },
     ProgramSegmentDef {
         segment_type: SegmentType::DataSections,
