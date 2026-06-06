@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn parse_library_with_reexports() {
         let stub_library = parse_defined_library(
-            r#"--- !tapi-tbd
+            r"--- !tapi-tbd
 tbd-version:     4
 targets:         [ x86_64-macos, arm64-macos ]
 install-name:    '/usr/lib/libMain.dylib'
@@ -227,7 +227,7 @@ reexports:
   - targets:         [ arm64-macos ]
     symbols:         [ _b_exported_arm64 ]
     weak-symbols:    [ _b_weak_exported_arm64 ]
-"#,
+",
         )
         .expect("definition should parse");
 

@@ -445,7 +445,7 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
             &self.version_script,
             &mut per_group_shards,
             self.args,
-            &self.export_list,
+            self.export_list.as_ref(),
             self.output_kind,
         )?;
 
@@ -490,10 +490,9 @@ impl<'data, P: Platform> SymbolDb<'data, P> {
 
         let lto_objects = lto_objects.into_iter().collect::<Result<Vec<_>>>()?;
 
-        for group_objects in lto_objects
+        for group_objects in &lto_objects
             .into_iter()
             .chunks(crate::input_data::MAX_FILES_PER_GROUP as usize)
-            .into_iter()
         {
             let mut next_symbol_id = self.next_symbol_id();
             let group_index = self.next_group_index();
@@ -1447,7 +1446,7 @@ fn read_symbols<'data, P: Platform>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data, P>],
     args: &P::Args,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     timing_phase!("Read symbols");
@@ -1472,7 +1471,7 @@ fn read_symbols<'data, P: Platform>(
 fn read_symbols_for_group<'data, P: Platform>(
     shard: &mut SymbolWriterShard<'_, '_, 'data, P>,
     version_script: &VersionScript,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     num_buckets: usize,
     args: &P::Args,
     output_kind: OutputKind,
@@ -1635,7 +1634,7 @@ fn load_symbols_from_file<'data, P: Platform>(
     symbols_out: &mut SymbolWriterShard<'_, '_, 'data, P>,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &P::Args,
-    export_list: &Option<ExportList<'data>>,
+    export_list: Option<&ExportList<'data>>,
     output_kind: OutputKind,
 ) -> Result {
     if s.is_dynamic() {
@@ -1764,7 +1763,7 @@ struct RegularObjectSymbolLoader<'a, 'data, P: Platform> {
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     lib_name: &'data [u8],
-    export_list: &'a Option<ExportList<'a>>,
+    export_list: Option<&'a ExportList<'a>>,
     output_kind: OutputKind,
 }
 
@@ -1792,7 +1791,7 @@ impl<'data, P: Platform> SymbolLoader<'data, P> for RegularObjectSymbolLoader<'_
             self.args,
             sym,
             self.output_kind,
-            self.export_list.as_ref(),
+            self.export_list,
             self.lib_name,
             self.archive_semantics,
             is_undefined,

@@ -64,7 +64,7 @@ fn read_gnu_version_d(bin: &crate::Binary) -> Result<FieldValues> {
         // Thus, we strip it here.
         if verdef.vd_flags.get(e).contains(VER_FLG_BASE) {
             verdef_version = verdef_version.trim_end_matches(".so").to_string();
-            if let Some(pos) = verdef_version.rfind(".") {
+            if let Some(pos) = verdef_version.rfind('.') {
                 verdef_version.truncate(pos);
             }
         }

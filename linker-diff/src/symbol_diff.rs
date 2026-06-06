@@ -44,7 +44,7 @@ fn read_dynsym(bin: &crate::Binary) -> Result<FieldValues> {
                 format!("{}.section", String::from_utf8_lossy(name)),
                 section_name,
             );
-        };
+        }
     }
 
     Ok(values)

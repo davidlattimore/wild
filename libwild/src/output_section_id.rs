@@ -789,10 +789,8 @@ impl<'data, P: Platform> OutputSections<'data, P> {
                 {
                     return;
                 }
-            } else {
-                if id.as_usize() < NUM_BUILT_IN_SECTIONS {
-                    return;
-                }
+            } else if id.as_usize() < NUM_BUILT_IN_SECTIONS {
+                return;
             }
 
             if info.section_attributes.is_executable() {

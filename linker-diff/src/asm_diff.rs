@@ -219,9 +219,9 @@ fn compare_sections<A: Arch>(
             .iter()
             .any(|t| t.next_modifier == RelocationModifier::SkipNextRelocation)
         {
-            testers
-                .iter_mut()
-                .for_each(|t| t.next_modifier = RelocationModifier::Normal);
+            for t in &mut testers {
+                t.next_modifier = RelocationModifier::Normal;
+            }
 
             continue;
         }
@@ -281,7 +281,7 @@ fn compare_sections<A: Arch>(
                     &mut relocations,
                 )?;
             }
-        };
+        }
     }
 
     // There are no more relocations. Diff literal bytes up to the end of the section.
@@ -337,7 +337,9 @@ fn update_offsets_if_match_failed<A: Arch>(
             .unwrap_or(section_size);
 
         // Update all testers to the new location.
-        testers.iter_mut().for_each(|t| t.previous_end = new_offset);
+        for t in testers.iter_mut() {
+            t.previous_end = new_offset;
+        }
 
         // Skip any relocations that applied to the addresses we skipped.
         while let Some((next_rel_offset, _rel)) = relocations.peek() {
@@ -347,7 +349,7 @@ fn update_offsets_if_match_failed<A: Arch>(
                 break;
             }
         }
-    };
+    }
 
     Ok(())
 }
@@ -894,80 +896,77 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .as_ref()
         .and_then(|r| r.first_if_matched());
 
-    match (ours, reference) {
-        (Some(r1), Some(r2)) => {
-            let Some(orig) = original_annotations.first() else {
-                return "missing-original".to_owned();
-            };
+    if let (Some(r1), Some(r2)) = (ours, reference) {
+        let Some(orig) = original_annotations.first() else {
+            return "missing-original".to_owned();
+        };
 
-            match (
-                r1.relaxation.relaxation_kind.is_no_op(),
-                r2.relaxation.relaxation_kind.is_no_op(),
-            ) {
-                (true, false) => {
-                    format!(
-                        "rel.missing-opt.{}.{:?}.{}",
-                        orig.success.r_type,
-                        r2.relaxation.relaxation_kind,
-                        bin_attributes.type_name()
-                    )
-                }
-                (false, true) => {
-                    format!(
-                        "rel.extra-opt.{}.{:?}.{}",
-                        orig.success.r_type,
-                        r1.relaxation.relaxation_kind,
-                        bin_attributes.type_name()
-                    )
-                }
-                _ => {
-                    let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
-                    let any_others_copy = resolutions[1..]
-                        .iter()
-                        .any(|r| r.reference.referent.is_copy_relocation());
+        match (
+            r1.relaxation.relaxation_kind.is_no_op(),
+            r2.relaxation.relaxation_kind.is_no_op(),
+        ) {
+            (true, false) => {
+                format!(
+                    "rel.missing-opt.{}.{:?}.{}",
+                    orig.success.r_type,
+                    r2.relaxation.relaxation_kind,
+                    bin_attributes.type_name()
+                )
+            }
+            (false, true) => {
+                format!(
+                    "rel.extra-opt.{}.{:?}.{}",
+                    orig.success.r_type,
+                    r1.relaxation.relaxation_kind,
+                    bin_attributes.type_name()
+                )
+            }
+            _ => {
+                let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
+                let any_others_copy = resolutions[1..]
+                    .iter()
+                    .any(|r| r.reference.referent.is_copy_relocation());
 
-                    if ours_is_copy && !any_others_copy {
-                        format!("rel.extra-copy-relocation.{}", orig.success.r_type)
-                    } else if !ours_is_copy && any_others_copy {
-                        format!("rel.missing-copy-relocation.{}", orig.success.r_type)
-                    } else {
-                        format!(
-                            "rel.{}.{}",
-                            r1.relaxation.new_r_type, r2.relaxation.new_r_type
-                        )
-                    }
+                if ours_is_copy && !any_others_copy {
+                    format!("rel.extra-copy-relocation.{}", orig.success.r_type)
+                } else if !ours_is_copy && any_others_copy {
+                    format!("rel.missing-copy-relocation.{}", orig.success.r_type)
+                } else {
+                    format!(
+                        "rel.{}.{}",
+                        r1.relaxation.new_r_type, r2.relaxation.new_r_type
+                    )
                 }
             }
         }
-        _ => {
-            let failure_kind = |r: &ResolvedGroup<A>| {
-                if r.annotations
+    } else {
+        let failure_kind = |r: &ResolvedGroup<A>| {
+            if r.annotations
+                .iter()
+                .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
+            {
+                Some("literal-byte-mismatch".to_owned())
+            } else {
+                r.annotations
                     .iter()
-                    .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
-                {
-                    Some("literal-byte-mismatch".to_owned())
-                } else {
-                    r.annotations
-                        .iter()
-                        .zip(original_annotations)
-                        .find_map(|(a, orig)| match &a.kind {
-                            AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                            AnnotationKind::MatchFailed(_) => {
-                                Some(format!("rel.match_failed.{}", orig.success.r_type))
-                            }
-                            AnnotationKind::MatchedRelaxation(_) => None,
-                            AnnotationKind::LiteralByteMismatch => {
-                                unreachable!();
-                            }
-                            AnnotationKind::Error(e) => Some(e.clone()),
-                        })
-                }
-            };
+                    .zip(original_annotations)
+                    .find_map(|(a, orig)| match &a.kind {
+                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
+                        AnnotationKind::MatchFailed(_) => {
+                            Some(format!("rel.match_failed.{}", orig.success.r_type))
+                        }
+                        AnnotationKind::MatchedRelaxation(_) => None,
+                        AnnotationKind::LiteralByteMismatch => {
+                            unreachable!();
+                        }
+                        AnnotationKind::Error(e) => Some(e.clone()),
+                    })
+            }
+        };
 
-            failure_kind(&resolutions[0])
-                .or(failure_kind(&resolutions[1]))
-                .unwrap_or("rel.unknown_failure".to_owned())
-        }
+        failure_kind(&resolutions[0])
+            .or(failure_kind(&resolutions[1]))
+            .unwrap_or("rel.unknown_failure".to_owned())
     }
 }
 
@@ -2611,7 +2610,7 @@ impl<'data> RelaxationTester<'data> {
                         Err(failure) => {
                             failed_matches.push(failure);
                         }
-                    };
+                    }
                 });
 
                 let m = match matched_relaxations.len() {
@@ -3313,7 +3312,7 @@ impl<'data> AddressIndex<'data> {
                 .map(|versym| versym.0.get(e).index());
 
             let version: Option<&[u8]> = match version_index {
-                Some(object::elf::VER_NDX_LOCAL) | Some(object::elf::VER_NDX_GLOBAL)
+                Some(object::elf::VER_NDX_LOCAL | object::elf::VER_NDX_GLOBAL)
                     if !sym.is_definition() =>
                 {
                     // Unversioned, undefined symbols are sometimes emitted as VER_NDX_GLOBAL (LLD
@@ -3489,7 +3488,7 @@ impl<'data> AddressIndex<'data> {
 
         if dynamic_segment.is_none() {
             self.bin_attributes.output_kind = OutputKind::Executable;
-        };
+        }
 
         dynamic_segment
             .and_then(|seg| seg.data(e, elf_file.data()).ok())

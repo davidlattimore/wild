@@ -286,13 +286,13 @@ impl ArchKind {
                     object::elf::EM_RISCV => Ok(ArchKind::RiscV64),
                     object::elf::EM_LOONGARCH => Ok(ArchKind::LoongArch64),
                     object::elf::EM_PPC64 => Ok(ArchKind::Ppc64),
-                    other => bail!("Unsupported ELF architecture {other}",),
+                    other => bail!("Unsupported ELF architecture {other}"),
                 }
             }
             object::File::MachO64(file) => {
                 match file.macho_header().cputype.get(file.endianness()) {
                     object::macho::CPU_TYPE_ARM64 => Ok(ArchKind::Aarch64),
-                    other => bail!("Unsupported MachO architecture {other}",),
+                    other => bail!("Unsupported MachO architecture {other}"),
                 }
             }
             other => bail!("Unsupported file format: {:?}", other.format()),

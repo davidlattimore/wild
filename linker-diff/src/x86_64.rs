@@ -212,7 +212,7 @@ impl Arch for X86_64 {
                 );
             }
             _ => {}
-        };
+        }
 
         cb(no_op_relaxation);
     }

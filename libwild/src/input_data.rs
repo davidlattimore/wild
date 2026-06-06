@@ -340,7 +340,7 @@ impl<'data> FileLoader<'data> {
         // files pulled in.
         let mut files_by_index = Vec::new();
         files_by_index.resize_with(temporary_state.files.len(), || None);
-        for file in temporary_state.files.into_iter() {
+        for file in temporary_state.files {
             let entry = &mut files_by_index[file.index.0];
             assert!(
                 entry.is_none(),

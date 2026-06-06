@@ -244,7 +244,7 @@ fn default_file_write_mode(args: &impl platform::Args, output_kind: OutputKind) 
 
     if std::fs::metadata(args.output()).is_err() {
         return FileWriteMode::UnlinkAndReplace;
-    };
+    }
 
     FileWriteMode::UpdateInPlaceWithFallback
 }
