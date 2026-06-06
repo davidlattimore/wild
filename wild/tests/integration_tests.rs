@@ -2794,6 +2794,7 @@ fn get_target(compiler_args: &[String]) -> Result<&String> {
 /// the output filename. So it doesn't really work for us to make them match. Instead, we remove the
 /// -soname flag from the run-with script. Without the DT_SONAME, the linker will fall back to using
 /// the actual name of the .so file, which is what we want.
+/// Also, remove AArch64 Cortex-A53 errata flags injected by recent rustcfrom the run-with script.
 fn post_process_rust_run_script(output_path: &Path) -> Result {
     let run_with_filename = run_with_path(output_path);
     let contents =
@@ -2801,7 +2802,7 @@ fn post_process_rust_run_script(output_path: &Path) -> Result {
 
     let mut out = String::new();
     for line in contents.lines() {
-        if !line.contains("-soname") {
+        if !line.contains("-soname") && !line.contains("fix-cortex-a53") {
             out.push_str(line);
             out.push('\n');
         }
