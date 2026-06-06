@@ -205,7 +205,7 @@ enum LoadedFileState<'data, P: Platform> {
 enum InputRecord<'data, P: Platform> {
     Object(Result<Box<ParsedInputObject<'data, P>>>),
     LtoInput(Box<UnclaimedLtoInput<'data>>),
-    // TODO: remove
+    // TODO: remove once FAT objects are properly supported
     Empty,
 }
 
@@ -741,7 +741,6 @@ impl<'data, P: Platform> TemporaryState<'data, P> {
         if input_ref.is_archive_entry() && kind != FileKind::ElfObject {
             bail!("Unexpected archive member of kind {kind:?}: {input_ref}");
         }
-        // TODO
         // ensure!(
         //     kind != FileKind::FatMachOObject,
         //     "Fat object file is not supported yet: {input_ref}"
