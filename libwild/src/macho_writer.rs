@@ -302,6 +302,7 @@ fn write_got_entries(layout: &MachOLayout<'_>, got: &mut [u8]) -> Result {
           bind: 1 // == 1
         */
         let bind = 1u64 << 63;
+        // TODO: when crossing a page boundary, next is equal to zero
         let next = if i == sorted_symbols.len() - 1 { 0 } else { 2 };
         let next = next << 51;
         let ordinal = i as u64;
