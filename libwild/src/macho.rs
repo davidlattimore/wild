@@ -6,6 +6,7 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::MACHO_PAGE_ALIGNMENT;
 use crate::args::macho::MachOArgs;
+use crate::bail;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
@@ -34,6 +35,7 @@ use crate::platform::Args;
 use crate::platform::ObjectFile;
 use crate::symbol_db::Visibility;
 use crate::value_flags::ValueFlags;
+use anyhow::Context;
 use linker_utils::elf::RelocationKind::TlsGdGotBase;
 use object::Endianness;
 use object::SymbolIndex;
@@ -1442,7 +1444,16 @@ impl platform::Platform for MachO {
     ) -> crate::error::Result {
         if flags.has_resolution() && symbol_db.is_stub_library_symbol(symbol_id) {
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            common.add_imported_symbol(symbol_id, symbol_name.bytes());
+            let SequencedInput::StubLibrary(stub) =
+                symbol_db.file(symbol_db.file_id_for_symbol(symbol_id))
+            else {
+                bail!("stub library expected");
+            };
+            common.add_imported_symbol(
+                symbol_id,
+                symbol_name.bytes(),
+                u8::try_from(stub.file_id.file() + 1).with_context(|| "too many stub libraries")?,
+            );
         }
         Ok(())
     }

@@ -933,8 +933,11 @@ fn write_chained_fixup_table<A: Arch<Platform = MachO>>(
     // lib_ordinal: 8
     // weak_import: 1
     // name_offset: 23
-    for i in 0..sorted_symbols.len() {
-        imports[i].set(Endianness::Little, 1 + (symbol_offsets[i] << 9) as u32);
+    for (i, imported_symbol) in sorted_symbols.iter().enumerate() {
+        imports[i].set(
+            Endianness::Little,
+            u32::from(imported_symbol.symbol.library_index) | ((symbol_offsets[i] as u32) << 9),
+        );
     }
 
     // Pad a couple of bytes (related to the MAX_SEGMENT_COUNT).

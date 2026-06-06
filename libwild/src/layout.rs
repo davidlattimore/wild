@@ -1220,9 +1220,17 @@ impl<'data, P: Platform> CommonGroupState<'data, P> {
         self.mem_sizes.increment(part_id, size);
     }
 
-    pub(crate) fn add_imported_symbol(&mut self, symbol_id: SymbolId, name: &'data [u8]) {
-        self.imported_symbols
-            .push(ImportedSymbol { symbol_id, name });
+    pub(crate) fn add_imported_symbol(
+        &mut self,
+        symbol_id: SymbolId,
+        name: &'data [u8],
+        library_index: u8,
+    ) {
+        self.imported_symbols.push(ImportedSymbol {
+            symbol_id,
+            name,
+            library_index,
+        });
     }
 
     /// Allocate resources and update attributes based on a section having been loaded.
@@ -1312,6 +1320,8 @@ pub(crate) struct ImportedSymbol<'data> {
     pub(crate) symbol_id: SymbolId,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
+    // One-based index of the stub library that defines the symbol.
+    pub(crate) library_index: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
