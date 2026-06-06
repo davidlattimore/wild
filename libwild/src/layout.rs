@@ -1309,8 +1309,6 @@ pub(crate) struct DynamicSymbolDefinition<'data, P: Platform> {
 
 #[derive(derive_more::Debug, Clone, Copy)]
 pub(crate) struct ImportedSymbol<'data> {
-    // TODO
-    #[allow(unused)]
     pub(crate) symbol_id: SymbolId,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
